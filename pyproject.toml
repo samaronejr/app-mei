@@ -88,6 +88,13 @@ ignore_missing_imports = true
 module = ["celery", "celery.*"]
 ignore_missing_imports = true
 
+# celery ships no py.typed marker, so @shared_task is untyped by construction and
+# strict mode's disallow_untyped_decorators would reject every task. Relaxed for task
+# modules only — the task bodies themselves stay fully annotated and strictly checked.
+[[tool.mypy.overrides]]
+module = ["apps.*.tasks"]
+disallow_untyped_decorators = false
+
 [[tool.mypy.overrides]]
 module = ["allauth", "allauth.*"]
 ignore_missing_imports = true

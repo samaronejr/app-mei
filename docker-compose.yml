@@ -64,7 +64,13 @@ services:
 
   web:
     <<: *app-service
-    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    # web is the single migrator: beat's DatabaseScheduler needs django_celery_beat's
+    # tables to exist before it starts, and beat waits on web being healthy. Running
+    # migrate from more than one service would race, since Django takes no lock.
+    command:
+      - sh
+      - -c
+      - python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

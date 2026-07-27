@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_celery_beat",
     "apps.core",
     "apps.accounts",
 ]
@@ -139,6 +140,20 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 
 REDIS_URL = env.str("REDIS_URL", default="redis://localhost:6379/0")
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+# Sweeps in this product are idempotent fiscal jobs. Losing one silently is worse than
+# running it twice, so a task is acknowledged only after it completes and is requeued
+# when a worker dies mid-flight.
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=600)
+CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=540)
+# Store UTC, schedule in Brazilian local time.
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
 
 LOGGING: dict[str, Any] = {
     "version": 1,
