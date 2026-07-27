@@ -7,16 +7,13 @@ well-known trap, and T-016 configures allauth for email-only login, which the st
 """
 
 import uuid
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
-
-if TYPE_CHECKING:
-    from django.db.models.manager import Manager
 
 
 class UserManager(BaseUserManager["User"]):
@@ -75,7 +72,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(_("staff status"), default=False)
     date_joined = models.DateTimeField(_("date joined"), default=timezone.now)
 
-    objects: ClassVar["Manager[User]"] = UserManager()
+    objects: ClassVar[UserManager] = UserManager()
 
     USERNAME_FIELD = "email"
     EMAIL_FIELD = "email"

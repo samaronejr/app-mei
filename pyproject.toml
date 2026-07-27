@@ -10,10 +10,18 @@ dependencies = [
   "django-allauth[mfa]",
   "django-celery-beat",
   "django-environ",
+  # Runtime, not dev: generic subscripts such as `ModelAdmin[Tenant]` appear in shipped
+  # code, and Django's classes are not subscriptable at runtime without the monkeypatch
+  # this package installs. Dropping it to the dev group breaks production imports only.
+  "django-stubs-ext",
   "gunicorn",
   "psycopg[binary]>=3.2",
   "redis",
   "sentry-sdk[django]",
+  # Python 3.13's stdlib uuid has no uuid7() (it lands in 3.14) and Django 5.2 ships no
+  # UUIDv7 field. Time-ordered primary keys matter here because every tenant-scoped
+  # index leads with tenant_id and a random second column destroys insert locality.
+  "uuid6",
   "whitenoise",
 ]
 

@@ -10,7 +10,12 @@ explicit per-origin list rather than a wildcard.
 from pathlib import Path
 from typing import Any
 
+import django_stubs_ext
 import environ
+
+# Makes Django's generic classes subscriptable at runtime, so shipped code can write
+# ModelAdmin[Tenant] and Manager[User] rather than losing the parameter to a bare name.
+django_stubs_ext.monkeypatch()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -42,6 +47,7 @@ INSTALLED_APPS = [
     "django_celery_beat",
     "apps.core",
     "apps.accounts",
+    "apps.tenants",
 ]
 
 MIDDLEWARE = [
