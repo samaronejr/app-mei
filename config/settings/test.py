@@ -1,9 +1,14 @@
 """Test settings: fast hashers and the unprivileged application database role."""
 
 from config.settings.base import *  # noqa: F403
-from config.settings.base import DATABASES, env
+from config.settings.base import DATABASES, INSTALLED_APPS, env
 
 DEBUG = False
+
+# Concrete tenant-scoped fixture models. Row-level security, the scoped manager and the
+# isolation suite all need a real table to assert against, and the first business table
+# does not arrive until the client registry several waves later.
+INSTALLED_APPS = [*INSTALLED_APPS, "apps.core.tests"]
 
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 

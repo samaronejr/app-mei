@@ -49,6 +49,22 @@ assertions meaningful — PostgreSQL evaluates policies against the *current* ro
 membership `SET ROLE` returns `permission denied to set role` and the entire isolation
 suite fails on its first statement.
 
+## Gunicorn must run the `sync` worker with `--threads 1`
+
+Primary keys are UUIDv7 values produced by `uuid6.uuid7()`, whose monotonic counter is
+documented as **not thread-safe**. Django calls a field `default` concurrently under
+threaded workers, so two simultaneous inserts can be handed the same key.
+
+```sh
+gunicorn config.wsgi:application --worker-class sync --threads 1
+```
+
+This is asserted in T-022. Celery's default prefork pool is process-based and therefore
+safe; if that pool is ever changed to `threads` or `gevent`, this constraint must be
+revisited at the same time.
+
+## Row-level security
+
 ### The `app.tenant_id` GUC differs between production and tests
 
 `ALTER ROLE app_runtime SET app.tenant_id TO ''` applies at **login**. Production

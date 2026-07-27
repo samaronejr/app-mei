@@ -13,11 +13,12 @@ import secrets
 from datetime import datetime, timedelta
 from typing import ClassVar
 
-import uuid6
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+
+from apps.core.models import UUIDv7PrimaryKeyModel
 
 INVITE_TOKEN_BYTES = 32
 INVITE_VALIDITY = timedelta(days=7)
@@ -39,10 +40,9 @@ class TenantPlan(models.TextChoices):
     ENTERPRISE = "enterprise", _("enterprise")
 
 
-class Tenant(models.Model):
+class Tenant(UUIDv7PrimaryKeyModel):
     """An accounting firm. The tenancy root, so it carries no tenant column itself."""
 
-    id = models.UUIDField(primary_key=True, default=uuid6.uuid7, editable=False)
     name = models.CharField(_("name"), max_length=255)
     slug = models.SlugField(_("slug"), unique=True, max_length=63)
     plan = models.CharField(
@@ -67,10 +67,9 @@ class Tenant(models.Model):
         return self.slug
 
 
-class Membership(models.Model):
+class Membership(UUIDv7PrimaryKeyModel):
     """A user's role within one firm. Read before any tenant context exists."""
 
-    id = models.UUIDField(primary_key=True, default=uuid6.uuid7, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -104,7 +103,7 @@ class Membership(models.Model):
         return f"{self.user_id} @ {self.tenant_id} ({self.role})"
 
 
-class Invite(models.Model):
+class Invite(UUIDv7PrimaryKeyModel):
     """A pending invitation to join a firm.
 
     `token` holds a SHA-256 digest, never the value handed to the invitee. An invite
@@ -112,7 +111,6 @@ class Invite(models.Model):
     must not be enough to accept it.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid6.uuid7, editable=False)
     tenant = models.ForeignKey(
         Tenant,
         on_delete=models.CASCADE,
