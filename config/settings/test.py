@@ -9,15 +9,18 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
 # Key mutation, never a wholesale reassignment — rebuilding DATABASES here would drop
 # ATOMIC_REQUESTS in the one module the manage.py system checks never validate.
-# The dedicated non-superuser test role arrives with the role split in T-009; until
-# then these fall back to the credentials already parsed from DATABASE_URL.
-# `or` rather than a default: .env ships these keys present-but-empty, so an empty
+#
+# Tests connect as app_test, NOT as app_runtime. app_runtime has no CREATEDB, so
+# pointing this at it would kill pytest-django at CREATE DATABASE before a single test
+# ran, and it cannot TRUNCATE app_test-owned tables either. The assertions still run
+# under app_runtime: tests/conftest.py issues SET ROLE app_runtime per test, and
+# PostgreSQL evaluates RLS against the *current* role, so policies still bite.
+#
+# `or` rather than a default: .env may ship these keys present-but-empty, so an empty
 # string must fall back too, not just an absent variable.
-DATABASES["default"]["USER"] = (
-    env.str("TEST_DB_USER", default="") or DATABASES["default"]["USER"]
-)
+DATABASES["default"]["USER"] = env.str("TEST_DB_USER", default="") or "app_test"
 DATABASES["default"]["PASSWORD"] = (
-    env.str("TEST_DB_PASSWORD", default="") or DATABASES["default"]["PASSWORD"]
+    env.str("TEST_DB_PASSWORD", default="") or "app_test_password"
 )
 DATABASES["default"]["CONN_MAX_AGE"] = 0
 

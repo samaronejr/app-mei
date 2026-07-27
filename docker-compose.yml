@@ -9,7 +9,11 @@ x-app-environment: &app-environment
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,.localhost,web}
   CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
-  DATABASE_URL: postgres://${POSTGRES_USER:-app_mei}:${POSTGRES_PASSWORD:-app_mei_password}@db:5432/${POSTGRES_DB:-app_mei}
+  # The application connects as app_runtime, which has neither SUPERUSER nor BYPASSRLS
+  # and owns no table. Pointing this at the bootstrap superuser makes every row-level
+  # security policy in the schema inert without producing a single error.
+  DATABASE_URL: postgres://app_runtime:${APP_RUNTIME_PASSWORD:-app_runtime_password}@db:5432/${POSTGRES_DB:-app_mei}
+  DATABASE_MIGRATION_URL: postgres://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_password}@db:5432/${POSTGRES_DB:-app_mei}
   CONN_MAX_AGE: ${CONN_MAX_AGE:-60}
   REDIS_URL: redis://redis:6379/0
 
@@ -34,8 +38,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-app_mei}
       POSTGRES_USER: ${POSTGRES_USER:-app_mei}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_mei_password}
+      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:-app_migrator_password}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:-app_runtime_password}
+      APP_TEST_PASSWORD: ${APP_TEST_PASSWORD:-app_test_password}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Entrypoint scripts run only against an EMPTY data directory. Changing roles.sql
+      # therefore requires `docker compose down -v`, not a restart.
+      - ./ops/sql:/docker-entrypoint-initdb.d:ro
     # Bound to the loopback interface: the database is never reachable from the LAN.
     ports:
       - "127.0.0.1:5432:5432"
@@ -67,10 +77,14 @@ services:
     # web is the single migrator: beat's DatabaseScheduler needs django_celery_beat's
     # tables to exist before it starts, and beat waits on web being healthy. Running
     # migrate from more than one service would race, since Django takes no lock.
+    # migrate runs as app_migrator (the schema owner) and the server as app_runtime.
+    # Running migrate as app_runtime fails by design — see ops/README.md.
     command:
       - sh
       - -c
-      - python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000
+      - >-
+        DATABASE_URL="$$DATABASE_MIGRATION_URL" python manage.py migrate --noinput
+        && python manage.py runserver 0.0.0.0:8000
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
