@@ -3,7 +3,10 @@
 from django.apps import AppConfig
 from django.core.checks import register
 
-from apps.core.checks import check_transaction_and_cookie_policy
+from apps.core.checks import (
+    check_tenant_middleware,
+    check_transaction_and_cookie_policy,
+)
 
 
 class CoreConfig(AppConfig):
@@ -15,3 +18,4 @@ class CoreConfig(AppConfig):
     def ready(self) -> None:
         """Attach the settings guards to Django's check framework."""
         register(check_transaction_and_cookie_policy)
+        register(check_tenant_middleware)

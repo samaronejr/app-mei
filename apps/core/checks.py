@@ -83,6 +83,51 @@ def _csrf_httponly_errors() -> list[CheckMessage]:
     ]
 
 
+TENANT_MIDDLEWARE = "apps.tenants.middleware.TenantMiddleware"
+AUTHENTICATION_MIDDLEWARE = "django.contrib.auth.middleware.AuthenticationMiddleware"
+
+
+def _tenant_middleware_errors() -> list[CheckMessage]:
+    middleware = list(settings.MIDDLEWARE)
+    if TENANT_MIDDLEWARE not in middleware:
+        return [
+            Error(
+                f"{TENANT_MIDDLEWARE} is missing from MIDDLEWARE.",
+                hint=(
+                    "Without it no request ever sets app.tenant_id, so every "
+                    "row-level-security policy denies every row and every scoped "
+                    "queryset is empty. Register it after AuthenticationMiddleware."
+                ),
+                id="core.E005",
+            ),
+        ]
+    if AUTHENTICATION_MIDDLEWARE not in middleware:
+        return []
+    if middleware.index(TENANT_MIDDLEWARE) < middleware.index(
+        AUTHENTICATION_MIDDLEWARE
+    ):
+        return [
+            Error(
+                f"{TENANT_MIDDLEWARE} runs before AuthenticationMiddleware.",
+                hint=(
+                    "Tenant resolution reads request.user to check membership. Run "
+                    "before authentication and request.user does not exist yet, so "
+                    "the membership check silently passes for everyone."
+                ),
+                id="core.E006",
+            ),
+        ]
+    return []
+
+
+def check_tenant_middleware(
+    app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ANN401, ARG001
+) -> list[CheckMessage]:
+    """Reject a middleware stack that would leave tenant context unset."""
+    return _tenant_middleware_errors()
+
+
 def check_transaction_and_cookie_policy(
     app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
     **kwargs: Any,  # noqa: ANN401, ARG001
