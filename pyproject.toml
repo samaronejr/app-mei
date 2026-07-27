@@ -71,7 +71,10 @@ known-first-party = ["apps", "config", "tests"]
 [tool.ruff.lint.per-file-ignores]
 "config/**/*.py" = ["D"]
 "tests/**/*.py" = ["ARG", "D", "PLR2004", "S101", "SLF001"]
-"**/migrations/*.py" = ["D", "E501", "RUF012", "N806"]
+# Operation subclasses must accept Django's fixed four-argument signature even when a
+# direction ignores one state, and _meta.db_table is the documented way to resolve a
+# table name from migration state. Neither is lint-dodging; both are the framework API.
+"**/migrations/*.py" = ["ARG002", "D", "E501", "RUF012", "N806", "SLF001"]
 
 [tool.ruff.format]
 quote-style = "double"

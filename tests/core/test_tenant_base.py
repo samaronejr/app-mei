@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 from django.apps import apps as django_apps
-from django.db import connection, models
+from django.db import connection, models, transaction
 
 from apps.core.models import TenantScopedModel, UUIDv7PrimaryKeyModel
 from apps.core.tests.models import ExampleTenantModel
@@ -82,14 +82,19 @@ def test_successive_uuid7_values_sort_ascending_as_strings() -> None:
     assert generated == sorted(generated)
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_tenant_scoped_rows_get_a_version_7_primary_key() -> None:
-    # Given a tenant-scoped row
+    # Given a tenant, and that tenant established as the transaction's context.
+    # The context is mandatory: the forced WITH CHECK policy rejects an insert made
+    # with no app.tenant_id, so this cannot be written without it.
     tenant = Tenant.objects.create(name="Acme", slug="acme")
-    row = ExampleTenantModel.all_objects.create(tenant=tenant, name="first")
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.execute("SELECT set_config('app.tenant_id', %s, true)", [str(tenant.id)])
 
-    # When its primary key is inspected
-    # Then it is a UUIDv7, inherited from the abstract base
+        # When a scoped row is created
+        row = ExampleTenantModel.all_objects.create(tenant=tenant, name="first")
+
+    # Then its primary key is a UUIDv7, inherited from the abstract base
     assert row.id.version == 7
 
 
