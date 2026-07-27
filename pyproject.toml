@@ -32,3 +32,70 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["."]
+# ruff >=0.14 formats Python code blocks inside Markdown. The plan documents and the
+# research report are read-only reference material, so keep ruff scoped to Python.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "COM812",
+  "CPY001",
+  "D203",
+  "D213",
+  "FBT001",
+  "FBT002",
+  "FIX002",
+  "ISC001",
+  "TD002",
+  "TD003",
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["apps", "config", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"config/**/*.py" = ["D"]
+"tests/**/*.py" = ["ARG", "D", "PLR2004", "S101", "SLF001"]
+"**/migrations/*.py" = ["D", "E501", "RUF012", "N806"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+show_error_codes = true
+plugins = ["mypy_django_plugin.main"]
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+[[tool.mypy.overrides]]
+module = ["environ"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["allauth", "allauth.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+filterwarnings = ["error"]
+pythonpath = ["."]
+testpaths = ["tests"]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
