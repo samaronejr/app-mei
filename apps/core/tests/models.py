@@ -4,7 +4,6 @@ from typing import ClassVar
 
 from django.db import models
 
-from apps.core.managers import TenantScopedManager
 from apps.core.models import TenantScopedModel
 
 
@@ -17,12 +16,9 @@ class ExampleTenantModel(TenantScopedModel):
 
     name = models.CharField(max_length=100)
 
-    # Named `scoped`, not `objects`: the Meta names that make a scoped manager the
-    # default arrive in T-007b, and asserting through `objects` here would only prove
-    # Django's manager-resolution order, not this manager's filtering.
-    scoped = TenantScopedManager["ExampleTenantModel"]()
-
-    class Meta:
+    # Inherits the parent Meta rather than declaring a bare one: a bare `class Meta:`
+    # REPLACES the parent's and silently drops both manager names.
+    class Meta(TenantScopedModel.Meta):
         """Model metadata."""
 
         indexes: ClassVar[list[models.Index]] = [

@@ -65,19 +65,19 @@ def test_the_scoped_manager_returns_exactly_the_tenant_in_context(
 ) -> None:
     # Given tenant A in both the ContextVar and the GUC, with rows for A and for B
     # When the scoped manager counts rows
-    count = ExampleTenantModel.scoped.count()
+    count = ExampleTenantModel.objects.count()
 
     # Then it sees all of A's rows and none of B's. The strict inequality matters:
     # without it a manager returning none() unconditionally would satisfy this.
     assert count == ROWS_FOR_A
     assert count > 0
-    assert ExampleTenantModel.scoped.filter(tenant_id=seeded.tenant_b.id).count() == 0
+    assert ExampleTenantModel.objects.filter(tenant_id=seeded.tenant_b.id).count() == 0
 
 
 def test_the_scoped_manager_never_yields_another_tenants_row(seeded: Seeded) -> None:
     # Given tenant A in context
     # When every visible row is inspected
-    tenants_seen = set(ExampleTenantModel.scoped.values_list("tenant_id", flat=True))
+    tenants_seen = set(ExampleTenantModel.objects.values_list("tenant_id", flat=True))
 
     # Then every one of them belongs to A
     assert tenants_seen == {seeded.tenant_a.id}
@@ -90,7 +90,7 @@ def test_the_manager_keys_on_the_contextvar_not_on_the_database_guc(
     token = current_tenant_id.set(None)
     try:
         # When the scoped manager counts rows
-        count = ExampleTenantModel.scoped.count()
+        count = ExampleTenantModel.objects.count()
     finally:
         current_tenant_id.reset(token)
 
@@ -118,7 +118,7 @@ def test_all_tenants_returns_an_unfiltered_queryset(seeded: Seeded) -> None:
     # Given tenant A in context
     # When the audited escape hatch is used
     # ALL_TENANTS_OK: proving the escape hatch is unscoped at the application layer.
-    escaped = ExampleTenantModel.scoped.all_tenants().count()
+    escaped = ExampleTenantModel.objects.all_tenants().count()
 
     # Then the ContextVar filter is gone. The database still bounds it to A, because
     # app.tenant_id is set — crossing tenants needs tenant_context per tenant too.
@@ -134,8 +134,8 @@ def test_all_tenants_is_not_filtered_when_the_contextvar_is_unset(
     try:
         # When the escape hatch and the scoped manager are compared
         # ALL_TENANTS_OK: contrasting the escape hatch against the fail-closed default.
-        escaped = ExampleTenantModel.scoped.all_tenants().count()
-        scoped = ExampleTenantModel.scoped.count()
+        escaped = ExampleTenantModel.objects.all_tenants().count()
+        scoped = ExampleTenantModel.objects.count()
     finally:
         current_tenant_id.reset(token)
 
