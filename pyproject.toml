@@ -3,8 +3,32 @@ name = "app-mei"
 version = "0.1.0"
 description = "Multi-tenant SaaS for Brazilian accounting firms managing MEI clients"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = []
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "celery",
+  "django==5.2.*",
+  "django-allauth[mfa]",
+  "django-celery-beat",
+  "django-environ",
+  "gunicorn",
+  "psycopg[binary]>=3.2",
+  "redis",
+  "sentry-sdk[django]",
+  "whitenoise",
+]
+
+[dependency-groups]
+dev = [
+  "django-stubs",
+  "hypothesis",
+  "model-bakery",
+  "mypy",
+  "pre-commit",
+  "pytest",
+  "pytest-cov",
+  "pytest-django",
+  "ruff",
+]
 
 [tool.uv]
 package = false
