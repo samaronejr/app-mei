@@ -1,0 +1,10 @@
+[project]
+name = "app-mei"
+version = "0.1.0"
+description = "Multi-tenant SaaS for Brazilian accounting firms managing MEI clients"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+package = false
