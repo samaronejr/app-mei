@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "apps.clients",
     "apps.lgpd",
     "apps.audit",
+    "apps.authz",
     "apps.security",
     "apps.tenants",
 ]
