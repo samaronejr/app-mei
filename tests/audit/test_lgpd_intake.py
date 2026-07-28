@@ -34,11 +34,24 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 DSR_URL = "/lgpd/solicitacao/"
 
-# A CPF is 11 digits, optionally punctuated. A CNPJ is 14 characters — alphanumeric
-# from July 2026 — with a two-digit check suffix. Both patterns are deliberately
-# tight enough not to match a UUID fragment or a timestamp.
+# A CPF is 11 digits. A CNPJ is 14 characters — alphanumeric from July 2026 — with a
+# two-digit check suffix.
+#
+# Every separator is optional in both, because `normalize_document` strips the mask
+# before the value reaches the column: the realistic leak this guard exists to catch
+# is `metadata={"cnpj": company.cnpj}`, which carries the BARE form. A CNPJ pattern
+# requiring the mask could not match anything the database actually holds, so that
+# half of the guard scanned real rows and was structurally incapable of finding a
+# document in them.
+#
+# Widening costs nothing in precision: both patterns still demand a full-length run
+# bounded by `\b` and ending in two digits, which no UUID (in any casing), timestamp,
+# action slug or identifier the audit tables carry can satisfy. The controls below
+# assert exactly that, in both directions.
 CPF_SHAPE = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
-CNPJ_SHAPE = re.compile(r"\b[A-Z0-9]{2}\.[A-Z0-9]{3}\.[A-Z0-9]{3}/[A-Z0-9]{4}-\d{2}\b")
+CNPJ_SHAPE = re.compile(
+    r"\b[A-Z0-9]{2}\.?[A-Z0-9]{3}\.?[A-Z0-9]{3}/?[A-Z0-9]{4}-?\d{2}\b",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -162,16 +175,87 @@ def _document_shaped(values: list[str]) -> list[str]:
     return [v for v in values if CPF_SHAPE.search(v) or CNPJ_SHAPE.search(v)]
 
 
-def test_the_pii_shape_patterns_actually_match_documents() -> None:
-    # Given known document numbers and known non-documents
+# Every form a document is written in anywhere near this product. The two BARE CNPJs
+# are the load-bearing entries: `normalize_document` strips the mask, so those are the
+# only forms a column — and therefore a leak out of one — can hold. The masked forms
+# come back out of `apps.fiscal.formatting`, so a value copied off a rendered page is
+# in scope too.
+STORED_DOCUMENTS = (
+    "12ABC34501DE35",
+    "12345678000195",
+    "52998224725",
+)
+MASKED_DOCUMENTS = (
+    "12.ABC.345/01DE-35",
+    "12.345.678/0001-95",
+    "529.982.247-25",
+)
+
+# What the audit tables genuinely do carry. A guard that fires on any of these would
+# be reverted the first time it went red on a release, which is a slower way of having
+# no guard at all — so the widening above is asserted not to have reached them.
+ORDINARY_METADATA = (
+    "ClientCompany",
+    "owner",
+    "invite_issued",
+    "dsr_submitted",
+    "EXPORT",
+    "csv",
+    "12",
+    "0198f3c1-6a2b-7c4d-8e9f-0a1b2c3d4e5f",
+    "0198F3C1-6A2B-7C4D-8E9F-0A1B2C3D4E5F",
+    "0198f3c16a2b7c4d8e9f0a1b2c3d4e5f",
+    "0198F3C16A2B7C4D8E9F0A1B2C3D4E5F",
+    "2026-07-28T14:30:00+00:00",
+    "2026-07-28 14:30:00.123456+00:00",
+    "2026-07-28",
+    "1785678901.123456",
+    "maria@exemplo.example",
+)
+
+
+@pytest.mark.parametrize("document", STORED_DOCUMENTS)
+def test_the_patterns_match_a_document_in_the_form_it_is_stored_in(
+    document: str,
+) -> None:
+    """The half that was blind. Storage is normalized; the mask never reaches a column.
+
+    A CNPJ pattern that required `.`, `/` and `-` matched only the display form, so
+    the scan below ran over real rows unable to recognise the one shape a leak would
+    take. It passed for exactly that reason, which is the failure mode this project
+    keeps finding: a test that asserts nothing while looking like it asserts a lot.
+    """
+    # Given a document number in the form `normalize_document` leaves behind
     # When the patterns are applied
-    # Then they match the former and not the latter. Without this control the guard
-    # below would pass against a regex that matches nothing at all.
-    assert _document_shaped(["529.982.247-25"])
-    assert _document_shaped(["52998224725"])
-    assert _document_shaped(["12.ABC.345/01DE-35"])
-    assert not _document_shaped(["ClientCompany", "owner", "invite_issued"])
-    assert not _document_shaped(["0198f3c1-6a2b-7c4d-8e9f-0a1b2c3d4e5f"])
+    # Then it is recognised
+    assert _document_shaped([document])
+
+
+@pytest.mark.parametrize("document", MASKED_DOCUMENTS)
+def test_the_patterns_match_a_document_in_the_form_it_is_displayed_in(
+    document: str,
+) -> None:
+    # Given a document number as `apps.fiscal.formatting` renders it
+    # When the patterns are applied
+    # Then it is recognised, so a value copied off a page is in scope too
+    assert _document_shaped([document])
+
+
+@pytest.mark.parametrize("value", ORDINARY_METADATA)
+def test_the_patterns_ignore_the_values_the_audit_tables_actually_carry(
+    value: str,
+) -> None:
+    """The other direction: widening the CNPJ pattern must not have cost precision.
+
+    Both patterns still demand a full-length run bounded by `\\b` and ending in two
+    digits. No UUID in any casing, no timestamp, no action slug and no identifier this
+    product writes can satisfy that — and a guard that fired on one of them would be
+    switched off rather than fixed.
+    """
+    # Given a value the audit trail legitimately holds
+    # When the patterns are applied
+    # Then it is not mistaken for a document number
+    assert not _document_shaped([value])
 
 
 def test_no_audit_metadata_value_is_document_shaped(tenant: Tenant) -> None:
@@ -199,3 +283,31 @@ def test_no_audit_metadata_value_is_document_shaped(tenant: Tenant) -> None:
     # Then none is CPF- or CNPJ-shaped. These tables reject UPDATE and DELETE for
     # every role including their owner, so a document number here is permanent.
     assert not offenders, f"document numbers in append-only audit metadata: {offenders}"
+
+
+def test_the_scan_catches_a_document_written_the_way_a_leak_would_write_it(
+    tenant: Tenant,
+) -> None:
+    """The mutation, kept as a test: a real leak, through the real write path.
+
+    `metadata={"cnpj": company.cnpj}` is the mistake that will actually be made one
+    day, and the value it carries is the normalized one, because that is what the
+    column holds. Against the CNPJ pattern as originally written this scan ran over
+    that row and found nothing — the guard above passed while blind to the only shape
+    a leak takes. Asserting the scan is *capable* of failing is the half that was
+    missing; without it, `assert not offenders` is satisfied by a regex that matches
+    nothing at all.
+    """
+    # Given an audit event carrying a document number in the form a column holds it
+    with tenant_context(tenant.id):
+        record_event(
+            action=AuditAction.EXPORT,
+            obj=ObjectRef(type="ClientCompany", id=str(tenant.pk)),
+            metadata={"cnpj": "12ABC34501DE35"},
+        )
+
+    # When the guard's own scan is applied, unchanged
+    offenders = _document_shaped(_tenant_metadata_values())
+
+    # Then it finds it
+    assert offenders == ["12ABC34501DE35"]
