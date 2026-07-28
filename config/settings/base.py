@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "allauth.mfa",
     "apps.core",
     "apps.accounts",
+    "apps.clients",
     "apps.lgpd",
     "apps.audit",
     "apps.security",
