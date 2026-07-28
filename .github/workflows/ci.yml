@@ -191,7 +191,12 @@ jobs:
       - name: Upload coverage
         # .evidence/ is deliberately NOT uploaded: it is git-ignored and a plain
         # pytest run does not write it, so the artifact would be empty.
-        if: always()
+        #
+        # Guarded on the file existing, not on always(): when an earlier gate fails
+        # pytest never runs, and uploading anyway reported a second, spurious failure
+        # that buried the step which actually caught the defect. if-no-files-found
+        # stays `error` so a green run producing no report is still loud.
+        if: always() && hashFiles('coverage.xml') != ''
         uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ github.run_id }}
