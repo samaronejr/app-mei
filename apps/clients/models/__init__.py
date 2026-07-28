@@ -12,6 +12,7 @@ from apps.clients.models.company import (
     CPF_SHAPE,
     ClientCompany,
     ClientStatus,
+    GovBrTrustLevel,
 )
 from apps.clients.models.onboarding import (
     OnboardingItem,
@@ -30,6 +31,7 @@ __all__ = [
     "ClientCompany",
     "ClientStatus",
     "ClientTag",
+    "GovBrTrustLevel",
     "OnboardingItem",
     "OnboardingItemTemplate",
     "OnboardingStatus",

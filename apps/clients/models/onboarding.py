@@ -43,6 +43,11 @@ class OnboardingItemTemplate(UUIDv7PrimaryKeyModel):
     label = models.CharField(_("label"), max_length=255)
     position = models.PositiveSmallIntegerField(_("position"), default=0)
     is_active = models.BooleanField(_("active"), default=True)
+    # Whether settling this item needs the e-CAC portal, which admits only prata and
+    # ouro gov.br accounts. Data rather than a hard-coded set of keys: which steps
+    # route through e-CAC is a fact about Receita Federal's portals, and it changes
+    # on their schedule rather than on this product's release schedule.
+    requires_ecac = models.BooleanField(_("requires e-CAC"), default=False)
 
     class Meta:
         """Model metadata."""
@@ -72,6 +77,7 @@ class OnboardingItem(TenantScopedModel):
     key = models.CharField(_("key"), max_length=64)
     label = models.CharField(_("label"), max_length=255)
     position = models.PositiveSmallIntegerField(_("position"), default=0)
+    requires_ecac = models.BooleanField(_("requires e-CAC"), default=False)
     status = models.CharField(
         _("status"),
         max_length=20,

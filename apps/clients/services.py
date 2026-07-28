@@ -86,6 +86,7 @@ def create_default_checklist(client: ClientCompany) -> list[OnboardingItem]:
                 key=template.key,
                 label=template.label,
                 position=template.position,
+                requires_ecac=template.requires_ecac,
             )
             for template in templates
         ],

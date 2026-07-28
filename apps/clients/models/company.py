@@ -22,6 +22,7 @@ from typing import ClassVar
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from apps.clients import readiness
 from apps.clients.managers import ClientCompanyManager
 from apps.clients.models.onboarding import OnboardingStatus
 from apps.core.models import TenantScopedModel
@@ -42,6 +43,27 @@ CPF_LENGTH = 11
 # is a separate concern and arrives with the validators in T-032/T-033.
 CNPJ_SHAPE = r"^[0-9A-Z]{14}$"
 CPF_SHAPE = r"^[0-9A-Z]{11}$"
+
+
+class GovBrTrustLevel(models.TextChoices):
+    """The gov.br account tier, RECORDED as data and never verified here.
+
+    No gov.br OIDC integration exists in this scope, so this column is what a person
+    told the firm, not what an identity provider asserted. `UNKNOWN` is the default
+    and is treated exactly like `BRONZE` by the e-CAC blocker: "nobody has asked" and
+    "asked, and the answer disqualifies them" are both states in which the firm cannot
+    rely on portal access.
+    """
+
+    UNKNOWN = "unknown", _("unknown")
+    BRONZE = "bronze", _("bronze")
+    PRATA = "prata", _("prata")
+    OURO = "ouro", _("ouro")
+
+    @classmethod
+    def below_ecac(cls) -> frozenset[str]:
+        """Return the tiers e-CAC refuses. e-CAC admits only prata and ouro."""
+        return frozenset({cls.UNKNOWN, cls.BRONZE})
 
 
 class ClientStatus(models.TextChoices):
@@ -79,6 +101,25 @@ class ClientCompany(TenantScopedModel):
         default=ClientStatus.ONBOARDING,
     )
     is_mei = models.BooleanField(_("MEI"), default=True)
+    govbr_trust_level = models.CharField(
+        _("gov.br trust level"),
+        max_length=16,
+        choices=GovBrTrustLevel.choices,
+        default=GovBrTrustLevel.UNKNOWN,
+    )
+    # Certificate METADATA only, and that boundary is enforced by a test rather than
+    # by discipline: custody of a client's A1 certificate would make this product a
+    # holder of signing keys for every firm on it, which the anchor forbids in v1.
+    # There is deliberately no field here that could hold the certificate itself.
+    has_digital_certificate = models.BooleanField(
+        _("has digital certificate"),
+        default=False,
+    )
+    certificate_expires_on = models.DateField(
+        _("certificate expires on"),
+        null=True,
+        blank=True,
+    )
     # Payroll is out of scope for v1, but the flag sizes the demand for it and keeps
     # a later eSocial decision a data question rather than a migration.
     has_employee = models.BooleanField(_("has employee"), default=False)
@@ -128,6 +169,15 @@ class ClientCompany(TenantScopedModel):
         """Identify the client by the name it is registered under."""
         return self.legal_name
 
+    def _checklist(self) -> list[readiness.ChecklistEntry]:
+        return [
+            readiness.ChecklistEntry(status=status, requires_ecac=requires_ecac)
+            for status, requires_ecac in self.onboarding_items.values_list(
+                "status",
+                "requires_ecac",
+            )
+        ]
+
     @property
     def is_ready(self) -> bool:
         """Report whether every applicable onboarding item is settled.
@@ -141,3 +191,17 @@ class ClientCompany(TenantScopedModel):
         if not statuses:
             return False
         return not (statuses & OnboardingStatus.unfinished())
+
+    @property
+    def readiness_score(self) -> int:
+        """Return the percentage of applicable checklist items that are done."""
+        return readiness.score(self._checklist())
+
+    @property
+    def ecac_blocker(self) -> str | None:
+        """Return why e-CAC is out of reach for this client, or None if it is not."""
+        return readiness.ecac_blocker(
+            self._checklist(),
+            self.govbr_trust_level,
+            GovBrTrustLevel.below_ecac(),
+        )
