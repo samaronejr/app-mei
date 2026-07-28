@@ -29,6 +29,7 @@ from apps.clients.managers import ClientCompanyManager
 from apps.clients.models.onboarding import OnboardingStatus
 from apps.core.models import TenantScopedModel
 from apps.fiscal.formatting import format_cnpj, format_cpf
+from apps.fiscal.mei import MEICategory
 from apps.fiscal.validators import normalize_document, validate_cnpj, validate_cpf
 
 # Both documents are stored normalized: uppercase, punctuation stripped, fixed width.
@@ -115,6 +116,18 @@ class ClientCompany(TenantScopedModel):
         default=ClientStatus.ONBOARDING,
     )
     is_mei = models.BooleanField(_("MEI"), default=True)
+    # Which annual ceiling this client is measured against. Not derivable from the
+    # CNAE: a trucker qualifies as MEI-Caminhoneiro through the transport activity
+    # codes, but the registry records what the firm established, not what a code
+    # table implies. Defaulted to common because the overwhelming majority are, and
+    # because defaulting to the higher caminhoneiro ceiling would understate
+    # consumption for everyone else — reporting an over-limit client as compliant.
+    mei_category = models.CharField(
+        _("MEI category"),
+        max_length=16,
+        choices=MEICategory.choices,
+        default=MEICategory.COMMON,
+    )
     govbr_trust_level = models.CharField(
         _("gov.br trust level"),
         max_length=16,
