@@ -103,7 +103,7 @@ Legacy all-numeric CNPJs validate **identically** under this algorithm — it is
 strict generalization, not a replacement. Both formats are valid simultaneously and
 one code path serves both. There is no migration of existing numbers.
 
-## Two consequences that bite the implementation
+## Three consequences that bite the implementation
 
 ### 1. Módulo 11 over a 36-character alphabet has collisions
 
@@ -126,7 +126,44 @@ This means "mutating any single character invalidates the CNPJ" is **mathematica
 false** and must not be written as a property test. The true property is: *mutating a
 character to one with a different residue mod 11 invalidates the checksum.*
 
-### 2. The arithmetic accepts `00000000000000`
+### 2. The remainder-to-digit clamp is a SECOND, independent collision source
+
+This one is not in the plan and was not anticipated. It was found empirically by
+Hypothesis while property-testing the validator, and then confirmed against RFB's own
+reference implementation.
+
+The rule "digit = 0 if remainder < 2" exists because `11 - 1` is `10`, which is not a
+single digit. But it means the remainder-to-digit map is **not injective**: remainders
+`0` and `1` both become the digit `0`.
+
+| remainder | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| digit | **0** | **0** | 9 | 8 | 7 | 6 | 5 | 4 | 3 | 2 | 1 |
+
+So two operands can sit in *different* residue classes, produce *different* weighted
+sums, and still carry *identical* check digits — as long as their remainders are 0 and
+1. Concretely:
+
+```
+4U27B2I9S9YZ00   remainder 1 -> digit 0
+4U27B2I949YZ00   remainder 0 -> digit 0     ('S'=35≡2, '4'=4≡4 — different classes)
+```
+
+Both are valid CNPJs under RFB's reference implementation.
+
+The practical consequence is for anyone writing a mutation property test: filtering
+substitutions to a *different residue class* is **necessary but not sufficient**. A
+property that excluded only the residue collisions passes most runs and fails
+intermittently, which is worse than failing every time. Both exclusions are applied in
+`tests/fiscal/test_validators.py`, and each collision mechanism additionally has its
+own explicit regression test.
+
+Neither mechanism is a defect. A two-digit módulo-11 checksum is designed to catch
+single-digit typos and adjacent transpositions, not to be collision-free — it cannot
+be, since 14 characters are being checked by 2 digits. It is not an integrity control
+and must never be used as one.
+
+### 3. The arithmetic accepts `00000000000000`
 
 RFB's reference implementation reports `00.000.000/0000-00` as valid — the sum is
 zero, the remainder is zero, and both check digits are correctly `0`. A repeated-digit

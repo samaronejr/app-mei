@@ -75,20 +75,46 @@ def _character_value(char: str) -> int:
     return ord(char) - _ASCII_OFFSET
 
 
-def _check_digit(operand: str, max_weight: int) -> int:
-    """Compute one módulo-11 check digit over `operand`.
+def _remainder(operand: str, max_weight: int) -> int:
+    """Return the módulo-11 remainder for `operand`, BEFORE the clamp is applied.
 
     Weights ascend from 2, are applied right to left, and restart at 2 once
-    `max_weight` is passed. The result is always 0..9, which is why a check digit can
-    never be a letter.
+    `max_weight` is passed.
     """
     total = 0
     weight = _FIRST_WEIGHT
     for char in reversed(operand):
         total += _character_value(char) * weight
         weight = _FIRST_WEIGHT if weight == max_weight else weight + 1
-    remainder = total % _MODULUS
+    return total % _MODULUS
+
+
+def cnpj_check_digit_remainder(operand: str) -> int:
+    """Return the pre-clamp módulo-11 remainder for a CNPJ operand.
+
+    Exposed because the clamp below is **not injective**: remainders 0 and 1 both
+    produce the digit 0. Two operands can therefore differ, land on remainders 0 and 1
+    respectively, and still carry identical check digits. Anything reasoning about when
+    a mutation is detectable has to see the remainder, not just the digit.
+    """
+    return _remainder(operand, _CNPJ_MAX_WEIGHT)
+
+
+def _clamp(remainder: int) -> int:
+    """Turn a módulo-11 remainder into a check digit.
+
+    **Not injective.** `0` and `1` both map to `0`, because `11 - 1` is `10`, which is
+    not a single digit. That collapse is a second, independent source of check-digit
+    collisions, distinct from the residue classes of the alphabet — see
+    `docs/fiscal/cnpj-alfanumerico.md`. The result is always 0..9, which is why a check
+    digit can never be a letter.
+    """
     return 0 if remainder < _MIN_REMAINDER else _MODULUS - remainder
+
+
+def _check_digit(operand: str, max_weight: int) -> int:
+    """Compute one módulo-11 check digit over `operand`."""
+    return _clamp(_remainder(operand, max_weight))
 
 
 def _both_check_digits(base: str, max_weight: int) -> str:

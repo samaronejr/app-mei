@@ -126,6 +126,28 @@ def _seeded_capability_matrix(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _seeded_municipalities(request: pytest.FixtureRequest) -> None:
+    """Restore the municipality registry that a transactional test truncates away.
+
+    Same reasoning as the capability matrix above: `fiscal_municipality` is platform
+    reference data written by a data migration, so every real deployment has it, and
+    `TransactionTestCase` truncates it without replaying `RunPython`. Left empty, every
+    municipality lookup would answer `unknown` — which is a *valid* answer, so the
+    resulting tests would pass while asserting nothing about the seeded path.
+
+    The data migration's own seed function is reused rather than reimplemented.
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    municipality = django_apps.get_model("fiscal", "Municipality")
+    if municipality.objects.exists():
+        return
+    migration = importlib.import_module("apps.fiscal.migrations.0002_seed_capitals")
+    migration.seed_from_global_registry()
+
+
+@pytest.fixture(autouse=True)
 def _empty_rate_limit_buckets() -> Iterator[None]:
     """Start every test with empty rate-limit buckets.
 

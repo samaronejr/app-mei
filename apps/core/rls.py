@@ -46,6 +46,10 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         # A rights request arrives unauthenticated, before any tenant exists. A
         # fail-closed policy would turn a statutory intake channel into a 500.
         "audit_datasubjectrequest",
+        # Which NFS-e system a municipality runs is a fact about that municipality,
+        # not about any one accounting firm. A per-tenant copy would let two firms
+        # hold contradictory answers about the same city and would make every firm
+        # rediscover the same municipal variance independently. Created in T-035.
         "fiscal_municipality",
         "fiscal_municipalitycapability",
         "obligations_fiscalparameter",

@@ -37,6 +37,7 @@ from apps.fiscal.validators import (
     CNPJ_BASE_LENGTH,
     CNPJ_LENGTH,
     CPF_LENGTH,
+    cnpj_check_digit_remainder,
     cnpj_check_digits,
     cpf_check_digits,
     normalize_document,
@@ -313,10 +314,16 @@ def test_mutating_to_a_different_residue_invalidates_the_checksum(
     position: int,
     substitute: str,
 ) -> None:
-    """The TRUE mutation property. The naive one is false — see the module docstring.
+    """The TRUE mutation property. It needs BOTH exclusions, not just the obvious one.
 
-    Restricting the mutation to a *different residue class* is what makes this hold.
-    Without that filter Hypothesis finds `A`→`L` and the test fails, correctly.
+    Exclusion 1, the residue classes: `A`→`L` moves the weighted sum by a multiple of
+    11 and changes nothing. This is the collision the plan documents.
+
+    Exclusion 2, the clamp: `_clamp` maps remainders 0 AND 1 to the digit 0, so two
+    operands on different residues can still share a check digit. Hypothesis found
+    this one — `4U27B2I9S9YZ` → `4U27B2I949YZ`, remainders 1 and 0, both digit `00`
+    — and it is asserted as its own regression case below. Filtering only on the
+    residue class is NOT enough, and a test that did so would fail intermittently.
     """
     # Given a valid CNPJ and a substitute character of a different residue
     original = base[position]
@@ -324,12 +331,65 @@ def test_mutating_to_a_different_residue_invalidates_the_checksum(
     cnpj = base + cnpj_check_digits(base)
     mutated = base[:position] + substitute + base[position + 1 :]
 
+    # And given the mutation is not absorbed by the non-injective clamp
+    remainders = {
+        cnpj_check_digit_remainder(base),
+        cnpj_check_digit_remainder(mutated),
+    }
+    assume(not remainders <= {0, 1})
+
     # When the mutated base is checked against the original's digits
-    # Then at least one check digit differs, so the tampered number is rejected
+    # Then the first check digit differs, so the tampered number is rejected
     assert cnpj_check_digits(mutated) != cnpj[CNPJ_BASE_LENGTH:]
     with pytest.raises(ValidationError) as caught:
         validate_cnpj(mutated + cnpj[CNPJ_BASE_LENGTH:])
     assert caught.value.code == "cnpj_check_digits"
+
+
+def test_the_remainder_to_digit_clamp_is_not_injective() -> None:
+    """Collision mechanism 2, distinct from the alphabet's residue classes.
+
+    `11 - 1` is 10, which is not a single digit, so the algorithm clamps every
+    remainder below 2 to the digit 0. Remainders 0 and 1 therefore become the same
+    check digit, and a mutation that moves the sum between them is undetectable even
+    though the characters involved are in different residue classes.
+    """
+    # Given the remainders a módulo-11 sum can produce
+    digits = {r: (0 if r < 2 else 11 - r) for r in range(11)}
+
+    # When they are mapped to check digits
+    # Then exactly one pair collides, and it is {0, 1}
+    collisions = [r for r in digits if list(digits.values()).count(digits[r]) > 1]
+    assert sorted(collisions) == [0, 1]
+    assert digits[0] == digits[1] == 0
+
+    # And every other remainder maps to its own distinct digit
+    others = {r: d for r, d in digits.items() if r not in {0, 1}}
+    assert len(set(others.values())) == len(others)
+
+
+def test_the_clamp_collision_is_reachable_with_real_cnpjs() -> None:
+    """The concrete counterexample Hypothesis produced. Do not "fix" this either.
+
+    `'S'` is 35 (≡ 2 mod 11) and `'4'` is 4 (≡ 4 mod 11) — genuinely different residue
+    classes — yet both bases carry the check digits `00`, because their remainders are
+    1 and 0. Receita Federal's own reference implementation reports both as valid.
+    """
+    # Given two bases differing at one position, in different residue classes
+    original = "4U27B2I9S9YZ"
+    mutated = "4U27B2I949YZ"
+    assert original != mutated
+    assert (ord("S") - 48) % 11 != (ord("4") - 48) % 11
+
+    # When their remainders are computed
+    # Then they differ, but both fall under the clamp
+    assert cnpj_check_digit_remainder(original) == 1
+    assert cnpj_check_digit_remainder(mutated) == 0
+
+    # And both therefore produce the same check digits, and both validate
+    assert cnpj_check_digits(original) == cnpj_check_digits(mutated) == "00"
+    validate_cnpj(original + "00")
+    validate_cnpj(mutated + "00")
 
 
 @settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
