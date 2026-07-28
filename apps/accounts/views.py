@@ -22,6 +22,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 
 from apps.accounts.forms import InviteAcceptForm, InviteIssueForm
 from apps.accounts.invites import (
+    INVITE_CAPABILITY,
     InviteAccountExistsError,
     InviteAlreadyAcceptedError,
     InviteEmailMismatchError,
@@ -35,6 +36,7 @@ from apps.accounts.invites import (
     resolve_invite,
 )
 from apps.accounts.models import User
+from apps.authz.services import require_can
 from apps.tenants.models import Invite
 
 
@@ -68,8 +70,16 @@ def _refuse(request: HttpRequest, error: InviteError) -> HttpResponse:
 
 @require_POST
 @login_required
+@require_can(INVITE_CAPABILITY)
 def issue_invite_view(request: AuthenticatedRequest) -> HttpResponse:
-    """Invite a colleague into the firm this request is scoped to."""
+    """Invite a colleague into the firm this request is scoped to.
+
+    Gated twice on purpose. The decorator guards the HTTP surface and records the
+    refusal as a `PlatformEvent`; `issue_invite` re-checks so that a management
+    command, a future API, or a test helper cannot reach issuance without the same
+    capability. The interim `Membership.role` gate T-017 shipped with is gone from
+    both, which is what the role-check guard test enforces.
+    """
     tenant = getattr(request, "tenant", None)
     if tenant is None:
         raise Http404

@@ -26,15 +26,16 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
-from apps.tenants.models import Invite, Membership, Tenant, TenantRole
+from apps.authz.services import can
+from apps.tenants.models import Invite, Membership, Tenant
 
 logger = logging.getLogger(__name__)
 
-# The report's RBAC matrix: platform admin, firm owner and operations admin may create
-# users. A staff accountant does client work and does not administer the firm's roster.
-MAY_INVITE: Final[frozenset[str]] = frozenset(
-    {TenantRole.OWNER, TenantRole.OPERATIONS_ADMIN},
-)
+# The capability the RBAC matrix scores as "Create and deactivate users". Which roles
+# hold it is a row in authz_rolegrant, never a constant here: T-017 shipped with an
+# interim `role__in` gate precisely because can() did not exist yet, and that copy of
+# the matrix would have drifted from the real one the first time a grant changed.
+INVITE_CAPABILITY: Final[str] = "users.create"
 
 
 class InviteError(Exception):
@@ -66,15 +67,14 @@ class InviteAccountExistsError(InviteError):
 
 
 def may_issue_invites(user: User, tenant: Tenant) -> bool:
-    """Report whether this account may add people to this firm."""
-    # PLATFORM_QUERY_OK: keyed on the actor and the tenant explicitly — this query
-    # IS the authorization check, so routing it through for_user would be circular.
-    return Membership.objects.filter(
-        user=user,
-        tenant=tenant,
-        is_active=True,
-        role__in=MAY_INVITE,
-    ).exists()
+    """Report whether this account may add people to this firm.
+
+    The tenant is passed explicitly rather than read from the ambient context: this
+    function is reachable from a management command and from tests, and a check that
+    silently fell back to "whatever tenant the thread happens to be in" would be
+    answering a different question than the caller asked.
+    """
+    return can(user, INVITE_CAPABILITY, tenant_id=tenant.pk)
 
 
 def issue_invite(

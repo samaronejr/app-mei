@@ -12,9 +12,11 @@ this project:
    would let every cross-tenant test pass while reading every tenant's rows.
 """
 
+import importlib
 from collections.abc import Iterator
 
 import pytest
+from django.apps import apps as django_apps
 from django.core.cache import cache
 from django.db import connection
 from pytest_django import DjangoDbBlocker
@@ -96,6 +98,31 @@ def _assume_runtime_role(request: pytest.FixtureRequest) -> Iterator[None]:
         if connection.connection is not None:
             with connection.cursor() as cursor:
                 cursor.execute("RESET ROLE")
+
+
+@pytest.fixture(autouse=True)
+def _seeded_capability_matrix(request: pytest.FixtureRequest) -> None:
+    """Restore the permission matrix that a transactional test truncates away.
+
+    `authz_capability` and `authz_rolegrant` are reference data written by a data
+    migration, so every real deployment has them. `TransactionTestCase` truncates every
+    table and does not replay `RunPython`, which leaves `can()` resolving against an
+    empty matrix — and an empty matrix denies everything, silently, in whatever test
+    happens to run next. Restoring it here makes the test database represent production
+    rather than an artifact of the test runner.
+
+    The data migration's own seed function is reused rather than reimplemented, so the
+    matrix can never be seeded one way by migrate and another way by the suite. It is
+    idempotent, and the existence check keeps the common case to one query.
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    capability = django_apps.get_model("authz", "Capability")
+    if capability.objects.exists():
+        return
+    migration = importlib.import_module("apps.authz.migrations.0002_seed_matrix")
+    migration.seed(django_apps, None)
 
 
 @pytest.fixture(autouse=True)
