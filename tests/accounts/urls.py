@@ -4,6 +4,7 @@ from django.http import HttpRequest, HttpResponse
 from django.urls import include, path
 
 from apps.core.views import healthz
+from apps.tenants.admin_views import select_tenant_view
 
 
 def dashboard(_request: HttpRequest) -> HttpResponse:
@@ -16,5 +17,6 @@ urlpatterns = [
     path("accounts/", include("allauth.urls")),
     path("", include("apps.accounts.urls")),
     path("", include("apps.lgpd.urls")),
+    path("admin/selecionar-empresa/", select_tenant_view, name="admin-select-tenant"),
     path("painel/", dashboard, name="dashboard"),
 ]

@@ -35,6 +35,16 @@ from apps.tenants.models import Membership, Tenant
 
 TENANT_GUC = "app.tenant_id"
 NO_TENANT = ""
+MIN_LABELS_FOR_A_SUBDOMAIN = 2
+
+
+def slug_from_host(host: str) -> str | None:
+    """Return the leading label of a hostname, which names the firm."""
+    hostname = host.split(":", 1)[0]
+    labels = hostname.split(".")
+    if len(labels) < MIN_LABELS_FOR_A_SUBDOMAIN:
+        return None
+    return labels[0] or None
 
 
 class TenantHttpRequest(HttpRequest):
@@ -96,7 +106,7 @@ class TenantMiddleware:
             current_tenant_id.reset(token)
 
     def _resolve_tenant(self, request: HttpRequest) -> Tenant | None:
-        slug = self._slug_from_host(request.get_host())
+        slug = slug_from_host(request.get_host())
         if slug is None and settings.DEBUG:
             slug = (
                 request.session.get("tenant_slug")
@@ -109,15 +119,6 @@ class TenantMiddleware:
         # names must happen before any user or tenant context exists; granting
         # context is a separate step below and IS authorized.
         return Tenant.objects.filter(slug=slug, is_active=True).first()
-
-    @staticmethod
-    def _slug_from_host(host: str) -> str | None:
-        hostname = host.split(":", 1)[0]
-        labels = hostname.split(".")
-        min_labels_for_a_subdomain = 2
-        if len(labels) < min_labels_for_a_subdomain:
-            return None
-        return labels[0] or None
 
     @staticmethod
     def _grant_context(request: HttpRequest, resolved: Tenant | None) -> Tenant | None:

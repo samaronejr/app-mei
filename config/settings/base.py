@@ -86,9 +86,19 @@ MIDDLEWARE = [
     # (tenant_id, user_id), and the tenant is not resolved before then. The
     # credential limits deliberately ignore the tenant — see apps.security.
     "apps.security.middleware.RateLimitMiddleware",
+    # Inner, so its tenant_context nests inside the one TenantMiddleware opened
+    # with an empty GUC on the platform host. It spans get_response, and therefore
+    # the template rendering Django performs inside it — wrapping only
+    # ModelAdmin.get_queryset would evaluate the lazy changelist after the block
+    # exited and render an empty page instead of raising.
+    "apps.tenants.admin_middleware.AdminTenantMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# The console lives here and nowhere else: AdminTenantMiddleware 404s it on any
+# firm's subdomain, where it would inherit that firm's cookie scope.
+ADMIN_PATH_PREFIX = "/admin/"
 
 ROOT_URLCONF = "config.urls"
 
