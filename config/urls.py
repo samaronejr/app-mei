@@ -10,6 +10,7 @@ urlpatterns = [
     path("healthz", healthz, name="healthz"),
     path("accounts/", include("allauth.urls")),
     path("", include("apps.accounts.urls")),
+    path("", include("apps.clients.urls")),
     path("", include("apps.lgpd.urls")),
     # Before admin.site.urls so it is not swallowed by the catch-all admin router.
     path("admin/selecionar-empresa/", select_tenant_view, name="admin-select-tenant"),

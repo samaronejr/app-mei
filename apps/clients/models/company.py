@@ -17,15 +17,19 @@ than merely invisible. The constraint is that FK's referent, so it must exist be
 any child table is created.
 """
 
+from collections.abc import Collection, Iterable
 from typing import ClassVar
 
 from django.db import models
+from django.db.models.base import ModelBase
 from django.utils.translation import gettext_lazy as _
 
 from apps.clients import readiness
 from apps.clients.managers import ClientCompanyManager
 from apps.clients.models.onboarding import OnboardingStatus
 from apps.core.models import TenantScopedModel
+from apps.fiscal.formatting import format_cnpj, format_cpf
+from apps.fiscal.validators import normalize_document, validate_cnpj, validate_cpf
 
 # Both documents are stored normalized: uppercase, punctuation stripped, fixed width.
 CNPJ_LENGTH = 14
@@ -80,12 +84,22 @@ class ClientCompany(TenantScopedModel):
 
     legal_name = models.CharField(_("legal name"), max_length=255)
     trade_name = models.CharField(_("trade name"), max_length=255, blank=True)
-    cnpj = models.CharField(_("CNPJ"), max_length=CNPJ_LENGTH)
+    cnpj = models.CharField(
+        _("CNPJ"),
+        max_length=CNPJ_LENGTH,
+        validators=[validate_cnpj],
+    )
     # DJ001 warns against a nullable string field because it creates two spellings of
     # "empty", NULL and "". That is answered here rather than ignored: the check
     # constraint below admits NULL or exactly eleven normalized characters and nothing
     # in between, so "" is rejected by the database and only one empty exists.
-    cpf = models.CharField(_("CPF"), max_length=CPF_LENGTH, null=True, blank=True)  # noqa: DJ001
+    cpf = models.CharField(  # noqa: DJ001
+        _("CPF"),
+        max_length=CPF_LENGTH,
+        null=True,
+        blank=True,
+        validators=[validate_cpf],
+    )
     municipality_ibge_code = models.CharField(
         _("IBGE municipality code"),
         max_length=7,
@@ -168,6 +182,60 @@ class ClientCompany(TenantScopedModel):
     def __str__(self) -> str:
         """Identify the client by the name it is registered under."""
         return self.legal_name
+
+    def normalize_documents(self) -> None:
+        """Strip punctuation and uppercase the two document columns, in place."""
+        self.cnpj = normalize_document(self.cnpj)
+        if self.cpf:
+            self.cpf = normalize_document(self.cpf)
+
+    def clean_fields(self, exclude: Collection[str] | None = None) -> None:
+        """Normalize before ANY field validation runs, not merely before `clean`.
+
+        This must be `clean_fields` rather than `clean`. `full_clean` runs
+        `clean_fields` first, and that is where `max_length` is enforced — a masked
+        `12.ABC.345/01DE-35` is eighteen characters, so it is rejected for length
+        before a later hook could strip the punctuation. Normalizing here puts the
+        bare fourteen characters in place ahead of the length check, the check-digit
+        validator, the per-tenant uniqueness check, and the database's
+        `clientcompany_cnpj_normalized` CHECK, all of which then see the value that
+        will actually be stored.
+        """
+        self.normalize_documents()
+        super().clean_fields(exclude=exclude)
+
+    def save(
+        self,
+        *,
+        force_insert: bool | tuple[ModelBase, ...] = False,
+        force_update: bool = False,
+        using: str | None = None,
+        update_fields: Iterable[str] | None = None,
+    ) -> None:
+        """Normalize on every write, not only on the paths that call `full_clean`.
+
+        `clean` runs for ModelForms and nothing else, so a management command, an
+        import or a future API would otherwise store a masked value that no search
+        would ever match again. Uniqueness is per tenant on this column, so a second
+        spelling of the same number is also a duplicate the constraint would not catch.
+        """
+        self.normalize_documents()
+        super().save(
+            force_insert=force_insert,
+            force_update=force_update,
+            using=using,
+            update_fields=update_fields,
+        )
+
+    @property
+    def masked_cnpj(self) -> str:
+        """Return the CNPJ in the official `AA.AAA.AAA/AAAA-DD` display mask."""
+        return format_cnpj(self.cnpj)
+
+    @property
+    def masked_cpf(self) -> str:
+        """Return the CPF in the official `AAA.AAA.AAA-DD` mask, or empty if unset."""
+        return format_cpf(self.cpf) if self.cpf else ""
 
     def _checklist(self) -> list[readiness.ChecklistEntry]:
         return [
