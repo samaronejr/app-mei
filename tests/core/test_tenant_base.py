@@ -92,6 +92,8 @@ def test_tenant_scoped_rows_get_a_version_7_primary_key() -> None:
         cursor.execute("SELECT set_config('app.tenant_id', %s, true)", [str(tenant.id)])
 
         # When a scoped row is created
+        # ALL_OBJECTS_OK: written under a raw GUC to prove the base model's own
+        # behaviour without the ContextVar layer participating.
         row = ExampleTenantModel.all_objects.create(tenant=tenant, name="first")
 
     # Then its primary key is a UUIDv7, inherited from the abstract base

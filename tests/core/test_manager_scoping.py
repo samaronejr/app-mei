@@ -45,10 +45,12 @@ def seeded() -> Iterator[Seeded]:
     with transaction.atomic():
         _set_guc(tenant_a.id)
         for index in range(ROWS_FOR_A):
+            # ALL_OBJECTS_OK: seeding A under A's own GUC, with no ContextVar set.
             ExampleTenantModel.all_objects.create(tenant=tenant_a, name=f"a{index}")
     with transaction.atomic():
         _set_guc(tenant_b.id)
         for index in range(ROWS_FOR_B):
+            # ALL_OBJECTS_OK: seeding B under B's own GUC, with no ContextVar set.
             ExampleTenantModel.all_objects.create(tenant=tenant_b, name=f"b{index}")
 
     with transaction.atomic():
@@ -105,6 +107,7 @@ def test_the_unscoped_manager_is_reachable_and_ignores_the_contextvar(
 ) -> None:
     # Given tenant A in both layers
     # When the unscoped manager counts rows
+    # ALL_OBJECTS_OK: the unscoped manager is the subject of this test.
     count = ExampleTenantModel.all_objects.count()
 
     # Then it is bounded by row-level security alone — A's rows, not B's — proving it

@@ -207,6 +207,8 @@ def test_one_firms_calendar_is_invisible_to_another(alpha: Firm, beta: Firm) -> 
     # When Alpha counts obligations through the UNSCOPED manager and a raw cursor,
     # both of which bypass the application-layer filter
     with tenant_context(alpha.tenant.id):
+        # ALL_OBJECTS_OK: the assertion IS that the unscoped manager still sees
+        # only this tenant, which requires bypassing the ContextVar filter.
         via_unscoped = Obligation.all_objects.count()
         with connection.cursor() as cursor:
             cursor.execute(f"SELECT count(*) FROM {Obligation._meta.db_table}")  # noqa: S608

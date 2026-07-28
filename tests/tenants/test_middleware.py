@@ -81,6 +81,8 @@ def alpha_rows(alpha: Tenant) -> None:
     with transaction.atomic(), connection.cursor() as cursor:
         cursor.execute("SELECT set_config('app.tenant_id', %s, true)", [str(alpha.id)])
         for index in range(ROWS_FOR_ALPHA):
+            # ALL_OBJECTS_OK: fixture seeding under a raw GUC, before the request
+            # that this test exists to observe has set any ContextVar.
             ExampleTenantModel.all_objects.create(tenant=alpha, name=f"row{index}")
 
 

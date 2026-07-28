@@ -166,6 +166,8 @@ def _tenant_metadata_values() -> list[str]:
     for tenant in Tenant.objects.all():  # PLATFORM_QUERY_OK: test-only integrity scan
         with tenant_context(tenant.pk):
             values.extend(
+                # ALL_OBJECTS_OK: the scan must reach every row this tenant holds,
+                # and RLS still bounds it to the context entered above.
                 _values_of(Event.all_objects.values_list("metadata", flat=True)),
             )
     return values

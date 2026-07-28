@@ -66,6 +66,8 @@ def seeded() -> tuple[Tenant, Tenant]:
                 [str(tenant.id)],
             )
             for index in range(count):
+                # ALL_OBJECTS_OK: fixture seeding under a raw GUC, since the
+                # ContextVar is what the tests below are measuring.
                 ExampleTenantModel.all_objects.create(
                     tenant=tenant,
                     name=f"{tenant.slug}{index}",

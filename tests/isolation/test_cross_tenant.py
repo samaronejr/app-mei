@@ -48,6 +48,8 @@ def tenants() -> Tenants:
     for tenant, count in ((alpha, ROWS_FOR_ALPHA), (beta, ROWS_FOR_BETA)):
         with tenant_context(tenant.id):
             for index in range(count):
+                # ALL_OBJECTS_OK: fixture seeding; the denials below are what
+                # this module asserts, and they need both tenants present.
                 ExampleTenantModel.all_objects.create(
                     tenant=tenant,
                     name=f"{tenant.slug}-{index}",
@@ -88,6 +90,8 @@ def test_case_1_tenant_a_cannot_read_tenant_b_rows(tenants: Tenants) -> None:
         # When Beta's rows are asked for directly, bypassing the ORM manager
         beta_rows = _raw_count("WHERE tenant_id = %s", [str(tenants.beta.id)])
         total_visible = _raw_count()
+        # ALL_OBJECTS_OK: the denial MUST bypass the ORM manager. Through
+        # .objects it would pass with RLS switched off entirely.
         via_unscoped_manager = ExampleTenantModel.all_objects.filter(
             tenant_id=tenants.beta.id,
         ).count()
@@ -119,6 +123,8 @@ def test_case_2_no_context_returns_zero_rows_when_the_guc_is_absent(
 
     # When the table is read
     visible = _raw_count()
+    # ALL_OBJECTS_OK: the absent-GUC denial belongs to the database policy, so
+    # it must be read past the application-layer filter.
     via_unscoped_manager = ExampleTenantModel.all_objects.count()
 
     # Then nothing is visible — the fail-closed default
@@ -140,6 +146,8 @@ def test_case_2_no_context_returns_zero_rows_when_the_guc_is_empty(
 
         # When the table is read
         visible = _raw_count()
+        # ALL_OBJECTS_OK: same reason as the absent-GUC case — this asserts the
+        # policy, not the manager.
         via_unscoped_manager = ExampleTenantModel.all_objects.count()
 
     # Then nothing is visible here either. Only asserting the absent shape would leave
@@ -210,6 +218,8 @@ def test_case_4_http_request_for_another_tenants_object_is_refused(
     )
     enrol_totp(member)
     with tenant_context(tenants.beta.id):
+        # ALL_OBJECTS_OK: reading Beta's row to address it by URL from Alpha's
+        # host, which is the request under test.
         beta_row = ExampleTenantModel.all_objects.filter(
             tenant_id=tenants.beta.id,
         ).first()
@@ -241,6 +251,8 @@ def test_case_4_http_request_for_its_own_object_succeeds(
     )
     enrol_totp(member)
     with tenant_context(tenants.alpha.id):
+        # ALL_OBJECTS_OK: the positive control — the same read, for the row that
+        # SHOULD be reachable, so the denial above is not merely an empty table.
         alpha_row = ExampleTenantModel.all_objects.filter(
             tenant_id=tenants.alpha.id,
         ).first()
