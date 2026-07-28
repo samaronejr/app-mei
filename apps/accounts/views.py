@@ -37,7 +37,7 @@ from apps.accounts.invites import (
 )
 from apps.accounts.models import User
 from apps.authz.services import require_can
-from apps.tenants.models import Invite
+from apps.tenants.models import Invite, Membership
 
 
 class AuthenticatedRequest(HttpRequest):
@@ -186,3 +186,44 @@ def _sign_in(request: HttpRequest, user: User) -> None:
 def invite_issued_view(request: HttpRequest) -> HttpResponse:
     """Confirm that the invitation was sent, without echoing the token."""
     return render(request, "accounts/invite_issued.html", {})
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_can(INVITE_CAPABILITY)
+def team_view(request: AuthenticatedRequest) -> HttpResponse:
+    """List who belongs to this firm, and offer the form that invites another.
+
+    `issue_invite_view` is POST-only and had no page to be posted from, so the
+    capability that guards it had no destination a navigation bar could offer. This
+    is that destination.
+
+    Both reads go through `for_user`, which is the only scoping these three
+    policy-free tables have — `Membership` and `Invite` cannot carry a row-level
+    policy because the tenant-resolving middleware must read memberships before
+    `app.tenant_id` exists. The extra `tenant` filter narrows the caller's own firms
+    down to the one this subdomain names.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        raise Http404
+    memberships = (
+        Membership.objects.for_user(request.user)
+        .filter(tenant=tenant)
+        .select_related("user")
+        .order_by("user__email")
+    )
+    pending = (
+        Invite.objects.for_user(request.user)
+        .filter(tenant=tenant, accepted_at__isnull=True)
+        .order_by("email")
+    )
+    return render(
+        request,
+        "accounts/team.html",
+        {
+            "memberships": memberships,
+            "pending_invites": pending,
+            "form": InviteIssueForm(),
+        },
+    )

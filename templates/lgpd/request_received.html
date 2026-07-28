@@ -1,6 +1,6 @@
 {% extends "base.html" %}{% load i18n %}
 {% block title %}{% translate "Solicitação recebida" %}{% endblock %}
-{% block body %}
-  <h1>{% translate "Solicitação recebida" %}</h1>
-  <p>{% translate "Sua solicitação foi registrada e encaminhada ao encarregado." %}</p>
+{% block heading %}{% translate "Solicitação recebida" %}{% endblock %}
+{% block content %}
+  <p class="text-sm text-ink-600">{% translate "Sua solicitação foi registrada e encaminhada ao encarregado." %}</p>
 {% endblock %}

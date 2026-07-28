@@ -1,6 +1,6 @@
 {% extends "base.html" %}{% load i18n %}
 {% block title %}{% translate "Convite indisponível" %}{% endblock %}
-{% block body %}
-  <h1>{% translate "Convite indisponível" %}</h1>
-  <p>{{ reason }}</p>
+{% block heading %}{% translate "Convite indisponível" %}{% endblock %}
+{% block content %}
+  <p class="notice-error max-w-2xl" role="alert">{{ reason }}</p>
 {% endblock %}

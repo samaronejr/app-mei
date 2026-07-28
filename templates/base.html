@@ -1,4 +1,4 @@
-{% load i18n static %}<!DOCTYPE html>
+{% load i18n navigation static %}<!DOCTYPE html>
 <html lang="pt-br">
 <head>
   <meta charset="utf-8">
@@ -22,7 +22,63 @@
   <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>
   {% block head %}{% endblock %}
 </head>
-<body>
-  {% block body %}{% endblock %}
+<body class="min-h-screen">
+  {% comment %}
+    The first focusable element on every page. It jumps past the header and the nav to
+    the start of the content, which is the difference between one keystroke and thirty
+    for anyone navigating by keyboard.
+  {% endcomment %}
+  <a class="skip-link" href="#conteudo">{% translate "Pular para o conteúdo" %}</a>
+
+  <header class="border-b border-ink-200 bg-surface">
+    <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-6 py-3">
+      <span class="text-sm font-semibold tracking-tight text-ink-900">
+        {% if request.tenant %}{{ request.tenant.name }}{% else %}{% translate "app-mei" %}{% endif %}
+      </span>
+      {% comment %}
+        Firm-scoped, so it is drawn only where a firm is resolved. The platform host —
+        the admin's tenant selector, an invitation being accepted — has no portfolio,
+        and every destination below lives on a firm's subdomain.
+      {% endcomment %}
+      {% if request.tenant and request.user.is_authenticated %}
+        {% nav_items request.user as items %}
+        {% if items %}
+          <nav aria-label="{% translate 'Navegação principal' %}" class="flex flex-wrap items-center gap-1">
+            {% for item in items %}
+              <a class="nav-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
+            {% endfor %}
+          </nav>
+        {% endif %}
+        <div class="ml-auto flex items-center gap-3 text-sm text-ink-500">
+          <span>{{ request.user.email }}</span>
+          <form method="post" action="{% url 'account_logout' %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-quiet">{% translate "Sair" %}</button>
+          </form>
+        </div>
+      {% endif %}
+    </div>
+  </header>
+
+  {% comment %}
+    tabindex="-1" makes the skip link's target focusable. Without it the browser moves
+    the viewport but leaves focus in the header, so the next Tab returns the user to
+    the navigation they just skipped.
+
+    The <h1> is emitted here rather than by each page, which makes "exactly one per
+    page" a structural property of the layout instead of a rule everyone has to
+    remember. A guard test refuses a literal <h1> in any other template.
+  {% endcomment %}
+  <main id="conteudo" tabindex="-1" class="mx-auto max-w-7xl px-6 py-8">
+    <h1 class="mb-6 text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "app-mei" %}{% endblock %}</h1>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="mx-auto max-w-7xl px-6 py-8 text-xs text-ink-500">
+    <p>
+      {% translate "Horários em BRT (America/Sao_Paulo)." %}
+      <a class="underline" href="{% url 'dsr-submit' %}">{% translate "Direitos do titular de dados (LGPD)" %}</a>
+    </p>
+  </footer>
 </body>
 </html>

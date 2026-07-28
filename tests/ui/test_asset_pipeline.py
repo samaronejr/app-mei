@@ -111,9 +111,7 @@ def test_compiled_stylesheet_covers_every_class_the_templates_use() -> None:
     """
     stylesheet = (STATIC_SOURCE / "css" / "app.css").read_text(encoding="utf-8")
     missing = sorted(
-        token
-        for token in class_tokens()
-        if css_selector_for(token) not in stylesheet
+        token for token in class_tokens() if css_selector_for(token) not in stylesheet
     )
     assert missing == [], "run `npm run build` — these classes have no compiled rule"
 

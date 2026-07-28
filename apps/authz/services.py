@@ -15,7 +15,7 @@ restricted variant should call. Collapsing them into `can()` would be the permis
 guess this module exists to avoid.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import wraps
 from typing import Concatenate, ParamSpec, TypeVar
 from uuid import UUID
@@ -102,6 +102,50 @@ def can(
     if level == GrantLevel.OWN:
         return _is_own_record(user, obj)
     return False
+
+
+def granted_levels(
+    user: Actor,
+    actions: Iterable[str],
+    *,
+    tenant_id: UUID | None = None,
+) -> dict[str, str]:
+    """Resolve several capabilities in one round trip, with `resolve_level`'s answers.
+
+    A navigation bar asks about every item it might draw, and `resolve_level` costs
+    two queries per question — so a six-item nav is twelve queries on every page.
+    This is the same two reads for the whole set.
+
+    It is not a second policy source: the resolution order, the superuser
+    short-circuit and the missing-grant default are the same, and
+    `test_bulk_resolution_agrees_with_resolve_level` walks every capability and every
+    role to prove the two cannot drift.
+    """
+    slugs = tuple(dict.fromkeys(actions))
+    known = set(
+        Capability.objects.filter(slug__in=slugs).values_list("slug", flat=True),
+    )
+    unknown = [slug for slug in slugs if slug not in known]
+    if unknown:
+        msg = (
+            f"{unknown} are not capabilities in the permission matrix. Returning "
+            f"NONE here would hide a permanently broken gate behind a plausible 403."
+        )
+        raise UnknownCapability(msg)
+    if not user.is_authenticated:
+        return dict.fromkeys(slugs, GrantLevel.NONE)
+    if user.is_superuser:
+        return dict.fromkeys(slugs, GrantLevel.FULL)
+    role = _role_of(user, tenant_id)
+    if role is None:
+        return dict.fromkeys(slugs, GrantLevel.NONE)
+    resolved = dict(
+        RoleGrant.objects.filter(
+            role=role,
+            capability__slug__in=slugs,
+        ).values_list("capability__slug", "level"),
+    )
+    return {slug: resolved.get(slug, GrantLevel.NONE) for slug in slugs}
 
 
 def require_can(
@@ -214,6 +258,7 @@ __all__ = [
     "Actor",
     "UnknownCapability",
     "can",
+    "granted_levels",
     "require_can",
     "resolve_level",
 ]

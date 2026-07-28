@@ -1,16 +1,17 @@
 {% extends "base.html" %}{% load i18n %}
 {% block title %}{% translate "Selecionar empresa" %}{% endblock %}
-{% block body %}
-  <h1 id="select-tenant">{% translate "Selecione uma empresa" %}</h1>
-  {% if error %}<p class="notice-error" role="alert">{{ error }}</p>{% endif %}
-  <form method="post" action="{% url 'admin-select-tenant' %}">
+{% block heading %}{% translate "Selecione uma empresa" %}{% endblock %}
+{% block content %}
+  {% if error %}<p class="notice-error mb-4 max-w-2xl" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="{% url 'admin-select-tenant' %}" class="card max-w-2xl space-y-4 p-6">
     {% csrf_token %}
-    <select name="tenant">
+    <label class="block text-sm font-medium text-ink-700" for="tenant">{% translate "Empresa" %}</label>
+    <select id="tenant" name="tenant" class="w-full rounded-control border border-ink-300 px-3 py-2">
       {% for tenant in tenants %}<option value="{{ tenant.pk }}">{{ tenant.name }}</option>{% endfor %}
     </select>
     {% if may_break_glass %}
-      <p>{% translate "Motivo (obrigatório para acesso fora das suas empresas):" %}</p>
-      <input type="text" name="reason" value="">
+      <label class="block text-sm font-medium text-ink-700" for="reason">{% translate "Motivo (obrigatório para acesso fora das suas empresas):" %}</label>
+      <input id="reason" type="text" name="reason" value="" class="w-full rounded-control border border-ink-300 px-3 py-2">
     {% endif %}
     <input type="hidden" name="next" value="{{ request.GET.next|default:'/admin/' }}">
     <button type="submit" class="btn btn-primary">{% translate "Selecionar" %}</button>
