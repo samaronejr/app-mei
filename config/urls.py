@@ -8,5 +8,6 @@ from apps.core.views import healthz
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
     path("accounts/", include("allauth.urls")),
+    path("", include("apps.accounts.urls")),
     path("admin/", admin.site.urls),
 ]

@@ -1,0 +1,13 @@
+{% load i18n %}<!DOCTYPE html>
+<html lang="pt-br">
+<head><meta charset="utf-8"><title>{% translate "Aceitar convite" %}</title></head>
+<body>
+  <h1>{% blocktranslate with firm=invite.tenant.name %}Convite para {{ firm }}{% endblocktranslate %}</h1>
+  <p>{{ invite.email }}</p>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">{% translate "Aceitar" %}</button>
+  </form>
+</body>
+</html>

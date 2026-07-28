@@ -14,5 +14,6 @@ def dashboard(_request: HttpRequest) -> HttpResponse:
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
     path("accounts/", include("allauth.urls")),
+    path("", include("apps.accounts.urls")),
     path("painel/", dashboard, name="dashboard"),
 ]

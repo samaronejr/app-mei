@@ -115,6 +115,13 @@ AUTHENTICATION_BACKENDS = [
     "allauth.account.auth_backends.AuthenticationBackend",
 ]
 
+# The origin invitation and data-subject links point at. Those flows are platform
+# level, not firm level: an invitee has no membership yet, so a link on the firm's
+# own subdomain would be refused by TenantMiddleware for exactly its recipient.
+PLATFORM_URL = env.str("PLATFORM_URL", default="http://localhost:8000")
+DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="nao-responda@localhost")
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+
 LOGIN_URL = "account_login"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
