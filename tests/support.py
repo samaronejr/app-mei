@@ -1,7 +1,9 @@
 """Helpers shared across suites, kept out of any one feature's test module."""
 
 from http import HTTPStatus
+from typing import Final
 
+import pytest
 from allauth.account.models import EmailAddress
 from allauth.mfa.totp.internal.auth import (
     TOTP,
@@ -11,10 +13,47 @@ from allauth.mfa.totp.internal.auth import (
 )
 from django.test import Client
 from django.urls import reverse
+from django_ratelimit import core as ratelimit_core
 
 from apps.accounts.models import User
 
 TOTP_SECRET = "MFRGGZDFMZTWQ2LKNNWG23TPOBYGC4TT"  # noqa: S105
+
+# Any fixed instant. Only its constancy matters, and `conftest` empties the buckets
+# around every test, so reusing one across the suite cannot carry a count forward.
+PINNED_INSTANT: Final = 1_800_000_000.0
+
+
+class _PinnedClock:
+    """The only member of `time` that `django_ratelimit.core` reads."""
+
+    @staticmethod
+    def time() -> float:
+        """Return the pinned instant, so every request lands in one window."""
+        return PINNED_INSTANT
+
+
+def pin_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop a rate-limit budget from being split across two counting windows.
+
+    django-ratelimit derives its cache key from `int(time.time())` bucketed into
+    fixed periods, so the counter resets the instant a window rolls. A test that
+    issues a 120-request budget and asserts the next one is refused therefore depends
+    on the whole budget being issued inside a single wall-clock minute: it passes on a
+    fast machine and fails on a slow runner, where the request that should be refused
+    is the first of a fresh window and is served.
+
+    That is wall-clock dependence in the test, not a defect in the limiter — proven by
+    holding the clock still and rolling it by exactly one period, which flips the same
+    request between 429 and 200. Pinning the clock removes the dependence without
+    touching a single assertion: the budget, the refusal, and the per-user separation
+    are all still exercised.
+
+    Only `django_ratelimit.core`'s reference to `time` is replaced, so nothing else in
+    the process — least of all the deadline arithmetic this product is built on — sees
+    a frozen clock.
+    """
+    monkeypatch.setattr(ratelimit_core, "time", _PinnedClock)
 
 
 def enrol_totp(user: User) -> None:

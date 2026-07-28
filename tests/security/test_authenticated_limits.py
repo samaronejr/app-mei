@@ -21,13 +21,19 @@ from pytest_django.fixtures import SettingsWrapper
 from apps.accounts.models import User
 from apps.security.ratelimit import authenticated_limit
 from apps.tenants.models import Membership, Tenant, TenantRole
-from tests.support import enrol_totp
+from tests.support import enrol_totp, pin_rate_limit_window
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 TENANT_HOST = "alpha.localhost"
 READS_ALLOWED = 120
 WRITES_ALLOWED = 60
+
+
+@pytest.fixture(autouse=True)
+def _pinned_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep each budget inside one counting window; see the helper for why."""
+    pin_rate_limit_window(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

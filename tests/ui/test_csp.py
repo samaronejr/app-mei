@@ -19,6 +19,7 @@ from apps.security.csp import (
     ContentSecurityPolicyMiddleware,
     build_policy,
 )
+from tests.support import pin_rate_limit_window
 from tests.ui.templates_scan import (
     EXTERNAL_URL,
     VARIABLE,
@@ -77,12 +78,15 @@ def test_header_is_served_on_a_real_response() -> None:
 
 
 @pytest.mark.django_db
-def test_header_survives_a_refusal_from_inner_middleware() -> None:
+def test_header_survives_a_refusal_from_inner_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A 429 is produced by middleware registered inside this one, and still gets it.
 
     The response phase runs in reverse registration order, so this asserts the
     ordering in MIDDLEWARE rather than merely the header's existence.
     """
+    pin_rate_limit_window(monkeypatch)
     client = Client()
     url = reverse("dsr-submit")
     statuses = {client.post(url, {}).status_code for _ in range(40)}
