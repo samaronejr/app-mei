@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.clients",
+    "apps.fiscal",
     "apps.lgpd",
     "apps.audit",
     "apps.authz",
