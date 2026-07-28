@@ -274,8 +274,19 @@ jobs:
           print(f"status={status} body={body}")
           if status != 200:
               sys.exit(f"expected HTTP 200 from /healthz, got {status}")
-          if json.loads(body) != {"status": "ok"}:
+
+          payload = json.loads(body)
+          if payload.get("status") != "ok":
               sys.exit(f"unexpected /healthz body: {body!r}")
+
+          # The probe also carries the beat dead-man's switch (T-041): it answers 503
+          # once the newest SchedulerHeartbeat passes fifteen minutes. Asserting
+          # "alive" here makes this job prove something the host-side suite cannot —
+          # that a COLD-BOOTED stack arms the switch, because the row is seeded by a
+          # migration rather than by beat's first tick. Without the seed this is
+          # exactly where a fresh deployment would sit at 503 until beat caught up.
+          if payload.get("scheduler") != "alive":
+              sys.exit(f"scheduler is not alive in a cold-booted stack: {body!r}")
           PY
 
       - name: Container logs
