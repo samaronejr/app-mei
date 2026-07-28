@@ -67,6 +67,8 @@ class InviteAccountExistsError(InviteError):
 
 def may_issue_invites(user: User, tenant: Tenant) -> bool:
     """Report whether this account may add people to this firm."""
+    # PLATFORM_QUERY_OK: keyed on the actor and the tenant explicitly — this query
+    # IS the authorization check, so routing it through for_user would be circular.
     return Membership.objects.filter(
         user=user,
         tenant=tenant,
@@ -107,6 +109,9 @@ def issue_invite(
 
 def resolve_invite(raw_token: str) -> Invite:
     """Look an invitation up by token and reject every unusable state."""
+    # PLATFORM_QUERY_OK: the digest of a 32-byte unguessable token IS the scope
+    # here, and the caller is anonymous by construction. Authorization is not skipped,
+    # it is deferred to accept_invite, which binds redemption to the invited mailbox.
     invite = Invite.objects.filter(token=Invite.hash_token(raw_token)).first()
     if invite is None:
         msg = "No invitation matches that link."
@@ -139,6 +144,8 @@ def accept_invite(*, invite: Invite, user: User) -> Membership:
     """Redeem an invitation for an account that has proved it owns the address."""
     # Re-read under a row lock: two clicks on the same link land in two requests, and
     # a check made outside the lock would let both create a membership.
+    # PLATFORM_QUERY_OK: re-reads by primary key the invite already resolved from
+    # its token, purely to take a row lock against a double redemption.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
     _assert_redeemable(locked)
 
@@ -149,6 +156,8 @@ def accept_invite(*, invite: Invite, user: User) -> Membership:
         )
         raise InviteEmailMismatchError(msg)
 
+    # PLATFORM_QUERY_OK: creates the membership named by the invite, keyed to the
+    # invite's own tenant. The caller cannot influence which tenant that is.
     membership, _created = Membership.objects.get_or_create(
         user=user,
         tenant_id=locked.tenant_id,
@@ -177,6 +186,7 @@ def register_and_accept(
     full_name: str = "",
 ) -> tuple[User, Membership]:
     """Create the invited account and redeem the invitation in one transaction."""
+    # PLATFORM_QUERY_OK: same primary-key re-read under a row lock as above.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
     _assert_redeemable(locked)
 

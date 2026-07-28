@@ -26,6 +26,7 @@ from django.conf import settings
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from apps.core.access import PlatformScopedManager
 from apps.core.models import TenantScopedModel, UUIDv7PrimaryKeyModel
 
 
@@ -139,6 +140,8 @@ class PlatformEvent(UUIDv7PrimaryKeyModel):
     metadata = models.JSONField(_("metadata"), default=dict, blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
+    objects = PlatformScopedManager["PlatformEvent"]()
+
     class Meta:
         """Model metadata."""
 
@@ -155,3 +158,60 @@ class PlatformEvent(UUIDv7PrimaryKeyModel):
     def __str__(self) -> str:
         """Identify the record by what happened and when."""
         return f"{self.action} @ {self.created_at:%Y-%m-%d %H:%M:%S}"
+
+
+class AccessLog(UUIDv7PrimaryKeyModel):
+    """The Marco Civil access record: who reached what, from where, and when.
+
+    Deliberately a different table from `Event`, with a different purpose, a different
+    retention period (six months, purged) and a different access policy. Folding it
+    into the business audit trail would force one retention rule onto two obligations
+    that genuinely differ.
+
+    `tenant` is present but **nullable**, and the table carries no policy. Both follow
+    from the same requirement: a firm must be able to ask "who reached my data?", and
+    the log must also capture pre-authentication and anonymous requests — which have
+    no tenant, and which a fail-closed policy would refuse to record at all. Scoping
+    is applied in the application layer through `objects.for_user()`.
+    """
+
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="access_logs",
+        verbose_name=_("tenant"),
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="access_logs",
+        verbose_name=_("user"),
+    )
+    ip = models.GenericIPAddressField(_("IP address"), null=True, blank=True)
+    user_agent = models.TextField(_("user agent"), blank=True)
+    method = models.CharField(_("method"), max_length=10)
+    path = models.CharField(_("path"), max_length=2048)
+    status_code = models.PositiveSmallIntegerField(_("status code"))
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True, db_index=True)
+
+    objects = PlatformScopedManager["AccessLog"]()
+
+    class Meta:
+        """Model metadata."""
+
+        verbose_name = _("access log")
+        verbose_name_plural = _("access logs")
+        ordering: ClassVar[list[str]] = ["-created_at"]
+        indexes: ClassVar[list[models.Index]] = [
+            models.Index(
+                fields=["tenant", "-created_at"], name="audit_access_tenant_ts"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        """Identify the record by the request it describes."""
+        return f"{self.method} {self.path} -> {self.status_code}"

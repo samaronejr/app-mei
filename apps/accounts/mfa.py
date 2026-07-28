@@ -39,6 +39,8 @@ def requires_mfa(user: User | AnonymousUser) -> bool:
         return False
     if user.is_staff:
         return True
+    # PLATFORM_QUERY_OK: filtered on the very account whose policy is being
+    # evaluated, and returns a boolean rather than any row.
     return Membership.objects.filter(user=user, is_active=True).exists()
 
 

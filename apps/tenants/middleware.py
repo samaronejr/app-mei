@@ -105,6 +105,9 @@ class TenantMiddleware:
             )
         if not slug:
             return None
+        # PLATFORM_QUERY_OK: the bootstrap lookup. Resolving which firm a hostname
+        # names must happen before any user or tenant context exists; granting
+        # context is a separate step below and IS authorized.
         return Tenant.objects.filter(slug=slug, is_active=True).first()
 
     @staticmethod
@@ -132,6 +135,9 @@ class TenantMiddleware:
             return None
         # The bootstrap read. Membership carries no app.tenant_id policy precisely so
         # that this can run before any tenant context exists.
+        # PLATFORM_QUERY_OK: this query IS the scoping mechanism the whole product
+        # rests on. It runs before app.tenant_id can be set, which is exactly why
+        # tenants_membership carries no row-level-security policy.
         if not Membership.objects.filter(
             user=user,
             tenant=resolved,

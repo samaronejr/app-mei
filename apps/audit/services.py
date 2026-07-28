@@ -136,6 +136,7 @@ def flush_platform_events(token: PlatformEventToken) -> None:
     buffer = _pending_platform_events.get()
     try:
         if buffer:
+            # PLATFORM_QUERY_OK: a write of rows this request itself constructed.
             PlatformEvent.objects.bulk_create(buffer)
     finally:
         _pending_platform_events.reset(token)

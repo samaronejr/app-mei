@@ -1,7 +1,7 @@
 """Views that audit something and then fail, so the transaction boundary is visible."""
 
 from django.core.exceptions import PermissionDenied
-from django.http import HttpResponse
+from django.http import HttpRequest, HttpResponse
 from django.urls import path
 
 from apps.audit.models import AuditAction
@@ -45,7 +45,13 @@ def audit_then_succeed(request: TenantHttpRequest) -> HttpResponse:
     return HttpResponse("ok")
 
 
+def ping(_request: HttpRequest) -> HttpResponse:
+    """A view that needs no tenant, so anonymous requests can reach it."""
+    return HttpResponse("pong")
+
+
 urlpatterns = [
+    path("ping/", ping, name="ping"),
     path("audit-deny/", audit_then_deny, name="audit-deny"),
     path("audit-ok/", audit_then_succeed, name="audit-ok"),
 ]

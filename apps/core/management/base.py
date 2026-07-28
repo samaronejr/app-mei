@@ -31,6 +31,9 @@ class TenantAwareBaseCommand(BaseCommand):
     def handle(self, *args: Any, **options: Any) -> str | None:  # noqa: ANN401
         """Resolve the tenant, then delegate inside its context."""
         slug = options["tenant_slug"]
+        # PLATFORM_QUERY_OK: resolves the --tenant argument for an operator who
+        # already holds shell access to the host, which is a strictly wider
+        # capability than reading one firm's rows.
         tenant = Tenant.objects.filter(slug=slug, is_active=True).first()
         if tenant is None:
             msg = f"No active tenant with slug {slug!r}."

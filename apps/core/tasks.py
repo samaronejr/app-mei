@@ -64,6 +64,9 @@ class PlatformTask(Task):
         """Yield every tenant with that tenant's context already established."""
         from apps.tenants.models import Tenant  # noqa: PLC0415
 
+        # PLATFORM_QUERY_OK: enumerating firms is the declared purpose of a
+        # PlatformTask. Each one's rows are then reached only inside that tenant's
+        # own context, so no query ever runs with two tenants in scope.
         queryset = Tenant.objects.all()
         if not include_inactive:
             queryset = queryset.filter(is_active=True)

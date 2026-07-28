@@ -12,6 +12,7 @@ from typing import Any
 
 import django_stubs_ext
 import environ
+from celery.schedules import crontab
 
 # Makes Django's generic classes subscriptable at runtime, so shipped code can write
 # ModelAdmin[Tenant] and Manager[User] rather than losing the parameter to a bare name.
@@ -68,6 +69,10 @@ MIDDLEWARE = [
     # transaction resolves. A login failure is recorded by a request whose own
     # writes are rolled back, and the audit row has to outlive them.
     "apps.audit.middleware.PlatformEventMiddleware",
+    # Also before TenantMiddleware, and for the same reason turned the other way:
+    # inside that transaction, the rollback on a failed request would erase the
+    # Marco Civil access record for exactly the request an investigation wants.
+    "apps.audit.middleware.AccessLogMiddleware",
     # Before TenantMiddleware: whether an account must carry a second factor is a
     # property of the account, not of the firm it is visiting, so it is settled
     # without resolving a tenant or opening the tenant transaction.
@@ -219,6 +224,22 @@ CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=540
 # Store UTC, schedule in Brazilian local time.
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
+
+# Six months, per the Marco Civil access-log duty. A ceiling, not a floor: keeping
+# longer converts a compliance obligation into a standing liability.
+ACCESS_LOG_RETENTION_DAYS = env.int("ACCESS_LOG_RETENTION_DAYS", default=180)
+
+# Infrastructure traffic, not a person reaching personal data. The liveness probe
+# in particular is declared non_atomic_requests so a database blip cannot restart a
+# healthy process, and logging it would put that dependency straight back.
+ACCESS_LOG_EXEMPT_PREFIXES = ["/healthz", STATIC_URL, MEDIA_URL]
+
+CELERY_BEAT_SCHEDULE: dict[str, Any] = {
+    "purge-access-logs": {
+        "task": "apps.audit.tasks.purge_access_logs",
+        "schedule": crontab(hour=3, minute=30),
+    },
+}
 
 LOGGING: dict[str, Any] = {
     "version": 1,

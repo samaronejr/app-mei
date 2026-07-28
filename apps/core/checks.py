@@ -85,6 +85,8 @@ def _csrf_httponly_errors() -> list[CheckMessage]:
 
 TENANT_MIDDLEWARE = "apps.tenants.middleware.TenantMiddleware"
 AUTHENTICATION_MIDDLEWARE = "django.contrib.auth.middleware.AuthenticationMiddleware"
+ACCESS_LOG_MIDDLEWARE = "apps.audit.middleware.AccessLogMiddleware"
+PLATFORM_EVENT_MIDDLEWARE = "apps.audit.middleware.PlatformEventMiddleware"
 
 
 def _tenant_middleware_errors() -> list[CheckMessage]:
@@ -120,12 +122,40 @@ def _tenant_middleware_errors() -> list[CheckMessage]:
     return []
 
 
+def _outside_tenant_transaction_errors() -> list[CheckMessage]:
+    """Both audit middlewares must sit OUTSIDE the tenant transaction.
+
+    Registered after `TenantMiddleware` they would run inside its `atomic()` block,
+    and the rollback on a failed request would erase the two records an incident
+    investigation actually needs: the statutory access log, and the audit event for
+    the action that was denied. Nothing else reports that — the writes appear to
+    succeed and the rows are simply absent afterwards.
+    """
+    middleware = list(settings.MIDDLEWARE)
+    if TENANT_MIDDLEWARE not in middleware:
+        return []
+    tenant_index = middleware.index(TENANT_MIDDLEWARE)
+    return [
+        Error(
+            f"{name} must be registered before {TENANT_MIDDLEWARE}.",
+            hint=(
+                "Inside the tenant transaction, a rolled-back request erases its own "
+                "audit and access-log rows — precisely the records that matter when a "
+                "request fails. List it earlier in MIDDLEWARE."
+            ),
+            id="core.E007",
+        )
+        for name in (ACCESS_LOG_MIDDLEWARE, PLATFORM_EVENT_MIDDLEWARE)
+        if name in middleware and middleware.index(name) > tenant_index
+    ]
+
+
 def check_tenant_middleware(
     app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
     **kwargs: Any,  # noqa: ANN401, ARG001
 ) -> list[CheckMessage]:
     """Reject a middleware stack that would leave tenant context unset."""
-    return _tenant_middleware_errors()
+    return [*_tenant_middleware_errors(), *_outside_tenant_transaction_errors()]
 
 
 def check_transaction_and_cookie_policy(

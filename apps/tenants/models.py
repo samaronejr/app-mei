@@ -18,6 +18,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
+from apps.core.access import PlatformScopedManager, TenantRootManager
 from apps.core.models import UUIDv7PrimaryKeyModel
 
 INVITE_TOKEN_BYTES = 32
@@ -55,6 +56,8 @@ class Tenant(UUIDv7PrimaryKeyModel):
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 
+    objects = TenantRootManager["Tenant"]()
+
     class Meta:
         """Model metadata."""
 
@@ -85,6 +88,8 @@ class Membership(UUIDv7PrimaryKeyModel):
     role = models.CharField(_("role"), max_length=32, choices=TenantRole.choices)
     is_active = models.BooleanField(_("active"), default=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+
+    objects = PlatformScopedManager["Membership"]()
 
     class Meta:
         """Model metadata."""
@@ -123,6 +128,8 @@ class Invite(UUIDv7PrimaryKeyModel):
     expires_at = models.DateTimeField(_("expires at"))
     accepted_at = models.DateTimeField(_("accepted at"), null=True, blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+
+    objects = PlatformScopedManager["Invite"]()
 
     class Meta:
         """Model metadata."""
