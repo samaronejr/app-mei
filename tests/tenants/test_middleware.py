@@ -18,6 +18,7 @@ from apps.accounts.models import User
 from apps.core.tenancy import current_tenant_id
 from apps.core.tests.models import ExampleTenantModel
 from apps.tenants.models import Membership, Tenant, TenantRole
+from tests.support import enrol_totp
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -71,6 +72,7 @@ def beta() -> Tenant:
 def alpha_member(alpha: Tenant) -> User:
     user = User.objects.create_user(email="member@alpha.example")
     Membership.objects.create(user=user, tenant=alpha, role=TenantRole.OWNER)
+    enrol_totp(user)
     return user
 
 
@@ -197,6 +199,7 @@ def test_a_user_without_membership_is_refused(
     # Given a user who belongs to Beta but not to Alpha
     outsider = User.objects.create_user(email="outsider@beta.example")
     Membership.objects.create(user=outsider, tenant=beta, role=TenantRole.OWNER)
+    enrol_totp(outsider)
     client.force_login(outsider)
 
     # When they request Alpha's subdomain

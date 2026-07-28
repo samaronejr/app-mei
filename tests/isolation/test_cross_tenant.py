@@ -24,6 +24,7 @@ from apps.core.tenancy import tenant_context
 from apps.core.tests.models import ExampleTenantModel
 from apps.tenants.models import Membership, Tenant, TenantRole
 from tests.isolation.rolecheck import assert_isolated_role
+from tests.support import enrol_totp
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -207,6 +208,7 @@ def test_case_4_http_request_for_another_tenants_object_is_refused(
         tenant=tenants.alpha,
         role=TenantRole.OWNER,
     )
+    enrol_totp(member)
     with tenant_context(tenants.beta.id):
         beta_row = ExampleTenantModel.all_objects.filter(
             tenant_id=tenants.beta.id,
@@ -237,6 +239,7 @@ def test_case_4_http_request_for_its_own_object_succeeds(
         tenant=tenants.alpha,
         role=TenantRole.OWNER,
     )
+    enrol_totp(member)
     with tenant_context(tenants.alpha.id):
         alpha_row = ExampleTenantModel.all_objects.filter(
             tenant_id=tenants.alpha.id,

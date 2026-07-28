@@ -45,6 +45,9 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django_celery_beat",
+    "allauth",
+    "allauth.account",
+    "allauth.mfa",
     "apps.core",
     "apps.accounts",
     "apps.tenants",
@@ -58,6 +61,12 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # allauth refuses to start without this one, and it must follow authentication.
+    "allauth.account.middleware.AccountMiddleware",
+    # Before TenantMiddleware: whether an account must carry a second factor is a
+    # property of the account, not of the firm it is visiting, so it is settled
+    # without resolving a tenant or opening the tenant transaction.
+    "apps.accounts.middleware.MFAEnforcementMiddleware",
     # After AuthenticationMiddleware: tenant resolution reads request.user to check
     # membership, and running earlier would make that check pass for everyone.
     "apps.tenants.middleware.TenantMiddleware",
@@ -100,6 +109,36 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # T-016 configures allauth for email-only login, which auth.User cannot do without
 # auto-generating throwaway usernames.
 AUTH_USER_MODEL = "accounts.User"
+
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "allauth.account.auth_backends.AuthenticationBackend",
+]
+
+LOGIN_URL = "account_login"
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/"
+
+# Email is the only identifier: accounts.User has no username column, so any other
+# login method would authenticate against a field that does not exist.
+ACCOUNT_LOGIN_METHODS = {"email"}
+ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*"]
+# Left at allauth's "username" default, this raises AttributeError the first time any
+# allauth template renders a user's display name.
+ACCOUNT_USER_MODEL_USERNAME_FIELD = None
+ACCOUNT_USER_MODEL_EMAIL_FIELD = "email"
+ACCOUNT_EMAIL_VERIFICATION = "mandatory"
+ACCOUNT_UNIQUE_EMAIL = True
+# Keeps signup, password reset and login from answering "does this address exist
+# here?" — which would enumerate the client list of every firm on the platform.
+ACCOUNT_PREVENT_ENUMERATION = True
+ACCOUNT_SESSION_REMEMBER = False
+ACCOUNT_LOGOUT_ON_PASSWORD_CHANGE = True
+
+# WebAuthn is out of scope for this phase. Recovery codes are on so that losing a
+# phone is a support conversation rather than an account loss.
+MFA_SUPPORTED_TYPES = ["totp", "recovery_codes"]
+MFA_TOTP_ISSUER = env.str("MFA_TOTP_ISSUER", default="app-mei")
 
 AUTH_PASSWORD_VALIDATORS = [
     {
