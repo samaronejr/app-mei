@@ -148,6 +148,31 @@ def _seeded_municipalities(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _seeded_fiscal_parameters(request: pytest.FixtureRequest) -> None:
+    """Restore the fiscal parameters that a transactional test truncates away.
+
+    Same reasoning as the two fixtures above, with a sharper edge. The obligation
+    engine reads every limit and deadline from this table and `parameter_for` raises
+    `NoEffectiveParameter` rather than defaulting, so an empty table turns every
+    threshold and due-date test into an error about missing seed data — and a test
+    written to assert that raise would pass while exercising nothing.
+
+    The data migration's own seed function is reused rather than reimplemented, so
+    the table can never be filled one way by migrate and another way by the suite.
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    parameter = django_apps.get_model("obligations", "FiscalParameter")
+    if parameter.objects.exists():
+        return
+    migration = importlib.import_module(
+        "apps.obligations.migrations.0002_seed_2026_parameters",
+    )
+    migration.seed_from_global_registry()
+
+
+@pytest.fixture(autouse=True)
 def _empty_rate_limit_buckets() -> Iterator[None]:
     """Start every test with empty rate-limit buckets.
 

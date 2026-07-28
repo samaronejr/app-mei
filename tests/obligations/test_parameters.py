@@ -28,7 +28,7 @@ from apps.obligations.parameters import (
 
 pytestmark = pytest.mark.django_db
 
-CEILING = "mei.annual_ceiling"
+CEILING = "test.annual_ceiling"
 SOURCE = "https://www.gov.br/empresas-e-negocios/pt-br/empreendedor"
 
 
@@ -154,20 +154,20 @@ def test_omitting_the_category_resolves_the_common_row() -> None:
 
 def test_a_category_agnostic_row_answers_every_category() -> None:
     # Given a key seeded with NULL category, meaning "applies to all"
-    make(key="das.due_day", value="20", valid_from=date(2026, 1, 1), mei_category=None)
+    make(key="test.due_day", value="20", valid_from=date(2026, 1, 1), mei_category=None)
 
     # When each category asks
     # Then the agnostic row answers all of them, rather than raising for the ones
     # that have no row of their own
     for category in (None, MEICategory.COMMON, MEICategory.CAMINHONEIRO):
-        assert parameter_for("das.due_day", date(2026, 6, 1), category) == Decimal(20)
+        assert parameter_for("test.due_day", date(2026, 6, 1), category) == Decimal(20)
 
 
 def test_a_category_specific_row_beats_an_agnostic_one_on_the_same_key() -> None:
     # Given both an agnostic row and a caminhoneiro override
-    make(key="mei.x", value="1", valid_from=date(2026, 1, 1), mei_category=None)
+    make(key="test.x", value="1", valid_from=date(2026, 1, 1), mei_category=None)
     make(
-        key="mei.x",
+        key="test.x",
         value="9",
         valid_from=date(2026, 1, 1),
         mei_category=MEICategory.CAMINHONEIRO,
@@ -176,9 +176,9 @@ def test_a_category_specific_row_beats_an_agnostic_one_on_the_same_key() -> None
     # When the caminhoneiro asks
     # Then the specific row wins. Falling back before checking for an exact match
     # would make every override inert.
-    trucker = parameter_for("mei.x", date(2026, 6, 1), MEICategory.CAMINHONEIRO)
+    trucker = parameter_for("test.x", date(2026, 6, 1), MEICategory.CAMINHONEIRO)
     assert trucker == Decimal(9)
-    assert parameter_for("mei.x", date(2026, 6, 1), MEICategory.COMMON) == Decimal(1)
+    assert parameter_for("test.x", date(2026, 6, 1), MEICategory.COMMON) == Decimal(1)
 
 
 def test_the_resolver_exposes_the_row_so_its_source_can_be_audited() -> None:
@@ -207,7 +207,7 @@ def test_a_duplicate_key_category_and_start_date_is_rejected() -> None:
 
 def test_a_duplicate_is_rejected_even_when_the_category_is_null() -> None:
     # Given a category-agnostic row
-    make(key="das.due_day", value="20", valid_from=date(2026, 1, 1), mei_category=None)
+    make(key="test.due_day", value="20", valid_from=date(2026, 1, 1), mei_category=None)
 
     # When the same triple is inserted again with a NULL category
     # Then it is STILL refused. PostgreSQL treats NULLs as distinct by default, so
@@ -215,7 +215,7 @@ def test_a_duplicate_is_rejected_even_when_the_category_is_null() -> None:
     # three agnostic rows and make latest-wins a coin flip.
     with pytest.raises(IntegrityError), transaction.atomic():
         make(
-            key="das.due_day",
+            key="test.due_day",
             value="25",
             valid_from=date(2026, 1, 1),
             mei_category=None,
