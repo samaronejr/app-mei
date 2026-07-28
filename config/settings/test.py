@@ -29,6 +29,13 @@ DATABASES["default"]["PASSWORD"] = (
 )
 DATABASES["default"]["CONN_MAX_AGE"] = 0
 
+# In-process cache so rate-limit buckets neither need Redis nor survive the run.
+# tests/conftest.py clears it between tests; without that, buckets filled by one
+# test would leak into the next and produce 429s nobody asked for.
+CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+}
+
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 # WhiteNoise scans STATIC_ROOT eagerly and warns when it is absent. Outside

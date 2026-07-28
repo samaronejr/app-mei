@@ -15,6 +15,7 @@ this project:
 from collections.abc import Iterator
 
 import pytest
+from django.core.cache import cache
 from django.db import connection
 from pytest_django import DjangoDbBlocker
 
@@ -95,3 +96,16 @@ def _assume_runtime_role(request: pytest.FixtureRequest) -> Iterator[None]:
         if connection.connection is not None:
             with connection.cursor() as cursor:
                 cursor.execute("RESET ROLE")
+
+
+@pytest.fixture(autouse=True)
+def _empty_rate_limit_buckets() -> Iterator[None]:
+    """Start every test with empty rate-limit buckets.
+
+    The cache is in-process and outlives an individual test, so without this a suite
+    that logs in repeatedly would start returning 429 partway through and the failure
+    would look like a bug in whatever test happened to be running.
+    """
+    cache.clear()
+    yield
+    cache.clear()

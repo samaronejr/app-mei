@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.audit",
+    "apps.security",
     "apps.tenants",
 ]
 
@@ -80,6 +81,10 @@ MIDDLEWARE = [
     # After AuthenticationMiddleware: tenant resolution reads request.user to check
     # membership, and running earlier would make that check pass for everyone.
     "apps.tenants.middleware.TenantMiddleware",
+    # After TenantMiddleware: the authenticated limits are keyed on
+    # (tenant_id, user_id), and the tenant is not resolved before then. The
+    # credential limits deliberately ignore the tenant — see apps.security.
+    "apps.security.middleware.RateLimitMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -210,6 +215,30 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 
 REDIS_URL = env.str("REDIS_URL", default="redis://localhost:6379/0")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_URL,
+    },
+}
+
+# Read from settings so a deployment can tighten them without a code change, and
+# so a test can assert the shipped values rather than a literal copied into one.
+#
+# The credential limits are keyed on email and IP and NEVER on tenant: credentials
+# are platform-global, so a tenant-keyed bucket is a Host-header bypass.
+RATELIMIT_LOGIN_EMAIL = env.str("RATELIMIT_LOGIN_EMAIL", default="5/m")
+RATELIMIT_LOGIN_IP = env.str("RATELIMIT_LOGIN_IP", default="20/m")
+RATELIMIT_WRITE = env.str("RATELIMIT_WRITE", default="60/m")
+RATELIMIT_READ = env.str("RATELIMIT_READ", default="120/m")
+RATELIMIT_CREDENTIAL_URL_NAMES = [
+    "account_login",
+    "account_reset_password",
+    "account_reset_password_from_key",
+    "mfa_authenticate",
+]
+
 
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL

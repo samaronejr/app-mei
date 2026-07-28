@@ -10,6 +10,7 @@ dependencies = [
   "django-allauth[mfa]",
   "django-celery-beat",
   "django-environ",
+  "django-ratelimit",
   # Runtime, not dev: generic subscripts such as `ModelAdmin[Tenant]` appear in shipped
   # code, and Django's classes are not subscriptable at runtime without the monkeypatch
   # this package installs. Dropping it to the dev group breaks production imports only.
@@ -111,6 +112,13 @@ disallow_subclassing_any = false
 
 [[tool.mypy.overrides]]
 module = ["allauth", "allauth.*"]
+ignore_missing_imports = true
+
+# django-ratelimit ships no py.typed marker. Its one entry point used here,
+# is_ratelimited, is wrapped by apps.security.ratelimit.exceeds, which is fully
+# annotated and coerces the result to bool — so the untyped surface stops there.
+[[tool.mypy.overrides]]
+module = ["django_ratelimit", "django_ratelimit.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -72,3 +72,43 @@ connections therefore start with the empty string, while a test session that rea
 `app_runtime` through `SET ROLE` sees the setting **absent** (`NULL`). Both fail closed
 through `NULLIF(current_setting('app.tenant_id', true), '')`, and the isolation suite
 asserts both shapes explicitly.
+
+## Client IP and the trusted-proxy count
+
+Every per-IP control in this product — the login rate limit, the Marco Civil access
+log, the IP recorded on a failed-login `PlatformEvent` — depends on knowing which
+address a request actually came from. Getting that wrong fails silently in one of two
+directions:
+
+- **Trusting `X-Forwarded-For` when nothing rewrites it.** Any caller sets their own
+  address, and every per-IP control becomes decorative.
+- **Ignoring it behind a reverse proxy.** Every request reports the proxy's address,
+  every per-IP control collapses into one shared bucket, and the first rate-limited
+  user locks out everybody.
+
+So it is configuration, not a guess. `TRUSTED_PROXY_COUNT` states how many proxies
+this deployment actually controls:
+
+| Deployment | `TRUSTED_PROXY_COUNT` | Effect |
+| --- | --- | --- |
+| Local development, container direct | `0` (default) | `X-Forwarded-For` is **not trusted**; `REMOTE_ADDR` is used |
+| Single nginx/Caddy in front of gunicorn | `1` | The last entry appended by that proxy is used |
+| CDN in front of a reverse proxy | `2` | The entry two from the right is used |
+
+`apps.core.netaddr.client_ip` counts from the **right** of the header, because entries
+to the left of the hops we control are attacker-supplied. Setting the count higher than
+the real number of proxies makes the address spoofable; setting it lower collapses
+everyone into the proxy's bucket. The default is `0`, which is the safe direction to
+be wrong in.
+
+## Rate limits
+
+| Bucket | Default | Key | Why that key |
+| --- | --- | --- | --- |
+| Login / password reset | `5/m` | **email**, globally | Credentials are platform-global, so a tenant-keyed bucket would be a `Host`-header bypass worth 5 attempts × every firm |
+| Login / password reset | `20/m` | **IP**, globally | Catches attempts spread across many addresses |
+| Authenticated writes | `60/m` | `(tenant_id, user_id)` | The caller is identified and the tenant resolved from a membership they hold |
+| Authenticated reads | `120/m` | `(tenant_id, user_id)` | `TenantMiddleware` holds a transaction open across rendering and workers run `sync --threads 1`, so unbounded GETs are a denial-of-service vector |
+
+All four are settings (`RATELIMIT_*`), so a deployment tightens them without a code
+change. Buckets live in the Redis cache.
