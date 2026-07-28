@@ -13,6 +13,11 @@ from apps.clients.models.company import (
     ClientCompany,
     ClientStatus,
 )
+from apps.clients.models.onboarding import (
+    OnboardingItem,
+    OnboardingItemTemplate,
+    OnboardingStatus,
+)
 from apps.clients.models.tagging import ClientTag, Tag
 
 __all__ = [
@@ -25,5 +30,8 @@ __all__ = [
     "ClientCompany",
     "ClientStatus",
     "ClientTag",
+    "OnboardingItem",
+    "OnboardingItemTemplate",
+    "OnboardingStatus",
     "Tag",
 ]

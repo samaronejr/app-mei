@@ -9,7 +9,13 @@ whose reach moved.
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
-from apps.clients.models import AssignmentRole, ClientAssignment, ClientCompany
+from apps.clients.models import (
+    AssignmentRole,
+    ClientAssignment,
+    ClientCompany,
+    OnboardingItem,
+    OnboardingItemTemplate,
+)
 
 OBJECT_TYPE = "clients.ClientAssignment"
 
@@ -61,4 +67,29 @@ def _record(*, actor: User, assignment: ClientAssignment, change: str) -> None:
     )
 
 
-__all__ = ["assign_client", "unassign_client"]
+def create_default_checklist(client: ClientCompany) -> list[OnboardingItem]:
+    """Give a newly registered client the standard checklist.
+
+    Driven entirely by the template table, so a Phase 3 connector adds its own item
+    by inserting a row rather than by shipping a migration and a code change.
+
+    The key and label are copied onto each item rather than referenced: a template
+    row may later be retired or reworded, and a client's checklist must keep saying
+    what was actually asked of them at the time.
+    """
+    templates = OnboardingItemTemplate.objects.filter(is_active=True)
+    return OnboardingItem.objects.bulk_create(
+        [
+            OnboardingItem(
+                tenant_id=client.tenant_id,
+                client=client,
+                key=template.key,
+                label=template.label,
+                position=template.position,
+            )
+            for template in templates
+        ],
+    )
+
+
+__all__ = ["assign_client", "create_default_checklist", "unassign_client"]

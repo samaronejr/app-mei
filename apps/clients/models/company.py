@@ -23,6 +23,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from apps.clients.managers import ClientCompanyManager
+from apps.clients.models.onboarding import OnboardingStatus
 from apps.core.models import TenantScopedModel
 
 # Both documents are stored normalized: uppercase, punctuation stripped, fixed width.
@@ -126,3 +127,17 @@ class ClientCompany(TenantScopedModel):
     def __str__(self) -> str:
         """Identify the client by the name it is registered under."""
         return self.legal_name
+
+    @property
+    def is_ready(self) -> bool:
+        """Report whether every applicable onboarding item is settled.
+
+        A client with no checklist at all answers `False` rather than `True`. The
+        vacuous reading — "nothing outstanding, therefore ready" — would report a
+        client nobody has assessed as fit to file for, which is the one wrong answer
+        that costs a firm a deadline.
+        """
+        statuses = set(self.onboarding_items.values_list("status", flat=True))
+        if not statuses:
+            return False
+        return not (statuses & OnboardingStatus.unfinished())

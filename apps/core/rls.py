@@ -34,6 +34,11 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         # Platform-level reference and control data, shared across every tenant.
         "authz_capability",
         "authz_rolegrant",
+        # The standard onboarding checklist. What a MEI must have in order is a
+        # property of Brazilian tax practice, not of any one firm, so a
+        # per-tenant copy would let one firm's list drift from another's. The
+        # per-client rows it generates are tenant-scoped and policed.
+        "clients_onboardingitemtemplate",
         "audit_accesslog",
         # Identity events that happen BEFORE a tenant is resolved. A policy here
         # would reject the login-failure record an investigation needs most.
