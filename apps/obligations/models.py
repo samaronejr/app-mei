@@ -114,8 +114,9 @@ class ObligationType(models.Model):
     product ships already disagree in direction: DAS-MEI rolls forward to the next
     business day (Resolução CGSN nº 140/2018 art. 40 §3) while DASN-SIMEI does not
     roll at all (art. 109). A third, DAE-MEI, anticipates backward. Encoding
-    direction as code would mean an `if code == "DASN"` branch, and the next
-    obligation would add another.
+    direction as code would mean branching on the obligation code, and the next
+    obligation would add another branch. A test greps for the quoted code literal in
+    behavioural source precisely so that branch cannot appear unnoticed.
 
     The code is the primary key rather than a surrogate: `DAS` and `DASN` are what
     every Receita Federal document already calls these, and a surrogate would add a

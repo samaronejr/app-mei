@@ -173,6 +173,26 @@ def _seeded_fiscal_parameters(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _seeded_obligation_types(request: pytest.FixtureRequest) -> None:
+    """Restore the obligation types that a transactional test truncates away.
+
+    Without them every due-date test raises `ObligationType.DoesNotExist`, and the
+    generator has nothing to generate — which reads as "no obligations are due",
+    the one answer this product must never produce by accident.
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    obligation_type = django_apps.get_model("obligations", "ObligationType")
+    if obligation_type.objects.exists():
+        return
+    migration = importlib.import_module(
+        "apps.obligations.migrations.0003_seed_obligation_types",
+    )
+    migration.seed_from_global_registry()
+
+
+@pytest.fixture(autouse=True)
 def _empty_rate_limit_buckets() -> Iterator[None]:
     """Start every test with empty rate-limit buckets.
 
