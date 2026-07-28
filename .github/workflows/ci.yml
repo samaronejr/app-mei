@@ -1,0 +1,276 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+# A superseded push to the same ref is wasted signal, but never cancel main: the
+# green run on main is the artifact T-021 exists to produce.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint, types, migrations, tests, isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    # Every credential below is a workflow-local literal for a container that is
+    # destroyed when the job ends. Nothing here exists outside this runner, and no
+    # real credential may ever be added to this file — production secrets live in
+    # the deployment environment (T-022), not in CI.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: app_mei
+          POSTGRES_USER: app_mei
+          POSTGRES_PASSWORD: ephemeral-ci-superuser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app_mei -d app_mei"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # config.settings.base reads a dotenv file when one exists. The runner has no
+      # .env, but pointing this at a path that cannot exist makes that explicit
+      # rather than incidental — the job is configured by these variables alone.
+      DJANGO_ENV_FILE: /nonexistent
+      SECRET_KEY: ephemeral-ci-secret-key-not-used-outside-this-runner-0000000000
+
+      APP_MIGRATOR_PASSWORD: ephemeral-ci-app-migrator
+      APP_RUNTIME_PASSWORD: ephemeral-ci-app-runtime
+      APP_TEST_PASSWORD: ephemeral-ci-app-test
+
+      # Only the roles bootstrap uses the superuser. Nothing else in this job may.
+      SUPERUSER_DATABASE_URL: postgres://app_mei:ephemeral-ci-superuser@localhost:5432/app_mei
+
+      DATABASE_URL: postgres://app_runtime:ephemeral-ci-app-runtime@localhost:5432/app_mei
+      DATABASE_MIGRATION_URL: postgres://app_migrator:ephemeral-ci-app-migrator@localhost:5432/app_mei
+      TEST_DB_USER: app_test
+      TEST_DB_PASSWORD: ephemeral-ci-app-test
+      CONN_MAX_AGE: "0"
+
+      REDIS_URL: redis://localhost:6379/0
+      ALLOWED_HOSTS: localhost,127.0.0.1,.localhost
+      CSRF_TRUSTED_ORIGINS: http://localhost:8000,http://127.0.0.1:8000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # GitHub Actions starts service containers BEFORE the repository is checked
+      # out, so the /docker-entrypoint-initdb.d mount that bootstraps roles under
+      # local Compose has no equivalent here — the file does not exist when Postgres
+      # initialises. Without this step app_runtime, app_migrator and app_test are
+      # never created and every step below fails on connect. This is why
+      # ops/sql/roles.sql is written idempotent: it now runs two different ways.
+      #
+      # This step must stay ahead of the first step that touches the database.
+      - name: Bootstrap database roles
+        run: psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check .
+
+      - name: Types (mypy)
+        run: uv run mypy .
+
+      # The django.core.checks guards never fire under pytest — pytest-django does
+      # not call run_checks() — and manage.py defaults to config.settings.dev. Run
+      # them once per settings module so ATOMIC_REQUESTS, the host-only cookie rules
+      # and the CSRF origin rule are validated in test and prod too, not just dev.
+      - name: Django system checks (dev, test, prod settings)
+        run: |
+          set -euo pipefail
+          for module in dev test prod; do
+            echo "::group::manage.py check --settings=config.settings.$module"
+            uv run python manage.py check --settings="config.settings.$module"
+            echo "::endgroup::"
+          done
+
+      # Run under test settings: INSTALLED_APPS there is a superset of dev's, so the
+      # tenant-scoped fixture app is covered as well as the shipped apps.
+      - name: Missing migrations
+        run: |
+          uv run python manage.py makemigrations --check --dry-run \
+            --settings=config.settings.test
+
+      - name: Tests with coverage
+        run: |
+          uv run pytest \
+            --cov=apps --cov=config \
+            --cov-report=term-missing --cov-report=xml
+
+      # Asserted in the job, independently of the suite, because a roles.sql that
+      # loses `GRANT app_runtime TO app_test` or drops NOBYPASSRLS makes every
+      # cross-tenant denial test pass while reading every tenant's rows.
+      #
+      # The login role is deliberately NOT what is asserted: config.settings.test
+      # connects as app_test, which holds CREATEDB and BYPASSRLS by design, so
+      # asserting against session_user would fail correctly-configured infrastructure.
+      # What governs policy evaluation is the EFFECTIVE role after SET ROLE.
+      - name: Assert effective role cannot bypass RLS
+        run: |
+          psql "postgres://app_test:${APP_TEST_PASSWORD}@localhost:5432/app_mei" \
+            -v ON_ERROR_STOP=1 <<'SQL'
+          SET ROLE app_runtime;
+
+          \echo '-- effective role after SET ROLE (this is what RLS is evaluated against)'
+          SELECT current_user AS effective_role,
+                 session_user AS login_role,
+                 (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+                     AS effective_rolsuper,
+                 (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user)
+                     AS effective_rolbypassrls;
+
+          DO $$
+          DECLARE
+              effective_role text;
+              effective_rolsuper boolean;
+              effective_rolbypassrls boolean;
+          BEGIN
+              SELECT current_user,
+                     (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+                     (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user)
+                INTO effective_role, effective_rolsuper, effective_rolbypassrls;
+
+              IF effective_role <> 'app_runtime'
+                 OR effective_rolsuper
+                 OR effective_rolbypassrls THEN
+                  RAISE EXCEPTION
+                      'isolation assertions would not bite: effective role is %, '
+                      'rolsuper=%, rolbypassrls=% (expected app_runtime/false/false)',
+                      effective_role, effective_rolsuper, effective_rolbypassrls;
+              END IF;
+          END
+          $$;
+          SQL
+
+      # A dedicated step so an isolation regression is unmistakable in the run log
+      # rather than one line inside a 450-test summary. Overlapping with the full
+      # run above is deliberate.
+      - name: Isolation suite
+        run: uv run pytest tests/isolation/ -v
+
+      # The CNPJ alphanumeric regression pack (T-034, Wave 6) gets its own named
+      # step here once tests/regression/ exists. Referencing it today would fail on
+      # a path that has not been written.
+
+      - name: Upload coverage
+        # .evidence/ is deliberately NOT uploaded: it is git-ignored and a plain
+        # pytest run does not write it, so the artifact would be empty.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ github.run_id }}
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  container-smoke:
+    name: Container smoke (/healthz from inside the stack)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    # No service containers here on purpose: the Compose stack publishes 5432, 6379
+    # and 8000 on the runner, which would collide with a job-level service mapping.
+    #
+    # This job exists because of a real regression: a dependency was added to
+    # pyproject.toml and installed into the host virtualenv while the image was
+    # never rebuilt, so every host-side gate above stayed green while the running
+    # container died with ModuleNotFoundError on every request. Host-side testing
+    # provably cannot catch that class of bug — only building the image and asking
+    # the running container for a response can.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Write workflow-local .env
+        # Compose requires SECRET_KEY to be set and reads the rest from .env. These
+        # are throwaway values for containers destroyed at job end.
+        run: |
+          cat > .env <<'ENV'
+          SECRET_KEY=ephemeral-ci-secret-key-not-used-outside-this-runner-0000000000
+          DEBUG=True
+          LOG_LEVEL=INFO
+          ALLOWED_HOSTS=localhost,127.0.0.1,.localhost,web
+          CSRF_TRUSTED_ORIGINS=http://localhost:8000,http://127.0.0.1:8000
+          POSTGRES_DB=app_mei
+          POSTGRES_USER=app_mei
+          POSTGRES_PASSWORD=ephemeral-ci-superuser
+          APP_RUNTIME_PASSWORD=ephemeral-ci-app-runtime
+          APP_MIGRATOR_PASSWORD=ephemeral-ci-app-migrator
+          APP_TEST_PASSWORD=ephemeral-ci-app-test
+          CONN_MAX_AGE=60
+          ENV
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start stack
+        run: docker compose up -d --wait
+
+      # Runs inside the built image, so an import that exists only in a developer's
+      # host virtualenv fails here.
+      - name: Django checks inside the container
+        run: docker compose exec -T web python manage.py check
+
+      - name: Assert /healthz returns 200 from inside the container
+        run: |
+          docker compose exec -T web python - <<'PY'
+          import json
+          import sys
+          import urllib.request
+
+          with urllib.request.urlopen(
+              "http://127.0.0.1:8000/healthz", timeout=10
+          ) as response:
+              status = response.status
+              body = response.read().decode()
+
+          print(f"status={status} body={body}")
+          if status != 200:
+              sys.exit(f"expected HTTP 200 from /healthz, got {status}")
+          if json.loads(body) != {"status": "ok"}:
+              sys.exit(f"unexpected /healthz body: {body!r}")
+          PY
+
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
