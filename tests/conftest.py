@@ -20,6 +20,10 @@ from pytest_django import DjangoDbBlocker
 
 RUNTIME_ROLE = "app_runtime"
 
+# Tables whose migrations revoke write access. Listed here rather than discovered so
+# that a new append-only table which forgets its revoke is a visible omission.
+APPEND_ONLY_TABLES = ("audit_event", "audit_platformevent")
+
 
 @pytest.fixture(scope="session")
 def django_db_setup(
@@ -42,19 +46,24 @@ def django_db_setup(
             f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {RUNTIME_ROLE}",
         )
         # The blanket grant above would silently restore UPDATE/DELETE on the
-        # append-only audit table, so T-018's revoke is re-applied as the last
-        # statement. Guarded on existence because audit_event arrives in Wave 3.
-        cursor.execute(
-            """
-            DO $$
-            BEGIN
-                IF to_regclass('public.audit_event') IS NOT NULL THEN
-                    REVOKE UPDATE, DELETE ON audit_event FROM app_runtime;
-                END IF;
-            END
-            $$
-            """,
-        )
+        # append-only audit tables, so the revoke is re-applied as the last statement.
+        # Note the grant above enumerates privileges rather than using ALL: a blanket
+        # GRANT ALL would also hand back TRUNCATE, which is a privilege of its own,
+        # is documented as NOT subject to row-level security, and would empty an
+        # append-only table without firing a single row trigger.
+        for table in APPEND_ONLY_TABLES:
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.{table}') IS NOT NULL THEN
+                        REVOKE ALL ON {table} FROM {RUNTIME_ROLE};
+                        GRANT SELECT, INSERT ON {table} TO {RUNTIME_ROLE};
+                    END IF;
+                END
+                $$
+                """,
+            )
 
 
 def _wants_database(request: pytest.FixtureRequest) -> bool:

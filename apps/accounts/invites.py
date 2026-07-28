@@ -24,6 +24,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.audit.models import AuditAction
+from apps.audit.services import Origin, record_platform_event
 from apps.tenants.models import Invite, Membership, Tenant, TenantRole
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,15 @@ def issue_invite(
         "invite issued",
         extra={"invite_id": str(invite.pk), "tenant_id": str(tenant.pk)},
     )
+    # A PlatformEvent, not an Event: acceptance happens with no tenant resolved, so
+    # the two halves of an invitation's life would otherwise land in different tables
+    # and an investigation would have to join them.
+    record_platform_event(
+        action=AuditAction.INVITE_ISSUED,
+        origin=Origin(actor=actor, subject=email),
+        tenant_id=tenant.pk,
+        metadata={"invite_id": str(invite.pk), "role": role},
+    )
     return invite, raw_token
 
 
@@ -148,6 +159,12 @@ def accept_invite(*, invite: Invite, user: User) -> Membership:
     logger.info(
         "invite accepted",
         extra={"invite_id": str(locked.pk), "tenant_id": str(locked.tenant_id)},
+    )
+    record_platform_event(
+        action=AuditAction.INVITE_ACCEPTED,
+        origin=Origin(actor=user, subject=locked.email),
+        tenant_id=locked.tenant_id,
+        metadata={"invite_id": str(locked.pk), "role": locked.role},
     )
     return membership
 

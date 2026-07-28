@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "allauth.mfa",
     "apps.core",
     "apps.accounts",
+    "apps.audit",
     "apps.tenants",
 ]
 
@@ -63,6 +64,10 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     # allauth refuses to start without this one, and it must follow authentication.
     "allauth.account.middleware.AccountMiddleware",
+    # Before TenantMiddleware, so buffered platform events are written after that
+    # transaction resolves. A login failure is recorded by a request whose own
+    # writes are rolled back, and the audit row has to outlive them.
+    "apps.audit.middleware.PlatformEventMiddleware",
     # Before TenantMiddleware: whether an account must carry a second factor is a
     # property of the account, not of the firm it is visiting, so it is settled
     # without resolving a tenant or opening the tenant transaction.
@@ -118,6 +123,11 @@ AUTHENTICATION_BACKENDS = [
 # The origin invitation and data-subject links point at. Those flows are platform
 # level, not firm level: an invitee has no membership yet, so a link on the firm's
 # own subdomain would be refused by TenantMiddleware for exactly its recipient.
+# How many reverse proxies this deployment actually controls. 0 means X-Forwarded-For
+# is not trusted at all, which is the safe default: a spoofable client address turns
+# every per-IP control into decoration.
+TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=0)
+
 PLATFORM_URL = env.str("PLATFORM_URL", default="http://localhost:8000")
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="nao-responda@localhost")
 SERVER_EMAIL = DEFAULT_FROM_EMAIL

@@ -35,6 +35,9 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         "authz_capability",
         "authz_rolegrant",
         "audit_accesslog",
+        # Identity events that happen BEFORE a tenant is resolved. A policy here
+        # would reject the login-failure record an investigation needs most.
+        "audit_platformevent",
         "fiscal_municipality",
         "fiscal_municipalitycapability",
         "obligations_fiscalparameter",
