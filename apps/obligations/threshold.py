@@ -34,7 +34,7 @@ from django.db import models
 
 from apps.clients.models import ClientCompany
 from apps.obligations.models import MonthlyRevenue
-from apps.obligations.parameters import parameter_for
+from apps.obligations.parameters import ParameterCache
 
 CEILING_KEY = "mei.annual_ceiling"
 PROPORTIONAL_KEY = "mei.monthly_proportional"
@@ -81,14 +81,19 @@ def _months_active_in(client: ClientCompany, year: int) -> int:
     return MONTHS_IN_YEAR - client.opened_on.month + 1
 
 
-def _ceiling_for(client: ClientCompany, year: int, months: int) -> Decimal:
+def _ceiling_for(
+    client: ClientCompany,
+    year: int,
+    months: int,
+    parameters: ParameterCache,
+) -> Decimal:
     # Resolved as of 1 January: the limit that governs a calendar year is the one in
     # force when that year began, so the answer does not change under a client
     # mid-year. An enacted increase carries valid_from = 1 January and is picked up.
     on_date = date(year, 1, 1)
     if months == MONTHS_IN_YEAR:
-        return parameter_for(CEILING_KEY, on_date, client.mei_category)
-    monthly = parameter_for(PROPORTIONAL_KEY, on_date, client.mei_category)
+        return parameters.value(CEILING_KEY, on_date, client.mei_category)
+    monthly = parameters.value(PROPORTIONAL_KEY, on_date, client.mei_category)
     return monthly * months
 
 
@@ -124,25 +129,39 @@ def _effective_date_for(
     return date(year, 1, 1)
 
 
-def threshold_status(client: ClientCompany, year: int) -> ThresholdStatus:
+def threshold_status(
+    client: ClientCompany,
+    year: int,
+    *,
+    accumulated: Decimal | None = None,
+    parameters: ParameterCache | None = None,
+) -> ThresholdStatus:
     """Evaluate this client's revenue for `year` against the ceiling that applies to it.
 
     Must be called inside the client's own tenant context: the revenue rows are
     tenant-scoped and would otherwise sum to zero under the fail-closed policy.
+
+    Both keyword arguments exist so a portfolio-wide sweep can reach the same
+    arithmetic without one query per client — `accumulated` lets the caller supply a
+    total it already aggregated in a single grouped query, and `parameters` lets it
+    share one resolver across every client. Neither changes the result; omitting both
+    performs the reads here, which is what every single-client caller does.
     """
+    resolver = parameters if parameters is not None else ParameterCache()
     months = _months_active_in(client, year)
     is_opening_year = months != MONTHS_IN_YEAR
-    ceiling = _ceiling_for(client, year, months)
+    ceiling = _ceiling_for(client, year, months, resolver)
 
-    accumulated = MonthlyRevenue.objects.filter(
-        client=client,
-        competence_month__year=year,
-    ).aggregate(
-        total=models.Sum("gross_amount", default=Decimal("0.00")),
-    )["total"]
+    if accumulated is None:
+        accumulated = MonthlyRevenue.objects.filter(
+            client=client,
+            competence_month__year=year,
+        ).aggregate(
+            total=models.Sum("gross_amount", default=Decimal("0.00")),
+        )["total"]
 
     consumed = accumulated / ceiling
-    tolerance = parameter_for(TOLERANCE_KEY, date(year, 1, 1), client.mei_category)
+    tolerance = resolver.value(TOLERANCE_KEY, date(year, 1, 1), client.mei_category)
     band = _band_for(consumed, tolerance)
 
     return ThresholdStatus(

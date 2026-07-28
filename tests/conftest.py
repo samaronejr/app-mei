@@ -213,6 +213,34 @@ def _seeded_national_holidays(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _seeded_checklist_templates(request: pytest.FixtureRequest) -> None:
+    """Restore the onboarding templates that a transactional test truncates away.
+
+    `create_default_checklist` copies from this table on every client registration,
+    and an empty table does not raise: it produces a client with an empty checklist.
+    That reads as "nothing is blocked" — which is a valid-looking answer, so the
+    onboarding queue would report all clear while asserting nothing at all.
+
+    The data migration's own seed function is reused, then `0005`'s follow-up is
+    replayed so the two items that require e-CAC access keep saying so.
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    template = django_apps.get_model("clients", "OnboardingItemTemplate")
+    if template.objects.exists():
+        return
+    seed_migration = importlib.import_module(
+        "apps.clients.migrations.0004_seed_checklist_templates",
+    )
+    seed_migration.seed(django_apps, None)
+    ecac_migration = importlib.import_module(
+        "apps.clients.migrations.0005_readiness_and_govbr_trust",
+    )
+    ecac_migration.mark_ecac_items(django_apps, None)
+
+
+@pytest.fixture(autouse=True)
 def _armed_scheduler_heartbeat(request: pytest.FixtureRequest) -> None:
     """Restore the heartbeat row that a transactional test truncates away.
 

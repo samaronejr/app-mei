@@ -67,6 +67,36 @@ def effective_parameter(
     return row
 
 
+class ParameterCache:
+    """Resolve each `(key, date, category)` once across a bulk pass.
+
+    A portfolio-wide threshold sweep asks for the same three parameters for every
+    client, and there are only ever as many distinct answers as there are MEI
+    categories — two. Without this the number of parameter reads grows with the
+    portfolio, which is precisely the N+1 the queue budgets exist to forbid.
+
+    Deliberately not a module-level cache: a fiscal parameter is effective-dated
+    reference data that a deploy or a data migration can change, and a process-lifetime
+    cache would keep serving a superseded ceiling until the worker restarted.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing resolved."""
+        self._values: dict[tuple[str, date, str | None], Decimal] = {}
+
+    def value(
+        self,
+        key: str,
+        on_date: date,
+        mei_category: str | None = None,
+    ) -> Decimal:
+        """Return the value in force, reading the table once per distinct ask."""
+        cache_key = (key, on_date, mei_category)
+        if cache_key not in self._values:
+            self._values[cache_key] = parameter_for(key, on_date, mei_category)
+        return self._values[cache_key]
+
+
 def parameter_for(
     key: str,
     on_date: date,

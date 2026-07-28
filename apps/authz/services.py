@@ -67,7 +67,7 @@ def resolve_level(
         return GrantLevel.NONE
     if user.is_superuser:
         return GrantLevel.FULL
-    role = _role_of(user, tenant_id)
+    role = role_of(user, tenant_id)
     if role is None:
         return GrantLevel.NONE
     grant = RoleGrant.objects.filter(role=role, capability=capability).first()
@@ -136,7 +136,7 @@ def granted_levels(
         return dict.fromkeys(slugs, GrantLevel.NONE)
     if user.is_superuser:
         return dict.fromkeys(slugs, GrantLevel.FULL)
-    role = _role_of(user, tenant_id)
+    role = role_of(user, tenant_id)
     if role is None:
         return dict.fromkeys(slugs, GrantLevel.NONE)
     resolved = dict(
@@ -204,7 +204,14 @@ def _capability(action: str) -> Capability:
     return capability
 
 
-def _role_of(user: User, tenant_id: UUID | None) -> str | None:
+def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
+    """Return this account's active role in the named firm, or None if it has none.
+
+    Public because `apps.authz.portfolio` needs it, and because the role-check guard
+    requires every role comparison in the codebase to live inside this package — so
+    the read that feeds one belongs here too rather than being re-implemented next to
+    the comparison.
+    """
     resolved = tenant_id or current_tenant_id.get()
     if resolved is None:
         return None
@@ -261,4 +268,5 @@ __all__ = [
     "granted_levels",
     "require_can",
     "resolve_level",
+    "role_of",
 ]
