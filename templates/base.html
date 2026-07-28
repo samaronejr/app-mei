@@ -1,0 +1,28 @@
+{% load i18n static %}<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% comment %}
+    Two settings, both load-bearing for the Content-Security-Policy this page ships
+    under. `allowEval` off removes the one `new Function` call HTMX keeps for `hx-on:`
+    handlers, so `script-src` needs no 'unsafe-eval'. `includeIndicatorStyles` off
+    stops HTMX injecting an inline <style> element, so `style-src` needs no
+    'unsafe-inline'; the indicator rules ship in the compiled stylesheet instead.
+  {% endcomment %}
+  <meta name="htmx-config" content='{"allowEval": false, "includeIndicatorStyles": false}'>
+  <title>{% block title %}{% translate "app-mei" %}{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  {% comment %}
+    Same-origin and deferred. Vendored under static/js/ rather than fetched from a CDN
+    so the interface does not depend on a third party being up on the day DAS is due,
+    and so the policy can name no external script origin at all.
+  {% endcomment %}
+  <script src="{% static 'js/htmx.min.js' %}" defer></script>
+  <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  {% block body %}{% endblock %}
+</body>
+</html>

@@ -1,9 +1,8 @@
-{% load i18n %}<!DOCTYPE html>
-<html lang="pt-br">
-<head><meta charset="utf-8"><title>{% translate "Selecionar empresa" %}</title></head>
-<body>
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Selecionar empresa" %}{% endblock %}
+{% block body %}
   <h1 id="select-tenant">{% translate "Selecione uma empresa" %}</h1>
-  {% if error %}<p class="errornote">{{ error }}</p>{% endif %}
+  {% if error %}<p class="notice-error" role="alert">{{ error }}</p>{% endif %}
   <form method="post" action="{% url 'admin-select-tenant' %}">
     {% csrf_token %}
     <select name="tenant">
@@ -14,7 +13,6 @@
       <input type="text" name="reason" value="">
     {% endif %}
     <input type="hidden" name="next" value="{{ request.GET.next|default:'/admin/' }}">
-    <button type="submit">{% translate "Selecionar" %}</button>
+    <button type="submit" class="btn btn-primary">{% translate "Selecionar" %}</button>
   </form>
-</body>
-</html>
+{% endblock %}

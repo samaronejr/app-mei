@@ -1,8 +1,6 @@
-{% load i18n %}<!DOCTYPE html>
-<html lang="pt-br">
-<head><meta charset="utf-8"><title>{% translate "Convite indisponível" %}</title></head>
-<body>
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Convite indisponível" %}{% endblock %}
+{% block body %}
   <h1>{% translate "Convite indisponível" %}</h1>
   <p>{{ reason }}</p>
-</body>
-</html>
+{% endblock %}

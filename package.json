@@ -1,0 +1,18 @@
+{
+  "name": "app-mei-assets",
+  "private": true,
+  "type": "module",
+  "description": "Front-end asset build. Every dependency is pinned exactly and vendored into static/ so that neither a deploy nor CI needs npm — see docs/frontend.md.",
+  "scripts": {
+    "build:css": "tailwindcss --input assets/css/app.css --output static/css/app.css --minify",
+    "watch:css": "tailwindcss --input assets/css/app.css --output static/css/app.css --watch",
+    "vendor:js": "node assets/vendor.mjs",
+    "build": "npm run vendor:js && npm run build:css"
+  },
+  "devDependencies": {
+    "@alpinejs/csp": "3.15.12",
+    "@tailwindcss/cli": "4.3.3",
+    "htmx.org": "2.0.10",
+    "tailwindcss": "4.3.3"
+  }
+}

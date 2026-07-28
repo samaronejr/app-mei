@@ -1,0 +1,305 @@
+/* The project design system, in Tailwind v4's CSS-first form.
+ *
+ * v4 has no `tailwind.config.js`: the theme IS this file, and every token declared in
+ * `@theme` becomes both a CSS custom property and a utility class. That matters here
+ * because it makes the token the only way to name a colour or a radius — a template
+ * writing `#0f766e` would not resolve to anything and would stand out in review.
+ *
+ * Three deliberate choices:
+ *
+ * 1. No web font is loaded. `font-src 'self'` is part of the policy this wave ships,
+ *    and a fiscal dashboard that waits on a font CDN to paint its deadline column is
+ *    worse than one that uses the operating system's own UI face. Figures are set in
+ *    tabular numerals instead, which is what actually makes a money column readable.
+ * 2. The status ramp is named after the domain (`ok` / `warn` / `over` / `late`), not
+ *    after hues. `bg-warn-soft` on a threshold badge stays correct if the palette is
+ *    retuned; `bg-amber-100` silently becomes a lie.
+ * 3. The HTMX request-indicator rules live here rather than being injected by HTMX at
+ *    runtime. HTMX writes them into an inline <style> element, which `style-src 'self'`
+ *    blocks — so the meta config turns that off and the stylesheet carries them.
+ */
+
+@import "tailwindcss";
+
+/* Templates are the only place these classes appear, and they live outside the CSS
+ * root, so v4's automatic content detection has to be told about them. */
+@source "../../templates";
+@source "../../apps";
+
+@theme {
+  --font-sans:
+    ui-sans-serif, "Segoe UI Variable Text", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, "Helvetica Neue", "Noto Sans", sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", "Liberation Mono",
+    monospace;
+
+  /* Neutral ramp. Cool and slightly desaturated so the status colours carry all the
+   * urgency in the interface and nothing else competes with them. */
+  --color-ink-50: oklch(0.985 0.002 250);
+  --color-ink-100: oklch(0.967 0.003 250);
+  --color-ink-200: oklch(0.925 0.005 250);
+  --color-ink-300: oklch(0.86 0.008 250);
+  --color-ink-400: oklch(0.7 0.012 250);
+  --color-ink-500: oklch(0.57 0.014 250);
+  --color-ink-600: oklch(0.45 0.016 250);
+  --color-ink-700: oklch(0.36 0.018 250);
+  --color-ink-800: oklch(0.26 0.018 250);
+  --color-ink-900: oklch(0.19 0.017 250);
+  --color-ink-950: oklch(0.13 0.015 250);
+
+  /* One accent. Deep teal rather than the default SaaS blue: in a Brazilian fiscal
+   * interface blue is already spoken for by government marks, and green reads as
+   * "regular" — the state every client in this product is trying to stay in. */
+  --color-accent-50: oklch(0.97 0.02 175);
+  --color-accent-100: oklch(0.94 0.04 175);
+  --color-accent-200: oklch(0.88 0.07 175);
+  --color-accent-400: oklch(0.72 0.12 175);
+  --color-accent-500: oklch(0.63 0.13 175);
+  --color-accent-600: oklch(0.54 0.12 175);
+  --color-accent-700: oklch(0.45 0.1 175);
+  --color-accent-900: oklch(0.3 0.07 175);
+
+  /* Domain status ramp. `soft` is the fill, `ink` the text that must sit on it at
+   * AA contrast, `line` the border. */
+  --color-ok-soft: oklch(0.95 0.04 160);
+  --color-ok-ink: oklch(0.42 0.11 160);
+  --color-ok-line: oklch(0.85 0.07 160);
+
+  --color-warn-soft: oklch(0.96 0.05 85);
+  --color-warn-ink: oklch(0.45 0.11 68);
+  --color-warn-line: oklch(0.87 0.09 85);
+
+  --color-over-soft: oklch(0.95 0.045 45);
+  --color-over-ink: oklch(0.46 0.15 38);
+  --color-over-line: oklch(0.86 0.09 45);
+
+  --color-late-soft: oklch(0.95 0.035 20);
+  --color-late-ink: oklch(0.46 0.16 22);
+  --color-late-line: oklch(0.86 0.08 20);
+
+  --color-surface: oklch(1 0 0);
+  --color-surface-sunken: oklch(0.984 0.003 250);
+
+  --radius-card: 0.75rem;
+  --radius-control: 0.5rem;
+
+  --shadow-card: 0 1px 2px oklch(0.19 0.017 250 / 0.05), 0 1px 3px
+    oklch(0.19 0.017 250 / 0.06);
+  --shadow-raised: 0 4px 12px oklch(0.19 0.017 250 / 0.08), 0 1px 3px
+    oklch(0.19 0.017 250 / 0.06);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-surface-sunken);
+    color: var(--color-ink-800);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* One visible focus treatment for every interactive element, applied through
+   * :focus-visible so a mouse click does not draw a ring the pointer already
+   * explains. Removing it anywhere is a WCAG 2.4.7 failure. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent-600);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  th,
+  td {
+    text-align: left;
+  }
+
+  /* Money and dates line up column-wise only with fixed-width figures. */
+  .tabular,
+  td,
+  time {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  /* Off-screen until focused. The first tab stop on every page. */
+  .skip-link {
+    @apply absolute left-4 z-50 -translate-y-24 rounded-control bg-ink-900 px-4 py-2
+      text-sm font-medium text-white transition-transform;
+  }
+
+  .skip-link:focus {
+    @apply translate-y-4;
+  }
+
+  .card {
+    @apply rounded-card border border-ink-200 bg-surface shadow-card;
+  }
+
+  .card-heading {
+    @apply border-b border-ink-200 px-5 py-3 text-sm font-semibold text-ink-700;
+  }
+
+  .metric {
+    @apply flex flex-col gap-1 rounded-card border border-ink-200 bg-surface px-5 py-4
+      shadow-card transition-shadow;
+  }
+
+  .metric:hover {
+    @apply shadow-raised;
+  }
+
+  .metric-value {
+    @apply text-3xl font-semibold tracking-tight text-ink-900 tabular-nums;
+  }
+
+  .metric-label {
+    @apply text-xs font-medium uppercase tracking-wide text-ink-500;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs
+      font-medium;
+  }
+
+  .badge-ok {
+    @apply border-ok-line bg-ok-soft text-ok-ink;
+  }
+
+  .badge-warn {
+    @apply border-warn-line bg-warn-soft text-warn-ink;
+  }
+
+  .badge-over {
+    @apply border-over-line bg-over-soft text-over-ink;
+  }
+
+  .badge-late {
+    @apply border-late-line bg-late-soft text-late-ink;
+  }
+
+  .badge-neutral {
+    @apply border-ink-200 bg-ink-100 text-ink-600;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-control px-3 py-2
+      text-sm font-medium transition-colors;
+  }
+
+  .btn-primary {
+    @apply bg-accent-600 text-white;
+  }
+
+  .btn-primary:hover {
+    @apply bg-accent-700;
+  }
+
+  .btn-quiet {
+    @apply border border-ink-200 bg-surface text-ink-700;
+  }
+
+  .btn-quiet:hover {
+    @apply bg-ink-50;
+  }
+
+  .nav-link {
+    @apply rounded-control px-3 py-2 text-sm font-medium text-ink-600
+      transition-colors;
+  }
+
+  .nav-link:hover {
+    @apply bg-ink-100 text-ink-900;
+  }
+
+  .nav-link[aria-current="page"] {
+    @apply bg-accent-50 text-accent-700;
+  }
+
+  .data-table {
+    @apply w-full border-collapse text-sm;
+  }
+
+  .data-table th {
+    @apply border-b border-ink-200 px-5 py-2 text-xs font-semibold uppercase
+      tracking-wide text-ink-500;
+  }
+
+  .data-table td {
+    @apply border-b border-ink-100 px-5 py-3 text-ink-700;
+  }
+
+  .data-table tbody tr:hover td {
+    @apply bg-ink-50;
+  }
+
+  .notice-error {
+    @apply rounded-control border border-late-line bg-late-soft px-4 py-3 text-sm
+      text-late-ink;
+  }
+
+  .empty-state {
+    @apply px-5 py-10 text-center text-sm text-ink-500;
+  }
+
+  /* One cell of the twelve-month DAS strip. */
+  .calendar-cell {
+    @apply flex flex-col gap-1 rounded-control border px-3 py-2;
+  }
+
+  .calendar-month {
+    @apply text-xs font-medium uppercase tracking-wide;
+  }
+
+  .calendar-due {
+    @apply text-base font-semibold tabular-nums;
+  }
+
+  .calendar-rolled {
+    @apply text-[0.6875rem] leading-tight;
+  }
+}
+
+@layer utilities {
+  /* Reachable by a screen reader, invisible to everyone else. Used for the labels
+   * an icon-only control still owes an assistive technology. */
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  /* HTMX request indicators. Normally HTMX injects these as an inline <style>, which
+   * `style-src 'self'` blocks; `includeIndicatorStyles: false` in the htmx-config meta
+   * turns that off and these take over. */
+  .htmx-indicator {
+    opacity: 0;
+    transition: opacity 150ms ease-in;
+  }
+
+  .htmx-request .htmx-indicator,
+  .htmx-request.htmx-indicator {
+    opacity: 1;
+  }
+}
+
+/* Users who have asked their operating system for less motion get none of it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

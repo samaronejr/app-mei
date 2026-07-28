@@ -1,13 +1,11 @@
-{% load i18n %}<!DOCTYPE html>
-<html lang="pt-br">
-<head><meta charset="utf-8"><title>{% translate "Solicitação de titular de dados" %}</title></head>
-<body>
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Solicitação de titular de dados" %}{% endblock %}
+{% block body %}
   <h1>{% translate "Solicitação de titular de dados" %}</h1>
   <p>{% translate "Use este canal para exercer os direitos previstos no art. 18 da LGPD." %}</p>
   <form method="post">
     {% csrf_token %}
     {{ form.as_p }}
-    <button type="submit">{% translate "Enviar" %}</button>
+    <button type="submit" class="btn btn-primary">{% translate "Enviar" %}</button>
   </form>
-</body>
-</html>
+{% endblock %}

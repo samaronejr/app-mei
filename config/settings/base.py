@@ -63,6 +63,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Registered this far out so its RESPONSE phase runs near the end of the chain and
+    # therefore covers responses produced by inner middleware too — the 429 from the
+    # rate limiter and the 403 from require_can included.
+    "apps.security.csp.ContentSecurityPolicyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.locale.LocaleMiddleware",
@@ -208,6 +212,10 @@ LOCALE_PATHS = [BASE_DIR / "locale"]
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+# `static/` holds the build output — the compiled Tailwind stylesheet and the vendored
+# HTMX and Alpine bundles — and belongs to no app, so it needs an explicit source
+# entry. `staticfiles/` above is collectstatic's destination and must stay separate.
+STATICFILES_DIRS = [BASE_DIR / "static"]
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 

@@ -1,0 +1,18 @@
+{
+  "vendored": [
+    {
+      "file": "htmx.min.js",
+      "package": "htmx.org",
+      "version": "2.0.10",
+      "source": "dist/htmx.min.js",
+      "sha256": "71ea67185bfa8c98c39d31717c6fce5d852370fcdfd129db4543774d3145c0de"
+    },
+    {
+      "file": "alpine-csp.min.js",
+      "package": "@alpinejs/csp",
+      "version": "3.15.12",
+      "source": "dist/cdn.min.js",
+      "sha256": "566167134bb2347110904e2ced6e816d2e8d837200c158f98b72372b3bb0b9a6"
+    }
+  ]
+}
