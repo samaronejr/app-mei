@@ -292,6 +292,22 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
         "task": "apps.audit.tasks.purge_access_logs",
         "schedule": crontab(hour=3, minute=30),
     },
+    # Every five minutes, and /healthz alarms after fifteen. The scheduler's failure
+    # mode is silence: when beat stops, no task raises and nothing reaches Sentry,
+    # so the only way to detect it is to require a positive signal on a timer.
+    # The literal is 300 seconds rather than an import: importing
+    # apps.obligations.heartbeat here would load a model before the app registry is
+    # ready. A test asserts this equals HEARTBEAT_INTERVAL, so the two cannot drift.
+    "scheduler-heartbeat": {
+        "task": "apps.obligations.tasks.record_scheduler_heartbeat",
+        "schedule": 300.0,
+    },
+    # Before dawn in Brazil, so a newly entered competence month is already on the
+    # queue when the first accountant opens the dashboard.
+    "refresh-das-calendars": {
+        "task": "apps.obligations.tasks.refresh_das_calendars",
+        "schedule": crontab(hour=4, minute=0),
+    },
 }
 
 LOGGING: dict[str, Any] = {

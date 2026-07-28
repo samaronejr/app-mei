@@ -213,6 +213,26 @@ def _seeded_national_holidays(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _armed_scheduler_heartbeat(request: pytest.FixtureRequest) -> None:
+    """Restore the heartbeat row that a transactional test truncates away.
+
+    Without it `/healthz` answers 503 for every test that follows one, because a
+    missing row is deliberately read as "beat has never started" rather than as
+    "not applicable".
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    heartbeat = django_apps.get_model("obligations", "SchedulerHeartbeat")
+    if heartbeat.objects.exists():
+        return
+    migration = importlib.import_module(
+        "apps.obligations.migrations.0007_arm_scheduler_heartbeat",
+    )
+    migration.arm(django_apps, None)
+
+
+@pytest.fixture(autouse=True)
 def _empty_rate_limit_buckets() -> Iterator[None]:
     """Start every test with empty rate-limit buckets.
 

@@ -77,15 +77,25 @@ def test_atomic_requests_is_true_on_the_connection() -> None:
 
 
 @pytest.mark.django_db(transaction=True)
-def test_the_liveness_probe_issues_no_queries(client: Client) -> None:
+def test_the_liveness_probe_opens_no_tenant_transaction(client: Client) -> None:
     # Given the health endpoint, deliberately marked non_atomic_requests so that a
     # database blip can never make an orchestrator restart a healthy web process
     # When it is probed
     with CaptureQueriesContext(connections["default"]) as captured:
         response = client.get("/healthz")
 
-    # Then it answered without the tenant middleware issuing a single statement.
-    # An unconditional transaction.atomic() in the middleware would show up here.
+    # Then the tenant middleware issued nothing at all. set_config is its fingerprint
+    # -- an unconditional transaction.atomic() in the middleware would apply the GUC
+    # and show up right here.
     assert response.status_code == HTTPStatus.OK
-    assert response.json() == {"status": "ok"}
-    assert captured.captured_queries == []
+    statements = [query["sql"] for query in captured.captured_queries]
+    assert not any("set_config" in sql for sql in statements), (
+        f"the tenant middleware opened its transaction on the probe: {statements}"
+    )
+
+    # ...and the ONE statement the probe does make is the scheduler dead-man's switch
+    # and nothing else. T-041 requires /healthz to answer 503 when beat goes quiet,
+    # which cannot be known without asking; naming the permitted query keeps that
+    # from becoming a licence for the next person to add a second one.
+    assert len(statements) == 1, f"the probe made unexpected queries: {statements}"
+    assert "schedulerheartbeat" in statements[0].lower()
