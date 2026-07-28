@@ -22,6 +22,7 @@ from typing import ClassVar
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from apps.clients.managers import ClientCompanyManager
 from apps.core.models import TenantScopedModel
 
 # Both documents are stored normalized: uppercase, punctuation stripped, fixed width.
@@ -82,6 +83,10 @@ class ClientCompany(TenantScopedModel):
     has_employee = models.BooleanField(_("has employee"), default=False)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
+
+    # Shadows the inherited scoped manager by name, which is what keeps
+    # Meta.default_manager_name pointing at something that still filters by tenant.
+    objects: ClassVar[ClientCompanyManager] = ClientCompanyManager()
 
     class Meta(TenantScopedModel.Meta):
         """Model metadata."""
