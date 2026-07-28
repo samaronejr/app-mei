@@ -19,6 +19,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from apps.fiscal.mei import MEICategory
+from apps.obligations.holidays import HolidayScope
 
 
 class Periodicity(models.TextChoices):
@@ -144,3 +145,48 @@ class ObligationType(models.Model):
     def __str__(self) -> str:
         """Identify the obligation by the code an accountant would use."""
         return self.code
+
+
+class Holiday(models.Model):
+    """A day on which a payment cannot be settled, and therefore a deadline moves.
+
+    Platform-level: whether 20 November is a holiday is a fact about Brazil, not
+    about any one accounting firm.
+
+    The rows are materialized by a data migration from the computation in
+    `apps.obligations.holidays`, rather than the resolver recomputing them. That is
+    the difference between a calendar and a formula: a one-off day decreed by the
+    government, or a municipal holiday, is an INSERT here and is invisible to code
+    that recomputes from first principles.
+    """
+
+    date = models.DateField(_("date"))
+    name = models.CharField(_("name"), max_length=120)
+    scope = models.CharField(
+        _("scope"),
+        max_length=16,
+        choices=HolidayScope.choices,
+        default=HolidayScope.NATIONAL,
+    )
+
+    class Meta:
+        """Model metadata."""
+
+        verbose_name = _("holiday")
+        verbose_name_plural = _("holidays")
+        ordering: ClassVar[list[str]] = ["date", "name"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["date", "scope", "name"],
+                name="holiday_date_scope_name_uniq",
+            ),
+        ]
+        indexes: ClassVar[list[models.Index]] = [
+            # scope leads because every lookup filters on it first: a municipal
+            # holiday must not remove a business day from the national calendar.
+            models.Index(fields=["scope", "date"], name="holiday_scope_date_idx"),
+        ]
+
+    def __str__(self) -> str:
+        """Identify the holiday by its date and name."""
+        return f"{self.date.isoformat()} {self.name}"

@@ -193,6 +193,26 @@ def _seeded_obligation_types(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _seeded_national_holidays(request: pytest.FixtureRequest) -> None:
+    """Restore the holiday calendar that a transactional test truncates away.
+
+    An empty holiday table does not raise: it answers "every weekday is a business
+    day". That is a valid-looking answer and a wrong one, so a due-date test would
+    pass while asserting nothing about the calendar it exists to exercise.
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    holiday = django_apps.get_model("obligations", "Holiday")
+    if holiday.objects.exists():
+        return
+    migration = importlib.import_module(
+        "apps.obligations.migrations.0005_seed_national_holidays",
+    )
+    migration.seed_from_global_registry()
+
+
+@pytest.fixture(autouse=True)
 def _empty_rate_limit_buckets() -> Iterator[None]:
     """Start every test with empty rate-limit buckets.
 
