@@ -215,3 +215,74 @@ class AccessLog(UUIDv7PrimaryKeyModel):
     def __str__(self) -> str:
         """Identify the record by the request it describes."""
         return f"{self.method} {self.path} -> {self.status_code}"
+
+
+class DataSubjectRequestType(models.TextChoices):
+    """The rights LGPD art. 18 grants a data subject over their personal data."""
+
+    ACCESS = "access", _("access")
+    CORRECTION = "correction", _("correction")
+    DELETION = "deletion", _("deletion")
+    PORTABILITY = "portability", _("portability")
+    RESTRICTION = "restriction", _("restriction")
+
+
+class DataSubjectRelationship(models.TextChoices):
+    """Whether the requester is the data subject or acts on their behalf."""
+
+    HOLDER = "holder", _("holder")
+    REPRESENTATIVE = "representative", _("representative")
+
+
+class DataSubjectRequest(UUIDv7PrimaryKeyModel):
+    """An LGPD rights request, arriving from someone who may have no account.
+
+    Platform level and deliberately outside row-level security: a request arrives
+    unauthenticated, before any tenant can be resolved, and a fail-closed policy would
+    refuse the insert — turning a statutory intake channel into a silent 500.
+
+    Unlike the audit tables this one is **not** append-only, and that is the point:
+    it holds a CPF, which is exactly the kind of personal data a subject may later ask
+    to have erased. Storing document numbers in an append-only table would create an
+    unerasable store of the data the law grants rights over.
+    """
+
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="data_subject_requests",
+        verbose_name=_("tenant"),
+    )
+    requester_name = models.CharField(_("requester name"), max_length=255)
+    cpf = models.CharField(_("CPF"), max_length=14)
+    # Not named in the plan's field list, but a rights request with no reply channel
+    # cannot be answered, and LGPD art. 19 sets a deadline for answering.
+    email = models.EmailField(_("email address"))
+    relationship = models.CharField(
+        _("relationship"),
+        max_length=20,
+        choices=DataSubjectRelationship.choices,
+    )
+    request_type = models.CharField(
+        _("request type"),
+        max_length=20,
+        choices=DataSubjectRequestType.choices,
+    )
+    detail = models.TextField(_("detail"), blank=True)
+    created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+    resolved_at = models.DateTimeField(_("resolved at"), null=True, blank=True)
+
+    objects = PlatformScopedManager["DataSubjectRequest"]()
+
+    class Meta:
+        """Model metadata."""
+
+        verbose_name = _("data subject request")
+        verbose_name_plural = _("data subject requests")
+        ordering: ClassVar[list[str]] = ["-created_at"]
+
+    def __str__(self) -> str:
+        """Identify the request by what is being asked and by whom."""
+        return f"{self.request_type} — {self.requester_name}"

@@ -79,8 +79,8 @@ def authenticated_limit(request: HttpRequest) -> Limit:
     return Limit("read", settings.RATELIMIT_READ, _tenant_user_key)
 
 
-def is_credential_endpoint(request: HttpRequest) -> bool:
-    """Report whether this request is submitting a credential.
+def is_public_post_endpoint(request: HttpRequest) -> bool:
+    """Report whether this is an unauthenticated POST that must not be floodable.
 
     Matched by URL *name* rather than by path prefix: allauth owns these routes and
     may move them, and a stale prefix would silently stop limiting the login form
@@ -92,7 +92,7 @@ def is_credential_endpoint(request: HttpRequest) -> bool:
         match = resolve(request.path_info, urlconf=getattr(request, "urlconf", None))
     except Resolver404:
         return False
-    return match.url_name in set(settings.RATELIMIT_CREDENTIAL_URL_NAMES)
+    return match.url_name in set(settings.RATELIMIT_PUBLIC_POST_URL_NAMES)
 
 
 def exceeds(request: HttpRequest, limit: Limit) -> bool:

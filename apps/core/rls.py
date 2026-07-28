@@ -38,6 +38,9 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         # Identity events that happen BEFORE a tenant is resolved. A policy here
         # would reject the login-failure record an investigation needs most.
         "audit_platformevent",
+        # A rights request arrives unauthenticated, before any tenant exists. A
+        # fail-closed policy would turn a statutory intake channel into a 500.
+        "audit_datasubjectrequest",
         "fiscal_municipality",
         "fiscal_municipalitycapability",
         "obligations_fiscalparameter",

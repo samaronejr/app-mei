@@ -30,7 +30,10 @@ MFA_ENROLMENT_URL_NAME = "mfa_activate_totp"
 #               reach.
 #   /healthz    is the liveness probe. An orchestrator must not restart a healthy
 #               process because the operator with a session open has not enrolled.
-EXEMPT_PREFIXES: tuple[str, ...] = ("/accounts/", "/healthz")
+#   /lgpd/      is the statutory rights-request channel. It is reachable by people
+#               with no account at all, so gating it on a second factor would put
+#               a login wall in front of a legal obligation.
+EXEMPT_PREFIXES: tuple[str, ...] = ("/accounts/", "/healthz", "/lgpd/")
 
 
 def requires_mfa(user: User | AnonymousUser) -> bool:

@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "allauth.mfa",
     "apps.core",
     "apps.accounts",
+    "apps.lgpd",
     "apps.audit",
     "apps.security",
     "apps.tenants",
@@ -140,6 +141,11 @@ TRUSTED_PROXY_COUNT = env.int("TRUSTED_PROXY_COUNT", default=0)
 
 PLATFORM_URL = env.str("PLATFORM_URL", default="http://localhost:8000")
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="nao-responda@localhost")
+# The named encarregado (DPO) required by LGPD art. 41. docs/lgpd.md carries the
+# name and the escalation path; this is where rights requests are delivered.
+LGPD_ENCARREGADO_EMAIL = env.str(
+    "LGPD_ENCARREGADO_EMAIL", default="encarregado@localhost"
+)
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
 
 LOGIN_URL = "account_login"
@@ -232,11 +238,15 @@ RATELIMIT_LOGIN_EMAIL = env.str("RATELIMIT_LOGIN_EMAIL", default="5/m")
 RATELIMIT_LOGIN_IP = env.str("RATELIMIT_LOGIN_IP", default="20/m")
 RATELIMIT_WRITE = env.str("RATELIMIT_WRITE", default="60/m")
 RATELIMIT_READ = env.str("RATELIMIT_READ", default="120/m")
-RATELIMIT_CREDENTIAL_URL_NAMES = [
+# Unauthenticated POST endpoints that must not be floodable. Two kinds live here:
+# credential forms, and the LGPD intake — which sends mail to the encarregado on
+# every submission and would otherwise be an amplification vector.
+RATELIMIT_PUBLIC_POST_URL_NAMES = [
     "account_login",
     "account_reset_password",
     "account_reset_password_from_key",
     "mfa_authenticate",
+    "dsr-submit",
 ]
 
 

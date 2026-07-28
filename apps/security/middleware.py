@@ -17,7 +17,7 @@ from apps.security.ratelimit import (
     authenticated_limit,
     credential_limits,
     exceeds,
-    is_credential_endpoint,
+    is_public_post_endpoint,
 )
 
 
@@ -39,7 +39,7 @@ class RateLimitMiddleware:
 
     @staticmethod
     def _is_limited(request: HttpRequest) -> bool:
-        if is_credential_endpoint(request):
+        if is_public_post_endpoint(request):
             # Both buckets are counted, not short-circuited: an attacker spreading
             # attempts across many addresses must still exhaust the per-IP bucket.
             overflowed = [exceeds(request, limit) for limit in credential_limits()]
