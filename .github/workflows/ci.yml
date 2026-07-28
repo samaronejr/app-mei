@@ -184,9 +184,15 @@ jobs:
       - name: Isolation suite
         run: uv run pytest tests/isolation/ -v
 
-      # The CNPJ alphanumeric regression pack (T-034, Wave 6) gets its own named
-      # step here once tests/regression/ exists. Referencing it today would fail on
-      # a path that has not been written.
+      # A dedicated step for the same reason as the isolation suite above: the CNPJ
+      # is this product's most fundamental identifier, alphanumeric registrations
+      # went live on 2026-07-31, and a regression that broke either format would
+      # otherwise arrive as one line inside a five-hundred-test summary. The pack
+      # walks both formats through validation, normalization, model save, queryset
+      # filter, admin search, CSV export and re-import, so the step name in a red
+      # build already says what class of thing broke.
+      - name: CNPJ alfanumerico regression pack
+        run: uv run pytest tests/regression/test_cnpj_alfanumerico.py -v
 
       - name: Upload coverage
         # .evidence/ is deliberately NOT uploaded: it is git-ignored and a plain
