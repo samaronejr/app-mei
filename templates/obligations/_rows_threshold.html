@@ -1,0 +1,12 @@
+{% load i18n ptbr %}
+<tr>
+  <td>{{ row.client.legal_name }}</td>
+  <td>{{ row.status.accumulated|brl }}</td>
+  <td>{{ row.status.ceiling|brl }}</td>
+  <td>{{ row.status.percentage_consumed|percentual }}</td>
+  <td>
+    <span class="badge {% if row.status.band == 'warning' %}badge-warn{% else %}badge-over{% endif %}">
+      {{ row.status.band|banda_limite }}
+    </span>
+  </td>
+</tr>

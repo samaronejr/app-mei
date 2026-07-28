@@ -1,0 +1,7 @@
+{% load i18n %}
+<tr>
+  <td>{{ row.client.legal_name }}</td>
+  <td>{{ row.label }}</td>
+  <td>{{ row.blocked_reason|default:"—" }}</td>
+  <td><span class="badge badge-over">{{ row.get_status_display }}</span></td>
+</tr>

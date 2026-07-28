@@ -20,6 +20,10 @@ ATTRIBUTE = re.compile(r"""([a-zA-Z0-9:_.-]+)\s*=\s*(["'])(.*?)\2""", re.DOTALL)
 # is server-authored, a variable can carry whatever a tenant typed into a name field.
 VARIABLE = re.compile(r"\{\{.*?\}\}")
 
+# Any Django tag or variable. Removed from a class attribute before tokenising it,
+# so a tag's own words are never mistaken for class names.
+TEMPLATE_SYNTAX = re.compile(r"\{%.*?%\}|\{\{.*?\}\}", re.DOTALL)
+
 # A scheme-relative or absolute URL. `//evil.example` is the one people forget.
 EXTERNAL_URL = re.compile(r"""^\s*(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?//""")
 
@@ -54,19 +58,18 @@ def loaded_templates() -> Iterator[tuple[Path, str]]:
 def class_tokens() -> set[str]:
     """Return every literal class name written in a template's `class` attribute.
 
-    Tokens containing template syntax are dropped: they are assembled at render time
-    and a static scan cannot know what they become.
+    Template syntax is stripped before tokenising rather than filtered afterwards.
+    Filtering afterwards mistakes a tag's own words — `if`, `==`, a quoted comparison
+    value — for class names, while stripping first keeps the literals on *both* sides
+    of a conditional, which are exactly the ones that need a compiled rule.
     """
     tokens: set[str] = set()
     for _, text in loaded_templates():
         for name, value in attributes_of(text):
             if name != "class":
                 continue
-            tokens.update(
-                token
-                for token in value.split()
-                if token and not set("{}%|").intersection(token)
-            )
+            literal = TEMPLATE_SYNTAX.sub(" ", value)
+            tokens.update(token for token in literal.split() if token)
     return tokens
 
 
@@ -83,6 +86,7 @@ def css_selector_for(token: str) -> str:
 
 __all__ = [
     "EXTERNAL_URL",
+    "TEMPLATE_SYNTAX",
     "VARIABLE",
     "attributes_of",
     "class_tokens",

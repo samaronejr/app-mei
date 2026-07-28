@@ -1,0 +1,20 @@
+{% load i18n %}
+{% comment %}
+  Refreshed in place by HTMX. Every attribute below is a literal — no tenant value is
+  ever interpolated into an hx-* attribute, because the browser decodes an attribute
+  before HTMX reads it and Django's escaping does not survive that.
+{% endcomment %}
+<div id="contagens"
+     class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+     hx-get="{% url 'queue-counts' %}"
+     hx-trigger="every 60s"
+     hx-swap="outerHTML">
+  {% for entry in counts %}
+    <a class="metric" href="{% url entry.url_name %}" data-count-{{ entry.spec.slug }}="{{ entry.count }}">
+      <span class="metric-value">{{ entry.count }}</span>
+      <span class="metric-label">{{ entry.spec.label }}</span>
+    </a>
+  {% empty %}
+    <p class="empty-state">{% translate "Nenhuma fila disponível para esta conta." %}</p>
+  {% endfor %}
+</div>

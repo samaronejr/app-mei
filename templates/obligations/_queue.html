@@ -1,0 +1,48 @@
+{% load i18n %}
+{% comment %}
+  The fragment an HTMX request receives, and the same markup the full page embeds. One
+  template for both, so a partial refresh can never drift from a fresh load.
+
+  Pagination is ordinary anchors inside an hx-boost container: the page number belongs
+  in href, which the browser treats as a URL, and never in an hx-* attribute, which
+  HTMX would treat as one more place a decoded value lands.
+{% endcomment %}
+<div id="fila" class="card overflow-hidden">
+  <table class="data-table">
+    <caption class="visually-hidden">{{ spec.label }}</caption>
+    <thead>
+      <tr>
+        {% for heading in spec.headings %}<th scope="col">{{ heading }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in page.object_list %}
+        {% include spec.row_template %}
+      {% empty %}
+        <tr>
+          <td colspan="6" class="empty-state">{% translate "Nenhum item nesta fila." %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if page.paginator.num_pages > 1 %}
+    <nav aria-label="{% translate 'Paginação' %}"
+         class="flex items-center justify-between border-t border-ink-200 px-5 py-3 text-sm text-ink-600"
+         hx-boost="true"
+         hx-target="#fila"
+         hx-swap="outerHTML">
+      <span>
+        {% blocktranslate with current=page.number total=page.paginator.num_pages %}Página {{ current }} de {{ total }}{% endblocktranslate %}
+      </span>
+      <span class="flex gap-2">
+        {% if page.has_previous %}
+          <a class="btn btn-quiet" href="?{{ filter_query }}pagina={{ page.previous_page_number }}">{% translate "Anterior" %}</a>
+        {% endif %}
+        {% if page.has_next %}
+          <a class="btn btn-quiet" href="?{{ filter_query }}pagina={{ page.next_page_number }}">{% translate "Próxima" %}</a>
+        {% endif %}
+      </span>
+    </nav>
+  {% endif %}
+</div>

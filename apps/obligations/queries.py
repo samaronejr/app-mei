@@ -30,14 +30,24 @@ from django.db.models import Q, QuerySet, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from apps.accounts.models import User
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import Actor
-from apps.clients.models import ClientCompany, OnboardingItem, OnboardingStatus
+from apps.clients.models import (
+    ClientCompany,
+    OnboardingItem,
+    OnboardingStatus,
+)
 from apps.obligations.models import Obligation, ObligationStatus
 from apps.obligations.parameters import ParameterCache
 from apps.obligations.threshold import ThresholdBand, ThresholdStatus, threshold_status
 
 DUE_SOON_HORIZON_DAYS: Final = 7
+
+# A total order, so page two of a paginated queue is the same rows on every request.
+# Without the primary key as a final tiebreaker two obligations sharing a due date and
+# a client name are ordered arbitrarily, and a row can appear on both pages or neither.
+ROW_ORDER: Final = ("resolved_due_date", "client__legal_name", "pk")
 
 # An obligation in either of these states needs no further work, whatever its date.
 SETTLED: Final = (ObligationStatus.PAID, ObligationStatus.WAIVED)
@@ -66,10 +76,30 @@ def _today(today: date | None) -> date:
     return today if today is not None else timezone.localdate()
 
 
-def _unsettled(user: Actor, tenant_id: UUID | None) -> QuerySet[Obligation]:
+def _book(
+    user: Actor,
+    tenant_id: UUID | None,
+    assignee: User | None,
+) -> QuerySet[ClientCompany]:
+    """Return the clients a screen covers, optionally narrowed to one accountant.
+
+    The narrowing is applied to the *already scoped* queryset, never instead of it, so
+    naming somebody else's user id can only ever subtract rows.
+    """
+    clients = visible_clients(user, tenant_id=tenant_id)
+    if assignee is not None:
+        clients = clients.filter(assignments__user=assignee)
+    return clients
+
+
+def _unsettled(
+    user: Actor,
+    tenant_id: UUID | None,
+    assignee: User | None = None,
+) -> QuerySet[Obligation]:
     return (
         Obligation.objects.filter(
-            client__in=visible_clients(user, tenant_id=tenant_id),
+            client__in=_book(user, tenant_id, assignee),
         )
         .exclude(status__in=SETTLED)
         # Both are rendered on every row of the queue. Without this the template
@@ -84,6 +114,7 @@ def due_soon(
     today: date | None = None,
     horizon_days: int = DUE_SOON_HORIZON_DAYS,
     tenant_id: UUID | None = None,
+    assignee: User | None = None,
 ) -> QuerySet[Obligation]:
     """Obligations resolving within the next `horizon_days`, today included.
 
@@ -94,12 +125,12 @@ def due_soon(
     reference = _today(today)
     horizon = reference + timedelta(days=horizon_days)
     return (
-        _unsettled(user, tenant_id)
+        _unsettled(user, tenant_id, assignee)
         .filter(
             resolved_due_date__gte=reference,
             resolved_due_date__lte=horizon,
         )
-        .order_by("resolved_due_date", "client__legal_name")
+        .order_by(*ROW_ORDER)
     )
 
 
@@ -108,12 +139,13 @@ def overdue(
     *,
     today: date | None = None,
     tenant_id: UUID | None = None,
+    assignee: User | None = None,
 ) -> QuerySet[Obligation]:
     """Obligations whose resolved due date has passed and which are still unsettled."""
     return (
-        _unsettled(user, tenant_id)
+        _unsettled(user, tenant_id, assignee)
         .filter(resolved_due_date__lt=_today(today))
-        .order_by("resolved_due_date", "client__legal_name")
+        .order_by(*ROW_ORDER)
     )
 
 
@@ -121,15 +153,16 @@ def onboarding_blocked(
     user: Actor,
     *,
     tenant_id: UUID | None = None,
+    assignee: User | None = None,
 ) -> QuerySet[OnboardingItem]:
     """Checklist items a client's onboarding is stuck on."""
     return (
         OnboardingItem.objects.filter(
-            client__in=visible_clients(user, tenant_id=tenant_id),
+            client__in=_book(user, tenant_id, assignee),
             status=OnboardingStatus.BLOCKED,
         )
         .select_related("client")
-        .order_by("client__legal_name", "position", "key")
+        .order_by("client__legal_name", "position", "key", "pk")
     )
 
 
@@ -139,6 +172,7 @@ def threshold_warning(
     year: int | None = None,
     today: date | None = None,
     tenant_id: UUID | None = None,
+    assignee: User | None = None,
 ) -> tuple[ThresholdRow, ...]:
     """Clients at or past 80% of the ceiling that applies to them.
 
@@ -153,14 +187,14 @@ def threshold_warning(
         monthly_revenues__competence_month__year=reference_year,
     )
     clients = (
-        visible_clients(user, tenant_id=tenant_id)
+        _book(user, tenant_id, assignee)
         .annotate(
             billed=Coalesce(
                 Sum("monthly_revenues__gross_amount", filter=within_year),
                 Decimal("0.00"),
             ),
         )
-        .order_by("legal_name")
+        .order_by("legal_name", "pk")
     )
 
     parameters = ParameterCache()
@@ -182,6 +216,7 @@ def threshold_warning(
 __all__ = [
     "ATTENTION_BANDS",
     "DUE_SOON_HORIZON_DAYS",
+    "ROW_ORDER",
     "SETTLED",
     "ThresholdRow",
     "due_soon",

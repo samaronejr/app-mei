@@ -1,0 +1,8 @@
+{% load i18n ptbr %}
+<tr>
+  <td>{{ row.client.legal_name }}</td>
+  <td>{{ row.obligation_type.code }}</td>
+  <td>{{ row.competence_month|competencia }}</td>
+  <td><time datetime="{{ row.resolved_due_date|date:'Y-m-d' }}">{{ row.resolved_due_date|data }}</time></td>
+  <td>{{ row.get_status_display }}</td>
+</tr>

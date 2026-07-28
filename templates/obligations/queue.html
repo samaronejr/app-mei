@@ -1,0 +1,37 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{{ spec.label }}{% endblock %}
+{% block heading %}{{ spec.label }}{% endblock %}
+{% block content %}
+  {% include "obligations/_counts.html" %}
+
+  <form class="my-6 flex flex-wrap items-end gap-4"
+        method="get"
+        hx-get="{% url queue_url_name %}"
+        hx-target="#fila"
+        hx-swap="outerHTML"
+        hx-trigger="change">
+    <div>
+      <label class="mb-1 block text-xs font-medium text-ink-600" for="responsavel">{% translate "Responsável" %}</label>
+      <select id="responsavel" name="responsavel" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
+        <option value="">{% translate "Todos" %}</option>
+        {% for member in members %}
+          <option value="{{ member.pk }}" {% if selected_assignee == member.pk|stringformat:'s' %}selected{% endif %}>{{ member.email }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if spec.accepts_status %}
+      <div>
+        <label class="mb-1 block text-xs font-medium text-ink-600" for="situacao">{% translate "Situação" %}</label>
+        <select id="situacao" name="situacao" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
+          <option value="">{% translate "Todas" %}</option>
+          {% for value, label in statuses %}
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    {% endif %}
+    <noscript><button type="submit" class="btn btn-primary">{% translate "Filtrar" %}</button></noscript>
+  </form>
+
+  {% include "obligations/_queue.html" %}
+{% endblock %}
