@@ -91,6 +91,31 @@ def test_visible_clients_is_always_a_queryset_never_none(alpha: Firm) -> None:
             assert hasattr(result, "filter")
 
 
+def test_the_orm_layer_scopes_on_its_own_without_help_from_the_policy(
+    alpha: Firm,
+) -> None:
+    """Layer 1 must carry a tenant predicate of its own, not lean on layer 2.
+
+    This test exists because of a real escape. `visible_clients` was changed to the
+    unscoped base manager and the entire suite stayed green — row-level security
+    contained it, exactly as designed, and every behavioural assertion in the project
+    therefore passed while one of the two isolation layers was gone. Defence in depth
+    is only depth if each layer is verified separately, so this reads the SQL rather
+    than the rows.
+    """
+    with tenant_context(alpha.tenant.id):
+        for actor in (alpha.owner, alpha.accountant):
+            # The WHERE clause specifically. `tenant_id` is in the SELECT list of
+            # every one of these querysets whether or not it is filtered on, so
+            # searching the whole statement passes for the unscoped manager too —
+            # which is how the first version of this test managed to be vacuous.
+            _, _, predicate = str(visible_clients(actor).query).partition(" WHERE ")
+            assert "tenant_id" in predicate, (
+                "the portfolio queryset carries no tenant predicate; it is relying "
+                "on row-level security to do layer 1's job"
+            )
+
+
 def test_another_firms_clients_are_never_visible(alpha: Firm) -> None:
     beta = make_firm("beta-scope", client_count=2)
     with tenant_context(alpha.tenant.id):

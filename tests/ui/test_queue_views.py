@@ -219,7 +219,7 @@ def test_pagination_is_stable_and_does_not_repeat_or_drop_rows(alpha: Firm) -> N
         add_client(
             firm,
             legal_name=f"Paged Cliente {index:03d} MEI",
-            base=client_base(index),
+            base=client_base(index, firm.tenant.slug),
         )
     _stock(firm, PAGE_SIZE + 7)
 

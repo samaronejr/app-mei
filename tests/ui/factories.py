@@ -10,6 +10,7 @@ happened and treats the next sensitive action as stale.
 
 from dataclasses import dataclass, field
 from datetime import date
+from hashlib import sha256
 
 from allauth.account.models import EmailAddress
 from django.test import Client
@@ -135,19 +136,27 @@ def make_firm(slug: str, *, client_count: int = 0) -> Firm:
         add_client(
             firm,
             legal_name=f"{slug.title()} Cliente {index + 1} MEI",
-            base=client_base(index),
+            base=client_base(index, slug),
         )
     return firm
 
 
-def client_base(index: int) -> str:
+def client_base(index: int, seed: str = "") -> str:
     """Return a distinct, non-degenerate twelve-character CNPJ base.
 
+    The `seed` is the owning firm's slug, and it is load-bearing rather than
+    decorative: without it every firm's Nth client carries the *same* CNPJ, and a
+    cross-tenant assertion that searches a rendered page for another firm's document
+    finds its own and reports a leak that is not there — or, worse, is written around
+    until it reports nothing at all.
+
     A base of one repeated character is refused by `validate_cnpj` even though it
-    satisfies its own checksum, so the leading prefix is fixed and only the tail
-    varies.
+    satisfies its own checksum, so the leading digit is fixed and never varies with
+    the digest.
     """
-    return f"1122233300{index:02d}"
+    digest = sha256(seed.encode("utf-8")).hexdigest()
+    discriminator = "".join(char for char in digest if char.isdigit())[:9].ljust(9, "7")
+    return f"1{discriminator}{index:02d}"
 
 
 __all__ = [

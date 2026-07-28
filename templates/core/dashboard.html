@@ -1,0 +1,93 @@
+{% extends "base.html" %}{% load i18n ptbr %}
+{% block title %}{% translate "Painel" %}{% endblock %}
+{% block heading %}{% translate "Painel" %}{% endblock %}
+{% block content %}
+
+  <section aria-labelledby="filas" class="mb-8">
+    <h2 id="filas" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Filas de trabalho" %}</h2>
+    {% include "obligations/_counts.html" %}
+  </section>
+
+  <section aria-labelledby="carteira" class="mb-8">
+    <h2 id="carteira" class="mb-3 text-sm font-semibold text-ink-700">
+      {% blocktranslate with total=portfolio_total %}Carteira ({{ total }} clientes){% endblocktranslate %}
+    </h2>
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {% for entry in portfolio %}
+        <div class="metric" data-portfolio-{{ entry.status }}="{{ entry.count }}">
+          <span class="metric-value">{{ entry.count }}</span>
+          <span class="metric-label">{{ entry.label }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section aria-labelledby="calendario" class="mb-8">
+    <h2 id="calendario" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Calendário do DAS — 12 meses" %}</h2>
+
+    <form method="get" class="mb-4 flex flex-wrap items-end gap-3"
+          hx-get="{% url 'dashboard' %}"
+          hx-target="#calendario-strip"
+          hx-select="#calendario-strip"
+          hx-swap="outerHTML"
+          hx-trigger="change">
+      <div>
+        <label class="mb-1 block text-xs font-medium text-ink-600" for="cliente">{% translate "Cliente" %}</label>
+        <select id="cliente" name="cliente" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
+          {% for company in clients %}
+            <option value="{{ company.pk }}" {% if calendar_client.pk == company.pk %}selected{% endif %}>{{ company.legal_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </form>
+
+    <div id="calendario-strip" class="card p-5">
+      {% if calendar_client %}
+        <p class="mb-4 text-sm text-ink-600">
+          {{ calendar_client.legal_name }} — {{ calendar_client.cnpj|cnpj_mask }}
+        </p>
+      {% endif %}
+      {% if calendar %}
+        <ol class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          {% for cell in calendar %}
+            <li class="calendar-cell {% if cell.was_rolled %}border-warn-line bg-warn-soft{% else %}border-ink-200{% endif %}">
+              <span class="calendar-month {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-500{% endif %}">{{ cell.competence|competencia }}</span>
+              <time class="calendar-due {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-900{% endif %}"
+                    datetime="{{ cell.resolved|date:'Y-m-d' }}"
+                    data-competence="{{ cell.competence|date:'Y-m' }}">{{ cell.resolved|data }}</time>
+              {% if cell.was_rolled %}
+                <span class="calendar-rolled text-warn-ink">{% blocktranslate with nominal=cell.nominal|data %}adiado de {{ nominal }}{% endblocktranslate %}</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="empty-state">{% translate "Nenhum vencimento gerado para este cliente ainda." %}</p>
+      {% endif %}
+    </div>
+  </section>
+
+  <section aria-labelledby="limite">
+    <h2 id="limite" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Clientes perto do limite" %}</h2>
+    <div class="card overflow-hidden">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th scope="col">{% translate "Cliente" %}</th>
+            <th scope="col">{% translate "Faturado" %}</th>
+            <th scope="col">{% translate "Teto" %}</th>
+            <th scope="col">{% translate "Consumido" %}</th>
+            <th scope="col">{% translate "Faixa" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in threshold_rows %}
+            {% include "obligations/_rows_threshold.html" %}
+          {% empty %}
+            <tr><td colspan="5" class="empty-state">{% translate "Nenhum cliente perto do limite." %}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

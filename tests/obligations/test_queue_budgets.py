@@ -58,7 +58,7 @@ def _populate(firm: Firm, count: int) -> None:
         company = add_client(
             firm,
             legal_name=f"{firm.tenant.slug} Cliente {index} MEI",
-            base=client_base(index),
+            base=client_base(index, firm.tenant.slug),
         )
         with tenant_context(firm.tenant.id):
             Obligation.objects.create(
