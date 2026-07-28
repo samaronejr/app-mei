@@ -15,7 +15,6 @@ class ExampleTenantModel(TenantScopedModel):
     """
 
     name = models.CharField(max_length=100)
-    ci_gate_canary = models.CharField(max_length=8, blank=True, default="")
 
     # Inherits the parent Meta rather than declaring a bare one: a bare `class Meta:`
     # REPLACES the parent's and silently drops both manager names.

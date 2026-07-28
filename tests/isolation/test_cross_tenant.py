@@ -92,10 +92,11 @@ def test_case_1_tenant_a_cannot_read_tenant_b_rows(tenants: Tenants) -> None:
             tenant_id=tenants.beta.id,
         ).count()
 
-    # Then none of them come back, and Alpha sees only its own
-    assert beta_rows == 0
-    assert via_unscoped_manager == 0
-    assert total_visible == ROWS_FOR_ALPHA
+    # CI GATE PROOF (throwaway branch): asserts cross-tenant LEAKAGE instead of
+    # denial, i.e. exactly the shape an isolation regression takes.
+    assert beta_rows == ROWS_FOR_BETA
+    assert via_unscoped_manager == ROWS_FOR_BETA
+    assert total_visible == ROWS_FOR_ALPHA + ROWS_FOR_BETA
 
 
 def test_case_2_no_context_returns_zero_rows_when_the_guc_is_absent(
