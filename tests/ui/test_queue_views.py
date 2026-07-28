@@ -12,6 +12,7 @@ from decimal import Decimal
 from http import HTTPStatus
 
 import pytest
+from django.db.models import QuerySet
 from django.urls import reverse
 from pytest_django.fixtures import SettingsWrapper
 
@@ -24,6 +25,7 @@ from apps.obligations.models import (
     ObligationStatus,
     ObligationType,
 )
+from apps.obligations.views import ALL_QUEUES
 from apps.tenants.models import Membership, TenantRole
 from tests.ui.factories import Firm, add_member, assign, make_firm
 
@@ -317,6 +319,51 @@ def test_filtering_by_status_narrows_the_queue(alpha: Firm) -> None:
 
     assert alpha.clients[0].legal_name in body
     assert alpha.clients[1].legal_name not in body
+
+
+def test_every_status_accepting_queue_returns_rows_that_can_be_filtered(
+    alpha: Firm,
+) -> None:
+    """A queue that accepts `situacao` must return something `.filter()` works on.
+
+    This pairing used to be an invariant spanning two fields with nothing checking it:
+    `accepts_status` was a constructor flag, and the threshold queue returns a tuple.
+    Setting the flag on it produced `AttributeError: 'tuple' object has no attribute
+    'filter'` — an HTTP 500 — the first time anybody clicked a status. The type system
+    now refuses the combination; this asserts the runtime half, so reintroducing a
+    settable flag and mispairing it turns this red rather than turning a page into a
+    500.
+    """
+    # Given the queue registry, in a tenant context so the fetches see real rows
+    with tenant_context(alpha.tenant.id):
+        fetched = [
+            (spec, spec.fetch(alpha.owner, tenant_id=alpha.tenant.id))
+            for spec in ALL_QUEUES
+        ]
+
+        # Both halves must be non-empty or the guard proves nothing: with no
+        # status-accepting queue it checks nothing, and with no materialised queue
+        # there is no shape it could ever have caught.
+        assert [spec for spec, _ in fetched if spec.accepts_status], (
+            "no queue accepts a status filter — this guard would be vacuous"
+        )
+        assert [rows for _, rows in fetched if not isinstance(rows, QuerySet)], (
+            "every queue returns a queryset, so this guard cannot see the mispairing "
+            "it exists for"
+        )
+
+        # When each status-accepting queue is asked to narrow itself
+        for spec, rows in fetched:
+            if not spec.accepts_status:
+                continue
+            assert isinstance(rows, QuerySet), (
+                f"{spec.slug} accepts a status filter but its fetch returned "
+                f"{type(rows).__name__}, which has no .filter() — the view would 500"
+            )
+            narrowed = rows.filter(status=ObligationStatus.SCHEDULED)
+
+            # Then the filter runs and actually bites
+            assert 0 < narrowed.count() <= rows.count()
 
 
 def test_an_unknown_status_is_ignored_rather_than_emptying_the_queue(

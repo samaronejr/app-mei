@@ -27,6 +27,7 @@ from uuid import UUID
 
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import EmptyPage, Page, Paginator
+from django.db.models import QuerySet
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.utils.translation import gettext_lazy as _
@@ -36,7 +37,7 @@ from apps.accounts.models import User
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.models import GrantLevel
 from apps.authz.services import Actor, granted_levels, require_can
-from apps.obligations.models import ObligationStatus
+from apps.obligations.models import Obligation, ObligationStatus
 from apps.obligations.queries import (
     due_soon,
     onboarding_blocked,
@@ -77,16 +78,48 @@ class Paginable(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class QueueSpec:
-    """One queue: its identity, the capability it needs, and how to fill it."""
+class QueueSpec[RowsT: Paginable]:
+    """One queue: its identity, the capability it needs, and how to fill it.
+
+    Generic over what `fetch` returns, because that return type is exactly what
+    decides whether the status filter is available: narrowing by status means calling
+    `.filter()`, which `Paginable` does not have and the threshold queue's tuple
+    genuinely cannot answer. A queue that *is* narrowable declares itself an
+    `ObligationQueueSpec`, whose `fetch` returns a queryset by construction.
+
+    `accepts_status` is therefore a property of the class rather than a flag on the
+    constructor. The pairing it used to express — a tuple-returning `fetch` alongside
+    `accepts_status=True` — was an invariant spanning two fields with nothing checking
+    it, and getting it wrong meant `AttributeError: 'tuple' object has no attribute
+    'filter'` at request time. It is now not expressible.
+    """
 
     slug: str
     label: object
     capability: str
-    fetch: Callable[..., Paginable]
+    fetch: Callable[..., RowsT]
     row_template: str
     headings: tuple[object, ...]
-    accepts_status: bool = False
+
+    @property
+    def accepts_status(self) -> bool:
+        """Report whether this queue can be narrowed by obligation status."""
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class ObligationQueueSpec(QueueSpec[QuerySet[Obligation]]):
+    """A queue of obligation rows, which the database can narrow by `status`.
+
+    Adds no fields: the whole content of the subclass is the promise its type
+    parameter makes about `fetch`, which is what lets the view call `.filter()`
+    without an escape hatch.
+    """
+
+    @property
+    def accepts_status(self) -> bool:
+        """Report that these rows carry a status column the database can filter."""
+        return True
 
 
 OBLIGATION_HEADINGS: Final[tuple[object, ...]] = (
@@ -97,23 +130,21 @@ OBLIGATION_HEADINGS: Final[tuple[object, ...]] = (
     _("Situação"),
 )
 
-DUE_SOON = QueueSpec(
+DUE_SOON = ObligationQueueSpec(
     "due-soon",
     _("Vencendo em 7 dias"),
     "das.generate",
     due_soon,
     "obligations/_rows_obligations.html",
     OBLIGATION_HEADINGS,
-    accepts_status=True,
 )
-OVERDUE = QueueSpec(
+OVERDUE = ObligationQueueSpec(
     "overdue",
     _("Atrasadas"),
     "das.generate",
     overdue,
     "obligations/_rows_obligations.html",
     OBLIGATION_HEADINGS,
-    accepts_status=True,
 )
 ONBOARDING = QueueSpec(
     "onboarding-blocked",
@@ -132,7 +163,12 @@ THRESHOLD = QueueSpec(
     (_("Cliente"), _("Faturado"), _("Teto"), _("Consumido"), _("Faixa")),
 )
 
-ALL_QUEUES: Final[tuple[QueueSpec, ...]] = (DUE_SOON, OVERDUE, ONBOARDING, THRESHOLD)
+ALL_QUEUES: Final[tuple[QueueSpec[Paginable], ...]] = (
+    DUE_SOON,
+    OVERDUE,
+    ONBOARDING,
+    THRESHOLD,
+)
 
 URL_NAMES: Final[dict[str, str]] = {
     DUE_SOON.slug: "queue-due-soon",
@@ -211,18 +247,27 @@ def _filter_query(assignee: User | None, status: str | None) -> str:
     return f"{encoded}&" if encoded else ""
 
 
-def _render_queue(request: AuthenticatedRequest, spec: QueueSpec) -> HttpResponse:
+def _render_queue(
+    request: AuthenticatedRequest,
+    spec: QueueSpec[Paginable],
+) -> HttpResponse:
     members = _members(request)
     assignee = _requested_assignee(request, members)
-    status = _requested_status(request) if spec.accepts_status else None
+    tenant_id = _tenant_id(request)
 
-    rows: Paginable = spec.fetch(
-        request.user,
-        tenant_id=_tenant_id(request),
-        assignee=assignee,
-    )
-    if status is not None:
-        rows = rows.filter(status=status)  # type: ignore[attr-defined]
+    # The isinstance is what makes `.filter()` legal rather than hopeful: on the base
+    # spec `fetch` returns `Paginable`, which has no `.filter`, and the threshold queue
+    # really does return a tuple. Only `ObligationQueueSpec` promises a queryset, and
+    # only it reads the status parameter at all.
+    rows: Paginable
+    status: str | None
+    if isinstance(spec, ObligationQueueSpec):
+        status = _requested_status(request)
+        obligations = spec.fetch(request.user, tenant_id=tenant_id, assignee=assignee)
+        rows = obligations if status is None else obligations.filter(status=status)
+    else:
+        status = None
+        rows = spec.fetch(request.user, tenant_id=tenant_id, assignee=assignee)
 
     context = {
         "spec": spec,
@@ -328,6 +373,7 @@ def visible_queue_links(user: Actor, tenant_id: UUID) -> list[dict[str, object]]
 __all__ = [
     "ALL_QUEUES",
     "PAGE_SIZE",
+    "ObligationQueueSpec",
     "QueueSpec",
     "queue_counts",
     "queue_counts_view",
