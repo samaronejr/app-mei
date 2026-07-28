@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 
 from django.contrib import admin
 from django.db.models import QuerySet
-from django.http import HttpRequest
+from django.http import HttpRequest, HttpResponse
 
 from apps.audit.models import AccessLog, DataSubjectRequest, Event, PlatformEvent
 from apps.core.tenancy import current_tenant_id
@@ -41,24 +41,29 @@ class ReadOnlyAdmin(admin.ModelAdmin[Any]):
         return False
 
 
-class TenantScopedAdminMixin:
+class TenantScopedAdminMixin(admin.ModelAdmin[Any]):
     """Render an explicit empty state instead of a silently empty changelist.
 
     With no firm selected, both isolation layers correctly return nothing — and "shows
     only the selected firm's rows" is trivially true of zero rows. An operator would
     read that as "this firm has no data". Saying so explicitly is the difference
     between an answer and an accident.
+
+    Declared on `ModelAdmin` rather than on bare `object`, because the else branch is
+    a `super().changelist_view` call and a bare-object base leaves it unresolved. Every
+    admin this is mixed into already derives from `ModelAdmin`, so the MRO is what it
+    always was — the base merely says so.
     """
 
     def changelist_view(
         self,
         request: HttpRequest,
         extra_context: dict[str, Any] | None = None,
-    ) -> Any:  # noqa: ANN401
+    ) -> HttpResponse:
         """Divert to the selector when no firm is in context."""
         if current_tenant_id.get() is None:
             return select_tenant_view(request)
-        return super().changelist_view(request, extra_context)  # type: ignore[misc]
+        return super().changelist_view(request, extra_context)
 
 
 @admin.register(Event)

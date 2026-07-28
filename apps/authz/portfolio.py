@@ -76,11 +76,16 @@ def visible_clients(
     anything written here.
     """
     scope = portfolio_scope(user, tenant_id=tenant_id)
-    if scope is PortfolioScope.NONE:
-        return ClientCompany.objects.none()
-    if scope is PortfolioScope.ASSIGNED:
-        return ClientCompany.objects.assigned_to(user)  # type: ignore[arg-type]
-    return ClientCompany.objects.all()
+    if scope is PortfolioScope.ALL:
+        return ClientCompany.objects.all()
+    # An assignment is a row keyed on a user id, so an actor that is not a `User` holds
+    # none by construction — which is why `assigned_to` keeps its `User` parameter
+    # instead of widening to accept something it could never match. `portfolio_scope`
+    # already answers NONE for such an actor, so naming the case here resolves it to
+    # the same empty queryset rather than adding a behaviour.
+    if scope is PortfolioScope.ASSIGNED and isinstance(user, User):
+        return ClientCompany.objects.assigned_to(user)
+    return ClientCompany.objects.none()
 
 
 __all__ = [

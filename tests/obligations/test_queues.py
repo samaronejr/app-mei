@@ -10,6 +10,7 @@ book of business and nothing else, and the empty-state cases exist because "no r
 is the answer this product must never give by accident.
 """
 
+from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -40,6 +41,11 @@ from tests.isolation.rolecheck import assert_isolated_role
 from tests.ui.factories import Firm, assign, make_firm
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+# The four queues share no return type — three querysets over different models and
+# one tuple — so the shape a parametrised test can rely on is exactly this: called
+# with an actor, iterable afterwards.
+Queue = Callable[..., Iterable[object]]
 
 TODAY = date(2026, 6, 15)
 YEAR = 2026
@@ -91,8 +97,8 @@ def beta() -> Firm:
     return firm
 
 
-def _names(rows: object) -> set[str]:
-    return {row.client.legal_name for row in rows}  # type: ignore[attr-defined]
+def _names(rows: Iterable[Obligation]) -> set[str]:
+    return {row.client.legal_name for row in rows}
 
 
 # --------------------------------------------------------------------------- content
@@ -241,10 +247,10 @@ def test_threshold_warning_reports_the_band_it_matched_on(alpha: Firm) -> None:
     [due_soon, overdue, onboarding_blocked, threshold_warning],
 )
 def test_an_empty_queue_is_an_empty_result_never_none(
-    alpha: Firm, queue: object
+    alpha: Firm, queue: Queue
 ) -> None:
     with tenant_context(alpha.tenant.id):
-        result = queue(alpha.owner)  # type: ignore[operator]
+        result = queue(alpha.owner)
     assert result is not None
     assert list(result) == []
 
@@ -302,7 +308,7 @@ def test_an_unassigned_staff_accountant_gets_nothing_rather_than_everything(
 def test_no_queue_ever_returns_another_firms_rows(
     alpha: Firm,
     beta: Firm,
-    queue: object,
+    queue: Queue,
 ) -> None:
     assert_isolated_role()
     _obligation(beta, beta.clients[0], due=TODAY + timedelta(days=1))
@@ -321,7 +327,7 @@ def test_no_queue_ever_returns_another_firms_rows(
         item.save(update_fields=["status", "blocked_reason"])
 
     with tenant_context(alpha.tenant.id):
-        rows = list(queue(alpha.owner))  # type: ignore[operator]
+        rows = list(queue(alpha.owner))
 
     assert rows == []
 

@@ -8,6 +8,7 @@ published matrix, every capability against every role, and refuses any divergenc
 
 import pytest
 from django.contrib.auth.models import AnonymousUser
+from pytest_django.fixtures import DjangoAssertNumQueries
 
 from apps.accounts.models import User
 from apps.authz.matrix import MATRIX
@@ -48,10 +49,10 @@ def test_bulk_resolution_agrees_with_resolve_level(tenant: Tenant, role: str) ->
 
 def test_it_resolves_the_whole_matrix_in_a_fixed_number_of_queries(
     tenant: Tenant,
-    django_assert_num_queries: object,
+    django_assert_num_queries: DjangoAssertNumQueries,
 ) -> None:
     user = _member(tenant, TenantRole.OWNER)
-    with tenant_context(tenant.id), django_assert_num_queries(BULK_QUERY_BUDGET):  # type: ignore[operator]
+    with tenant_context(tenant.id), django_assert_num_queries(BULK_QUERY_BUDGET):
         granted_levels(user, ALL_SLUGS)
 
 

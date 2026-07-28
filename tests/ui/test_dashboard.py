@@ -18,7 +18,7 @@ from http import HTTPStatus
 import pytest
 from django.db.models import F
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
 
 from apps.clients.models import (
     ClientCompany,
@@ -298,10 +298,10 @@ def test_the_dashboard_is_not_streamed(alpha: Firm) -> None:
 
 def test_the_dashboard_stays_inside_a_query_budget(
     alpha: Firm,
-    django_assert_max_num_queries: object,
+    django_assert_max_num_queries: DjangoAssertNumQueries,
 ) -> None:
     session = alpha.as_owner()
-    with django_assert_max_num_queries(QUERY_BUDGET):  # type: ignore[operator]
+    with django_assert_max_num_queries(QUERY_BUDGET):
         session.get(reverse("dashboard"))
 
 

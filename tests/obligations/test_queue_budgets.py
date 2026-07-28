@@ -15,6 +15,7 @@ import pytest
 from django.db import connection, reset_queries
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from pytest_django.fixtures import DjangoAssertNumQueries
 
 from apps.accounts.models import User
 from apps.clients.models import OnboardingItem, OnboardingStatus
@@ -147,9 +148,9 @@ def test_each_queue_stays_inside_a_fixed_budget(
     large: Firm,
     name: str,
     queue: Queue,
-    django_assert_max_num_queries: object,
+    django_assert_max_num_queries: DjangoAssertNumQueries,
 ) -> None:
     """A ceiling as well as a comparison: identical-but-huge passes the test above."""
     budget = 20
-    with django_assert_max_num_queries(budget):  # type: ignore[operator]
+    with django_assert_max_num_queries(budget):
         _cost(queue, large.owner, large)

@@ -19,7 +19,7 @@ from typing import Final
 from uuid import UUID
 
 from django.contrib.auth.decorators import login_required
-from django.db.models import Count
+from django.db.models import Count, QuerySet
 from django.http import Http404, HttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
@@ -71,7 +71,7 @@ def _tenant(request: AuthenticatedRequest) -> Tenant:
     return resolved
 
 
-def _portfolio_counts(clients: object) -> list[dict[str, object]]:
+def _portfolio_counts(clients: QuerySet[ClientCompany]) -> list[dict[str, object]]:
     """Count the portfolio by client status, keeping statuses with no clients at zero.
 
     Rendering only the statuses that happen to be present would make a firm with no
@@ -80,7 +80,7 @@ def _portfolio_counts(clients: object) -> list[dict[str, object]]:
     """
     tallied = {
         row["status"]: row["total"]
-        for row in clients.values("status").annotate(total=Count("pk"))  # type: ignore[attr-defined]
+        for row in clients.values("status").annotate(total=Count("pk"))
     }
     return [
         {"status": value, "label": label, "count": tallied.get(value, 0)}
@@ -90,7 +90,7 @@ def _portfolio_counts(clients: object) -> list[dict[str, object]]:
 
 def _selected_client(
     request: AuthenticatedRequest,
-    clients: object,
+    clients: QuerySet[ClientCompany],
 ) -> ClientCompany | None:
     """Resolve the calendar's client from the query string, within the portfolio.
 
@@ -99,7 +99,7 @@ def _selected_client(
     blank calendar into a confirmation that the id was real.
     """
     requested = request.GET.get(CLIENT_PARAM, "").strip()
-    ordered = clients.order_by("legal_name", "pk")  # type: ignore[attr-defined]
+    ordered = clients.order_by("legal_name", "pk")
     if requested:
         try:
             chosen: ClientCompany | None = ordered.filter(pk=UUID(requested)).first()

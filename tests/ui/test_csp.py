@@ -9,6 +9,7 @@ at a CDN, one `hx-on:` handler, or one tenant-controlled value interpolated into
 from http import HTTPStatus
 
 import pytest
+from django.http import HttpRequest, HttpResponseBase
 from django.test import Client
 from django.urls import reverse
 
@@ -91,8 +92,13 @@ def test_header_survives_a_refusal_from_inner_middleware() -> None:
     assert refused.headers[HEADER] == build_policy()
 
 
+def _never_called(request: HttpRequest) -> HttpResponseBase:
+    """Stand in for the rest of the chain: the policy is built before any call."""
+    raise AssertionError(request.path)
+
+
 def test_middleware_renders_the_configured_policy_once() -> None:
-    middleware = ContentSecurityPolicyMiddleware(lambda request: None)  # type: ignore[arg-type, return-value]
+    middleware = ContentSecurityPolicyMiddleware(_never_called)
     assert middleware.policy == build_policy(DEFAULT_POLICY)
 
 

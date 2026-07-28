@@ -11,8 +11,9 @@ from http import HTTPStatus
 import pytest
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
 
+from apps.authz.services import Actor
 from apps.core.navigation import NAV, visible_nav_items
 from apps.core.tenancy import tenant_context
 from tests.ui.factories import Firm, make_firm
@@ -36,9 +37,9 @@ def firm() -> Firm:
     return make_firm("alpha-nav")
 
 
-def _labels(firm: Firm, user: object) -> list[str]:
+def _labels(firm: Firm, user: Actor) -> list[str]:
     with tenant_context(firm.tenant.id):
-        return [str(item.label) for item in visible_nav_items(user)]  # type: ignore[arg-type]
+        return [str(item.label) for item in visible_nav_items(user)]
 
 
 def test_every_shipped_destination_resolves() -> None:
@@ -76,10 +77,10 @@ def test_an_anonymous_visitor_gets_no_nav(firm: Firm) -> None:
 
 def test_resolving_the_whole_bar_costs_a_fixed_number_of_queries(
     firm: Firm,
-    django_assert_num_queries: object,
+    django_assert_num_queries: DjangoAssertNumQueries,
 ) -> None:
     """One query per item would make the bar the most expensive thing on the page."""
-    with tenant_context(firm.tenant.id), django_assert_num_queries(NAV_QUERY_BUDGET):  # type: ignore[operator]
+    with tenant_context(firm.tenant.id), django_assert_num_queries(NAV_QUERY_BUDGET):
         visible_nav_items(firm.owner)
 
 
