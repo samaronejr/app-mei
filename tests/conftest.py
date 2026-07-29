@@ -22,10 +22,23 @@ from django.db import connection
 from pytest_django import DjangoDbBlocker
 
 RUNTIME_ROLE = "app_runtime"
+PORTAL_ROLE = "app_portal"
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so
 # that a new append-only table which forgets its revoke is a visible omission.
 APPEND_ONLY_TABLES = ("audit_event", "audit_platformevent")
+
+# app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
+# rather than blanket so every other table — accounts_user, mfa_authenticator,
+# django_session — stays unreadable by the portal role.
+PORTAL_TABLES = (
+    "clients_clientcompany",
+    "clients_clientassignment",
+    "clients_clienttag",
+    "clients_onboardingitem",
+    "obligations_obligation",
+    "obligations_monthlyrevenue",
+)
 
 
 @pytest.fixture(scope="session")
@@ -62,6 +75,23 @@ def django_db_setup(
                     IF to_regclass('public.{table}') IS NOT NULL THEN
                         REVOKE ALL ON {table} FROM {RUNTIME_ROLE};
                         GRANT SELECT, INSERT ON {table} TO {RUNTIME_ROLE};
+                    END IF;
+                END
+                $$
+                """,
+            )
+        # roles.sql runs from the init hook against an empty cluster, so its own guarded
+        # grant reaches none of these tables. Without the grant below every portal
+        # assertion dies with `permission denied` before it reaches a policy — and the
+        # write-denial test would pass for entirely the wrong reason.
+        cursor.execute(f"GRANT USAGE ON SCHEMA public TO {PORTAL_ROLE}")
+        for table in PORTAL_TABLES:
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.{table}') IS NOT NULL THEN
+                        GRANT SELECT ON {table} TO {PORTAL_ROLE};
                     END IF;
                 END
                 $$
