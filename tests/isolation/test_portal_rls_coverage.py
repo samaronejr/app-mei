@@ -13,7 +13,10 @@ countered by construction rather than by care:
   `current_setting('app.client_id')`, and `id` is a substring of
   `tenant_id`. Both `qual` and `with_check` therefore anchor the column as the
   LEFT operand.
-  the column as the LEFT operand.
+* A RESTRICTIVE policy is selected here by `app_portal` being IN its `TO` clause, so
+  one that also names `app_runtime` passes every shape assertion while ANDing the
+  client predicate into the firm's own connection — zero rows, silently. The role set
+  is therefore asserted equal, not merely matched.
 * Using `conftest.PORTAL_TABLES` as the privilege oracle is tautological, because
   `conftest` issues the test-database grants from that same tuple. The oracle is
   `ops/sql/roles.sql`, the production artifact, and conftest is asserted to match it.
@@ -24,6 +27,7 @@ countered by construction rather than by care:
 
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 from django.conf import settings
@@ -95,16 +99,33 @@ def _has_column(table: str, column: str) -> bool:
     return bool(row[0]) if row else False
 
 
-def _portal_policies(table: str) -> list[tuple[str, str, str, str | None, str | None]]:
+class PortalPolicy(NamedTuple):
+    name: str
+    permissive: str
+    cmd: str
+    qual: str | None
+    with_check: str | None
+    roles: frozenset[str]
+
+
+def _portal_policies(table: str) -> list[PortalPolicy]:
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT policyname, permissive, cmd, qual, with_check FROM pg_policies "
-            "WHERE schemaname = 'public' AND tablename = %s "
+            "SELECT policyname, permissive, cmd, qual, with_check, roles "
+            "FROM pg_policies WHERE schemaname = 'public' AND tablename = %s "
             "AND %s = ANY(roles) ORDER BY policyname",
             [table, PORTAL_ROLE],
         )
         return [
-            (str(r[0]), str(r[1]), str(r[2]), r[3], r[4]) for r in cursor.fetchall()
+            PortalPolicy(
+                str(r[0]),
+                str(r[1]),
+                str(r[2]),
+                r[3],
+                r[4],
+                frozenset(str(role) for role in r[5]),
+            )
+            for r in cursor.fetchall()
         ]
 
 
@@ -198,11 +219,22 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
         )
         column = CLIENT_IDENTITY_COLUMN.get(table, "client_id")
 
-        for name, permissive, cmd, qual, with_check in policies:
+        for name, permissive, cmd, qual, with_check, roles in policies:
             assert permissive == "RESTRICTIVE", f"{table}.{name} is not restrictive"
             assert cmd == "ALL", f"{table}.{name} covers only {cmd}"
             assert qual is not None, f"{table}.{name} has no USING"
             assert with_check is not None, f"{table}.{name} has no WITH CHECK"
+            # The TO clause names the portal and NOTHING else. A restrictive policy
+            # applies to every role it lists, so one naming app_runtime as well would
+            # AND this client predicate into the firm's own connection — where
+            # app.client_id is unset, the comparison is NULL, and RLS admits a row only
+            # on true. The firm would read zero rows with nothing raised. That is the
+            # same outcome as an inheriting grant, reached by authoring a policy rather
+            # than by granting a role, and the selection below matches on containment
+            # so every other assertion here passes on such a policy.
+            assert roles == {PORTAL_ROLE}, (
+                f"{table}.{name} is restrictive and also binds {sorted(roles)}"
+            )
 
             if is_client_scoped:
                 # Then the predicate confines the portal to one client, on BOTH sides.
@@ -243,11 +275,21 @@ def test_every_portal_policy_is_restrictive() -> None:
     assert_isolated_role()
 
     for table in _all_public_tables():
-        for name, permissive, _cmd, _qual, _check in _portal_policies(table):
+        for policy in _portal_policies(table):
             # Then none is permissive. A permissive portal policy ORs with the Phase-1
             # tenant policy and drops TENANT isolation for portal sessions, while every
             # per-table shape assertion above still passes.
-            assert permissive == "RESTRICTIVE", f"{table}.{name} is permissive"
+            assert policy.permissive == "RESTRICTIVE", (
+                f"{table}.{policy.name} is permissive"
+            )
+
+            # And none binds a second role. This sweep is the only one that reaches
+            # tables the tenant_id enumeration never sees, so a dual-role policy on one
+            # of those is invisible to every other assertion in this module.
+            extra = sorted(policy.roles - {PORTAL_ROLE})
+            assert policy.roles == {PORTAL_ROLE}, (
+                f"{table}.{policy.name} also binds {extra}"
+            )
 
 
 def test_the_conftest_allow_list_matches_the_production_artifact() -> None:
