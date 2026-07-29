@@ -158,9 +158,13 @@ def accept_invite(*, invite: Invite, user: User) -> Membership:
 
     # PLATFORM_QUERY_OK: creates the membership named by the invite, keyed to the
     # invite's own tenant. The caller cannot influence which tenant that is.
+    # client=None explicitly: with the (user, tenant, client) unique constraint an
+    # implicit lookup on two of the three columns can match a portal membership and
+    # raise MultipleObjectsReturned, turning an accepted invite into a 500.
     membership, _created = Membership.objects.get_or_create(
         user=user,
         tenant_id=locked.tenant_id,
+        client=None,
         defaults={"role": locked.role, "is_active": True},
     )
     locked.accepted_at = timezone.now()

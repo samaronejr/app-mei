@@ -94,10 +94,14 @@ class ClientAssignment(TenantScopedModel):
         """
         # PLATFORM_QUERY_OK: keyed on this row's own user and tenant. The query IS
         # the authorization check, so routing it through for_user would be circular.
+        # client__isnull=True: a client-role user would otherwise pass this roster
+        # test and become assignable, which _is_attached_to consults to grant the
+        # `limited` level.
         belongs = Membership.objects.filter(
             user_id=self.user_id,
             tenant_id=self.tenant_id,
             is_active=True,
+            client__isnull=True,
         ).exists()
         if not belongs:
             msg = (

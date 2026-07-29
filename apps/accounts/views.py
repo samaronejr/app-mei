@@ -207,9 +207,13 @@ def team_view(request: AuthenticatedRequest) -> HttpResponse:
     tenant = getattr(request, "tenant", None)
     if tenant is None:
         raise Http404
+    # The outer filter is separate from the one inside for_user: that narrows WHICH
+    # FIRMS the caller belongs to, while this narrows which rows come back. When the
+    # manager's model IS Membership the two are not the same, and without this a
+    # portal user appears on the firm's team page.
     memberships = (
         Membership.objects.for_user(request.user)
-        .filter(tenant=tenant)
+        .filter(tenant=tenant, client__isnull=True)
         .select_related("user")
         .order_by("user__email")
     )

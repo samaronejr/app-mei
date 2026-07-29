@@ -44,6 +44,9 @@ def requires_mfa(user: User | AnonymousUser) -> bool:
         return True
     # PLATFORM_QUERY_OK: filtered on the very account whose policy is being
     # evaluated, and returns a boolean rather than any row.
+    # CLIENT_SCOPE_OK: deliberately NOT filtered to firm-side memberships. A portal
+    # user holding only a client role still reaches MFA enforcement, which is the
+    # safe direction for an account that can read a company's tax filings.
     return Membership.objects.filter(user=user, is_active=True).exists()
 
 

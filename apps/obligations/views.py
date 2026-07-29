@@ -189,8 +189,11 @@ def _members(request: AuthenticatedRequest) -> list[User]:
     """Return the accounts a queue may be filtered by: this firm's roster, only."""
     return [
         membership.user
+        # Outer client__isnull=True for the same reason as team_view: for_user
+        # narrows the firms, not the rows. Portal users must not be offerable as
+        # queue assignees.
         for membership in Membership.objects.for_user(request.user)
-        .filter(tenant_id=_tenant_id(request), is_active=True)
+        .filter(tenant_id=_tenant_id(request), is_active=True, client__isnull=True)
         .select_related("user")
         .order_by("user__email")
     ]

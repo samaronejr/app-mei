@@ -139,10 +139,16 @@ class TenantMiddleware:
         # PLATFORM_QUERY_OK: this query IS the scoping mechanism the whole product
         # rests on. It runs before app.tenant_id can be set, which is exactly why
         # tenants_membership carries no row-level-security policy.
+        # client__isnull=True is a SECURITY control, not a tidy-up. Without it a
+        # portal user browsing the FIRM host satisfies this check, receives
+        # app.tenant_id, and runs as app_runtime -- for whom no restrictive portal
+        # policy applies -- reading the firm's entire client base. That is precisely
+        # the hole the portal isolation layer exists to close.
         if not Membership.objects.filter(
             user=user,
             tenant=resolved,
             is_active=True,
+            client__isnull=True,
         ).exists():
             msg = "This account has no active membership for this firm."
             raise PermissionDenied(msg)

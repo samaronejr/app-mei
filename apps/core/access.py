@@ -45,9 +45,12 @@ class PlatformScopedManager(models.Manager[_ModelT]):
         if not user.is_authenticated:
             return self.get_queryset().none()
         membership = django_apps.get_model("tenants", "Membership")
+        # Firm-side memberships only. A client-role row would inject the firm's
+        # tenant id here, widening Tenant/Invite/AccessLog.for_user for a portal user.
         tenant_ids = membership.objects.filter(
             user=user,
             is_active=True,
+            client__isnull=True,
         ).values("tenant_id")
         return self.get_queryset().filter(**{f"{self.tenant_lookup}__in": tenant_ids})
 
