@@ -11,6 +11,11 @@ the handle to the first one:
 Both must be set. Setting only the ContextVar leaves the database open; setting only
 the GUC makes every scoped queryset silently empty. The middleware, the Celery task
 base, and the management-command base all set both.
+
+The portal adds a second dimension on the same pattern: `current_client_id` and the
+`app.client_id` GUC, which drive the RESTRICTIVE policies confining a portal session to
+one client of the firm. Tenant scope alone cannot express that, because a portal user
+sits *inside* the accounting firm's tenant alongside every other client.
 """
 
 from collections.abc import Iterator
@@ -21,10 +26,17 @@ from uuid import UUID
 from django.db import connection, transaction
 
 TENANT_GUC = "app.tenant_id"
+CLIENT_GUC = "app.client_id"
 NO_TENANT = ""
+NO_CLIENT = ""
 
 current_tenant_id: ContextVar[UUID | None] = ContextVar(
     "current_tenant_id",
+    default=None,
+)
+
+current_client_id: ContextVar[UUID | None] = ContextVar(
+    "current_client_id",
     default=None,
 )
 
@@ -41,16 +53,25 @@ class MissingTenantContext(RuntimeError):  # noqa: N818
     """
 
 
-def _read_guc() -> str:
+class MissingClientContext(RuntimeError):  # noqa: N818
+    """Raised when client-scoped work is attempted with no client established.
+
+    Same reasoning as `MissingTenantContext`, one dimension down: the portal's
+    restrictive policies compare against NULL when `app.client_id` is unset, so the
+    quiet alternative is again zero rows rather than an error.
+    """
+
+
+def _read_guc(name: str = TENANT_GUC, missing: str = NO_TENANT) -> str:
     with connection.cursor() as cursor:
-        cursor.execute(f"SELECT coalesce(current_setting('{TENANT_GUC}', true), '')")
+        cursor.execute("SELECT coalesce(current_setting(%s, true), '')", [name])
         row = cursor.fetchone()
-    return str(row[0]) if row else NO_TENANT
+    return str(row[0]) if row else missing
 
 
-def _write_guc(value: str) -> None:
+def _write_guc(value: str, name: str = TENANT_GUC) -> None:
     with connection.cursor() as cursor:
-        cursor.execute("SELECT set_config(%s, %s, true)", [TENANT_GUC, value])
+        cursor.execute("SELECT set_config(%s, %s, true)", [name, value])
 
 
 @contextmanager
@@ -90,3 +111,41 @@ def tenant_context(tenant_id: UUID | None) -> Iterator[UUID]:
             _write_guc(previous)
     finally:
         current_tenant_id.reset(token)
+
+
+@contextmanager
+def client_context(client_id: UUID | None) -> Iterator[UUID]:
+    """Establish the client dimension for a block of work, then restore it.
+
+    This sets `app.client_id` and nothing else. On its own it confines NOTHING at the
+    database layer: the portal policies are RESTRICTIVE **to `app_portal`**, and
+    `app_runtime` does not inherit that role — the grant is `WITH INHERIT FALSE`
+    precisely so those policies do not bind the firm's own connection. Confinement
+    therefore requires `SET LOCAL ROLE app_portal` as well, which the portal middleware
+    issues. Until then this is an application-layer signal that `role_of` and
+    `_is_attached_to` read, not an isolation boundary.
+
+    It mirrors `tenant_context` otherwise — including restoring the previous value
+    explicitly rather than in a `finally`, for the savepoint-merge reason documented
+    there.
+
+    The tenant dimension is NOT set here. A client always sits inside a tenant, so
+    callers establish both, and keeping them separate lets the middleware set the
+    tenant while a portal user is still anonymous and the client is not yet known.
+    """
+    if client_id is None:
+        msg = (
+            "client_context requires a client id. Refusing to run client-scoped work "
+            "with no context, which would silently touch zero rows."
+        )
+        raise MissingClientContext(msg)
+
+    token = current_client_id.set(client_id)
+    try:
+        with transaction.atomic():
+            previous = _read_guc(CLIENT_GUC, NO_CLIENT)
+            _write_guc(str(client_id), CLIENT_GUC)
+            yield client_id
+            _write_guc(previous, CLIENT_GUC)
+    finally:
+        current_client_id.reset(token)
