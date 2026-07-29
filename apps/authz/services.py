@@ -30,7 +30,7 @@ from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
 from apps.authz.models import Capability, GrantLevel, RoleGrant
-from apps.core.tenancy import current_tenant_id
+from apps.core.tenancy import current_client_id, current_tenant_id
 
 _P = ParamSpec("_P")
 _ResponseT = TypeVar("_ResponseT", bound=HttpResponseBase)
@@ -218,10 +218,18 @@ def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
     membership_model = django_apps.get_model("tenants", "Membership")
     # PLATFORM_QUERY_OK: keyed on the actor and one explicit tenant. This query IS
     # the authorization check, so routing it through for_user would be circular.
+    # The client filter is what keeps this ONE path rather than two. Outside a portal
+    # request the context var is None, so it reads `client=None` and resolves the
+    # firm-side membership exactly as before — including for Celery tasks and
+    # management commands, which never establish a client. Inside a portal request it
+    # selects that user's membership over that one client. It also makes `.first()`
+    # deterministic: a user holding both a firm and a client role in one firm has two
+    # rows, and without this filter the ordering between them is arbitrary.
     membership = membership_model.objects.filter(
         user=user,
         tenant_id=resolved,
         is_active=True,
+        client=current_client_id.get(),
     ).first()
     return str(membership.role) if membership is not None else None
 
@@ -233,6 +241,25 @@ def _is_attached_to(user: User, obj: object | None) -> bool:
     client_id = _client_id_of(obj)
     if client_id is None:
         return False
+    portal_client = current_client_id.get()
+    if portal_client is not None:
+        # A portal session is attached to exactly one client, and the database already
+        # refuses it every other row. Consulting ClientAssignment here would ask the
+        # wrong question: that table records which STAFF ACCOUNTANT covers a client,
+        # and a MEI owner appears in it for nobody — so a portal user would be denied
+        # their own data. `_client_id_of` is used rather than `obj.client_id` because
+        # ClientCompany has no such column; its own primary key is the client identity.
+        #
+        # THIS BRANCH IGNORES `user`, AND THAT IS ONLY SAFE BECAUSE `role_of` ABOVE
+        # FILTERED ON THE SAME CLIENT. `can()` reaches here only after resolving a
+        # level, which means this user already holds an active membership over
+        # `portal_client`. Re-checking it here would be a second query for a fact just
+        # proven. Relax that filter — a "firm user views the portal as the client"
+        # feature is the obvious way — and this line grants `limited` to anyone whose
+        # request happens to carry a client context. Pinned by
+        # tests/authz/test_portal_authorization.py, which asserts a firm-side user
+        # inside a client context is denied.
+        return str(client_id) == str(portal_client)
     assignment_model = django_apps.get_model("clients", "ClientAssignment")
     return bool(
         assignment_model.objects.filter(user=user, client_id=client_id).exists(),

@@ -14,8 +14,9 @@ from apps.accounts.models import User
 from apps.authz.matrix import MATRIX
 from apps.authz.models import GrantLevel
 from apps.authz.services import UnknownCapability, granted_levels, resolve_level
+from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
-from apps.tenants.models import Membership, Tenant, TenantRole
+from apps.tenants.models import CLIENT_ROLES, Membership, Tenant, TenantRole
 
 pytestmark = pytest.mark.django_db
 
@@ -34,7 +35,21 @@ def _member(tenant: Tenant, role: str) -> User:
         email=f"{role}@alpha-bulk.example.com",
         password="irrelevant-here",  # noqa: S106
     )
-    Membership.objects.create(user=user, tenant=tenant, role=role)
+    # A client role names the client it is held over; a firm role must not. The
+    # membership_role_matches_client_scope CHECK rejects either mismatch, so the
+    # parametrisation over every TenantRole has to supply the right shape.
+    client = None
+    if role in CLIENT_ROLES:
+        with tenant_context(tenant.id):
+            # ALL_OBJECTS_OK: fixture seeding for a portal membership, which by
+            # definition needs the client row to exist first.
+            client = ClientCompany.all_objects.create(
+                tenant=tenant,
+                legal_name=f"CLIENTE {role}",
+                cnpj=f"1122233300{len(role):04d}",
+                is_mei=True,
+            )
+    Membership.objects.create(user=user, tenant=tenant, role=role, client=client)
     return user
 
 
