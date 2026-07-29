@@ -20,6 +20,7 @@ from django.utils.translation import gettext_lazy as _
 
 from apps.core.access import PlatformScopedManager, TenantRootManager
 from apps.core.models import UUIDv7PrimaryKeyModel
+from apps.tenants.validators import validate_tenant_slug
 
 INVITE_TOKEN_BYTES = 32
 INVITE_VALIDITY = timedelta(days=7)
@@ -81,7 +82,12 @@ class Tenant(UUIDv7PrimaryKeyModel):
     """An accounting firm. The tenancy root, so it carries no tenant column itself."""
 
     name = models.CharField(_("name"), max_length=255)
-    slug = models.SlugField(_("slug"), unique=True, max_length=63)
+    slug = models.SlugField(
+        _("slug"),
+        unique=True,
+        max_length=63,
+        validators=[validate_tenant_slug],
+    )
     plan = models.CharField(
         _("plan"),
         max_length=32,

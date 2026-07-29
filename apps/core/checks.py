@@ -8,10 +8,14 @@ crossed. `manage.py check` runs them; CI runs it once per settings module.
 from collections.abc import Sequence
 from typing import Any
 
+from django.apps import apps as django_apps
 from django.apps.config import AppConfig
 from django.conf import settings
 from django.core.checks import CheckMessage, Error
+from django.core.exceptions import ValidationError
 from django.db import DatabaseError, connections
+
+from apps.tenants.validators import validate_tenant_slug
 
 
 def _atomic_requests_errors() -> list[CheckMessage]:
@@ -212,6 +216,53 @@ def check_portal_role(
 ) -> list[CheckMessage]:
     """Reject a cluster where the portal role is absent or wrongly inherited."""
     return _portal_role_errors()
+
+
+def _tenant_slug_errors() -> list[CheckMessage]:
+    """Report stored slugs the portal host scheme cannot safely derive a host from.
+
+    The validator on `Tenant.slug` only guards rows written through a form or a
+    `full_clean()`. Slugs predating it, and any created by a bulk path that skips
+    validation, are still in the table — and this is the one control that sees them.
+    """
+    tenant_model = django_apps.get_model("tenants", "Tenant")
+    try:
+        # PLATFORM_QUERY_OK: a boot-time audit of the tenancy root itself, which has no
+        # tenant to be scoped to. Reads slugs only.
+        slugs = list(tenant_model.objects.values_list("slug", flat=True))
+    except DatabaseError:
+        return []
+
+    offenders = []
+    for slug in slugs:
+        try:
+            validate_tenant_slug(str(slug))
+        except ValidationError as invalid:
+            offenders.append(f"{slug} ({'; '.join(invalid.messages)})")
+
+    if not offenders:
+        return []
+    return [
+        Error(
+            "Stored tenant slugs are incompatible with the portal host scheme: "
+            + ", ".join(sorted(offenders)),
+            hint=(
+                "The portal is served at <slug>-portal.<domain>. A slug ending in "
+                "-portal takes over another firm's portal host, and host dispatch "
+                "would route this firm's own front door to the portal urlconf. "
+                "Rename the firm before the portal ships."
+            ),
+            id="core.E009",
+        ),
+    ]
+
+
+def check_tenant_slugs(
+    app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ANN401, ARG001
+) -> list[CheckMessage]:
+    """Reject stored slugs that collide with a portal host or overflow a DNS label."""
+    return _tenant_slug_errors()
 
 
 def check_tenant_middleware(
