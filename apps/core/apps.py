@@ -4,6 +4,7 @@ from django.apps import AppConfig
 from django.core.checks import register
 
 from apps.core.checks import (
+    check_portal_role,
     check_tenant_middleware,
     check_transaction_and_cookie_policy,
 )
@@ -19,3 +20,4 @@ class CoreConfig(AppConfig):
         """Attach the settings guards to Django's check framework."""
         register(check_transaction_and_cookie_policy)
         register(check_tenant_middleware)
+        register(check_portal_role)

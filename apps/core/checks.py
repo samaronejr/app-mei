@@ -11,7 +11,7 @@ from typing import Any
 from django.apps.config import AppConfig
 from django.conf import settings
 from django.core.checks import CheckMessage, Error
-from django.db import connections
+from django.db import DatabaseError, connections
 
 
 def _atomic_requests_errors() -> list[CheckMessage]:
@@ -83,6 +83,9 @@ def _csrf_httponly_errors() -> list[CheckMessage]:
     ]
 
 
+RUNTIME_ROLE = "app_runtime"
+PORTAL_ROLE = "app_portal"
+
 TENANT_MIDDLEWARE = "apps.tenants.middleware.TenantMiddleware"
 AUTHENTICATION_MIDDLEWARE = "django.contrib.auth.middleware.AuthenticationMiddleware"
 ACCESS_LOG_MIDDLEWARE = "apps.audit.middleware.AccessLogMiddleware"
@@ -148,6 +151,67 @@ def _outside_tenant_transaction_errors() -> list[CheckMessage]:
         for name in (ACCESS_LOG_MIDDLEWARE, PLATFORM_EVENT_MIDDLEWARE)
         if name in middleware and middleware.index(name) > tenant_index
     ]
+
+
+def _portal_role_errors() -> list[CheckMessage]:
+    """Require the portal role to exist and not be inherited by the runtime role.
+
+    Both failures are silent in opposite directions. A missing `app_portal` means
+    `SET LOCAL ROLE` raises on the first portal request. Worse, an inheriting grant
+    means PostgreSQL applies the RESTRICTIVE portal policies to `app_runtime` as well —
+    it matches a policy's `TO` clause by privilege inheritance, not identity — and the
+    accounting firm reads zero rows from every client table with no error anywhere.
+
+    This is the only check here that queries the database. It returns cleanly when the
+    database is unreachable so `manage.py` stays usable without one; CI runs `check`
+    against a live, role-bootstrapped cluster, which is where it bites.
+    """
+    hint = (
+        "Run ops/sql/roles.sql as the bootstrap superuser. The grant must be "
+        "'GRANT app_portal TO app_runtime WITH INHERIT FALSE, SET TRUE'. A plain "
+        "re-GRANT of an existing membership is a no-op: correcting it needs an "
+        "explicit WITH INHERIT FALSE, or a REVOKE followed by a GRANT."
+    )
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute(
+                "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s)",
+                [PORTAL_ROLE],
+            )
+            exists_row = cursor.fetchone()
+            if not (exists_row and exists_row[0]):
+                return [
+                    Error(
+                        f"The {PORTAL_ROLE} database role does not exist.",
+                        hint=hint,
+                        id="core.E008",
+                    ),
+                ]
+            cursor.execute(
+                "SELECT pg_has_role(%s, %s, 'USAGE')",
+                [RUNTIME_ROLE, PORTAL_ROLE],
+            )
+            inherits_row = cursor.fetchone()
+    except DatabaseError:
+        return []
+    if inherits_row and inherits_row[0]:
+        return [
+            Error(
+                f"{RUNTIME_ROLE} INHERITS {PORTAL_ROLE}, so every restrictive portal "
+                f"policy also binds {RUNTIME_ROLE}.",
+                hint=hint,
+                id="core.E008",
+            ),
+        ]
+    return []
+
+
+def check_portal_role(
+    app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ANN401, ARG001
+) -> list[CheckMessage]:
+    """Reject a cluster where the portal role is absent or wrongly inherited."""
+    return _portal_role_errors()
 
 
 def check_tenant_middleware(
