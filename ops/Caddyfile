@@ -7,19 +7,35 @@
 # X-Forwarded-For and X-Forwarded-Host by default, which is exactly what the app needs
 # for both the redirect logic and TRUSTED_PROXY_COUNT=1 client-IP resolution.
 #
-# TLS_DIRECTIVE is injected by compose:
-#   staging (no domain)  -> "tls internal"      Caddy's own CA; browsers warn; no ACME,
-#                                                no rate limits, no port-80 dependency.
-#   production (domain)  -> "tls { dns cloudflare {env.CF_API_TOKEN} }"
-#                                                DNS-01 is REQUIRED for a wildcard cert;
-#                                                HTTP-01 cannot issue *.example.com.
-# Switching between them changes this one value and nothing else.
+# TLS is selected by TWO variables, not one, and the split is forced by the parser
+# rather than chosen:
+#
+#   staging (no domain)   TLS_DIRECTIVE="tls internal"   ACME_DNS_OPTION=""
+#       Caddy's own CA; browsers warn; no ACME, no rate limits, no port-80 dependency.
+#   production (domain)   TLS_DIRECTIVE=""               ACME_DNS_OPTION="acme_dns cloudflare {env.CF_API_TOKEN}"
+#       Default ACME, issuing over DNS-01 through the global option below.
+#
+# An earlier revision documented the production value as a single
+# `TLS_DIRECTIVE="tls { dns cloudflare {env.CF_API_TOKEN} }"`. That CANNOT parse: the
+# Caddyfile grammar rejects a `{` with content after it on the same line, so the
+# substitution fails with "Unexpected next token after '{' on same line" and the
+# container never starts. Verified against caddy 2 — the one-line global `acme_dns`
+# option is the form that works.
+#
+# DNS-01 is REQUIRED here rather than preferred. Firms are reached at `<slug>.<domain>`
+# and portals at `<slug>-portal.<domain>`, so the hostnames are not known ahead of time
+# and only a wildcard certificate covers them. HTTP-01 cannot issue a wildcard.
+#
+# The provider module is compiled into the image by ops/caddy/Dockerfile; the stock
+# image fails this config with "module not registered: dns.providers.cloudflare".
 
 {
 	admin off
 	# Caddy's default issuer is Let's Encrypt; an address is required for expiry notices
 	# when real ACME is enabled. Ignored entirely under `tls internal`.
 	email {$ACME_EMAIL:admin@localhost}
+	# Empty under `tls internal`, which needs no ACME at all.
+	{$ACME_DNS_OPTION}
 	# On a 954 MiB box, keeping Caddy's own footprint small matters.
 	servers {
 		max_header_size 16KB
