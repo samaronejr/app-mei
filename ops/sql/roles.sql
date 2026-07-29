@@ -10,6 +10,10 @@
 --               three of those hold.
 -- app_test      owns the pytest-created test database.  CREATEDB + BYPASSRLS, and a
 --               member of both roles above so tests can SET ROLE app_runtime.
+-- app_portal    the client portal's role, entered with SET LOCAL ROLE inside the
+--               request transaction. NOLOGIN, and holds SELECT on an ALLOW-LIST of six
+--               tables only, so any table added later is closed to the portal by
+--               default and a missing grant fails loudly instead of returning nothing.
 
 \set app_migrator_password 'app_migrator_password'
 \set app_runtime_password 'app_runtime_password'
@@ -29,6 +33,9 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_test') THEN
         CREATE ROLE app_test;
     END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_portal') THEN
+        CREATE ROLE app_portal;
+    END IF;
 END
 $$;
 
@@ -45,6 +52,10 @@ ALTER ROLE app_runtime WITH LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROL
 -- in production is a divergence in the worst possible direction.
 ALTER ROLE app_test WITH LOGIN NOSUPERUSER BYPASSRLS CREATEDB NOCREATEROLE
     PASSWORD :'app_test_password';
+-- NOLOGIN: reached only through SET LOCAL ROLE from an app_runtime connection, so it
+-- needs no password and no GRANT CONNECT — SET ROLE does not re-check either.
+ALTER ROLE app_portal WITH NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE
+    NOINHERIT;
 
 -- WITHOUT THESE TWO GRANTS THE ENTIRE ISOLATION SUITE DIES ON ITS FIRST STATEMENT.
 -- PostgreSQL permits SET ROLE <r> only when the current role is a member of <r>.
@@ -52,6 +63,18 @@ ALTER ROLE app_test WITH LOGIN NOSUPERUSER BYPASSRLS CREATEDB NOCREATEROLE
 -- "permission denied to set role" and no cross-tenant assertion would ever execute.
 GRANT app_runtime TO app_test;
 GRANT app_migrator TO app_test;
+
+-- INHERIT FALSE IS LOAD-BEARING. DO NOT DROP IT, AND DO NOT "SIMPLIFY" THIS TO A PLAIN
+-- GRANT. PostgreSQL matches a policy's TO clause by PRIVILEGE INHERITANCE, not identity.
+-- Under the default (INHERIT TRUE) app_runtime acquires app_portal's privileges, so the
+-- RESTRICTIVE `TO app_portal` policies bind app_runtime as well and the accounting firm
+-- reads ZERO ROWS from every client table. Reproduced on PostgreSQL 16.14.
+--   pg_has_role('app_runtime','app_portal','USAGE') MUST be false  (inheritance off)
+--   pg_has_role('app_runtime','app_portal','SET')   MUST be true   (SET LOCAL ROLE works)
+-- 'MEMBER' is true under both settings and must never be used as the assertion.
+-- A plain re-GRANT of an existing membership is a NO-OP: changing this later requires
+-- an explicit WITH INHERIT TRUE/FALSE, or a REVOKE followed by a GRANT.
+GRANT app_portal TO app_runtime WITH INHERIT FALSE, SET TRUE;
 
 -- Applied at LOGIN, so production sees '' while a test session that reaches
 -- app_runtime through SET ROLE sees NULL. Both fail closed through
@@ -61,7 +84,7 @@ ALTER ROLE app_runtime SET app.tenant_id TO '';
 GRANT CONNECT ON DATABASE :"DBNAME" TO app_migrator, app_runtime, app_test;
 
 GRANT USAGE, CREATE ON SCHEMA public TO app_migrator;
-GRANT USAGE ON SCHEMA public TO app_runtime, app_test;
+GRANT USAGE ON SCHEMA public TO app_runtime, app_test, app_portal;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_runtime;
@@ -79,3 +102,34 @@ ALTER DEFAULT PRIVILEGES FOR ROLE app_test IN SCHEMA public
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_runtime;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
+
+-- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
+-- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
+-- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the
+-- portal coverage meta-test inspects. Naming the six tables closes every future table
+-- by default.
+--
+-- to_regclass-guarded because this file runs from the init hook against an EMPTY data
+-- directory under ON_ERROR_STOP=1: an unguarded GRANT on a table that does not exist
+-- yet aborts cluster bootstrap. On a fresh cluster this therefore grants nothing, so
+-- the same statements must be re-run after `migrate` (ops/README.md) — and are, for the
+-- test database, by tests/conftest.py.
+DO $$
+DECLARE
+    portal_table text;
+BEGIN
+    FOREACH portal_table IN ARRAY ARRAY[
+        'clients_clientcompany',
+        'clients_clientassignment',
+        'clients_clienttag',
+        'clients_onboardingitem',
+        'obligations_obligation',
+        'obligations_monthlyrevenue'
+    ]
+    LOOP
+        IF to_regclass('public.' || portal_table) IS NOT NULL THEN
+            EXECUTE format('GRANT SELECT ON public.%I TO app_portal', portal_table);
+        END IF;
+    END LOOP;
+END
+$$;
