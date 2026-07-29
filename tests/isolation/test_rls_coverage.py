@@ -66,10 +66,24 @@ def _rls_flags(table: str) -> tuple[bool, bool]:
 
 
 def _policies(table: str) -> list[tuple[str, str, str | None, str | None]]:
+    """Return this table's PHASE-1 tenant policies only.
+
+    `EnableRLS` creates its policies with no `TO` clause, so PostgreSQL records them
+    against `{public}`. The portal policies added in Phase 2a are RESTRICTIVE and
+    scoped `TO app_portal`, and one of them is `USING (false)` — which cannot satisfy
+    the `NULLIF` / `, true)` shape assertions below, because those describe the
+    fail-closed *tenant* predicate and nothing else.
+
+    Filtering on the role keeps every Phase-1 assertion asserting exactly what it was
+    written to assert. Portal policies are not left unchecked: their shape, their
+    `WITH CHECK`, the RLS flags on the tables carrying them, and the role grant itself
+    are all asserted by the portal coverage meta-test.
+    """
     with connection.cursor() as cursor:
         cursor.execute(
             "SELECT policyname, cmd, qual, with_check FROM pg_policies "
-            "WHERE schemaname = 'public' AND tablename = %s ORDER BY policyname",
+            "WHERE schemaname = 'public' AND tablename = %s "
+            "AND roles = '{public}' ORDER BY policyname",
             [table],
         )
         return [(r[0], r[1], r[2], r[3]) for r in cursor.fetchall()]
