@@ -1,0 +1,59 @@
+# TLS termination in front of gunicorn.
+#
+# prod.py sets SECURE_SSL_REDIRECT=True and trusts X-Forwarded-Proto via
+# SECURE_PROXY_SSL_HEADER. If nothing in front sets that header, Django cannot tell it
+# is already on HTTPS and redirects forever — a loop, not an error, so it will not show
+# up as a failed healthcheck. Caddy's reverse_proxy sets X-Forwarded-Proto,
+# X-Forwarded-For and X-Forwarded-Host by default, which is exactly what the app needs
+# for both the redirect logic and TRUSTED_PROXY_COUNT=1 client-IP resolution.
+#
+# TLS_DIRECTIVE is injected by compose:
+#   staging (no domain)  -> "tls internal"      Caddy's own CA; browsers warn; no ACME,
+#                                                no rate limits, no port-80 dependency.
+#   production (domain)  -> "tls { dns cloudflare {env.CF_API_TOKEN} }"
+#                                                DNS-01 is REQUIRED for a wildcard cert;
+#                                                HTTP-01 cannot issue *.example.com.
+# Switching between them changes this one value and nothing else.
+
+{
+	admin off
+	# Caddy's default issuer is Let's Encrypt; an address is required for expiry notices
+	# when real ACME is enabled. Ignored entirely under `tls internal`.
+	email {$ACME_EMAIL:admin@localhost}
+	# On a 954 MiB box, keeping Caddy's own footprint small matters.
+	servers {
+		max_header_size 16KB
+	}
+}
+
+# Container-local liveness. Deliberately NOT proxied to Django: hitting the app through
+# 127.0.0.1 would send `Host: 127.0.0.1`, which is absent from ALLOWED_HOSTS and would
+# come back 400 DisallowedHost — a healthcheck that fails while everything is fine.
+# Django's own liveness is already asserted by the `web` service healthcheck.
+:8080 {
+	respond /healthz "caddy ok" 200
+	respond 404
+}
+
+{$SITE_ADDRESS} {
+	{$TLS_DIRECTIVE}
+
+	encode zstd gzip
+
+	# Static files are served by whitenoise inside the app rather than by Caddy, so that
+	# the ManifestStaticFilesStorage hashes stay authoritative in one place.
+	reverse_proxy web:8000 {
+		# Explicit rather than implicit: these are load-bearing for SECURE_SSL_REDIRECT
+		# and for per-IP rate limiting, and a future Caddy default change should not be
+		# able to silently disable either.
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+		header_up Host {host}
+	}
+
+	log {
+		output stdout
+		format console
+		level WARN
+	}
+}

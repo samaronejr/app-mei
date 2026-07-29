@@ -1,0 +1,300 @@
+# Production stack. STANDALONE — do not combine with docker-compose.yml.
+#
+# The dev file is a development stack (runserver, DEBUG=True, bind-mounted source,
+# permissive password defaults). Layering an override on top of it would silently
+# inherit those defaults wherever an override happened to be missing, and Compose's
+# list-merge semantics make "remove the bind mount" hard to express. A separate file
+# makes the production surface explicit and auditable in one read.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait
+#
+# Sizing note: this targets an Oracle E2.1.Micro (1 OCPU, 954 MiB RAM) plus a 4 GiB
+# swapfile. Every limit below was measured on that box, not guessed. See ops/README.md.
+
+x-app-environment: &app-environment
+  DJANGO_SETTINGS_MODULE: config.settings.prod
+  # The image bakes the source at /app, and .env.prod is read by Compose (not Django).
+  # Point Django's own env-file reader at a nonexistent path so configuration comes
+  # only from the explicit values below — one source of truth, no shadowing.
+  DJANGO_ENV_FILE: /nonexistent
+  SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env.prod}
+  DEBUG: "False"
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set}
+  # A wildcard here is rejected by the core.E003 system check: cookies are host-only
+  # by design, so every tenant origin must be enumerated.
+  CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?CSRF_TRUSTED_ORIGINS must be set}
+  # app_runtime holds neither SUPERUSER nor BYPASSRLS and owns no table. Pointing this
+  # at the bootstrap superuser would make every RLS policy inert without erroring.
+  DATABASE_URL: postgres://app_runtime:${APP_RUNTIME_PASSWORD:?}@db:5432/${POSTGRES_DB:-app_mei}
+  DATABASE_MIGRATION_URL: postgres://app_migrator:${APP_MIGRATOR_PASSWORD:?}@db:5432/${POSTGRES_DB:-app_mei}
+  CONN_MAX_AGE: ${CONN_MAX_AGE:-60}
+  REDIS_URL: redis://redis:6379/0
+  # EXACTLY ONE reverse proxy (caddy) terminates TLS in front of web. Setting this to 0
+  # would collapse every client into a single rate-limit bucket, because X-Forwarded-For
+  # would be ignored and every request would appear to originate from Caddy. Setting it
+  # higher than the number of proxies WE control makes the client IP spoofable, which
+  # would let an attacker evade the per-IP login limiter by forging the header.
+  TRUSTED_PROXY_COUNT: "1"
+  PLATFORM_URL: ${PLATFORM_URL:?PLATFORM_URL must be set}
+  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-nao-responda@localhost}
+  LGPD_ENCARREGADO_EMAIL: ${LGPD_ENCARREGADO_EMAIL:?LGPD art. 41 requires a named encarregado}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
+  SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-31536000}
+
+x-app-service: &app-service
+  build:
+    context: .
+  image: app-mei:prod
+  environment: *app-environment
+  # No bind mount: the image is the artifact. A bind mount would let host state drift
+  # from the built image and defeat rollback-by-tag.
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-app_mei}
+      POSTGRES_USER: ${POSTGRES_USER:-app_mei}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      APP_MIGRATOR_PASSWORD: ${APP_MIGRATOR_PASSWORD:?}
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?}
+      APP_TEST_PASSWORD: ${APP_TEST_PASSWORD:?}
+    # Tuned for 954 MiB total RAM. shared_buffers at the PostgreSQL default of 128 MB
+    # plus 100 connection slots would alone exceed what this box can spare.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - max_connections=24
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /wal_archive/%f && cp %p /wal_archive/%f
+      - -c
+      - archive_timeout=300
+      - -c
+      - max_wal_size=512MB
+      - -c
+      - min_wal_size=80MB
+    # Docker creates a named-volume mount point owned by root, and a bind mount keeps the
+    # host owner. Either way postgres (uid 999) cannot write, so archive_command fails on
+    # EVERY segment — and PostgreSQL reports that only as a rising failed_count in
+    # pg_stat_archiver, never as a startup error. The result is a server that looks
+    # perfectly healthy while retaining zero WAL, i.e. silent, total loss of PITR.
+    # Doing this in the entrypoint rather than by hand means it survives `down -v`.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - >-
+        mkdir -p /wal_archive /backups
+        && chown postgres:postgres /wal_archive /backups
+        && chmod 775 /wal_archive /backups
+        && exec /usr/local/bin/docker-entrypoint.sh "$$@"
+      - --
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Entrypoint scripts run ONLY against an empty data directory. Changing roles.sql
+      # therefore requires `down -v`, not a restart.
+      - ./ops/sql:/docker-entrypoint-initdb.d:ro
+      - wal_archive:/wal_archive
+      - ./ops/backups:/backups
+    # Loopback only. The database is never reachable from outside the host, and the
+    # OCI Security List is NOT the control preventing it — this binding is.
+    ports:
+      - "127.0.0.1:5432:5432"
+    # pg_isready alone returns success during the init phase, BEFORE the entrypoint has
+    # run roles.sql. On a slow disk `web` could then start migrating against a cluster
+    # with no app_migrator role. Asserting the role exists makes the healthcheck mean
+    # what dependents actually rely on. (Closes the risk disclosed by the F3 cold-boot QA.)
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -q &&
+          psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc
+          "select count(*) from pg_roles where rolname in ('app_runtime','app_migrator')"
+          | grep -qx 2
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    mem_limit: 320m
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    # noeviction, deliberately: redis is the Celery broker here, and allkeys-lru would
+    # silently discard queued tasks under pressure rather than failing loudly.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 64mb
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    mem_limit: 96m
+    restart: unless-stopped
+
+  web:
+    <<: *app-service
+    # web is the single migrator: beat's DatabaseScheduler needs django_celery_beat's
+    # tables before it starts, and Django takes no lock, so migrating from more than one
+    # service would race. collectstatic must precede gunicorn because prod.py uses
+    # CompressedManifestStaticFilesStorage, which raises at request time if the manifest
+    # is absent rather than degrading to unhashed paths.
+    command:
+      - sh
+      - -c
+      - >-
+        python manage.py collectstatic --noinput --clear &&
+        DATABASE_URL="$$DATABASE_MIGRATION_URL" python manage.py migrate --noinput &&
+        exec gunicorn config.wsgi:application
+        --bind 0.0.0.0:8000
+        --workers 2 --threads 2 --worker-class gthread
+        --max-requests 400 --max-requests-jitter 40
+        --timeout 60 --graceful-timeout 30
+        --access-logfile - --error-logfile -
+    expose:
+      - "8000"
+    # Both headers are load-bearing, and the dev healthcheck (which sends neither) CANNOT
+    # work here:
+    #   Host             - the loopback probe would otherwise arrive as `127.0.0.1:8000`,
+    #                      which is absent from ALLOWED_HOSTS, and Django answers 400.
+    #   X-Forwarded-Proto - prod.py sets SECURE_SSL_REDIRECT=True, so without it Django
+    #                      301s the probe to https:// and the check fails on TLS, not on
+    #                      application health.
+    # The host is derived from ALLOWED_HOSTS rather than duplicated, so it cannot drift.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os,sys,urllib.request;
+          h=[x.strip().lstrip('.') for x in os.environ['ALLOWED_HOSTS'].split(',') if x.strip()][0];
+          r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/healthz',
+          headers={'Host':h,'X-Forwarded-Proto':'https'}),timeout=5);
+          sys.exit(0 if r.status==200 else 1)"
+      interval: 10s
+      timeout: 15s
+      retries: 30
+      start_period: 40s
+    mem_limit: 400m
+
+  worker:
+    <<: *app-service
+    # concurrency=1 and a child recycle: on 1 OCPU more concurrency buys nothing but
+    # RAM, and max-tasks-per-child bounds leak accumulation on a box with no headroom.
+    command:
+      - celery
+      - -A
+      - config
+      - worker
+      - --loglevel=INFO
+      - --concurrency=1
+      - --prefetch-multiplier=1
+      - --max-tasks-per-child=100
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A config inspect ping -d celery@$$HOSTNAME"]
+      interval: 15s
+      timeout: 15s
+      retries: 12
+      start_period: 45s
+    mem_limit: 320m
+
+  beat:
+    <<: *app-service
+    command:
+      - celery
+      - -A
+      - config
+      - beat
+      - --loglevel=INFO
+      - --scheduler
+      - django_celery_beat.schedulers:DatabaseScheduler
+    # Without this, `up --wait` cannot fail on a crash-looping scheduler, and the only
+    # signal that beat died is the 15-minute dead-man's switch flipping /healthz to 503.
+    # This is liveness only — it proves the process exists, NOT that it is scheduling.
+    # The heartbeat in /healthz remains the authority on whether ticks are happening.
+    # (Closes the second risk disclosed by the F3 cold-boot QA.)
+    # Reads /proc directly because python:3.13-slim ships no procps, so pgrep does not
+    # exist and the check would fail permanently while beat was perfectly healthy.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -qa beat /proc/1/cmdline"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 45s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    mem_limit: 256m
+
+  caddy:
+    image: caddy:2-alpine
+    # Terminates TLS and sets X-Forwarded-Proto, which prod.py's SECURE_PROXY_SSL_HEADER
+    # requires. Without a proxy setting that header, SECURE_SSL_REDIRECT=True produces
+    # an infinite redirect loop rather than an error.
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS must be set}
+      TLS_DIRECTIVE: ${TLS_DIRECTIVE:-tls internal}
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      web:
+        condition: service_healthy
+    # Targets Caddy's own :8080 responder, NOT the proxied site: a loopback request to
+    # the real site arrives as `Host: 127.0.0.1`, which Django rejects with 400 because
+    # it is absent from ALLOWED_HOSTS. Django's health is asserted by `web` already;
+    # this check answers only "is Caddy serving?".
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    mem_limit: 96m
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  wal_archive:
+  caddy_data:
+  caddy_config:
