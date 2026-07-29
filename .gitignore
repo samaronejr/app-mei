@@ -33,3 +33,7 @@ htmlcov/
 # Agent tooling scratch
 .codegraph
 .omo/run-continuation/
+
+# Production secrets — never committed.
+ops/backups/*
+!ops/backups/.gitkeep
