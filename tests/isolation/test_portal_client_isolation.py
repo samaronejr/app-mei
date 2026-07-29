@@ -21,16 +21,20 @@ from decimal import Decimal
 import pytest
 from django.db import ProgrammingError, connection, transaction
 
-from apps.clients.models import ClientCompany
+from apps.accounts.models import User
+from apps.clients.models import ClientAssignment, ClientCompany, ClientTag, Tag
 from apps.core.tenancy import tenant_context
-from apps.obligations.models import MonthlyRevenue
-from apps.tenants.models import Tenant
+from apps.obligations.models import MonthlyRevenue, Obligation, ObligationType
+from apps.tenants.models import Membership, Tenant, TenantRole
 from tests.isolation.rolecheck import assert_isolated_role
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 ONBOARDING_ITEMS_PER_CLIENT = 6
 REVENUES_PER_CLIENT = 1
+OBLIGATIONS_PER_CLIENT = 1
+ASSIGNMENTS_PER_CLIENT = 1
+TAG_LINKS_PER_CLIENT = 1
 
 
 class Clients:
@@ -66,6 +70,23 @@ def clients() -> Clients:
             cnpj="11444777000161",
             is_mei=True,
         )
+    # ClientAssignment.save() refuses a user who is not on the firm's roster, so the
+    # accountant needs a real firm-side membership before it will accept the row.
+    accountant = User.objects.create_user(
+        email="accountant@firma.example.com",
+        password="irrelevant-here",  # noqa: S106
+    )
+    Membership.objects.create(
+        user=accountant,
+        tenant=tenant,
+        role=TenantRole.STAFF_ACCOUNTANT,
+        client=None,
+    )
+
+    with tenant_context(tenant.id):
+        obligation_type = ObligationType.objects.first()
+        assert obligation_type is not None, "migration 0003 seeds the obligation types"
+        tag = Tag.objects.create(tenant=tenant, name="ATENDIMENTO")
         for client in (alpha, beta):
             # ALL_OBJECTS_OK: as above.
             MonthlyRevenue.all_objects.create(
@@ -74,6 +95,20 @@ def clients() -> Clients:
                 competence_month=dt.date(2026, 1, 1),
                 gross_amount=Decimal("1000.00"),
             )
+            Obligation.objects.create(
+                tenant=tenant,
+                client=client,
+                obligation_type=obligation_type,
+                competence_month=dt.date(2026, 1, 1),
+                nominal_due_date=dt.date(2026, 2, 20),
+                resolved_due_date=dt.date(2026, 2, 20),
+            )
+            ClientAssignment.objects.create(
+                tenant=tenant,
+                client=client,
+                user=accountant,
+            )
+            ClientTag.objects.create(tenant=tenant, client=client, tag=tag)
     return Clients(tenant, alpha, beta)
 
 
@@ -128,9 +163,24 @@ def _runtime_counts_by_client(table: str, tenant_id: str) -> dict[str, int]:
         return {str(row[0]): int(row[1]) for row in cursor.fetchall()}
 
 
+# Every client-scoped table carrying a RESTRICTIVE portal policy, so the runtime denial
+# is proven on all of them rather than on the three that happened to be here first.
+#
+# The T-064 mutation matrix is what exposed the gap: dropping the portal policy on
+# obligations_obligation left this module entirely green, because nothing here read that
+# table. T-056 proves the policy's SHAPE on every table; this list is what proves the
+# BEHAVIOUR, and a table missing from it is a policy no runtime test would miss.
+#
+# The two DenyPortalAccess tables (clients_tag, audit_event) are deliberately absent:
+# app_portal holds no SELECT on them, so the privilege check fires before RLS and a
+# portal session gets `permission denied` rather than zero rows. T-055 calls them the
+# 2b backstop, asserted statically by T-056 and not exercised at runtime in 2a.
 COUNTS = [
     ("clients_onboardingitem", ONBOARDING_ITEMS_PER_CLIENT),
     ("obligations_monthlyrevenue", REVENUES_PER_CLIENT),
+    ("obligations_obligation", OBLIGATIONS_PER_CLIENT),
+    ("clients_clientassignment", ASSIGNMENTS_PER_CLIENT),
+    ("clients_clienttag", TAG_LINKS_PER_CLIENT),
 ]
 
 
