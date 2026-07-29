@@ -5,14 +5,14 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 
-from apps.tenants.models import TenantRole
+from apps.tenants.models import firm_role_choices
 
 
 class InviteIssueForm(forms.Form):
     """Who to invite, and as what."""
 
     email = forms.EmailField(label=_("email address"))
-    role = forms.ChoiceField(label=_("role"), choices=TenantRole.choices)
+    role = forms.ChoiceField(label=_("role"), choices=firm_role_choices)
 
 
 class InviteAcceptForm(forms.Form):
