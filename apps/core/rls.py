@@ -63,3 +63,50 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
 def is_exempt_from_tenant_policy(table: str) -> bool:
     """Report whether a table is allow-listed to carry no tenant-isolation policy."""
     return any(fnmatchcase(table, pattern) for pattern in NON_TENANT_TABLES)
+
+
+# Tables the portal coverage meta-test must not demand a portal policy for, each with
+# the reason. A RESTRICTIVE policy is only evaluated when row-level security is enabled
+# on the table; writing one onto a table where it is not is stored and never evaluated,
+# which reads as "covered" while protecting nothing. Every table below has RLS
+# deliberately disabled, so the portal is held off it by the SELECT allow-list in
+# ops/sql/roles.sql instead — asserted in both directions by the meta-test.
+PORTAL_DECISION_EXEMPT: dict[str, str] = {
+    "audit_accesslog": (
+        "RLS disabled by Phase-1 design: tenant is nullable so pre-authentication and "
+        "anonymous requests are still recorded for Marco Civil. Written in the "
+        "response phase as app_runtime, outside the portal transaction. app_portal "
+        "holds no SELECT privilege on it."
+    ),
+    "audit_platformevent": (
+        "Platform-level and cross-tenant by design, in NON_TENANT_TABLES. Buffered and "
+        "flushed outside the request transaction. app_portal holds no SELECT privilege."
+    ),
+    "audit_datasubjectrequest": (
+        "LGPD intake is a platform flow in Phase 2a, in NON_TENANT_TABLES. "
+        "app_portal holds no SELECT privilege."
+    ),
+    "tenants_membership": (
+        "Tenancy root, deliberately unpoliced: the middleware reads it to discover "
+        "the tenant before any GUC exists, as app_runtime and before SET LOCAL ROLE. "
+        "Gains a nullable client_id in T-059 and stays exempt, because exemption is "
+        "evaluated before the client-column branch. app_portal holds no SELECT "
+        "privilege."
+    ),
+    "tenants_invite": (
+        "Tenancy root, same bootstrap reason as tenants_membership. "
+        "app_portal holds no SELECT privilege."
+    ),
+    "core_tests_exampletenantmodel": (
+        "Test-only fixture model, installed by config.settings.test alone. Carries no "
+        "client_id, and a deny policy on it would be dead weight."
+    ),
+}
+
+
+def portal_decision_exemption(table: str) -> str | None:
+    """Return why a table needs no portal policy, or None if it needs one."""
+    for pattern, justification in PORTAL_DECISION_EXEMPT.items():
+        if fnmatchcase(table, pattern):
+            return justification
+    return None
