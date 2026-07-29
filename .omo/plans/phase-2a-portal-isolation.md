@@ -752,6 +752,39 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 
 **Any mutation that changes nothing is a defect** — that control is decoration and must be fixed or removed.
 
+> **Status: 16 of 18 rows RUN. Every row red. Recorded in `.evidence/T-064-happy.txt`.**
+> Deferred, both requiring Wave 3 to exist: *remove `SET LOCAL ROLE` from the middleware*
+> (T-061) and *forge `client_id`* (T-062).
+>
+> Harness: `pytest --reuse-db` keeps `test_app_mei` between runs and mutations are applied
+> as the cluster superuser, because the tables are owned by `app_test` and `CREATE POLICY`
+> needs ownership. Note that a run must capture **`ERROR` as well as `FAILED`**: under
+> `WITH INHERIT TRUE` the whole of T-057 fails at *fixture setup*, because the seeding runs
+> as `app_runtime` and now trips the portal `WITH CHECK`. A `^FAILED`-only filter reports
+> that row as green. Note also that row 9 leaves a real `GRANT` on `accounts_user` behind,
+> since `conftest` issues its grants from `PORTAL_TABLES` — revoke it explicitly.
+>
+> **Three findings. Two were controls that changed nothing; both are fixed.**
+>
+> 1. **T-057's runtime coverage reached only 3 of the 6 client-isolation policies.** It read
+>    `clients_onboardingitem`, `obligations_monthlyrevenue` and `clients_clientcompany`, so
+>    the R2 row above — *drop the policy on `obligations_obligation`* — could not turn it red
+>    no matter what the policy did. T-056 proved every policy's shape; the behaviour was
+>    proven on half of them. `COUNTS` now covers all six, and dropping the policy on each of
+>    the three newly covered tables fails four T-057 cases apiece. The two `DenyPortalAccess`
+>    tables stay out deliberately: `app_portal` holds no SELECT, so the privilege check fires
+>    before RLS and they are the 2b backstop T-055 describes.
+> 2. **`membership_role_matches_client_scope` had no automated test.** It lived in the
+>    migration, the model and two comments. The expected outcome above says "T-059 failure QA
+>    red", but that QA is a recorded evidence file rather than a test that runs, so dropping
+>    the constraint changed nothing. Now covered by
+>    `tests/tenants/test_membership_role_scope_constraint.py`.
+> 3. **The membership scope guard was satisfiable by a comment.** Its keyword check matched
+>    `apps/tenants/middleware.py`'s own explanatory comment — *"`client__isnull=True` is a
+>    SECURITY control"* — so deleting the real filter left the guard green. The keyword is now
+>    sought with comments stripped, while the `CLIENT_SCOPE_OK` marker is still read from the
+>    raw block because a marker is itself a comment.
+
 **Acceptance criteria** — Every row produces the expected red, recorded with exact failing test ids.
 **QA — happy**: full matrix with observed outcomes → `.evidence/T-064-happy.txt`
 **QA — failure**: any no-op mutation documented as a defect with remediation → `.evidence/T-064-failure.txt`
