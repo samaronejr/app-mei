@@ -49,10 +49,23 @@ MEMBERSHIP_QUERY: Final = re.compile(
     re.IGNORECASE,
 )
 
-# An actual keyword, not the word "client" in a comment. The bare-substring version of
-# this check was satisfied by prose: deleting the marker below from apps/accounts/mfa.py
-# left the guard green, because the explanatory comment above the call says "client".
+# An actual keyword in actual CODE. Two earlier versions of this check were satisfiable
+# by prose:
+#
+# * matching the bare substring "client" passed on any comment containing the word;
+# * matching a keyword still passed on a comment CONTAINING a keyword, which is not
+#   hypothetical — apps/tenants/middleware.py documents its filter as
+#   "client__isnull=True is a SECURITY control", so deleting the real filter left the
+#   guard green. Found by the T-064 mutation matrix.
+#
+# The keyword is therefore sought in code with comments stripped, while the approval
+# marker is sought in the raw block, because a marker IS a comment.
 CLIENT_KEYWORD: Final = re.compile(r"\bclient(?:_id)?(?:__\w+)*\s*=")
+
+
+def _without_comments(block: str) -> str:
+    return "\n".join(line.split("#", 1)[0] for line in block.splitlines())
+
 
 APPROVAL: Final = "# CLIENT_SCOPE_OK:"
 
@@ -170,7 +183,7 @@ def test_every_membership_query_declares_its_client_scope() -> None:
     offenders = [
         f"{path.relative_to(PROJECT_ROOT)}:{number}"
         for path, number, block in _call_sites()
-        if not CLIENT_KEYWORD.search(block) and APPROVAL not in block
+        if not CLIENT_KEYWORD.search(_without_comments(block)) and APPROVAL not in block
     ]
 
     # Then each either filters on client or carries an explicit approval marker
@@ -205,7 +218,28 @@ def test_each_known_firm_side_site_filters_on_client(site: str) -> None:
     # Then it exists and names client as a KEYWORD. Listing them individually means
     # deleting a filter fails by name rather than shrinking a count nobody checks.
     assert blocks, f"{site} no longer contains a Membership query"
-    assert any(CLIENT_KEYWORD.search(block) for block in blocks), site
+    assert any(CLIENT_KEYWORD.search(_without_comments(block)) for block in blocks), (
+        site
+    )
+
+
+def test_a_keyword_in_a_comment_does_not_excuse_an_unscoped_query() -> None:
+    # Given the exact shape apps/tenants/middleware.py has: a comment that documents
+    # the filter by name, above a query that no longer applies it
+    documented_but_not_applied = (
+        "# client__isnull=True is a SECURITY control, not a tidy-up.\n"
+        "Membership.objects.filter(user=user, tenant=resolved).exists()"
+    )
+
+    # Then the comment does not satisfy the guard, though it contains the keyword
+    # verbatim. The T-064 matrix found this: deleting the real filter from the
+    # middleware left this module green, because the comment above it survived.
+    assert CLIENT_KEYWORD.search(documented_but_not_applied)
+    assert not CLIENT_KEYWORD.search(_without_comments(documented_but_not_applied))
+
+    # And the real thing still passes, so the strip has not broken the common case
+    applied = "Membership.objects.filter(user=user, client__isnull=True).exists()"
+    assert CLIENT_KEYWORD.search(_without_comments(applied))
 
 
 def test_an_unscoped_query_is_actually_flagged() -> None:
