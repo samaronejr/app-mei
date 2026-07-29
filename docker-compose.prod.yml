@@ -262,7 +262,10 @@ services:
     mem_limit: 256m
 
   caddy:
-    image: caddy:2-alpine
+    # Built, not pulled: the stock image has no DNS provider module, and a wildcard
+    # certificate can only be issued over DNS-01. See ops/caddy/Dockerfile.
+    build:
+      context: ./ops/caddy
     # Terminates TLS and sets X-Forwarded-Proto, which prod.py's SECURE_PROXY_SSL_HEADER
     # requires. Without a proxy setting that header, SECURE_SSL_REDIRECT=True produces
     # an infinite redirect loop rather than an error.
@@ -271,8 +274,31 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     environment:
+      # SITE_ADDRESS must name BOTH the wildcard and the apex, comma-separated:
+      #   *.samaronefialho.dev, samaronefialho.dev
+      # The wildcard covers every firm host `<slug>.<domain>` AND every portal host
+      # `<slug>-portal.<domain>`, because `acme-portal` is a single DNS label. That is
+      # the whole reason the portal host is `<slug>-portal.<domain>` and not
+      # `portal.<slug>.<domain>`: the latter is two labels, and no public CA issues
+      # `*.*.<domain>`.
       SITE_ADDRESS: ${SITE_ADDRESS:?SITE_ADDRESS must be set}
-      TLS_DIRECTIVE: ${TLS_DIRECTIVE:-tls internal}
+      # TLS is two variables, not one, because the Caddyfile grammar forbids a `{` with
+      # content after it on the same line — so the DNS challenge cannot be injected as a
+      # one-line `tls { ... }`. Staging sets TLS_DIRECTIVE and leaves ACME_DNS_OPTION
+      # empty; production does the reverse. ops/Caddyfile documents the pair.
+      # `${VAR-default}`, NOT `${VAR:-default}`. The colon form substitutes when the
+      # variable is unset OR EMPTY, so production's deliberate `TLS_DIRECTIVE=` would
+      # silently become `tls internal` — Caddy's self-signed CA, every browser warning,
+      # and ACME_DNS_OPTION ignored, on a deployment that looks correctly configured.
+      # Without the colon, an explicit empty value stays empty and only an absent
+      # variable falls back.
+      TLS_DIRECTIVE: ${TLS_DIRECTIVE-tls internal}
+      ACME_DNS_OPTION: ${ACME_DNS_OPTION-}
+      # Required whenever ACME_DNS_OPTION selects the cloudflare challenge. Scope the
+      # token to Zone -> DNS -> Edit on this zone only: DNS-01 writes a _acme-challenge
+      # TXT record and needs nothing else.
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
     ports:
       - "80:80"
       - "443:443"
