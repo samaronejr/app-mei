@@ -4,9 +4,29 @@
 > fixed, none argued down. Oracle reproduced six of them on a live PostgreSQL 16.14 cluster.
 > Every fix is traceable to a finding — receipts in `.omo/drafts/phase-2a-portal-isolation.md`.
 >
-> **Wave-1 status (round 6): T-051…T-055 and T-057 are APPROVED for implementation.**
-> T-056 was patched in this revision (W1-BL-1, W1-BL-2) and must be re-reviewed before the
-> meta-test is written. Wave 3 (T-061/T-062) remains under review.
+> **Wave-1 status: CLOSED.** T-051…T-055 and T-057 approved in round 6. T-056 was patched
+> for W1-BL-1 and W1-BL-2, and the required re-review has now been done against all 13 of
+> its spec requirements: 12 conformed, and the re-review found **W1-BL-3** (below), which
+> is fixed. Wave 3 (T-061/T-062) remains under review.
+>
+> **W1-BL-3 — T-056 asserted `roles` by containment, not equality.** The spec requires
+> `roles={app_portal}`; the implementation used `roles` only as its selection filter
+> (`%s = ANY(roles)`) and never compared the set. A policy authored
+> `AS RESTRICTIVE FOR ALL TO app_portal, app_runtime` is selected by that filter and
+> satisfies every other assertion — restrictive, `cmd=ALL`, `NULLIF(`, `, true)`, names
+> `app.client_id`, and anchors the column as the left operand of both `qual` and
+> `with_check`. Planted on a live cluster, T-056 stayed **green**.
+> A RESTRICTIVE policy binds every role in its `TO` clause, so that policy ANDs the client
+> predicate into the firm's own connection: with `app.client_id` unset the GUC reads NULL,
+> the comparison evaluates to NULL, and RLS admits a row only on true — the firm reads
+> **zero rows** and nothing raises. That is the same outcome as an inheriting grant,
+> reached by **authoring a policy** instead of by **granting a role**; T-056 covered the
+> granting route and missed the authoring one. Fixed by asserting
+> `policy.roles == {PORTAL_ROLE}` in both the per-table branch and the global sweep — the
+> sweep independently, because it is the only assertion reaching tables the `tenant_id`
+> enumeration never visits. Not automatable: `CREATE POLICY` requires table ownership and
+> the test login is not the owner, the same constraint that keeps T-051's grant mutation
+> manual. Falsified by hand; recorded in `.evidence/T-056-failure.txt`.
 
 ## TL;DR (For humans)
 
@@ -723,6 +743,7 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 | **`PORTAL_DECISION_EXEMPT["*"] = "x"`** | T-056 pinned-exempt-set assertion red |
 | **`GRANT INSERT ON obligations_obligation TO app_portal`** | T-056 write-privilege assertion red |
 | **portal policy `AS RESTRICTIVE` → permissive** | T-056 all-portal-policies-restrictive assertion red |
+| **portal policy `TO app_portal` → `TO app_portal, app_runtime`** | T-056 role-set-equality assertion red. *W1-BL-3. This is the AUTHORING route to the zero-rows failure; the `WITH INHERIT TRUE` row above is only the GRANTING route. Green before the fix: the policy is selected by `= ANY(roles)` and passes every shape assertion, while binding the firm's own connection to a client predicate that is NULL for it. Requires table ownership, so this row is manual* |
 | Disable RLS on a policed table | T-056 `relrowsecurity` assertion red |
 | Remove `SET LOCAL ROLE` from the middleware | T-061 red; T-057 test 7 red |
 | **Forge `client_id` via query param / header / session** | T-062 behavioural test red |
