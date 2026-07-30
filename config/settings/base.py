@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     "apps.lgpd",
     "apps.obligations",
     "apps.audit",
+    "apps.portal",
     "apps.authz",
     "apps.security",
     "apps.tenants",
@@ -87,8 +88,23 @@ MIDDLEWARE = [
     # property of the account, not of the firm it is visiting, so it is settled
     # without resolving a tenant or opening the tenant transaction.
     "apps.accounts.middleware.MFAEnforcementMiddleware",
+    # Immediately after MFAEnforcementMiddleware, and the three that follow are one
+    # ordered group enforced at startup by core.E005/E006/E007.
+    #
+    # The dispatcher precedes PortalMiddleware because _is_non_atomic in both portal
+    # and tenant middleware resolves against request.urlconf; a dispatcher running
+    # later would have them decide transaction behaviour from ROOT_URLCONF.
+    "apps.portal.middleware.HostDispatchMiddleware",
+    # INSIDE MFAEnforcementMiddleware, never outside it. Outside, _must_enrol runs
+    # within the portal transaction, where requires_mfa() reads tenants_membership and
+    # is_mfa_enabled() reads mfa_authenticator — app_portal holds SELECT on neither, so
+    # every authenticated portal request would die with permission denied. Being inside
+    # SessionMiddleware matters for the same reason: django_session is written in its
+    # response phase, after COMMIT, in autocommit as app_runtime.
+    "apps.portal.middleware.PortalMiddleware",
     # After AuthenticationMiddleware: tenant resolution reads request.user to check
     # membership, and running earlier would make that check pass for everyone.
+    # After PortalMiddleware, which no-ops it on portal hosts.
     "apps.tenants.middleware.TenantMiddleware",
     # After TenantMiddleware: the authenticated limits are keyed on
     # (tenant_id, user_id), and the tenant is not resolved before then. The

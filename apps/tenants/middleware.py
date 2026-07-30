@@ -31,6 +31,7 @@ from django.http.response import HttpResponseBase
 from django.urls import Resolver404, resolve
 
 from apps.core.tenancy import current_tenant_id
+from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.models import Membership, Tenant
 
 TENANT_GUC = "app.tenant_id"
@@ -67,6 +68,22 @@ class TenantMiddleware:
         """Establish tenant context, run the request inside it, and tear it down."""
         if self._is_non_atomic(request):
             return self._run_without_database_context(request)
+        if portal_slug_from_host(request.get_host()) is not None:
+            # PortalMiddleware owns this request entirely. Touch neither the ContextVar
+            # nor the database.
+            #
+            # Placed AFTER the _is_non_atomic guard, never before it: get_host() raises
+            # DisallowedHost, and /healthz is @non_atomic_requests and must keep serving
+            # on hosts outside ALLOWED_HOSTS without opening a connection.
+            #
+            # Returning early rather than falling through is the whole point.
+            # _run_without_database_context sets request.tenant to None and clears
+            # current_tenant_id, clobbering what PortalMiddleware just established; and
+            # _run_in_tenant_context would call _apply_guc(None) inside a SAVEPOINT of
+            # the portal transaction, where set_config(..., true) MERGES UPWARD on
+            # RELEASE. app.tenant_id would read empty for the rest of the request and
+            # the Phase-1 permissive policy would return zero rows in silence.
+            return self.get_response(request)
         resolved = self._resolve_tenant(request)
         granted = self._grant_context(request, resolved)
         return self._run_in_tenant_context(request, granted)

@@ -91,42 +91,92 @@ RUNTIME_ROLE = "app_runtime"
 PORTAL_ROLE = "app_portal"
 
 TENANT_MIDDLEWARE = "apps.tenants.middleware.TenantMiddleware"
+PORTAL_MIDDLEWARE = "apps.portal.middleware.PortalMiddleware"
+HOST_DISPATCH_MIDDLEWARE = "apps.portal.middleware.HostDispatchMiddleware"
 AUTHENTICATION_MIDDLEWARE = "django.contrib.auth.middleware.AuthenticationMiddleware"
 ACCESS_LOG_MIDDLEWARE = "apps.audit.middleware.AccessLogMiddleware"
 PLATFORM_EVENT_MIDDLEWARE = "apps.audit.middleware.PlatformEventMiddleware"
 
+# Both middlewares that open a request-scoped transaction and set a GUC. Every ordering
+# rule below applies to EACH of them, not to whichever happens to appear first.
+TRANSACTION_MIDDLEWARE: tuple[str, ...] = (TENANT_MIDDLEWARE, PORTAL_MIDDLEWARE)
+
 
 def _tenant_middleware_errors() -> list[CheckMessage]:
+    """Require both transaction owners to be present and correctly ordered.
+
+    Deliberately NOT `min()` over whichever owners happen to be registered. That
+    formulation only fires when BOTH are absent, and the reachable failure is one of
+    them missing: `TenantMiddleware` no-ops itself on a portal host, so a settings
+    module that omits `PortalMiddleware` serves portal requests with no tenant context,
+    no portal context and **no error** — `TenantScopedManager` returns `.none()` and the
+    pages are simply empty.
+    """
     middleware = list(settings.MIDDLEWARE)
-    if TENANT_MIDDLEWARE not in middleware:
+    missing = [name for name in TRANSACTION_MIDDLEWARE if name not in middleware]
+    if missing:
         return [
             Error(
-                f"{TENANT_MIDDLEWARE} is missing from MIDDLEWARE.",
+                f"{name} is missing from MIDDLEWARE.",
                 hint=(
-                    "Without it no request ever sets app.tenant_id, so every "
+                    "Without it no request ever sets its GUC, so every "
                     "row-level-security policy denies every row and every scoped "
-                    "queryset is empty. Register it after AuthenticationMiddleware."
+                    "queryset is empty — silently. Register it after "
+                    "AuthenticationMiddleware."
                 ),
                 id="core.E005",
-            ),
+            )
+            for name in missing
         ]
     if AUTHENTICATION_MIDDLEWARE not in middleware:
         return []
-    if middleware.index(TENANT_MIDDLEWARE) < middleware.index(
-        AUTHENTICATION_MIDDLEWARE
-    ):
+    authentication_index = middleware.index(AUTHENTICATION_MIDDLEWARE)
+    errors = [
+        Error(
+            f"{name} runs before AuthenticationMiddleware.",
+            hint=(
+                "Context resolution reads request.user to check membership. Run "
+                "before authentication and request.user does not exist yet, so "
+                "the membership check silently passes for everyone."
+            ),
+            id="core.E006",
+        )
+        for name in TRANSACTION_MIDDLEWARE
+        if middleware.index(name) < authentication_index
+    ]
+    return [*errors, *_portal_dispatch_order_errors(middleware)]
+
+
+def _portal_dispatch_order_errors(middleware: list[str]) -> list[CheckMessage]:
+    """Require dispatcher before portal before tenant."""
+    if HOST_DISPATCH_MIDDLEWARE not in middleware:
         return [
             Error(
-                f"{TENANT_MIDDLEWARE} runs before AuthenticationMiddleware.",
+                f"{HOST_DISPATCH_MIDDLEWARE} is missing from MIDDLEWARE.",
                 hint=(
-                    "Tenant resolution reads request.user to check membership. Run "
-                    "before authentication and request.user does not exist yet, so "
-                    "the membership check silently passes for everyone."
+                    "Without it request.urlconf is never set, so a portal host is "
+                    "served the firm's URL tree."
                 ),
                 id="core.E006",
             ),
         ]
-    return []
+    ordered = (HOST_DISPATCH_MIDDLEWARE, PORTAL_MIDDLEWARE, TENANT_MIDDLEWARE)
+    indices = [middleware.index(name) for name in ordered]
+    if indices == sorted(indices):
+        return []
+    return [
+        Error(
+            "Portal middleware order is wrong: the host dispatcher must precede "
+            f"{PORTAL_MIDDLEWARE}, which must precede {TENANT_MIDDLEWARE}.",
+            hint=(
+                "The dispatcher sets request.urlconf, which both _is_non_atomic "
+                "implementations resolve against; and the tenant middleware no-ops "
+                "itself on a portal host only after the portal middleware has "
+                "established context."
+            ),
+            id="core.E006",
+        ),
+    ]
 
 
 def _outside_tenant_transaction_errors() -> list[CheckMessage]:
@@ -139,21 +189,22 @@ def _outside_tenant_transaction_errors() -> list[CheckMessage]:
     succeed and the rows are simply absent afterwards.
     """
     middleware = list(settings.MIDDLEWARE)
-    if TENANT_MIDDLEWARE not in middleware:
+    owners = [name for name in TRANSACTION_MIDDLEWARE if name in middleware]
+    if not owners:
         return []
-    tenant_index = middleware.index(TENANT_MIDDLEWARE)
     return [
         Error(
-            f"{name} must be registered before {TENANT_MIDDLEWARE}.",
+            f"{name} must be registered before {owner}.",
             hint=(
-                "Inside the tenant transaction, a rolled-back request erases its own "
+                "Inside a request transaction, a rolled-back request erases its own "
                 "audit and access-log rows — precisely the records that matter when a "
                 "request fails. List it earlier in MIDDLEWARE."
             ),
             id="core.E007",
         )
+        for owner in owners
         for name in (ACCESS_LOG_MIDDLEWARE, PLATFORM_EVENT_MIDDLEWARE)
-        if name in middleware and middleware.index(name) > tenant_index
+        if name in middleware and middleware.index(name) > middleware.index(owner)
     ]
 
 
