@@ -1,12 +1,16 @@
 # Phase 2b — Portal write access and the document vault — Work Plan
 
-> **Revision 2.** Revision 1 was rejected by Momus (7 blocking) and Oracle (10 blocking,
-> every one reproduced on a live PostgreSQL 16.14 cluster). Its framing survived; almost
-> every specific did not, and it concealed its hardest problem in the one place none of
-> Phase 2a's machinery reaches. Each correction below is marked **[R1→R2]** at the point of
-> the change.
+> **Revision 3.** Revision 1 was rejected by both reviewers; revision 2 was rejected again,
+> by both, on the same blocking defect — **the correction I wrote for C1 was itself broken,
+> and broken in the fail-OPEN direction**. Corrections are marked **[R1→R2]** and
+> **[R2→R3]** at the point of change.
 >
-> **Status: revised, NOT re-reviewed.** Must go back to Momus and Oracle before decomposition.
+> The lesson is recorded here rather than in a commit message, because it generalises: I
+> flagged C1 as the thing I could not verify about my own work, and I was right to flag it
+> and wrong in the fix. A correction written confidently into a plan is not safer than the
+> defect it replaces — it is more dangerous, because it reads as settled.
+>
+> **Status: revised, NOT re-reviewed.**
 
 ## What this phase is actually about
 
@@ -62,8 +66,19 @@ Four ways out, with materially different security properties:
 | Pre-signed URLs | Needs an object store that does not exist; a signed URL outlives the session that minted it and cannot be revoked inside its lifetime |
 
 **Recommendation to be ratified, not assumed**: cap the size and return an in-memory
-`HttpResponse`. **Exit criterion**: the decision is written down, and the
-`_reject_streaming` interaction is stated explicitly in it.
+`HttpResponse`.
+
+**Exit criteria** *[R2→R3: revision 2 said "the decision is written down", which is
+satisfiable by writing anything down — including the wrong option. That is decoration, in
+the gate written to prevent decoration, and it violates operating rule 3.]* — all three
+checkable:
+
+1. No portal response path constructs a `StreamingHttpResponse` subclass, asserted by a test
+   that walks the portal urlconf's view returns.
+2. The byte cap is a **named constant** with a test at the boundary (at the cap succeeds, one
+   over is refused).
+3. If the chosen option bypasses the portal transaction, the compensating authorisation is
+   named and has its own test.
 
 ### V4 — Where do the bytes live, and do they survive a deploy? (blocks every vault todo)
 
@@ -128,12 +143,67 @@ Therefore revision 1's option 1 (grant the authz tables) is **incomplete**, and 
 (cache the matrix) is both incomplete and contrary to the design principle that the matrix is
 data so changing a grant is a data edit.
 
-**DECIDED — resolve before the role switch, using machinery that already exists.**
-`PortalMiddleware._grant_context` already holds the `Membership` and already runs as
-`app_runtime`. Call `granted_levels(user, PORTAL_CAPABILITIES, tenant_id=...)` there, stash
-the result on the request, and have `can()` read the stashed level inside the portal
-transaction. `granted_levels` already exists, is already pinned to agree with `resolve_level`
-by a walking test, and costs two queries for the whole set. No denied table is touched.
+**DECIDED — resolve inside `_run_in_portal_context`, after both ContextVars are live and
+before the role switch.**
+
+*[R2→R3: revision 2 said `_grant_context`. **That call site cannot work, and it fails in both
+directions.**]* `role_of` does not take a client — it reads a ContextVar:
+
+```python
+# apps/authz/services.py:232
+client=current_client_id.get(),
+```
+
+and the middleware's ordering is fixed:
+
+| line | event |
+| --- | --- |
+| 154 | `_grant_context(...)` ← revision 2 put the call **here**, where the ContextVar is unset |
+| 246 | `current_client_id.set(client_id)` |
+| 256 | `request.client = membership.client` |
+| 258 | `_assume_portal_role()` |
+
+At line 154 `current_client_id.get()` is `None`, so `role_of` resolves the **firm-side**
+membership. Both outcomes are blocking, and reviewers reproduced both on the live cluster:
+
+| Case | Stashed at line 154 | Truth inside the portal context |
+| --- | --- | --- |
+| portal-only user | every capability `NONE` | all `full` |
+| **firm + client membership in one firm** | `invoices.issue: full`, `reports.view_financial: full` | `limited`, `limited` |
+
+The first fails closed — every portal view 403s, so the phase does not ship. **The second
+fails open**: the firm owner's levels are stashed onto a portal session, reopening the exact
+escalation C2 exists to close, through C2's own machinery. It voids two invariants Phase 2a
+shipped: `PortalMiddleware`'s `client__isnull=False`, documented as *"the SECURITY control
+here"* — the stash reads `client=None`, precisely the row that filter excludes — and
+`_is_attached_to`'s safety argument, *"ONLY SAFE BECAUSE `role_of` ABOVE FILTERED ON THE SAME
+CLIENT"*, which becomes false when the resolution did not filter on the client at all.
+
+**The call goes between line 256 and line 258.** Both ContextVars are live, the role is still
+`app_runtime`, and line 256 already proves a tenant-scoped read is safe at that point.
+
+Three requirements come with it:
+
+1. **`can()` must RAISE** if asked for a capability outside the stashed set during a portal
+   request — never fall through to `resolve_level` (which would hit the denied tables) and
+   never return `NONE` (which would fail closed silently and be read as a permissions bug).
+2. **The stash is keyed on "the portal role was assumed", not on the host.** `/accounts/`
+   runs with `membership is None` and no role switch, so it must take the ordinary path.
+3. **A named test for the dual-membership user** — firm-side *and* client-side membership in
+   one firm. That is the shape that turns this from fail-closed into fail-open, and **nothing
+   in the suite covers it today.**
+
+**Two supporting claims in revision 2 were also wrong** *[R2→R3]*:
+
+* *"costs two queries"* — it is **three**, pinned as `BULK_QUERY_BUDGET = 3` in
+  `tests/authz/test_granted_levels.py:25` ("one capability existence check, one membership
+  read, one grant read").
+* *"already pinned to agree with `resolve_level` by a walking test"* — true in letter,
+  **vacuous for the two portal roles**. `client_context` appears **zero times** in that test
+  file; it runs under `tenant_context` only, so for `client_owner` and `client_collaborator`
+  both sides return all-`NONE` and the parametrisation compares two empty answers. **The pin
+  this decision leans on does not cover the case it is needed for.** Extending that test with
+  a `client_context` parametrisation is part of this todo, not a follow-up.
 
 ### C2 — the escalation trigger is real, but the branch is not the control
 
@@ -161,6 +231,26 @@ and the object dimension is real; then add the `user` check, which makes the bra
 load-bearing as revision 1 wrongly assumed it already was. Pinned by a test asserting the
 *level*: `resolve_level(portal_user, "documents.transfer") == GrantLevel.LIMITED`. Today's
 silent `FULL` is what made C2's whole discussion moot.
+
+Firm-side behaviour is genuinely unchanged — the four firm columns are untouched — but the
+demotion has **three consequences revision 2 did not name** *[R2→R3]*:
+
+1. **`tests/authz/test_matrix.py` parses `deep-research-report.md`, not `matrix.py`.** Row 59
+   reads `| Upload/download documents | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |`; its last two cells
+   must become `Limited` or 2 of 96 parametrised cells go red. **That file is described in
+   `pyproject.toml` as read-only reference material, so editing it is a governance decision,
+   not an implementation detail.** Decide explicitly whether the report or the matrix is the
+   oracle — the test's independence claim rests on them being two separate sources.
+2. **A new `RunPython(seed)` migration is required.** `0002_seed_matrix` is already applied
+   and Django will not re-run it. `seed()` uses `update_or_create`, so a fresh migration
+   fixes existing databases — without it, a fresh test DB goes green while dev and staging
+   keep `full`. That is exactly the verify-by-effect failure decided constraint 6 exists to
+   prevent, reproduced inside this plan.
+3. **`PORTAL_FULL_CAPABILITY = "documents.transfer"`** (`tests/authz/test_portal_authorization.py:30`)
+   still *passes* after the demotion, via `_is_attached_to` — so its name, its comment
+   ("no object refinement is needed") and its purpose all become false **silently**, which
+   operating rule 3 forbids. Re-point it at `clients.view_assigned` and add a LIMITED
+   assertion.
 
 ## New in revision 2 — findings the review reproduced
 
@@ -191,6 +281,13 @@ ALTER TABLE <child>  ADD CONSTRAINT <c>_fk
 
 Add `add_client_composite_fk()` beside the existing helper, and assert coverage (**W7**) —
 without that assertion this is one forgotten `models.ForeignKey` away from recurring.
+
+**`client_id` must be `NOT NULL` on every portal-writable table** *[R2→R3]*. PostgreSQL's
+default `MATCH SIMPLE` **skips the composite FK check entirely when any key column is NULL**,
+so a nullable `client_id` leaves the client pairing silently unenforced — the constraint
+exists, and does nothing. State also whether the tenant-paired FK is **dropped** or kept
+alongside the client-paired one; the latter subsumes it, and carrying both is two constraints
+where one is load-bearing.
 
 ### C4 — write grants create three existence oracles
 
@@ -276,22 +373,32 @@ duplicated W1. All rewritten; W6–W8 are new.]*
 | # | Requirement |
 | --- | --- |
 | **W1** | For every table on the write allow-list: an INSERT with a forged `client_id` raises with **`"violates row-level security policy"` and the named policy** in the message, **and `"permission denied"` NOT in it** — that last clause is what turns the mutation "revoke the grant instead of forging the id" red. Plus a **positive control**: the same INSERT with the correct `client_id` succeeds. Both failures are SQLSTATE `42501` and both surface as `ProgrammingError`, so asserting on exception type alone passes against the very failure W1 exists to detect |
-| **W1b** | For every portal-policed table **not** on the write allow-list, `WITH CHECK` remains statically asserted, and `STATIC_ONLY_TABLES == PORTAL_POLICED_TABLES - WRITE_ALLOWLIST` is pinned, so a table silently dropping out of runtime coverage turns the meta-test red |
+| **W1b** | For every portal-policed table **not** on the write allow-list, `WITH CHECK` remains statically asserted. `STATIC_ONLY_TABLES` is an **independent literal list**, asserted equal to `PORTAL_POLICED_TABLES - WRITE_ALLOWLIST`. *[R2→R3: if it were DEFINED as that difference the assertion is a tautology that can never fail — the revision-1 W1 defect, reproduced in the requirement written to replace it. The literal is what makes a table dropping out of runtime coverage turn the meta-test red]* |
 | **W2** | The `DenyPortalAccess` backstop is exercised **without a permanent grant**: inside `transaction.atomic()`, as the table owner, `GRANT SELECT`, assert the portal reads **zero** rows, then **drop the deny policy and assert the same query returns rows** (the positive control that makes the zero mean anything), then `ROLLBACK`. Verified: `GRANT` is transactional and leaves no residue. `USING (false)` on SELECT **returns zero rows and never raises**, so the naive assertion passes when the grant is absent, when the policy is absent, and when the table is empty |
 | **W3** | The write allow-list is pinned, `ops/sql/roles.sql` remains the oracle, and the extractor uses `re.finditer` keyed on the loop variable (`portal_table` vs `portal_write_table`) and **asserts both blocks were found** — a single `re.search` returns only the first, leaving the write list pinned by nothing while every assertion stays green |
-| **W4** | `DELETE`, `TRUNCATE`, `REFERENCES` and sequence privileges are asserted **flat zero**, in an assertion **structurally separate** from the allow-list, so one map entry cannot reopen them |
+| **W4** | `DELETE`, `TRUNCATE`, `REFERENCES`, **`UPDATE`** and sequence privileges are asserted **flat zero at TABLE level** via `has_table_privilege`, in an assertion **structurally separate** from the allow-list. Column-level `UPDATE` grants are pinned separately via `has_any_column_privilege`. *[R2→R3: revision 2 dropped `UPDATE` from the flat-zero set — narrowing a shipped five-privilege invariant, so a blanket `GRANT UPDATE` would have passed every requirement in this plan. Unnecessary: verified on the cluster that after `GRANT UPDATE (description)`, `has_table_privilege(...,'UPDATE')` is **false** while `has_any_column_privilege(...,'UPDATE')` is **true** — flat-zero and the column grant constraint 4 permits are compatible]* |
 | **W5** | A portal user cannot write a row attributed to another client, proven at the DB layer with a positive control. Covers `INSERT`; if any column-level `UPDATE` is granted, covers `UPDATE` separately, whose semantics differ (`USING` selects the rows, `WITH CHECK` constrains the result) |
-| **W6** | A portal user issued client A's storage key, replaying it as client B, is **refused at the storage layer**, with a positive control (B's own key succeeds in the same test). Without this, W1–W5 protect the metadata while the bytes stay open |
-| **W7** | For every table on the write allow-list, **every FK column is covered by a constraint whose key includes `client_id`** — the assertion that keeps C3 from recurring |
+| **W6** | A portal user issued client A's storage key, replaying it as client B, is **refused before any byte is read, by a named check whose location V4 pins**, with a positive control (B's own key succeeds in the same test). *[R2→R3: revision 2 said "at the storage layer" — a category error under V4's own recommended outcome, since `FileSystemStorage` has no layer that can refuse anything. The refusal is the Django view, which is this plan's stated single layer, and naming it that way is what makes the requirement satisfiable]* Without this, W1–W5 protect the metadata while the bytes stay open |
+| **W7** | For every table on the write allow-list, every FK column is either covered by a constraint whose key includes `client_id`, **or named in a pinned exemption literal with a justification**, in the shape of `PORTAL_DECISION_EXEMPT`. *[R2→R3: revision 2's "every FK column" is unsatisfiable — `tenant_id → tenants_tenant` and `uploaded_by_id → accounts_user` can never be client-paired, because those parents have no `client_id`. Without a pinned exemption it gets relaxed ad hoc on first contact]* |
 | **W8** | No `ON CONFLICT` / `ignore_conflicts` / `get_or_create` on any portal write path (grep guard, with the self-test the guard family requires) |
 
 ### Inherited pins this phase will break, deliberately
 
-* `EXPECTED_TENANT_TABLE_COUNT = 14` → **15** once the documents table carries `tenant_id`.
-* `PORTAL_TABLES` 6 → **7**, and T-064's row 9 ("add a 7th entry") becomes "an eighth".
+*[R2→R3: revision 2 listed two. There are seven, and an incomplete list defeats the section's
+whole purpose — it exists precisely so nobody meets an unexpected red and relaxes it.]*
 
-Both reds are **correct** — the pins exist to force a deliberate edit. Named here because an
-implementer hitting a red **NON-NEGOTIABLE** meta-test mid-wave will be tempted to relax it.
+| Pin | Change | Stage |
+| --- | --- | --- |
+| `EXPECTED_TENANT_TABLE_COUNT = 14` | → **15** once the documents table carries `tenant_id` | 3 |
+| `PORTAL_TABLES` 6 → **7** | T-064 row 9 ("add a 7th entry") becomes "an eighth" | 3 |
+| `test_the_portal_role_holds_no_write_privilege_anywhere` | flat-zero sweep goes red the moment INSERT is granted; must split into allow-listed INSERT + flat-zero DELETE/TRUNCATE/REFERENCES/UPDATE | 4 |
+| `test_the_conftest_allow_list_matches_the_production_artifact` | reshaped when `roles.sql` gains a second `DO` block | 4 |
+| `test_the_portal_role_can_read_the_allow_list_and_nothing_else` | same | 4 |
+| `tests/authz/test_matrix.py` | 2 of 96 cells, against the `deep-research-report.md` oracle | 1 |
+| `PORTAL_FULL_CAPABILITY` | passes but becomes semantically false — re-point it | 1 |
+
+Every red is **correct**; the pins exist to force a deliberate edit. What is not acceptable is
+meeting one that this table did not predict.
 
 ## Execution stages
 
@@ -302,7 +409,7 @@ tables do not exist yet".]*
 
 | Stage | Contents | Gate |
 | --- | --- | --- |
-| 1 | **C1 + C2.** No schema change, no grant. Pure `apps/authz/` and middleware work; unblocks every portal view | — |
+| 1 | **C1 + C2.** No schema change, no write grant. *[R2→R3: not "pure `apps/authz/` and middleware work" — C2 also needs a data migration and an edit to `deep-research-report.md`]* Unblocks every portal view | — |
 | 2 | **V3, V4, V5, V6.** Decisions, not code | Stage 1 green |
 | 3 | **C5**, documents schema, RLS policy, client-paired FKs, `client_id`-leading unique constraints, count-pin bumps — **with the write grant still zero**, so T-056 stays green throughout | V-gates closed |
 | 4 | **The write grant**, the per-verb allow-list mechanism, C3/C4 guards, and the W1–W8 runtime proofs. Necessarily last: they need the table to exist | Stage 3 green |
@@ -328,7 +435,8 @@ Unchanged from 2a, and two added because they cost real time there:
 2. A forged `client_id` on write is refused **by a named policy**, with a positive control.
 3. A document cannot be attached to another client's obligation — the C3 hole, closed and
    asserted.
-4. Another client's storage key, replayed, is refused **at the storage layer**.
+4. Another client's storage key, replayed, is refused **before any byte is read**, by the
+   named check V4 pins.
 5. The `DenyPortalAccess` policies refuse a read at runtime, proven without a permanent grant.
 6. `app_portal` holds no `DELETE`, `TRUNCATE`, `REFERENCES` or sequence privilege, and write
    access only to the pinned allow-list.
