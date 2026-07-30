@@ -30,14 +30,36 @@ def streamer(_request: HttpRequest) -> StreamingHttpResponse:
 
 
 @transaction.non_atomic_requests
-def no_database(_request: HttpRequest) -> HttpResponse:
-    """A view that opted out of the request transaction."""
-    return HttpResponse("ok")
+def no_database(_request: HttpRequest) -> JsonResponse:
+    """Report whether a transaction was opened, and as which role.
+
+    Returning a bare "ok" made the criterion untestable: a middleware that opened a
+    transaction and switched the role anyway would revert both at commit, and the test
+    could not tell the difference.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT current_user")
+        row = cursor.fetchone()
+    return JsonResponse(
+        {"role": str(row[0]), "in_atomic": connection.in_atomic_block},
+    )
+
+
+def fake_admin(_request: HttpRequest) -> HttpResponse:
+    """Stand in for the Django admin at /admin/.
+
+    Mounted ON PURPOSE. Without a route here the resolver 404s /admin/ by itself, so
+    the middleware's admin gate could be deleted entirely and its test would still
+    pass -- the control would be decoration. With this route, only the gate produces
+    the 404.
+    """
+    return HttpResponse("ADMIN REACHED")
 
 
 urlpatterns = [
     path("probe", probe, name="portal-probe"),
     path("streamer", streamer, name="portal-streamer"),
     path("nodb", no_database, name="portal-nodb"),
+    path("admin/", fake_admin, name="portal-fake-admin"),
     path("accounts/", include("allauth.urls")),
 ]

@@ -19,7 +19,9 @@ from apps.core.checks import (
     ACCESS_LOG_MIDDLEWARE,
     AUTHENTICATION_MIDDLEWARE,
     HOST_DISPATCH_MIDDLEWARE,
+    MFA_MIDDLEWARE,
     PORTAL_MIDDLEWARE,
+    RATE_LIMIT_MIDDLEWARE,
     TENANT_MIDDLEWARE,
     check_tenant_middleware,
 )
@@ -99,3 +101,34 @@ def test_e007_fires_when_the_access_log_moves_inside_either_transaction(
     # request erases its own statutory access log — the record an incident actually
     # needs.
     assert "core.E007" in _ids(settings, middleware)
+
+
+def test_e006_fires_when_the_portal_is_hoisted_outside_the_mfa_middleware(
+    settings: SettingsWrapper,
+) -> None:
+    # Given the portal group moved before MFAEnforcementMiddleware
+    middleware = [
+        m
+        for m in settings.MIDDLEWARE
+        if m not in {HOST_DISPATCH_MIDDLEWARE, PORTAL_MIDDLEWARE}
+    ]
+    at = middleware.index(MFA_MIDDLEWARE)
+    middleware[at:at] = [HOST_DISPATCH_MIDDLEWARE, PORTAL_MIDDLEWARE]
+
+    # Then E006 fires. Outside the MFA middleware, _must_enrol runs INSIDE the portal
+    # transaction and reads tenants_membership and mfa_authenticator — app_portal can
+    # see neither, so every authenticated portal request 500s. The three-way check this
+    # replaced reported nothing for this mutation.
+    assert "core.E006" in _ids(settings, middleware)
+
+
+def test_e006_fires_when_the_rate_limiter_is_hoisted_above_the_group(
+    settings: SettingsWrapper,
+) -> None:
+    # Given RateLimitMiddleware moved above the whole portal group
+    middleware = [m for m in settings.MIDDLEWARE if m != RATE_LIMIT_MIDDLEWARE]
+    middleware.insert(middleware.index(MFA_MIDDLEWARE), RATE_LIMIT_MIDDLEWARE)
+
+    # Then E006 fires. This is the fourth leg of the positional assertion, which
+    # nothing enforced before: the previous check passed and the whole suite passed.
+    assert "core.E006" in _ids(settings, middleware)

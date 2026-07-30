@@ -93,6 +93,8 @@ PORTAL_ROLE = "app_portal"
 TENANT_MIDDLEWARE = "apps.tenants.middleware.TenantMiddleware"
 PORTAL_MIDDLEWARE = "apps.portal.middleware.PortalMiddleware"
 HOST_DISPATCH_MIDDLEWARE = "apps.portal.middleware.HostDispatchMiddleware"
+MFA_MIDDLEWARE = "apps.accounts.middleware.MFAEnforcementMiddleware"
+RATE_LIMIT_MIDDLEWARE = "apps.security.middleware.RateLimitMiddleware"
 AUTHENTICATION_MIDDLEWARE = "django.contrib.auth.middleware.AuthenticationMiddleware"
 ACCESS_LOG_MIDDLEWARE = "apps.audit.middleware.AccessLogMiddleware"
 PLATFORM_EVENT_MIDDLEWARE = "apps.audit.middleware.PlatformEventMiddleware"
@@ -160,19 +162,35 @@ def _portal_dispatch_order_errors(middleware: list[str]) -> list[CheckMessage]:
                 id="core.E006",
             ),
         ]
-    ordered = (HOST_DISPATCH_MIDDLEWARE, PORTAL_MIDDLEWARE, TENANT_MIDDLEWARE)
-    indices = [middleware.index(name) for name in ordered]
+    # The full four-way order, anchored on MFAEnforcementMiddleware. An earlier version
+    # asserted only that the first three were in relative order, which left two legs
+    # unenforced: RateLimitMiddleware could be hoisted above the whole group, and the
+    # portal could be moved OUTSIDE the MFA middleware, and `manage.py check` stayed
+    # clean for both. The second is the dangerous one — outside MFA, `_must_enrol` runs
+    # inside the portal transaction and reads tenants_membership and mfa_authenticator,
+    # neither of which app_portal may see, so every authenticated portal request 500s.
+    ordered = (
+        MFA_MIDDLEWARE,
+        HOST_DISPATCH_MIDDLEWARE,
+        PORTAL_MIDDLEWARE,
+        TENANT_MIDDLEWARE,
+        RATE_LIMIT_MIDDLEWARE,
+    )
+    present = [name for name in ordered if name in middleware]
+    indices = [middleware.index(name) for name in present]
     if indices == sorted(indices):
         return []
     return [
         Error(
-            "Portal middleware order is wrong: the host dispatcher must precede "
-            f"{PORTAL_MIDDLEWARE}, which must precede {TENANT_MIDDLEWARE}.",
+            "Portal middleware order is wrong. Required: "
+            + " -> ".join(name.rsplit(".", 1)[-1] for name in ordered),
             hint=(
                 "The dispatcher sets request.urlconf, which both _is_non_atomic "
-                "implementations resolve against; and the tenant middleware no-ops "
-                "itself on a portal host only after the portal middleware has "
-                "established context."
+                "implementations resolve against. The portal must sit INSIDE "
+                "MFAEnforcementMiddleware, or _must_enrol runs in the portal "
+                "transaction and reads tables app_portal cannot see. The tenant "
+                "middleware no-ops itself on a portal host only after the portal has "
+                "established context, and the rate limiter keys on a resolved tenant."
             ),
             id="core.E006",
         ),

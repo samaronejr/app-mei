@@ -162,8 +162,8 @@ def test_an_anonymous_portal_request_runs_as_app_runtime_with_empty_gucs(
     # Then the role is NOT switched and neither GUC is set. Assuming app_portal with no
     # client would make the login page itself read zero rows.
     assert seen["role"] == "app_runtime"
-    assert seen["tenant_guc"] in {"", "UNSET"}
-    assert seen["client_guc"] in {"", "UNSET"}
+    assert seen["tenant_guc"] == ""
+    assert seen["client_guc"] == ""
 
 
 def test_a_firm_side_user_is_refused_on_the_portal_host(firm: Firm) -> None:
@@ -188,11 +188,12 @@ def test_the_admin_is_refused_before_the_transaction_opens(firm: Firm) -> None:
     # When they ask for the Django admin
     response = http.get("/admin/", headers={"host": PORTAL_HOST})
 
-    # Then 404, not 500. AdminTenantMiddleware cannot refuse this host — its lookup
-    # yields the slug "acme-portal", which no tenant owns — so this gate is the only
-    # control, and reaching the admin would query tenants_tenant as app_portal and
-    # raise permission denied.
+    # Then 404, and the gate is what produced it. The probe urlconf deliberately
+    # SERVES /admin/, so the resolver would return 200 -- delete the gate and this
+    # test fails. Without that route the 404 came from the resolver and the test
+    # could not fail, which made the control decoration.
     assert response.status_code == HTTPStatus.NOT_FOUND
+    assert b"ADMIN REACHED" not in response.content
 
 
 def test_neither_the_role_nor_the_gucs_survive_the_request(firm: Firm) -> None:
@@ -220,7 +221,7 @@ def test_a_second_request_on_the_same_connection_is_unaffected(firm: Firm) -> No
 
     # Then it sees none of the first request's context
     assert second["role"] == "app_runtime"
-    assert second["client_guc"] in {"", "UNSET"}
+    assert second["client_guc"] == ""
 
 
 def test_a_streaming_response_is_refused(firm: Firm) -> None:
@@ -242,11 +243,13 @@ def test_a_non_atomic_view_opens_no_transaction_and_no_context(firm: Firm) -> No
     # When it is served on the portal host
     response = http.get("/nodb", headers={"host": PORTAL_HOST})
 
-    # Then it succeeds without a transaction. Opening one would reintroduce exactly the
-    # connection that decorator exists to avoid — and SET LOCAL ROLE inside no
-    # transaction would silently no-op, which is the fail-open.
+    # Then it ran with NO transaction open and as app_runtime, both observed from
+    # inside the view. Asserting only the post-request role would pass even if a
+    # transaction had been opened and the role switched, since both revert at commit.
     assert response.status_code == HTTPStatus.OK
-    assert _session_role() == "app_runtime"
+    seen = dict(json.loads(response.content))
+    assert seen["in_atomic"] is False
+    assert seen["role"] == "app_runtime"
 
 
 def test_a_forged_client_id_is_ignored_from_every_direction(firm: Firm) -> None:
