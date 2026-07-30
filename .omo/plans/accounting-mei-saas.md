@@ -398,16 +398,17 @@ These todos **research before implementing**. Record the finding in the todo's e
   - `TenantScopedModel` (abstract, extends the above): `tenant = models.ForeignKey("tenants.Tenant", on_delete=models.PROTECT, db_index=True)`, with `class Meta: abstract = True` and **`all_objects = models.Manager()`** only. The scoped manager arrives in T-007b.
 - Create the concrete fixture `apps/core/tests/models.py::ExampleTenantModel(TenantScopedModel)`, registered only under `config.settings.test`. The abstract bases have no table, and no real tenant-scoped model exists until T-025 — T-010 and T-012 need something concrete to assert against.
 - Every concrete tenant-scoped model declares a composite index with `tenant_id` **leading** — RLS predicates only stay index-served when `tenant_id` leads.
-- **`uuid6.uuid7()` is documented as NOT thread-safe** (its monotonic counter is unguarded), and Django calls a field `default` concurrently under threaded workers, risking duplicate PKs. **DECIDED: pin gunicorn to the `sync` worker class with `--threads 1`**, asserted in T-022 and recorded in `ops/README.md`. Celery's default prefork pool is process-based and therefore safe; if the pool is ever changed to threads or gevent, this constraint must be revisited.
+- **`uuid6.uuid7()`'s monotonic counter is unguarded** — a non-atomic read-modify-write on a module global, holding no lock. **The exposure is monotonic ordering, not uniqueness**: a duplicate key would need the 48-bit millisecond field *and* the 76 bits from `secrets.randbits(76)` to agree, and 16 threads x 4000 unlocked generations produced zero duplicates and zero repeated timestamps — the race is rare, not absent. **DECIDED: remove the race rather than tolerate it.** Every runtime UUIDv7 default routes through `apps.core.identifiers.uuid7`, which serialises on a process-local lock, and gunicorn runs **`gthread`, 2 workers x 2 threads**. Asserted in T-022 and recorded in `ops/README.md`; two tests pin it, one on the lock being held and one on the field default being the wrapper. *(A no-duplicates test would be decoration — it passes with the lock removed.)* **UUIDv7 ordering is an index-locality property, never a business ordering guarantee**: no caller may infer sequence, causality or a timestamp from a primary key. Celery's prefork pool is process-based, so each worker holds its own lock; the wrapper is also what would make a threads or gevent pool safe.
 
 **Acceptance criteria**
 - `uv run python -c "import uuid6; u=uuid6.uuid7(); assert u.version==7"` exits 0.
-- A test asserts two successive `uuid7()` values sort ascending as strings (time-ordering property).
+- A test asserts two successive `uuid7()` values sort ascending as strings. This is the **index-locality** property that keeps inserts local in the B-tree; it is **not** a business ordering guarantee, and no caller may infer sequence, causality or a timestamp from a primary key.
+- A test asserts the process-local lock is **held** while the counter advances, and a second asserts the model field default **is** `apps.core.identifiers.uuid7`. A no-duplicates test would be decoration — unlocked generation produced none in 64000 attempts, so it passes with the lock removed.
 - `ExampleTenantModel` migrates cleanly and has a composite index with `tenant_id` leading (assert via `pg_indexes`).
 - `uv run python manage.py makemigrations --check --dry-run` exits 0.
 
-**QA — happy**: uuid7 version + ordering tests, plus the `pg_indexes` leading-column assertion → `.evidence/T-007a-happy.txt`
-**QA — failure**: create an index with `tenant_id` NOT leading and assert the index-order test fails; revert → `.evidence/T-007a-failure.txt`
+**QA — happy**: uuid7 version + ordering tests, the lock-held and field-default pins, plus the `pg_indexes` leading-column assertion → `.evidence/T-007a-happy.txt`
+**QA — failure**: create an index with `tenant_id` NOT leading and assert the index-order test fails; **delete `with _LOCK` and assert the lock test fails; re-point the field default at `uuid6.uuid7` and assert the default test fails**; revert all three → `.evidence/T-007a-failure.txt`
 **Commit**: `feat(core): uuidv7 primary keys and abstract tenant-scoped base`
 
 ---
@@ -811,7 +812,7 @@ NON_TENANT_TABLES = {
 **Do** — Add **`django-ratelimit`** to `pyproject.toml` and re-lock. Apply:
 - **Login / password-reset — TENANT-INDEPENDENT**, whichever trips first: **5/m per `email`** (global, across all subdomains) **and** **20/m per IP** (global). The tenant is **not** part of either key.
 - Authenticated write endpoints (POST/PUT/PATCH/DELETE): **60/m** keyed `(tenant_id, user_id)` — tenant-keying is correct *here*, because the user is authenticated and tenant-resolved.
-- **Read endpoints: 120/m per `(tenant_id, user_id)`** — closes the DoS vector where unlimited dashboard GETs each hold a transaction open through template rendering against `sync --threads 1` workers.
+- **Read endpoints: 120/m per `(tenant_id, user_id)`** — closes the DoS vector where unlimited dashboard GETs each hold a transaction open through template rendering against the deployment's 4 concurrent request slots (`gthread`, 2 workers x 2 threads).
 - Client IP must be derived from a **trusted-proxy** configuration; document whether `X-Forwarded-For` is trusted, or the limit is either spoofable or collapses every user into one bucket behind the reverse proxy.
 Use the Redis cache from T-005. Exceeding a limit returns **429** with a pt-BR message.
 
@@ -891,9 +892,9 @@ Use the Redis cache from T-005. Exceeding a limit returns **429** with a pt-BR m
 
 **References** — User decision: single VPS (Hetzner-class) + Compose, Postgres local, **no PgBouncer**. Anchor §11 mitigation: "infrastructure-as-code".
 
-**Do** — `docker-compose.prod.yml` with pinned image tags, **gunicorn pinned to `--worker-class sync --threads 1`** (required by T-007a: `uuid6.uuid7()` is not thread-safe and is used as a PK default), whitenoise for static, a reverse proxy terminating TLS (Caddy or nginx + certbot), and restart policies. A deploy script/workflow that builds, pushes, pulls on the VPS, runs `migrate` as `app_migrator`, `collectstatic`, and restarts with zero-downtime-ish rolling. Secrets come from the VPS environment or a secrets file **never** in git. Document the one-time VPS provisioning in `ops/README.md`.
+**Do** — `docker-compose.prod.yml` with pinned image tags, **gunicorn pinned to `--worker-class gthread --workers 2 --threads 2`** (safe only because every UUIDv7 PK default routes through the process-local lock in `apps.core.identifiers`; see T-007a and `ops/README.md`), whitenoise for static, a reverse proxy terminating TLS (Caddy or nginx + certbot), and restart policies. A deploy script/workflow that builds, pushes, pulls on the VPS, runs `migrate` as `app_migrator`, `collectstatic`, and restarts with zero-downtime-ish rolling. Secrets come from the VPS environment or a secrets file **never** in git. Document the one-time VPS provisioning in `ops/README.md`.
 
-**Acceptance criteria** — A deploy run ends with `/healthz` returning 200 over HTTPS on the staging host. The running gunicorn process is asserted to use `sync` workers with `--threads 1` (grep the compose command and assert the running arg list). `git grep` finds no secret literal. Migrations run as `app_migrator` and the app process connects as `app_runtime` (assert via a `/healthz` field reporting `current_user`).
+**Acceptance criteria** — A deploy run ends with `/healthz` returning 200 over HTTPS on the staging host. The running gunicorn process is asserted to use `gthread` workers with `--workers 2 --threads 2` (grep the compose command and assert the running arg list), **and the UUIDv7 lock wrapper is asserted present in the same test** — a threaded worker without it is exactly the combination T-007a forbids, so asserting the worker class alone would pass in the unsafe state. `git grep` finds no secret literal. Migrations run as `app_migrator` and the app process connects as `app_runtime` (assert via a `/healthz` field reporting `current_user`).
 **QA — happy**: deploy, then `curl -fsS https://<staging>/healthz` → `.evidence/T-022-happy.txt`
 **QA — failure**: deploy with a deliberately wrong `DATABASE_URL`; assert the container fails its healthcheck rather than serving 500s silently → `.evidence/T-022-failure.txt`
 **Commit**: `chore(deploy): compose-based staging deploy to vps with tls`
