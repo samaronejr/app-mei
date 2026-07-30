@@ -1,6 +1,6 @@
 # Phase 2b — Portal write access and the document vault — Work Plan
 
-> **Revision 8.** Revisions 1, 2 and 3 were each rejected by both reviewers. Revision 3's
+> **Revision 9.** Revisions 1, 2 and 3 were each rejected by both reviewers. Revision 3's
 > C1 call site was confirmed **correct** — both reviewers reproduced it on the live cluster,
 > including the dual-membership shape. It was rejected on the *consequences* of C2, which
 > revision 3 decided and did not trace. Corrections are marked **[R1→R2]**, **[R2→R3]** and
@@ -348,13 +348,18 @@ guard, unconditionally — contradicting requirement 2. Both reviewers flagged t
 It is the same class of ambiguity that produced revision 2's defect, so it is now stated as a
 containment, not a range.]*
 
-**Nine requirements come with it** *[R3→R4: revision 3 shipped three. Both reviewers found the
+**Eight requirements come with it** *[R3→R4: revision 3 shipped three. Both reviewers found the
 same gap — the three cover the fall-through, the trigger and the test, and say nothing about
 the stash's lifetime, whose levels it holds, or what is in it. A stash is new mutable
 request state; requirements 4-8 are its contract. Revision 7 adds two more: both round-4 reviewers found
 the `tenant_id` hole independently, and one built a concrete cross-tenant escalation]*:
 
-1. **`can()` must RAISE** if asked for a capability outside the stashed set during a portal
+1. **`can()` must RAISE `PortalStashMiss`** — a named exception defined beside the stash, not
+   a bare `RuntimeError` and never `ProgrammingError` *[R8→R9: requirements 5 and 7 said "RAISE
+   the named exception from requirement 1" and requirement 1 named none. The whole stated reason
+   for the 5/7 rewrite was that `ProgrammingError` is "the wrong mechanism with no usable
+   diagnostic" — an unnamed exception is indistinguishable from it by any test]* — if asked for a
+   capability outside the stashed set during a portal
    request — never fall through to `resolve_level` (which would hit the denied tables) and
    never return `NONE` (which would fail closed silently and be read as a permissions bug).
 2. **The stash is keyed on "the portal role was assumed", not on the host.** `/accounts/`
@@ -402,9 +407,19 @@ the `tenant_id` hole independently, and one built a concrete cross-tenant escala
    from levels computed for the **portal's** tenant. A reviewer built the escalation: a user who
    is `client_owner` in T1 and holds **no membership at all** in T2 is handed T1's `FULL` for a
    T2 question whose truth is `NONE`. Real call sites already pass an explicit `tenant_id`.
-   **Consult the stash only when the user matches AND the tenant matches AND the client
-   matches; otherwise RAISE the named exception from requirement 1 — never "take the ordinary
-   path".** *[R7→R8: both round-5 reviewers measured what the ordinary path means under
+   **Resolve the EFFECTIVE tenant first, then compare.** The effective tenant is the explicit
+   `tenant_id` when one is given, and `current_tenant_id.get()` when it is omitted. Consult the
+   stash when the user matches AND the effective tenant equals the tenant captured in the stash;
+   otherwise RAISE `PortalStashMiss` — never "take the ordinary path".
+   *[R8→R9 — I broke this in revision 8 and an adversarial reviewer caught it. Revision 7 read
+   "`tenant_id` is **omitted or** equals the request's tenant"; revision 8 dropped the omitted
+   branch. **`require_can` calls `can(request.user, action)` with no `tenant_id`** (`services.py:175`),
+   as do `{% can %}` and `visible_nav_items` — the exact three entry points the Coverage table
+   requires to read the stash. Under revision 8's text every one of them raises on every portal
+   request, and success criterion 8 is built on `require_can`. Resolving the effective tenant
+   first is what closes both branches: the omitted case works, and a nested `tenant_context`
+   (which `record_event` enters) is caught because the ContextVar has moved off the captured
+   value.]* *[R7→R8: both round-5 reviewers measured what the ordinary path means under
    `app_portal` — `resolve_level` reads `authz_capability`, which is denied, raising
    `ProgrammingError` and **poisoning the transaction**, so a refusal becomes a 500 with a
    cascade. Requirement 1 forbade falling through for exactly that reason, so requirements 5 and
@@ -417,15 +432,29 @@ the `tenant_id` hole independently, and one built a concrete cross-tenant escala
    `_apply_gucs` and the lazy `membership.client` fetch — both of which can raise — so a token
    assigned there leaves `finally` raising `UnboundLocalError`, **masking the original
    exception**. Bind it to `None` beside the other two and guard the reset.
-9. **The stash is bound to the CLIENT, which is the third input nothing bound** *[R7→R8 —
-   the ninth gap, found by both round-5 reviewers]*. `role_of` filters on
-   `current_client_id`, so a stashed level is a function of **(user, tenant, client)**.
-   Requirements 5 and 7 bind the first two. Measured: one user, one tenant, two clients —
-   `FULL` under client A and `LIMITED` under client B, the same escalation shape requirement 7
-   closes, reached through the dimension it left open. `_grant_context` already picks among
-   multiple client memberships with `order_by("client_id").first()`, so dual-client users are
-   not hypothetical. Capture the client into the stash and compare against the captured value.
-
+> **Requirement 9 was DELETED in revision 9 — it was a tautology, the fourth in this plan.**
+> *[R8→R9]* Revision 8 added "the stash is bound to the CLIENT" and required comparing a captured
+> client against the live value. **There is nothing to compare it to.** `can()`, `resolve_level`
+> and `granted_levels` take no client parameter, so the only comparand is `current_client_id`,
+> which is **single-assignment per request** — set once at `middleware.py:247` from
+> `membership.client_id`, reset at `:265`. `tenant_context` touches only `current_tenant_id`. The
+> single mutator, `client_context`, has **zero production callers** and is actively **grep-banned
+> from request code**: `tests/portal/test_client_id_provenance_guard.py` lists `\bclient_context\(`
+> in `CLIENT_ID_WRITE` and permits it only in `apps/core/tenancy.py` (its definition) and
+> `apps/portal/middleware.py` (the one legitimate write site).
+>
+> So both sides derive from one `membership.client_id` and the comparison cannot return False —
+> the identical shape this plan rejected for `request.client` and for the obligation. Revision 8's
+> supporting measurement set `current_client_id` directly, which is "constructing an object
+> production cannot construct… testing a pure Python function, not a control."
+>
+> **The client dimension needs no requirement because it is unreachable**, and that is recorded
+> here rather than defended with a control. If a future phase gives `can()` a client parameter or
+> lifts the grep-ban, this becomes live again and the requirement returns with it.
+>
+> *The two round-6 reviewers split on exactly this. One held the provenance guard proved
+> `client_context` was reachable; the guard exists to make it unreachable. Checking the guard
+> rather than averaging the reviews is what settled it.*
 
 **Coverage — DECIDED, not left open** *[R6→R7: revision 4 said "state whether they read the
 stash or are banned from portal paths", which is satisfiable by writing one sentence. That is
@@ -676,7 +705,7 @@ duplicated W1. All rewritten; W6–W8 are new.]*
 | **W6** | A portal user issued client A's storage key, replaying it as client B, is **refused before any byte is read by the row lookup itself** — `Document.objects.get(storage_key=...)` returns no row under the portal's client-scoped RLS policy, so the view 404s before it ever calls storage. *[R6→R7: revisions 3-6 said "an authorisation check in the Django download view", naming a location and never the check. Both reviewers flagged that the location is not the mechanism. The mechanism is the RLS-confined lookup, which also means this plan's "one layer for the bytes" claim is wrong in the safe direction: the row lookup is RLS-backed, and the view's contribution is refusing to call storage until it succeeds.]* with a positive control (B's own key succeeds in the same test). *[R3→R4: revision 3 delegated the naming to V4, whose three exit criteria pin a backend, key randomness and non-dependence on secrecy, and name no check and no location. Both reviewers flagged the dangling reference. W6's own note already stated the answer, so the delegation was circular]* *[R2→R3: revision 2 said "at the storage layer" — a category error under V4's own recommended outcome, since `FileSystemStorage` has no layer that can refuse anything. The refusal is the Django view, which is this plan's stated single layer, and naming it that way is what makes the requirement satisfiable]* Without this, W1–W5 protect the metadata while the bytes stay open |
 | **W7** | For every table on the write allow-list, every FK column is either covered by a constraint whose key includes `client_id`, **or named in a pinned exemption literal with a justification**, in the shape of `PORTAL_DECISION_EXEMPT`. **The exemption list must name `client_id → clients_clientcompany` up front** *[R3→R4]* — the parent has no `client_id` column because its **pk is** the client identity (`_client_id_of`, `services.py:269-275`), so the correct constraint is the tenant-paired `FOREIGN KEY (tenant_id, client_id) REFERENCES clients_clientcompany (tenant_id, id)`. It is the first FK a documents table meets, and unnamed it gets decided ad hoc on contact — the exact failure this requirement's escape hatch exists to prevent. *[R2→R3: revision 2's "every FK column" is unsatisfiable — `tenant_id → tenants_tenant` and `uploaded_by_id → accounts_user` can never be client-paired, because those parents have no `client_id`. Without a pinned exemption it gets relaxed ad hoc on first contact]* |
 | **W8** | No `ON CONFLICT` / `ignore_conflicts` / `get_or_create` on any portal write path (grep guard, with the self-test the guard family requires) |
-| **W9** | **Every table the portal can `SELECT` is client-confined on its `USING` predicate**, asserted by the inherited `test_every_tenant_table_has_a_deliberate_portal_decision` plus `test_the_portal_role_can_read_the_allow_list_and_nothing_else`. *[R7→R8: retiring C2 rests entirely on this property — "any object a portal request can fetch is already client-matched". It is true of today's six tables, verified on the cluster. **This phase adds a seventh.** Leaving it as an observation rather than a requirement means the argument that retired C2 could be silently falsified by the documents table itself. The meta-test enumerates tables carrying `tenant_id`, and the documents table will carry one, so this is self-extending once stated.]* |
+| **W9** | **Every table the portal can `SELECT` is client-confined on its `USING` predicate**, asserted by the inherited `test_every_tenant_table_has_a_deliberate_portal_decision`, which checks RESTRICTIVE + `cmd=ALL` + `NULLIF(`/`, true)` + `app.client_id` + `_anchored` on **both** `USING` and `WITH CHECK`. *[R8→R9: revision 8 also cited `test_the_portal_role_can_read_the_allow_list_and_nothing_else`, which asserts only `readable == allow_listed` and says nothing about `qual` — cited for something it does not do. Note the enumeration is driven by tables carrying `tenant_id`, not by the SELECT grant; they coincide today and after the documents table, which is a `TenantScopedModel`.]* *[R7→R8: retiring C2 rests entirely on this property — "any object a portal request can fetch is already client-matched". It is true of today's six tables, verified on the cluster. **This phase adds a seventh.** Leaving it as an observation rather than a requirement means the argument that retired C2 could be silently falsified by the documents table itself. The meta-test enumerates tables carrying `tenant_id`, and the documents table will carry one, so this is self-extending once stated.]* |
 
 ### Inherited pins this phase will break, deliberately
 
@@ -712,7 +741,7 @@ tables do not exist yet".]*
 | --- | --- | --- |
 | 1 | **C1 only** — the stash, its nine requirements, and the restored import-time startup check. No schema change, no write grant, **no data migration, and no edit to `deep-research-report.md`** *[R7→R8: this row still carried C2 and its migration note, contradicting the retirement four sections above. Both round-5 reviewers ranked it the most damaging dangler, because the stages table is what you decompose from — it would have produced a seed-migration todo for work that was cancelled]* | — |
 | 2 | **No gate work remains** — V3, V4, V5 and V6 are all closed, and V6 is already implemented. Stage 2 collapses into Stage 3 | Stage 1 green |
-| 3 | **`django-storages[s3]` + `boto3`, and `prod.py`'s `STORAGES` switched to the S3 backend** *[R6→R7: V4 decided object storage and no stage owned the dependency or the settings change; `prod.py` is still `FileSystemStorage`]*. Then **C5**, documents schema, RLS policy, client-paired FKs, `client_id`-leading unique constraints, count-pin bumps — **with the write grant still zero**, so T-056 stays green throughout | V-gates closed |
+| 3 | **W9** — the reachability assertion the C2 retirement rests on, extended to the new documents table *[R8→R9: W9 was assigned to no stage at all. Stage 4 listed W1-W5/W7/W8 and Stage 5 listed W6, so the requirement whose own text says "this phase adds a seventh" owned no slot. The stages table is what decomposition reads — this is the mirror of the Stage 1 dangler, scheduling live work rather than cancelled work]*. Then **`django-storages[s3]` + `boto3`, and `prod.py`'s `STORAGES` switched to the S3 backend** *[R6→R7: V4 decided object storage and no stage owned the dependency or the settings change; `prod.py` is still `FileSystemStorage`]*. Then **C5**, documents schema, RLS policy, client-paired FKs, `client_id`-leading unique constraints, count-pin bumps — **with the write grant still zero**, so T-056 stays green throughout | V-gates closed |
 | 4 | **The write grant**, the per-verb allow-list mechanism, C3/C4 guards, and the **W1–W5, W7, W8** runtime proofs. Necessarily last: they need the table to exist | Stage 3 green |
 | 5 | Upload, download — **and W6**. No notification: cut by V5 | Stage 4 green |
 
@@ -748,8 +777,17 @@ Unchanged from 2a, and two added because they cost real time there:
    access only to the pinned allow-list.
 7. Document downloads appear in the Marco Civil access log.
 8. Every `require_can` reachable from the portal urlconf gates on a capability that is `FULL`
-   for **both** client roles, asserted by the **import-time startup check** — not by
-   inspection. *[R7→R8: revision 7's "every portal view authorises through `can()`" was
+   for **both** client roles, asserted by the **import-time startup check** — not by inspection —
+   **and the check finds at least one**, because Stage 5's upload and download views gate on
+   `documents.transfer` through `require_can`. *[R8→R9: the portal urlconf has **zero**
+   `require_can` views today (3 patterns: `healthz`, third-party `allauth.urls`, and
+   `portal_home` with only `@login_required`), so without a floor the criterion is true over an
+   empty set and its falsifying mutation does not exist. Given consequence 2, the path of least
+   resistance is to skip `require_can` entirely — which would satisfy criterion 8 vacuously, the
+   same prose-satisfiable failure revision 8 rejected revision 7's criterion 8 for, in the
+   vacuous-truth direction.]* `require_can` must also record the action on its wrapper
+   (`guarded.required_capability = action`); it currently keeps it only in the closure, so
+   enumeration would otherwise have to read `__closure__`/`co_freevars`. *[R7→R8: revision 7's "every portal view authorises through `can()`" was
    prose-satisfiable, had no mutation attached, and contradicted constraint 5's own statement
    that `can()` adds nothing on the portal path. The startup check is what makes it
    falsifiable: point a portal view at a non-`FULL` capability and the process refuses to
