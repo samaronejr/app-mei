@@ -1,0 +1,21 @@
+{% load i18n %}<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% translate "Portal do cliente" %}{% endblock %}</title>
+</head>
+<body>
+  {# Deliberately standalone rather than extending the firm's base.html: that layout #}
+  {# reaches for {{ perms.* }} and tenant data, and app_portal holds SELECT on        #}
+  {# neither auth_permission nor tenants_tenant, so every portal page would 500.      #}
+  {# request.user is materialised before the transaction opens and costs no query.    #}
+  <header>
+    <h1>{% translate "Portal do cliente" %}</h1>
+    <p>{{ request.user.email }}</p>
+  </header>
+  <main id="conteudo">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

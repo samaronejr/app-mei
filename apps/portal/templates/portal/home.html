@@ -1,0 +1,16 @@
+{% extends "portal/base.html" %}
+{% load i18n %}
+
+{% block content %}
+  {% if client %}
+    <h2>{{ client.legal_name }}</h2>
+    <dl>
+      <dt>{% translate "CNPJ" %}</dt>
+      <dd>{{ client.masked_cnpj }}</dd>
+      <dt>{% translate "Obrigações" %}</dt>
+      <dd>{{ obligation_count }}</dd>
+    </dl>
+  {% else %}
+    <p>{% translate "Nenhuma empresa vinculada a esta conta." %}</p>
+  {% endif %}
+{% endblock %}
