@@ -105,6 +105,28 @@ existing wildcard, and still a distinct host so `__Host-` cookies remain separat
 `ALLOWED_HOSTS`** (a `DisallowedHost` 400 is not covered by "resolves and serves TLS"), and
 the reserved-slug validator is in place — all before T-061 begins.
 
+> **V2 STATUS: CLOSED. All three criteria met; this no longer blocks Wave 3.**
+> Domain `samaronefialho.dev`, Cloudflare DNS-only (grey cloud — records resolve to the
+> origin, so `TRUSTED_PROXY_COUNT=1` is correct). Evidence in
+> `.evidence/V2-slug-validator.txt`, `.evidence/V2-tls-and-hosts.txt`, `.evidence/T-065-happy.txt`.
+>
+> 1. **Shape written down** — `.env.prod.example`, committed via a `.gitignore` negation,
+>    states `SITE_ADDRESS` as the wildcard **and** the apex.
+> 2. **Resolves and serves TLS** — live wildcard certificate, `CN=*.samaronefialho.dev`,
+>    issuer Let's Encrypt, valid to 2026-10-27. `acme-portal.samaronefialho.dev` → HTTP 200.
+> 3. **Accepted by `ALLOWED_HOSTS`** — HTTP 200 rather than 400 proves it live, and
+>    `tests/core/test_portal_host_is_allowed.py` pins the host *shape* so the assertion
+>    survives the move off this deliberately temporary domain.
+> 4. **Reserved-slug validator** — `apps/tenants/validators.py` plus `core.E009` over
+>    stored slugs.
+>
+> **Two defects in the shipped config were found only by executing this.** The documented
+> production value `TLS_DIRECTIVE="tls { dns cloudflare {env.CF_API_TOKEN} }"` **cannot
+> parse** — the Caddyfile grammar rejects a `{` with content after it on the same line, so
+> the container would never have started. TLS is now two variables, using the one-line
+> global `acme_dns` option. And `caddy:2-alpine` carries no DNS provider module, so a
+> wildcard could not be issued at all; `ops/caddy/Dockerfile` builds it with `xcaddy`.
+
 ---
 
 ## Scope
@@ -799,6 +821,29 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 **Do** — Run the documented superuser `psql` step to create `app_portal` on the existing cluster (V1). Deploy, migrate, and run both isolation suites **against the deployed cluster** (Phase 1's precedent: 41 passed in 283s). Confirm the Caddy site block serves `<slug>-portal.<domain>` (V2).
 
 **Acceptance criteria** — All suites green against staging. `app_portal` exists with the non-inheriting grant. A portal login works over HTTPS. Phase-1 assertions still hold at the S9 baseline.
+
+> **T-065 STATUS: 3 of 4 "Do" items done.** Deployed at `0865ff7` to 144.33.16.182.
+> `app_portal` created via the V1 psql step (`USAGE` false, `SET` true, 0 write grants);
+> all 7 portal migrations applied, giving 8 policies that are all RESTRICTIVE and all bind
+> `app_portal` and nothing else; Caddy serves the portal host on a real wildcard
+> certificate. **Isolation suites against the deployed cluster: 87 passed in 470s** — the
+> Phase-1 precedent was 41 in 283s, the portal suites are the difference. Success criterion
+> 4 holds: `USAGE` false and firm-side data unchanged across the deploy.
+>
+> **Blocked**: "a portal login works over HTTPS" needs T-063. Note also that staging holds
+> **zero users and zero memberships**, so a portal login cannot be exercised until a tenant
+> and a portal user are seeded, independently of Wave 3. Same for success criteria 1 and 5.
+>
+> **A live defect was found by deploying**: `TRUSTED_PROXY_COUNT` was absent from
+> `.env.prod` and therefore `0` while running behind Caddy, so for 25 hours every client IP
+> resolved to Caddy's address — one shared rate-limit bucket for all users, and a Marco
+> Civil log recording the proxy. Set to 1.
+>
+> **Two operational blockers for the next deploy**, both recorded in
+> `.evidence/T-065-happy.txt`: the server has no git remote access, so this deploy shipped
+> commits as a bundle over SSH and a read-only deploy key is needed; and `xcaddy` cannot
+> build on that box (30+ minutes, swap-thrashing, unfinished), so images must be built
+> elsewhere and shipped with `docker save | ssh docker load`.
 **QA — happy**: staging suite output + live portal login → `.evidence/T-065-happy.txt`
 **QA — failure**: cross-client read against staging returns 0 rows → `.evidence/T-065-failure.txt`
 **Commit**: `chore(ops): deploy portal isolation to staging`
