@@ -37,6 +37,7 @@ Four things here are easy to get wrong and silent when wrong:
 """
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import PermissionDenied
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
@@ -44,6 +45,9 @@ from django.http import Http404, HttpRequest, StreamingHttpResponse
 from django.http.response import HttpResponseBase
 from django.urls import Resolver404, resolve
 
+from apps.authz.matrix import CAPABILITY_SLUGS
+from apps.authz.services import Actor, granted_levels
+from apps.authz.stash import PortalStash, portal_stash
 from apps.core.tenancy import (
     CLIENT_GUC,
     NO_CLIENT,
@@ -54,6 +58,9 @@ from apps.core.tenancy import (
 )
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.models import Membership, Tenant
+
+if TYPE_CHECKING:
+    from contextvars import Token
 
 PORTAL_ROLE = "app_portal"
 ADMIN_PREFIX = "/admin/"
@@ -245,6 +252,10 @@ class PortalMiddleware:
         # token/reset, never a bare set(): one thread serves many requests.
         tenant_token = current_tenant_id.set(tenant.id if tenant else None)
         client_token = current_client_id.set(client_id)
+        # Bound here rather than at the set() below, because that call sits after two
+        # statements that can raise and `finally` would then reset a name that was
+        # never assigned, masking the original exception.
+        stash_token: Token[PortalStash | None] | None = None
         try:
             with transaction.atomic():
                 # Order is forced, not stylistic. The GUCs go first because
@@ -256,14 +267,37 @@ class PortalMiddleware:
                 self._apply_gucs(tenant, client_id)
                 request.client = membership.client if membership else None
                 if membership is not None:
+                    # Both context variables are live and the role is still
+                    # app_runtime, which is the only window where the three tables
+                    # this needs are readable.
+                    stash_token = portal_stash.set(
+                        self._build_stash(request.user, membership),
+                    )
                     self._assume_portal_role()
                 response = self.get_response(request)
                 self._reject_streaming(response, membership)
                 self._render_inside_transaction(response)
             return response
         finally:
+            if stash_token is not None:
+                portal_stash.reset(stash_token)
             current_client_id.reset(client_token)
             current_tenant_id.reset(tenant_token)
+
+    @staticmethod
+    def _build_stash(user: Actor, membership: Membership) -> PortalStash:
+        """Resolve every capability once, as `app_runtime`, before the role switch."""
+        return PortalStash(
+            # membership.user_id, not user.pk: _grant_context filtered on this user, so
+            # they are the same value, and this one needs no narrowing and no query.
+            user_pk=membership.user_id,
+            tenant_id=membership.tenant_id,
+            levels=granted_levels(
+                user,
+                CAPABILITY_SLUGS,
+                tenant_id=membership.tenant_id,
+            ),
+        )
 
     @staticmethod
     def _assume_portal_role() -> None:

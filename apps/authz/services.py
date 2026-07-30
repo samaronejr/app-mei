@@ -30,6 +30,7 @@ from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
 from apps.authz.models import Capability, GrantLevel, RoleGrant
+from apps.authz.stash import portal_stash, stashed_level
 from apps.core.tenancy import current_client_id, current_tenant_id
 
 _P = ParamSpec("_P")
@@ -62,6 +63,11 @@ def resolve_level(
     offers only the three firm-side roles — so a membership-first order would deny the
     platform administrator every capability the matrix grants them.
     """
+    # Before _capability, which reads authz_capability — denied to app_portal, and a
+    # denied read aborts the transaction rather than refusing.
+    stashed = stashed_level(user, action, tenant_id, current_tenant_id.get())
+    if stashed is not None:
+        return stashed
     capability = _capability(action)
     if not user.is_authenticated:
         return GrantLevel.NONE
@@ -122,6 +128,14 @@ def granted_levels(
     role to prove the two cannot drift.
     """
     slugs = tuple(dict.fromkeys(actions))
+    # Before the Capability read, for the reason resolve_level states.
+    if portal_stash.get() is not None:
+        resolved_tenant = current_tenant_id.get()
+        return {
+            slug: stashed_level(user, slug, tenant_id, resolved_tenant)
+            or GrantLevel.NONE
+            for slug in slugs
+        }
     known = set(
         Capability.objects.filter(slug__in=slugs).values_list("slug", flat=True),
     )
