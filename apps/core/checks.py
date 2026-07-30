@@ -5,15 +5,16 @@ no visible symptom until a tenant boundary or a transaction boundary has already
 crossed. `manage.py check` runs them; CI runs it once per settings module.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from django.apps import apps as django_apps
 from django.apps.config import AppConfig
 from django.conf import settings
 from django.core.checks import CheckMessage, Error
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.db import DatabaseError, connections
+from django.urls import get_resolver
 
 from apps.tenants.validators import validate_tenant_slug
 
@@ -340,6 +341,93 @@ def check_tenant_middleware(
 ) -> list[CheckMessage]:
     """Reject a middleware stack that would leave tenant context unset."""
     return [*_tenant_middleware_errors(), *_outside_tenant_transaction_errors()]
+
+
+def _portal_capability_gate_errors() -> list[CheckMessage]:
+    """Refuse a portal view gated on a capability that cannot admit its own users.
+
+    `require_can` calls `can(request.user, action)` with no object, and both
+    object-refined levels return False when the object is None. So a portal view gated
+    at anything below FULL is an unconditional 403 for the roles that hold it there —
+    silently, and only for those roles, which is why it survives testing as an owner.
+
+    Pure Python and no database read, deliberately. `MATRIX` is a module literal, and
+    `Membership`'s role-scope CHECK constraint plus `PortalMiddleware`'s
+    `client__isnull=False` filter mean a portal request can only ever carry the two
+    client roles — so which columns to assert is known statically.
+    """
+    from apps.authz.matrix import MATRIX, ROLE_ORDER  # noqa: PLC0415
+    from apps.authz.models import GrantLevel  # noqa: PLC0415
+    from apps.authz.services import PORTAL_CAPABILITY_GATES  # noqa: PLC0415
+    from apps.portal.middleware import PORTAL_URLCONF  # noqa: PLC0415
+
+    portal_roles = ("client_owner", "client_collaborator")
+    try:
+        columns = [ROLE_ORDER.index(role) for role in portal_roles]
+    except ValueError:  # pragma: no cover - ROLE_ORDER is a literal
+        return []
+    levels = {row.slug: row.levels for row in MATRIX}
+
+    offenders: list[str] = []
+    for callback in _portal_callbacks(PORTAL_URLCONF):
+        action = PORTAL_CAPABILITY_GATES.get(callback)
+        if action is None:
+            continue
+        row = levels.get(action)
+        if row is None:
+            offenders.append(f"{callback.__qualname__} gates on unknown {action!r}")
+            continue
+        for role, column in zip(portal_roles, columns, strict=True):
+            level = row[column]
+            if level != GrantLevel.FULL:
+                offenders.append(
+                    f"{callback.__qualname__} gates on {action!r}, which is "
+                    f"{level} for {role}",
+                )
+
+    if not offenders:
+        return []
+    return [
+        Error(
+            "Portal views are gated on capabilities that refuse their own users: "
+            + "; ".join(sorted(offenders)),
+            hint=(
+                "require_can passes no object, so below FULL the gate is an "
+                "unconditional 403 for that role. Gate the view on a capability that "
+                "is FULL for both client roles, or authorise it some other way."
+            ),
+            id="core.E010",
+        ),
+    ]
+
+
+def _portal_callbacks(urlconf: str) -> list[Callable[..., Any]]:
+    """Return every view reachable from the portal urlconf, resolvers included."""
+    try:
+        resolver = get_resolver(urlconf)
+        patterns = list(resolver.url_patterns)
+    except (ImproperlyConfigured, ImportError, AttributeError):
+        return []
+
+    found: list[Callable[..., Any]] = []
+    while patterns:
+        entry = patterns.pop()
+        nested = getattr(entry, "url_patterns", None)
+        if nested is not None:
+            patterns.extend(nested)
+            continue
+        callback = getattr(entry, "callback", None)
+        if callable(callback):
+            found.append(callback)
+    return found
+
+
+def check_portal_capability_gates(
+    app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ANN401, ARG001
+) -> list[CheckMessage]:
+    """Reject a portal view whose capability gate would refuse every holder."""
+    return _portal_capability_gate_errors()
 
 
 def check_transaction_and_cookie_policy(
