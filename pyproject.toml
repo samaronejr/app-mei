@@ -15,6 +15,11 @@ dependencies = [
   # code, and Django's classes are not subscriptable at runtime without the monkeypatch
   # this package installs. Dropping it to the dev group breaks production imports only.
   "django-stubs-ext",
+  # Production stores document bytes in OCI Object Storage over its S3-compatible API.
+  # Development and tests stay on FileSystemStorage, so this is imported only by prod.py
+  # -- which means the shipped backend is NOT the tested one, and the storage swap needs
+  # its own verify-by-effect step against the real bucket.
+  "django-storages[s3]",
   "gunicorn",
   "psycopg[binary]>=3.2",
   "redis",

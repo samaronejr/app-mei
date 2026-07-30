@@ -27,7 +27,35 @@ SESSION_COOKIE_NAME = "__Host-sessionid"
 CSRF_COOKIE_NAME = "__Host-csrftoken"
 
 STORAGES = {
-    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "default": {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        # Defaulted to "" rather than required at import, so the module stays
+        # importable for inspection. Emptiness is enforced at boot by `core.E011`
+        # instead, which names every missing variable at once and, unlike an
+        # import-time raise, can itself be tested.
+        "OPTIONS": {
+            "bucket_name": env.str("OCI_S3_BUCKET", default=""),
+            "endpoint_url": env.str("OCI_S3_ENDPOINT_URL", default=""),
+            "region_name": env.str("OCI_S3_REGION", default=""),
+            # Passed explicitly rather than left to boto3's environment discovery, which
+            # would silently fall back to any AWS_* variables that happen to be set.
+            "access_key": env.str("OCI_S3_ACCESS_KEY_ID", default=""),
+            "secret_key": env.str("OCI_S3_SECRET_ACCESS_KEY", default=""),
+            # querystring_auth=False is a DECISION, not a default: with it True, url()
+            # mints a pre-signed URL that outlives the session and cannot be revoked
+            # inside its lifetime. V4 forbids pre-signed URLs outright, so url() must
+            # not be able to produce a working one even if a template calls it.
+            "querystring_auth": False,
+            "default_acl": "private",
+            # A repeated storage key must not silently clobber the earlier document;
+            # keys are random, so a collision means something is wrong.
+            "file_overwrite": False,
+            "signature_version": "s3v4",
+            # OCI's S3 endpoint is path-style; virtual-host addressing needs per-bucket
+            # DNS that does not exist here.
+            "addressing_style": "path",
+        },
+    },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
