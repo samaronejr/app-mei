@@ -58,6 +58,26 @@ PORTAL_ROLE = "app_portal"
 ADMIN_PREFIX = "/admin/"
 PORTAL_URLCONF = "apps.portal.urls"
 
+# Account management runs WITHOUT the portal role, in the same shape as an anonymous
+# request: both GUCs empty, still app_runtime.
+#
+# Not a convenience. allauth's own tables — account_emailaddress, mfa_authenticator,
+# django_session — are none of them among the six app_portal may read, and the role
+# holds no write privilege anywhere at all. Run this tree inside the portal role and
+# every one of these is a 500:
+#
+#   * MFAEnforcementMiddleware redirects EVERY unenrolled portal user to
+#     /accounts/2fa/totp/activate/, which reads account_emailaddress. That is the first
+#     request a new MEI owner makes, so nobody can ever enrol — the portal cannot
+#     onboard a single user.
+#   * Logging out deletes a django_session row.
+#   * Changing a password does both.
+#
+# Nothing under this prefix needs client-scoped data, so withholding the client context
+# costs nothing and restores the whole flow. `is_exempt_path` in apps/accounts/mfa.py
+# already exempts the same prefix for the same underlying reason.
+ACCOUNTS_PREFIX = "/accounts/"
+
 
 class PortalHttpRequest(HttpRequest):
     """An `HttpRequest` after this middleware has attached the tenant and client."""
@@ -128,7 +148,11 @@ class PortalMiddleware:
         if self._is_non_atomic(request):
             return self._run_without_database_context(request)
         tenant = self._resolve_tenant(slug)
-        membership = self._grant_context(request, tenant)
+        membership = (
+            None
+            if request.path_info.startswith(ACCOUNTS_PREFIX)
+            else self._grant_context(request, tenant)
+        )
         # Resolving the tenant from the host is ROUTING; granting context is
         # AUTHORIZATION. An anonymous request gets neither dimension — exactly as
         # TenantMiddleware already does firm-side — so the login page renders with both

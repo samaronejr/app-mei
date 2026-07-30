@@ -20,7 +20,13 @@ def portal_slug_from_host(host: str) -> str | None:
     owns, because the reserved-slug validator forbids exactly that shape. The suffix
     must be *required* and *stripped*, and a host without it is not a portal host.
     """
-    hostname = host.split(":", 1)[0]
+    # Lowercased because DNS is case-insensitive and `get_host()` returns the Host
+    # header VERBATIM. Without this, `ACME-PORTAL.example.com` fails the suffix test,
+    # every portal middleware no-ops, and the request is served the FIRM's URL tree —
+    # `/admin/` included — while the browser still sends the portal session cookie,
+    # cookie domains being case-insensitive. The entire isolation layer would be
+    # bypassed by changing the case of a header.
+    hostname = host.split(":", 1)[0].lower()
     labels = hostname.split(".")
     if len(labels) < MIN_LABELS_FOR_A_SUBDOMAIN:
         return None
