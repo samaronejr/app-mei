@@ -31,8 +31,9 @@ Four things here are easy to get wrong and silent when wrong:
 * **The role must not leak.** `SET LOCAL ROLE` reverts at `COMMIT` and at `ROLLBACK`,
   but *merges upward* on `RELEASE SAVEPOINT`. This middleware therefore owns the OUTER
   transaction; nesting it inside another would leak `app_portal` into the enclosing
-  block. gunicorn runs `sync --threads 1` with `CONN_MAX_AGE` set, so one connection is
-  reused across requests and a leak would be cross-request.
+  block. gunicorn runs `gthread` (2 workers x 2 threads) with `CONN_MAX_AGE` set, and
+  Django connections are thread-local, so each thread reuses one connection across
+  requests and a leak would be cross-request on that thread.
 """
 
 from collections.abc import Callable

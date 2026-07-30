@@ -203,8 +203,8 @@ def test_neither_the_role_nor_the_gucs_survive_the_request(firm: Firm) -> None:
     assert _probe(http, PORTAL_HOST)["role"] == "app_portal"
 
     # Then the connection is back to the firm-side role and both ContextVars are clear.
-    # One connection serves many requests under sync --threads 1, so a leak here would
-    # be cross-request.
+    # Connections are thread-local and each is reused across requests under gthread, so
+    # a leak here would be cross-request on that thread.
     assert _session_role() == "app_runtime"
     assert current_tenant_id.get() is None
     assert current_client_id.get() is None

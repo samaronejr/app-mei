@@ -7,8 +7,9 @@ actually hold, so the pair is a real identity and limiting against it protects t
 worker pool without letting one firm's traffic starve another's.
 
 The read limit exists for a specific reason: `TenantMiddleware` holds a transaction
-open across template rendering, and workers run `sync --threads 1`, so unbounded
-dashboard GETs are a denial-of-service vector rather than merely rude.
+open across template rendering, and the deployment holds only 4 concurrent request
+slots (gunicorn `gthread`, 2 workers x 2 threads), so unbounded dashboard GETs are a
+denial-of-service vector rather than merely rude.
 """
 
 from http import HTTPStatus
