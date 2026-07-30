@@ -7,7 +7,29 @@
 > **Wave-1 status: CLOSED.** T-051…T-055 and T-057 approved in round 6. T-056 was patched
 > for W1-BL-1 and W1-BL-2, and the required re-review has now been done against all 13 of
 > its spec requirements: 12 conformed, and the re-review found **W1-BL-3** (below), which
-> is fixed. Wave 3 (T-061/T-062) remains under review.
+> is fixed.
+>
+> **Wave-3 status (revision 8): REVIEWED and REVISED; APPROVED for implementation.**
+> Momus and Oracle reviewed T-061/T-062/T-063 in parallel and converged on one worst finding.
+> All are now fixed in place, each marked "Revision 8" at the point of the change:
+>
+> | | Finding | Where |
+> |---|---|---|
+> | 1 | T-062's tamper guard **could never fire** — it matched a literal the house bound-parameter idiom never produces, missed `client_context()` entirely, and *did* match shipped test code. Replaced, with a mandatory self-test. | T-062 |
+> | 2 | `SET LOCAL ROLE` **outside a transaction silently does nothing** (verified on PG 16.14), leaving a portal request as `app_runtime` — for whom the RESTRICTIVE policies do not bind — reading the whole client base. New item 11, asserted positively. | T-061 |
+> | 3 | Every T-061 test must use `django_db(transaction=True)`. Under the default the middleware's `atomic()` degrades to a savepoint, which makes finding 2 untriggerable *and* the "no leak" criterion unprovable. | T-061 |
+> | 4 | T-063's `CSRF_TRUSTED_ORIGINS` requirement was **wrong and costly** — no entry is needed for a same-origin POST, and it imposed a per-tenant redeploy. Empirically disproven; it also contradicted `0865ff7`. | T-063 |
+> | 5 | Item 7 contradicted itself on Portal's position ("neither may sit at index 11" vs "at index 11 the writes are safe"). Stale index deleted. | T-061 |
+> | 6 | `core.E005` had no mutation proving it fires when *one* owner is absent — the naive `min()` implementation passes every named proof while leaving the silent state reachable. Three mutations now named. | T-061 |
+> | 7 | The dispatcher-ordering proof **cannot fail**: identical paths in both urlconfs make the rate-limit test pass either way. Real justification (`_is_non_atomic`) substituted. | T-062 |
+> | 8 | `AdminTenantMiddleware` goes **inert** on the portal host — `slug_from_host` yields `acme-portal`, which the reserved-slug validator guarantees is no tenant. `PortalMiddleware`'s gate is the sole control, not a second layer. | T-061 |
+> | 9 | The `NoReverseMatch` diagnosis was wrong (request-phase `reverse()` always uses `ROOT_URLCONF`); the real failure is a 404/redirect loop. Requirement unchanged, test corrected. | T-062 |
+> | 10 | T-063's failure QA was a second happy-path assertion, not a mutation. | T-063 |
+>
+> **One sequencing note carried forward, not fixed in place**: T-061's positional assertion
+> names `HostDispatchMiddleware`, which T-062 creates. Either build both classes in T-061 and
+> let T-062 add the dispatch *behaviour*, or defer the four-way assertion to T-062 and assert
+> the three-way relation in T-061. Decide at implementation; both satisfy operating rule 1.
 >
 > **W1-BL-3 — T-056 asserted `roles` by containment, not equality.** The spec requires
 > `roles={app_portal}`; the implementation used `roles` only as its selection filter
@@ -639,7 +661,8 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
    > **Explicitly NOT `_run_without_database_context`.** It sets `current_tenant_id` to
    > `None` **and `request.tenant` to `None`** — it does *not* call `_apply_guc` (that is
    > reached only from `_run_in_tenant_context`, `apps/tenants/middleware.py:163`). Clobbering either is enough: `TenantScopedManager.get_queryset()` returns **`.none()`**
-   > when `current_tenant_id` is `None` (`apps/core/models.py:20-25`), and `AccessLogMiddleware`
+   > when `current_tenant_id` is `None` (`apps/core/managers.py:20-25` — the plan said
+   > `models.py`, which is the wrong file; the line numbers are right), and `AccessLogMiddleware`
    > / `RateLimitMiddleware` read `request.tenant`. Separately — and this is the savepoint
    > hazard's real owner — `_run_in_tenant_context(request, None)` calls `_apply_guc(None)`
    > at `:163`; since `PortalMiddleware` owns the outer transaction that block is a
@@ -656,7 +679,17 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
    > `PortalMiddleware` earlier — the natural instinct, since it does host work — puts it
    > *outside* `SessionMiddleware` (`base.py:71`), and every authenticated portal request
    > then dies with `permission denied for table django_session` under the SELECT-only
-   > grant. At index 11 the writes are safe: `django_session` is saved in
+   > grant.
+   >
+   > **Revision 8 correction — do NOT read an index out of this paragraph.** It previously
+   > read "at index 11 the writes are safe", which directly contradicts the rule two
+   > paragraphs above that *neither* Portal nor Tenant may sit at index 11. Index 11 is
+   > `MFAEnforcementMiddleware`; item 7 places Portal at `i+2`. The number was stale from a
+   > revision that positioned Portal differently, and a developer following the prose rather
+   > than item 7's code would have dragged `_must_enrol` inside the portal transaction and
+   > broken MFA. **Item 7's anchored expression is the only statement of position.**
+   >
+   > At the position item 7 gives it, the writes are safe: `django_session` is saved in
    > `SessionMiddleware`'s response phase, after COMMIT, in autocommit as `app_runtime`;
    > `accounts_user.last_login` is written during a login POST that is **anonymous at
    > middleware entry**, so item 2 runs it as `app_runtime`; `audit_platformevent` is
@@ -670,6 +703,16 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
    > `apps/core/tenancy.py:78-90`.
 
 8. **Refuse `/admin/` on the portal host before opening the transaction.** `AdminTenantMiddleware` sits after `RateLimitMiddleware` and therefore *inside* whichever middleware owns the transaction (stated structurally — the bare index drifts with every insertion, which is how revision 6 shipped a wrong one) — and gates only on `request.path_info.startswith("/admin/")`, **independent of `request.urlconf`**, so T-062's urlconf swap does not skip it. `GET /admin/` on a portal host reaches `Tenant.objects.filter(...).exists()` and raises `permission denied for table tenants_tenant` (verified) — an unhandled 500 where the firm host returns 404. `PortalMiddleware` returns 404 for the admin prefix *before* `SET LOCAL ROLE`.
+
+   > **Revision 8: `AdminTenantMiddleware` is not merely inconvenienced on the portal host —
+   > it goes INERT, and V2's note that it "must be unaffected" is wrong.** Its own
+   > tenant lookup uses `slug_from_host`, which returns the literal `"acme-portal"` for
+   > `acme-portal.<domain>`. The reserved-slug validator shipped in V2 **guarantees no tenant
+   > owns that slug**, so its refusal path never resolves a tenant and its 404 never fires.
+   > `PortalMiddleware`'s gate is therefore the **sole** control keeping the admin console off
+   > the portal host, not a belt-and-braces second layer. Say so in the docstring, and treat
+   > the `GET /admin/` → 404 assertion as load-bearing rather than defensive: if it is ever
+   > deleted as redundant, nothing else refuses.
 
 9. **Generalise the middleware-order system checks over BOTH transaction owners.**
    `apps/core/checks.py:125-150` keys on the literal `apps.tenants.middleware.TenantMiddleware`
@@ -692,7 +735,28 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 
 10. Docstring records the pgbouncer session-pooling assumption (constraint 3), the `RESET ROLE` threat model (constraint 7), and the savepoint-merge behaviour above.
 
-**Acceptance criteria** — the four-way positional assertion in item 7 holds. `core.E005/E006/E007` fire for `PortalMiddleware` exactly as for `TenantMiddleware` (prove it: move `AccessLogMiddleware` after the portal and observe the check fail). A portal request issues **exactly one `BEGIN`**, and `app.tenant_id` is still set at response time — the `TenantMiddleware` no-op regression test. `GET /admin/` on a portal host returns **404, not 500**. Anonymous request reaches the login page. **During the login POST `current_user` is `app_runtime` and the session write succeeds.** Authenticated portal request runs as `app_portal` with both GUCs. A firm-only user gets `PermissionDenied`. Streaming raises `TypeError`. No role or GUC leaks to the next request on the same connection.
+11. **`SET LOCAL ROLE` must be proven to have taken effect, not assumed.** Verified on
+    PostgreSQL 16.14: `SET LOCAL` **outside** a transaction emits a warning and *silently
+    does nothing*. If the statement is ever issued before `transaction.atomic()` opens, the
+    request runs as `app_runtime` — for whom the RESTRICTIVE portal policies do **not** bind,
+    because the grant is `INHERIT FALSE` — while `app.client_id` is set and everything looks
+    correct. A portal user then reads the firm's entire client base. This is the single
+    fail-open path in Wave 3, and it fails **silently in the permissive direction**.
+
+    Therefore: issue `SET LOCAL ROLE` **inside** the atomic block, and assert positively,
+    inside the request, that `current_user` is `app_portal` — never infer it from the absence
+    of an error.
+
+**Acceptance criteria** — the four-way positional assertion in item 7 holds. `core.E005/E006/E007` fire for `PortalMiddleware` exactly as for `TenantMiddleware`; **three named mutations, because the count of them is the point**: (a) remove `PortalMiddleware` from `MIDDLEWARE` entirely → **E005 fires** — the naive `min()` over present indices only fires when *both* owners are absent, which is exactly the silent state BL-2 describes, so this mutation is what rejects that implementation; (b) move `PortalMiddleware` before `AuthenticationMiddleware` → E006 fires; (c) move `AccessLogMiddleware` after the portal → E007 fires. A portal request issues **exactly one `BEGIN`**, and `app.tenant_id` is still set at response time — the `TenantMiddleware` no-op regression test. `GET /admin/` on a portal host returns **404, not 500**. Anonymous request reaches the login page. **During the login POST `current_user` is `app_runtime` and the session write succeeds.** Authenticated portal request runs as `app_portal` with both GUCs — asserted **positively**, per item 11. A firm-only user gets `PermissionDenied`. Streaming raises `TypeError`. No role or GUC leaks to the next request on the same connection.
+
+> **Every test in this todo MUST use `pytest.mark.django_db(transaction=True)`.** Under the
+> default `django_db` the test's own atomic block is the outer transaction, so
+> `PortalMiddleware`'s `transaction.atomic()` degrades to a **savepoint** — where `SET LOCAL
+> ROLE` works, and merges upward on `RELEASE SAVEPOINT` instead of reverting at `COMMIT`.
+> Both halves of that are wrong in the same direction: the fail-open of item 11 becomes
+> untriggerable, and the "no role leaks" criterion becomes unprovable because no `COMMIT`
+> ever happens. T-057 already mandates `transaction=True` for exactly this reason; T-061 did
+> not, and inherited the trap. `tests/tenants/test_middleware.py` is the in-house precedent.
 **QA — happy**: anonymous 200 + authenticated `current_user`/GUC assertions → `.evidence/T-061-happy.txt`
 **QA — failure**: firm-only user denied; connection-reuse proves no leak → `.evidence/T-061-failure.txt`
 **Commit**: `feat(portal): portal middleware with app_portal role and client GUC`
@@ -705,16 +769,75 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 
 **Do** — Thin dispatch middleware selecting `request.urlconf` by host: `<slug>-portal.<domain>` → portal chain; otherwise today's path unchanged.
 
-> **Name which allauth URLs the portal urlconf includes.** `MFAEnforcementMiddleware`
-> (`base.py:89`) calls `reverse("mfa_activate_totp")`. Because T-062 swaps
-> `request.urlconf` per host, omitting allauth's MFA tree makes every portal request by a
-> non-enrolled user a `NoReverseMatch` **500** — and `is_exempt_path` exempts `/accounts/`,
-> so that tree must be reachable on the portal host. At minimum: login, logout, password
-> reset, MFA enrolment. Two guards, because one is not enough:
-- **Grep guard**: `set_config('app.client_id'` / `current_client_id.set(` may appear only in `apps/core/tenancy.py` and `apps/portal/middleware.py`.
-- **Behavioural test**: a request carrying `?client_id=<other>`, an `X-Client-Id` header, and a forged session key still resolves to `membership.client_id`. *The grep guard checks file location, not provenance — moving a session read inside the permitted module would leave it green.*
+> **Name which allauth URLs the portal urlconf includes.** At minimum: login, logout,
+> password reset, MFA enrolment.
+>
+> **Revision 8 — the requirement stands but the stated mechanism was wrong.**
+> `MFAEnforcementMiddleware` (`base.py:89`) calls `reverse("mfa_activate_totp")`, and the
+> plan claimed omitting the MFA tree makes that a `NoReverseMatch` **500**. It does not:
+> Django sets the thread-local urlconf to `ROOT_URLCONF` at the top of
+> `BaseHandler.get_response` and only honours `request.urlconf` in `_get_response` — *after*
+> every request-phase middleware. So that `reverse()` always resolves against `ROOT_URLCONF`
+> and succeeds. The real failure is one hop later: the redirect it issues lands on the portal
+> host at a path the portal urlconf does not define, giving a **404 or a redirect loop**.
+> `reverse()` inside allauth's own views *does* raise `NoReverseMatch`, because views run
+> after `set_urlconf(request.urlconf)`.
+>
+> This matters for the test, not just the prose: a developer told to expect a 500 writes
+> "assert not 500", which passes against a 404 loop. **Assert `reverse()` resolves under the
+> portal urlconf explicitly, and assert the redirect target returns 200 on the portal host.**
+>
+> Two guards, because one is not enough:
+  - **Provenance guard** (revision 8 — the previous spec of this guard **could not fire**):
+    the client identity may be written only in `apps/core/tenancy.py` and
+    `apps/portal/middleware.py`. Match **all three** ways it can be written, over `apps/`
+    only, with comments stripped so naming the GUC in prose cannot satisfy or trip it:
 
-**Acceptance criteria** — Both hosts route correctly. The portal urlconf mounts the allauth tree at the **same paths** as `ROOT_URLCONF`, so `RATELIMIT_PUBLIC_POST_URL_NAMES`, `ACCESS_LOG_EXEMPT_PREFIXES` and `apps/accounts/mfa.py:36` `EXEMPT_PREFIXES` keep matching. **A POST to the portal login form is rate-limited at `RATELIMIT_LOGIN_EMAIL`** — prove it. Both guards pass, and each fails when its specific violation is introduced. A tenant slug ending in `-portal` is rejected at creation. `reverse("mfa_activate_totp")` resolves under the portal urlconf.
+    ```python
+    CLIENT_ID_WRITE = re.compile(
+        r"\bCLIENT_GUC\b"              # the constant, which is how the house writes it
+        r'|["\']app\.client_id["\']'   # the raw GUC name in any quoting
+        r"|\bcurrent_client_id\.set\(" # the ContextVar
+        r"|\bclient_context\(",        # the exported wrapper — writes BOTH of the above
+    )
+    ```
+
+    > **Why the old pattern was decoration.** It searched for the literal
+    > `set_config('app.client_id'`, which appears **nowhere in `apps/`**: every GUC write in
+    > this codebase uses bound parameters — `cursor.execute("SELECT set_config(%s, %s, true)",
+    > [name, value])` — so the string is unreachable by house style. An allow-list matching
+    > zero occurrences is satisfied identically by a clean tree and a compromised one. It was
+    > *also* wrong in the opposite direction: that literal **does** occur three times in
+    > shipped Wave-1 test code, so widening the scan to the repo fails on legitimate files.
+    > Worst of all it missed the real forgery vector — `client_context(request.GET["client_id"])`
+    > is an exported, request-callable setter, and calling it from a view writes the GUC from
+    > *inside* a permitted module. Inside a portal transaction that opens a genuine
+    > cross-client read window for the duration of the block.
+
+  - **The guard must ship with a self-test, as T-059's does.** Three cases: it MATCHES the
+    legitimate write in `apps/portal/middleware.py` (a pattern that matches nothing is the
+    defect above, reintroduced); it MATCHES a synthetic `cursor.execute("SELECT
+    set_config(%s, %s, true)", [CLIENT_GUC, request.GET["client_id"]])`; and it FLAGS that
+    same line when placed outside the two permitted modules.
+  - **Behavioural test**: a request carrying `?client_id=<other>`, an `X-Client-Id` header, and a forged session key still resolves to `membership.client_id`. *The guard checks file location, not provenance — moving a session read inside the permitted module would leave it green. This test is what carries the weight; the guard only narrows where the mistake can be made.*
+
+**Acceptance criteria** — Both hosts route correctly. The portal urlconf mounts the allauth tree at the **same paths** as `ROOT_URLCONF`, so `RATELIMIT_PUBLIC_POST_URL_NAMES`, `ACCESS_LOG_EXEMPT_PREFIXES` and `apps/accounts/mfa.py:36` `EXEMPT_PREFIXES` keep matching. **A POST to the portal login form is rate-limited at `RATELIMIT_LOGIN_EMAIL`** — prove it. Both guards pass, and each fails when its specific violation is introduced, **the provenance guard against the synthetic bound-parameter write named above, not against a single-quoted literal** (that literal is the nearest *right* artifact — no house-style violation produces it, so proving the guard catches it proves nothing). A tenant slug ending in `-portal` is rejected at creation. `reverse("mfa_activate_totp")` resolves **under the portal urlconf**, and the URL it returns serves 200 on the portal host.
+
+> **Revision 8 — the dispatcher's stated justification does not hold, and its prescribed
+> proof cannot fail.** T-061 requires the dispatcher precede `RateLimitMiddleware` because
+> `apps/security/ratelimit.py:92` resolves by `url_name` through
+> `resolve(..., urlconf=getattr(request, "urlconf", None))`. But this same todo mandates the
+> portal urlconf mount allauth at the **same paths and names**, so `resolve()` returns
+> `account_login` either way — verified — and the rate-limit test passes with the dispatcher
+> in the wrong position. It is a shape assertion wearing a behaviour assertion's clothes.
+>
+> **The ordering is still required**, for a different reason: `_is_non_atomic` in both
+> `TenantMiddleware` and `PortalMiddleware` resolves against `request.urlconf`, so a
+> dispatcher running later makes them resolve portal-only paths against `ROOT_URLCONF` and
+> decide transaction behaviour from the wrong urlconf. Keep the positional assertion as the
+> control — it is startup-enforced by item 9 — but state that as its reason, and **stop
+> claiming the rate-limit test proves ordering.** It proves the paths match, which is worth
+> asserting on its own terms.
 **QA — happy**: routing + both guards → `.evidence/T-062-happy.txt`
 **QA — failure**: forged `client_id` ignored; a client-id write added to a view fails the grep guard → `.evidence/T-062-failure.txt`
 **Commit**: `feat(portal): host dispatch with client-id tamper guards`
@@ -734,11 +857,47 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 > `{{ request.user.email }}` cost **zero queries** — both objects are fully materialised
 > before the transaction opens. **Forbidden in portal templates**: `{{ perms.* }}`
 > (`auth_permission`), and any reach into `tenants_tenant`, `mfa_authenticator` or
-> `clients_onboardingitemtemplate` — all denied. Confirm `SESSION_COOKIE_DOMAIN` stays `None` — host-only cookies are what defeat cookie-tossing between sibling hosts. Add the portal origin to `CSRF_TRUSTED_ORIGINS` (no wildcards — `core.E003`). This is now **two entries per tenant**, each new firm needing a redeploy; acceptable for one hand-managed staging tenant in 2a, but automating it is a named Phase-2b task.
+> `clients_onboardingitemtemplate` — all denied. Confirm `SESSION_COOKIE_DOMAIN` stays `None` — host-only cookies are what defeat cookie-tossing between sibling hosts.
+>
+> **Revision 8 — DO NOT add the portal origin to `CSRF_TRUSTED_ORIGINS`. The previous
+> instruction was wrong, and it was expensive.** It required "two entries per tenant, each
+> new firm needing a redeploy", conceding that as a cost to be automated away in 2b. No
+> entry is needed at all.
+>
+> Django accepts a same-origin POST without ever consulting that list: `_origin_verified`
+> compares the `Origin` header against `request.scheme://request.get_host()`, and browsers
+> send `Origin` on every POST. The portal login form is served by, and posts to, the portal
+> host — same origin. The referer fallback lands the same way, because
+> `CSRF_COOKIE_DOMAIN` is `None` (enforced by `core.E002`), which makes the expected referer
+> `request.get_host()`.
+>
+> Verified empirically against the running server: a host **absent** from
+> `CSRF_TRUSTED_ORIGINS` accepted a same-origin POST (**200**) and refused a cross-origin one
+> (**403**).
+>
+> This also contradicted the shipped tree. `.env.prod.example` sets
+> `CSRF_TRUSTED_ORIGINS=` empty and explains why; commit `0865ff7` fixed a template that
+> shipped `https://*.example.dev`, which `core.E003` rejects outright — it would have failed
+> `manage.py check` and stopped the container from starting. Leaving this instruction in the
+> plan would have had someone re-add per-tenant origins and rediscover that.
+>
+> Adding entries is not merely unnecessary, it is a small widening: each one is an origin
+> Django will accept a cross-origin POST from, and host-only cookies exist precisely to keep
+> sibling hosts apart.
 
-**Acceptance criteria** — A client-role user logs in at `<slug>-portal.<domain>` and sees exactly their own company. Obligation count matches only their rows. A firm-side user cannot log in there. `SESSION_COOKIE_DOMAIN` still `None`.
+**Acceptance criteria** — A client-role user logs in at `<slug>-portal.<domain>` and sees exactly their own company. Obligation count matches only their rows. `SESSION_COOKIE_DOMAIN` still `None`.
+
+> **Revision 8 — "a firm-side user cannot log in there" is not what happens, and testing the
+> words rather than the behaviour would pass while missing it.** The login POST is
+> **anonymous at middleware entry**, so `PortalMiddleware`'s membership check does not run:
+> allauth authenticates against the platform-global `accounts_user`, the credentials are
+> accepted, and **a session cookie is issued**. The refusal happens on the *next* request,
+> when the now-authenticated user has no client-role membership and gets `PermissionDenied`.
+> Assert that sequence — POST succeeds, subsequent GET is 403 — not "login fails". A test
+> asserting the login POST is refused would fail against correct code.
+
 **QA — happy**: end-to-end login rendering the right company → `.evidence/T-063-happy.txt`
-**QA — failure**: a second client in the same firm never appears → `.evidence/T-063-failure.txt`
+**QA — failure**: a **mutation**, not a second happy-path assertion. Seed a sibling client in the same firm with a *different* obligation count, then drop `clients_clientcompany_portal_client_isolation` and observe the rendered page change — company or count. *"A second client never appears" is unfalsifiable as written: a view doing `ClientCompany.objects.get(id=request.client.id)` renders exactly one company whether or not isolation holds. The obligation count is the falsifiable half, and only if the sibling's count differs.* → `.evidence/T-063-failure.txt`
 **Commit**: `feat(portal): authenticated portal landing page`
 
 ---
