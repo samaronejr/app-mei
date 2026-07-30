@@ -17,7 +17,7 @@ guess this module exists to avoid.
 
 from collections.abc import Callable, Iterable
 from functools import wraps
-from typing import Concatenate, ParamSpec, TypeVar
+from typing import Any, Concatenate, Final, ParamSpec, TypeVar
 from uuid import UUID
 
 from django.apps import apps as django_apps
@@ -38,6 +38,14 @@ _ResponseT = TypeVar("_ResponseT", bound=HttpResponseBase)
 _RequestT = TypeVar("_RequestT", bound=HttpRequest)
 
 Actor = User | AnonymousUser
+
+PORTAL_CAPABILITY_GATES: Final[dict[Callable[..., Any], str]] = {}
+"""Every view `require_can` guards, mapped to the capability it demands.
+
+Populated at import time and read by `core.E010`, which refuses to boot when a portal
+view is gated on a capability that is not `FULL` for both client roles — `require_can`
+passes no object, so at any other level it is an unconditional 403.
+"""
 
 
 class UnknownCapability(LookupError):  # noqa: N818
@@ -192,6 +200,11 @@ def require_can(
                 raise PermissionDenied(msg)
             return view(request, *args, **kwargs)
 
+        # Registered so `core.E010` can enumerate the portal's gates by walking the
+        # urlconf. `wraps` does not carry the closure, so the alternative is reading
+        # `__closure__`/`co_freevars` off each callback — which breaks the moment
+        # another decorator wraps this one.
+        PORTAL_CAPABILITY_GATES[guarded] = action
         return guarded
 
     return decorate
