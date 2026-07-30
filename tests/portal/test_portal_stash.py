@@ -12,6 +12,7 @@ without it, because `require_can` passes no `tenant_id` and the ordinary path re
 """
 
 import json
+from collections.abc import Mapping
 from http import HTTPStatus
 from uuid import UUID
 
@@ -91,24 +92,22 @@ def _get(client: Client, path: str) -> tuple[int, dict[str, object]]:
     return response.status_code, body
 
 
-def _stash_for(firm: Firm, **overrides: object) -> PortalStash:
+def _stash_for(firm: Firm, levels: Mapping[str, str] | None = None) -> PortalStash:
     # client_context is required, not incidental: role_of filters on the client, so
     # building the levels without one resolves the FIRM-side membership and yields
     # all-NONE. That is the fail-open shape an earlier revision shipped, and it is why
     # the middleware builds the stash after both context variables are live.
     with tenant_context(firm.tenant.id), client_context(firm.client.id):
-        levels = granted_levels(
+        resolved = granted_levels(
             firm.portal_user,
             CAPABILITY_SLUGS,
             tenant_id=firm.tenant.id,
         )
-    fields: dict[str, object] = {
-        "user_pk": firm.portal_user.pk,
-        "tenant_id": firm.tenant.id,
-        "levels": levels,
-    }
-    fields.update(overrides)
-    return PortalStash(**fields)  # type: ignore[arg-type]
+    return PortalStash(
+        user_pk=firm.portal_user.pk,
+        tenant_id=firm.tenant.id,
+        levels=resolved if levels is None else levels,
+    )
 
 
 def test_a_require_can_gated_portal_view_is_reachable(firm: Firm) -> None:
