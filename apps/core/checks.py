@@ -422,6 +422,53 @@ def _portal_callbacks(urlconf: str) -> list[Callable[..., Any]]:
     return found
 
 
+def _object_storage_config_errors() -> list[CheckMessage]:
+    """Refuse to boot when object storage is selected but not fully configured.
+
+    Enforced here rather than by requiring the variables at import, for two reasons: an
+    import-time raise names only the first missing variable and cannot be tested, and it
+    makes the settings module unimportable for inspection.
+
+    The trigger is the backend actually in use, so this is inert under the filesystem
+    storage development and tests run on, and fires exactly when S3 is configured.
+    """
+    backend = str(settings.STORAGES.get("default", {}).get("BACKEND", ""))
+    if "s3" not in backend.lower():
+        return []
+
+    options = settings.STORAGES["default"].get("OPTIONS", {})
+    required = (
+        "bucket_name",
+        "endpoint_url",
+        "region_name",
+        "access_key",
+        "secret_key",
+    )
+    missing = [name for name in required if not options.get(name)]
+    if not missing:
+        return []
+    return [
+        Error(
+            "Object storage is configured but incomplete; empty: "
+            + ", ".join(sorted(missing)),
+            hint=(
+                "Set the OCI_S3_* variables in the deployment environment. Booting "
+                "without them would store documents against an unconfigured client and "
+                "fail on the first upload rather than at startup."
+            ),
+            id="core.E011",
+        ),
+    ]
+
+
+def check_object_storage_config(
+    app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ANN401, ARG001
+) -> list[CheckMessage]:
+    """Reject a deployment that selects object storage without configuring it."""
+    return _object_storage_config_errors()
+
+
 def check_portal_capability_gates(
     app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
     **kwargs: Any,  # noqa: ANN401, ARG001
