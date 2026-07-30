@@ -82,6 +82,49 @@ def test_successive_uuid7_values_sort_ascending_as_strings() -> None:
     assert generated == sorted(generated)
 
 
+def test_the_generator_runs_inside_the_process_lock() -> None:
+    # Given a probe standing in for uuid6's unguarded generator.
+    #
+    # The assertion is that the lock is HELD, not that the output is unique, and that
+    # choice is the whole point: 16 threads x 4000 unlocked generations produced zero
+    # duplicates, so a uniqueness assertion passes with the lock removed and is
+    # therefore decoration. This one turns red the moment `with _LOCK` goes.
+    from unittest import mock  # noqa: PLC0415
+
+    import uuid6  # noqa: PLC0415
+
+    from apps.core import identifiers  # noqa: PLC0415
+
+    held: list[bool] = []
+    unpatched = uuid6.uuid7
+
+    def probe() -> uuid.UUID:
+        held.append(identifiers._LOCK.locked())
+        return unpatched()
+
+    # When a key is generated through the project wrapper
+    with mock.patch.object(uuid6, "uuid7", probe):
+        identifiers.uuid7()
+
+    # Then the counter update ran under the lock
+    assert held == [True]
+
+
+def test_the_primary_key_default_is_the_locked_wrapper() -> None:
+    # Given the abstract base every business table inherits its pk from
+    import uuid6  # noqa: PLC0415
+
+    from apps.core import identifiers  # noqa: PLC0415
+    from apps.core.models import UUIDv7PrimaryKeyModel  # noqa: PLC0415
+
+    field = UUIDv7PrimaryKeyModel._meta.get_field("id")
+
+    # Then the default is the wrapper, never uuid6's generator reached directly —
+    # re-pointing it back is the silent regression this pins
+    assert field.default is identifiers.uuid7
+    assert field.default is not uuid6.uuid7
+
+
 @pytest.mark.django_db(transaction=True)
 def test_tenant_scoped_rows_get_a_version_7_primary_key() -> None:
     # Given a tenant, and that tenant established as the transaction's context.

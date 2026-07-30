@@ -5,10 +5,10 @@ through a foreign key, because a row-level-security policy can only reference co
 on the row it is filtering. A policy cannot join.
 """
 
-import uuid6
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from apps.core.identifiers import uuid7
 from apps.core.managers import TenantScopedManager
 
 
@@ -20,7 +20,7 @@ class UUIDv7PrimaryKeyModel(models.Model):
     opacity and restores insert locality.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid6.uuid7, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
 
     class Meta:
         """Model metadata."""
