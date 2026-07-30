@@ -1,16 +1,39 @@
 # Phase 2b — Portal write access and the document vault — Work Plan
 
-> **Revision 3.** Revision 1 was rejected by both reviewers; revision 2 was rejected again,
-> by both, on the same blocking defect — **the correction I wrote for C1 was itself broken,
-> and broken in the fail-OPEN direction**. Corrections are marked **[R1→R2]** and
-> **[R2→R3]** at the point of change.
+> **Revision 5.** Revisions 1, 2 and 3 were each rejected by both reviewers. Revision 3's
+> C1 call site was confirmed **correct** — both reviewers reproduced it on the live cluster,
+> including the dual-membership shape. It was rejected on the *consequences* of C2, which
+> revision 3 decided and did not trace. Corrections are marked **[R1→R2]**, **[R2→R3]** and
+> **[R3→R4]** at the point of change.
+>
+> **The two round-3 reviewers disagreed, and the disagreement is the most important content
+> of this revision.** Both found that `require_can` is unusable at `LIMITED`. One proposed
+> passing **`request.client`** as the fix and measured `can(...) == True`. The other identified
+> that same object as a **tautology**. The second is right, and it is settled in code:
+> `middleware.py:243` reads `client_id = membership.client_id`, `:246` sets
+> `current_client_id` from it, and `:256` sets `request.client = membership.client` — **both
+> sides of `_is_attached_to` derive from one `membership` row**. The comparison cannot return
+> False. The measured `True` is evidence *for* the objection, not against it.
+>
+> Recorded because the failure generalises: a passing measurement is not a working control.
+> Operating rule 3 forbids exactly this, and the fix that a review hands you gets adopted
+> with less scrutiny than the defect it replaces.
 >
 > The lesson is recorded here rather than in a commit message, because it generalises: I
 > flagged C1 as the thing I could not verify about my own work, and I was right to flag it
 > and wrong in the fix. A correction written confidently into a plan is not safer than the
 > defect it replaces — it is more dangerous, because it reads as settled.
 >
-> **Status: revised, NOT re-reviewed.**
+> **Revision 5 closes V4, V5 and V6.** V6 is not merely decided — it is **implemented in this
+> change** (process-local UUIDv7 lock + `gthread` retained), so the gate is closed by effect.
+> V4 chose private OCI Object Storage over the S3 API with `FileSystemStorage` kept for dev and
+> tests; V5 cut the email notification from this phase. **V3 is the only gate still open.**
+> Revision-5 additions are marked **[R4→R5]**.
+>
+> **Status: revised, NOT re-reviewed.** Round-3 reviewers also misreported the suite in
+> opposite directions (one "every test errors", one "294 green"). Measured: `tests/portal
+> tests/authz` = **207 passed**, `tests/authz/test_matrix.py` = **103 passed**. The tree is
+> green; the "103 errors" was one reviewer's own probe package breaking its collection.
 
 ## What this phase is actually about
 
@@ -80,7 +103,7 @@ checkable:
 3. If the chosen option bypasses the portal transaction, the compensating authorisation is
    named and has its own test.
 
-### V4 — Where do the bytes live, and do they survive a deploy? (blocks every vault todo)
+### V4 — Where do the bytes live, and do they survive a deploy? — **CLOSED**
 
 Verified against the tree:
 
@@ -95,26 +118,92 @@ So as configured, **every uploaded document is destroyed on the next container r
 while this plan's own out-of-scope table forbids portal DELETE because *"a client deleting
 fiscal evidence is a compliance problem"*. The deployment deletes all of it, on every deploy.
 
-**Exit criteria**: a backend and its persistence are decided (`FileSystemStorage` + a named
-volume, or an object store with credentials handled as part of this gate); the storage key is
-random and derived from nothing; and **authorisation does not depend on the key being
-secret** — unguessability is defence in depth, never the control.
+> **DECIDED — private OCI Object Storage via its S3-compatible API in production;
+> `FileSystemStorage` retained in development and tests.**
+>
+> Phase 2b exposes **no public media route, no `storage.url()`, no pre-signed URLs, and no
+> direct-to-storage access**. Downloads are authorised **against the database row before any
+> object byte is read**. Storage keys are random and **carry no authorisation meaning** —
+> unguessability is defence in depth, never the control.
 
-### V5 — Does production send email at all? (blocks the notification todo)
+**Consequences to carry into the todos** *[R4→R5]*:
+
+1. **New dependencies and secrets.** `django-storages[s3]` + `boto3`, and OCI's S3 compatibility
+   needs a **Customer Secret Key** (access-key/secret pair), not an OCI API signing key, plus
+   the namespace endpoint and region. These are deploy secrets on the same footing as
+   `DATABASE_URL` — never in git, and the bucket must be **private**, asserted by an
+   anonymous GET returning 403/404 against a known key.
+2. **The tested backend is not the shipped backend.** Tests and dev run `FileSystemStorage`;
+   production runs S3. That is precisely the shape operating rule 5 exists for — *container
+   health is not deployment evidence* — so the storage swap needs its own verify-by-effect
+   step against the real bucket, and W6's assertions must be written against the **view's**
+   refusal, which is backend-independent, rather than against any storage behaviour.
+3. **W6 gets stronger, not weaker.** "Refused before any byte is read" now means *before the
+   S3 GET is issued* — an observable network call, so the requirement is falsifiable by
+   asserting the client is never invoked, instead of resting on file-open ordering.
+4. **V3's byte cap is now load-bearing in a second way.** Buffering an S3 object into memory
+   to build the `HttpResponse` is the download path, so the cap bounds both the response size
+   and the fetch.
+5. **`storage.url()` must be unreachable, not merely unused.** With S3 configured, `url()`
+   silently starts returning a working direct link. Assert it is never called on a portal path.
+
+### V5 — Does production send email at all? — **CLOSED**
 
 `EMAIL_BACKEND` is set in `dev.py` (console) and `test.py` (locmem) and **nowhere in
 `prod.py`**, so production falls back to Django's SMTP default on `localhost:25`, and
 `docker-compose.prod.yml` runs no MTA. Scope item 4 will silently not deliver, or 500.
-**Exit criterion**: a provider and credentials, or the notification is cut from this phase.
 
-### V6 — Reconcile the gunicorn worker class (blocks the first write todo)
+> **DECIDED — new-document email notification is CUT from Phase 2b.**
+>
+> Production email remains a **separate pre-launch gate**, because verification, invitations
+> and LGPD intake already depend on it and none of them is a 2b concern. It will use **OCI
+> Email Delivery through Django's SMTP backend**, with credentials, an approved sender and
+> DKIM. Document notifications return **only** behind a transactional outbox and a Celery
+> retry path.
 
-`docker-compose.prod.yml` runs `--workers 2 --threads 2 --worker-class gthread`.
-`ops/README.md` requires `sync --threads 1` because `uuid6.uuid7()`'s monotonic counter is
-documented as **not thread-safe**, and `apps/portal/middleware.py` states `sync --threads 1`
-as fact. This phase adds the first concurrent INSERT path driven by untrusted users, which is
-precisely where a duplicate UUIDv7 surfaces. **Exit criterion**: the contradiction is
-resolved in one direction and the losing document is corrected.
+**Consequences** *[R4→R5]*: scope item 5 is struck below. Nothing in 2b may call `send_mail`
+or `EmailMessage`. The outbox requirement is not decoration — a notification written inside
+the portal transaction that fails on send would either roll back a committed upload or leak a
+send on rollback, which is the entire reason it is deferred rather than bolted on.
+
+### V6 — Gunicorn worker class and the UUIDv7 counter — **CLOSED AND IMPLEMENTED**
+
+`docker-compose.prod.yml:182` ran `--workers 2 --threads 2 --worker-class gthread` while
+`ops/README.md:59` required `sync --threads 1` and `apps/portal/middleware.py:34` stated it as
+fact. This phase adds the first concurrent INSERT path driven by untrusted users.
+
+> **MEASURED — the README's stated reason did not hold.** It justified `sync --threads 1`
+> because `uuid6.uuid7()`'s counter is *"not thread-safe ... so two simultaneous inserts can be
+> handed the same key."* The counter really is unlocked — a non-atomic read-modify-write on a
+> module global, no `Lock` in the module. But **a duplicate needs the 48-bit timestamp AND the
+> 76 bits from `secrets.randbits(76)` to collide** (~2⁻⁷⁶). The property at risk is **strict
+> monotonic ordering, not uniqueness**. At 16 threads × 4000 generations: 0 duplicates, 0
+> repeated timestamps — the race is rare, not absent, and rarity is not a guarantee.
+
+> **DECIDED — keep `gthread`, 2 workers × 2 threads, and remove the race rather than tolerate
+> it.** Every runtime UUIDv7 default routes through a project-owned **process-local lock**.
+> **UUIDv7 ordering is an index-locality property, never a business ordering guarantee.**
+
+**Implemented in this change**, so the gate is closed rather than merely decided:
+
+| Artifact | State |
+| --- | --- |
+| `apps/core/identifiers.py` | new — `_LOCK` + `uuid7()` wrapper |
+| `apps/core/models.py:23` | `default=uuid7` — the **only** runtime caller; all other uses are tests |
+| `tests/core/test_tenant_base.py` | two pins: lock **held** during generation, field default **is** the wrapper |
+| 5 `AlterField` migrations | proven no-op — `sqlmigrate` emits no DDL, the default is Python-side |
+| `ops/README.md` | section retitled and the false duplicate-key rationale replaced |
+| `apps/portal/middleware.py:34`, `ops/README.md` rate table, 2 test docstrings | corrected to per-thread connection reuse |
+| `accounting-mei-saas.md` T-007a + T-022 | constraint and **both** acceptance criteria updated |
+
+**The sequencing constraint is satisfied.** The decision required `sync --threads 1` until the
+wrapper existed; the wrapper ships in the same change, so compose is left at `gthread` and no
+interim downgrade is needed. **Production is currently running `gthread` without the wrapper**
+— the exposure is the monotonicity race only, and it closes on the next deploy.
+
+*[R4→R5: a no-duplicates test was deliberately NOT written. Unlocked generation produced none
+in 64000 attempts, so such a test passes with the lock deleted — operating rule 3's decoration,
+in the control added to satisfy a gate about decoration. Both pins assert the mechanism.]*
 
 ## Carried forward from Phase 2a — both were aimed at the wrong target
 
@@ -161,6 +250,7 @@ and the middleware's ordering is fixed:
 | 154 | `_grant_context(...)` ← revision 2 put the call **here**, where the ContextVar is unset |
 | 246 | `current_client_id.set(client_id)` |
 | 256 | `request.client = membership.client` |
+| 257 | `if membership is not None:` ← **the guard** *[R3→R4: omitted from revision 3's table]* |
 | 258 | `_assume_portal_role()` |
 
 At line 154 `current_client_id.get()` is `None`, so `role_of` resolves the **firm-side**
@@ -179,10 +269,18 @@ here"* — the stash reads `client=None`, precisely the row that filter excludes
 `_is_attached_to`'s safety argument, *"ONLY SAFE BECAUSE `role_of` ABOVE FILTERED ON THE SAME
 CLIENT"*, which becomes false when the resolution did not filter on the client at all.
 
-**The call goes between line 256 and line 258.** Both ContextVars are live, the role is still
-`app_runtime`, and line 256 already proves a tenant-scoped read is safe at that point.
+**The call goes INSIDE the `if membership is not None:` guard at line 257, immediately before
+`_assume_portal_role()`.** Both ContextVars are live, the role is still `app_runtime`, and line
+256 already proves a tenant-scoped read is safe at that point. *[R3→R4: revision 3 said
+"between line 256 and line 258", which reads literally as line 257 itself — i.e. before the
+guard, unconditionally — contradicting requirement 2. Both reviewers flagged the imprecision.
+It is the same class of ambiguity that produced revision 2's defect, so it is now stated as a
+containment, not a range.]*
 
-Three requirements come with it:
+**Six requirements come with it** *[R3→R4: revision 3 shipped three. Both reviewers found the
+same gap — the three cover the fall-through, the trigger and the test, and say nothing about
+the stash's lifetime, whose levels it holds, or what is in it. A stash is new mutable
+request state; requirements 4-6 are its contract]*:
 
 1. **`can()` must RAISE** if asked for a capability outside the stashed set during a portal
    request — never fall through to `resolve_level` (which would hit the denied tables) and
@@ -192,6 +290,37 @@ Three requirements come with it:
 3. **A named test for the dual-membership user** — firm-side *and* client-side membership in
    one firm. That is the shape that turns this from fail-closed into fail-open, and **nothing
    in the suite covers it today.**
+4. **Lifetime: token/reset, cleared in `_run_in_portal_context`'s existing `finally`** — never
+   a bare `.set()`. `middleware.py:244` already carries this warning for the two existing
+   ContextVars: *"token/reset, never a bare set(): one thread serves many requests."* A
+   reviewer measured a bare `.set()` at the plan's own call site surviving the response —
+   `documents.transfer: full` still live on the thread after the request returned. That is a
+   **cross-request** leak under **both** V6 outcomes, since `sync --threads 1` reuses one
+   thread across requests exactly as gthread does. Pinned by a test asserting the stash is
+   `None` after the response, and by a second portal request on the same thread as a different
+   user.
+5. **The stash answers only for the identity it was computed for.** `granted_levels` is
+   computed once for `request.user`, but `can(user, action, obj)` accepts **any** user.
+   Measured: inside one client context the stash returns the portal user's
+   `documents.transfer: full` for a firm OWNER whose true level is `NONE` — a pure-Python
+   fail-open, with requirement 1's "must RAISE, never fall through" removing the escape hatch.
+   `can()` consults the stash **only** when `user == request.user`, and takes the ordinary path
+   otherwise. Unlike the dual-membership defect this is not created by ordering, so moving the
+   call site does nothing for it.
+6. **The stashed set is named and pinned.** Revision 3 said `can()` must raise for a capability
+   *"outside the stashed set"* and never said what the set is. The two readings are not
+   equivalent: **all 16 matrix slugs** costs the same 3 queries and makes requirement 1 nearly
+   dead code (`granted_levels` already raises `UnknownCapability` for an unknown slug), while a
+   **curated portal list** makes requirement 1 load-bearing and turns a new portal capability
+   into a **500**. Decide, and pin the set against the portal urlconf's actual `can()` call
+   sites so a new gated view cannot silently fall outside it.
+
+**Coverage** *[R3→R4]*: requirement 1 constrains `can()` only. `resolve_level` and
+`granted_levels` are both exported and both read the three denied tables — called from
+`apps/core/navigation.py:75` and `apps/obligations/views.py:332,364`. Not reachable from
+`portal/base.html` today, which is deliberately standalone with no nav, but Stage 5 adds portal
+views and templates. State whether they read the stash or are banned from portal paths;
+an unstashed call dies with `ProgrammingError: permission denied for table authz_capability`.
 
 **Two supporting claims in revision 2 were also wrong** *[R2→R3]*:
 
@@ -237,9 +366,14 @@ demotion has **three consequences revision 2 did not name** *[R2→R3]*:
 
 1. **`tests/authz/test_matrix.py` parses `deep-research-report.md`, not `matrix.py`.** Row 59
    reads `| Upload/download documents | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |`; its last two cells
-   must become `Limited` or 2 of 96 parametrised cells go red. **That file is described in
-   `pyproject.toml` as read-only reference material, so editing it is a governance decision,
-   not an implementation detail.** Decide explicitly whether the report or the matrix is the
+   must become `Limited` or 2 of 96 parametrised cells go red. **`apps/authz/matrix.py`'s
+   docstring is the pin for why that matters** — *"The matrix test does not trust this file: it
+   parses the report itself... which is why an error introduced here still turns the build
+   red."* *[R3→R4: revision 3 cited `pyproject.toml` as calling the report "read-only reference
+   material". The phrase is real, at `:50`, but it justifies `extend-exclude = ["*.md"]` — it
+   means ruff must not reformat it, and it calls the plan documents read-only too, which are
+   rewritten every revision. It does not carry a governance claim; the `matrix.py` docstring
+   does.]* Decide explicitly whether the report or the matrix is the
    oracle — the test's independence claim rests on them being two separate sources.
 2. **A new `RunPython(seed)` migration is required.** `0002_seed_matrix` is already applied
    and Django will not re-run it. `seed()` uses `update_or_create`, so a fresh migration
@@ -251,6 +385,46 @@ demotion has **three consequences revision 2 did not name** *[R2→R3]*:
    ("no object refinement is needed") and its purpose all become false **silently**, which
    operating rule 3 forbids. Re-point it at `clients.view_assigned` and add a LIMITED
    assertion.
+4. **The demotion breaks `require_can`, which is the only decorator that consumes it**
+   *[R3→R4 — BLOCKING in both round-3 reviews, and unaddressed in revision 3, where the string
+   `require_can` does not appear once]*. `require_can` calls `can(request.user, action)` with
+   **no object** (`apps/authz/services.py:175`); at `LIMITED` that reaches
+   `_is_attached_to(user, None)`, which returns `False` at `:240` before anything else runs.
+   Measured end-to-end on a real portal request against a `@require_can("documents.transfer")`
+   view: **`full` → 200, `limited` → 403**, unconditionally, for the client's own upload. It is
+   the codebase idiom (`dashboard.py:137`, `obligations/views.py:296-352`, `accounts/views.py:73,193`,
+   `clients/views.py:24`), so C2 as decided makes Stage 1 unshippable.
+
+**DECIDED — (b): the object is the obligation, never `request.client`.**
+
+> **`request.client` is rejected, and this is the correction that matters most in revision 4.**
+> One round-3 reviewer proposed it and measured `can(...) == True`. But `request.client`
+> (`middleware.py:256`) and `current_client_id` (`:246`) both come from the **same `membership`
+> row** read at `:243`, so `_is_attached_to` compares `membership.client.pk` to
+> `membership.client_id` — **always True, unfalsifiable**. It would make C2's stated purpose
+> ("so the object dimension is real") false on the phase's primary write path, and operating
+> rule 3 forbids a control that cannot fail.
+
+* **Upload attached to an obligation** — pass the **obligation**, fetched by id from the
+  request. Its `client_id` comes from a database row, independent of the membership, so the
+  comparison can genuinely refuse and a test can turn it red. C3 is already making that row
+  client-paired, which is what makes this sound.
+* **Standalone upload with no obligation** — there is **no object with an independent
+  `client_id`**, so `can()` at `LIMITED` cannot be a real control there. Say so: the controls
+  on that path are the RLS `WITH CHECK` (W1) and the client-paired FK (C3), and constraint 5
+  and success criterion 8 are narrowed accordingly rather than left false.
+* **Mechanism** — `require_can` gains an optional resolver mapping request → object. A portal
+  view gated on a `LIMITED` capability **without** a resolver must fail **loudly at startup**,
+  not 403 at request time; a silent universal 403 is the failure mode requirement 1 already
+  forbids for `can()`. Pinned by a parametrised `full`/`limited` test of the gated view.
+
+**Superuser is out of scope, stated rather than left false** *[R3→R4]*: `resolve_level` and
+`granted_levels` both short-circuit `is_superuser` to `FULL` before membership is consulted, so
+a superuser holding a client membership passes every portal `can()` at `FULL` and **never
+reaches `_is_attached_to`**. Measured: every capability `full`, including `clients.view_all`.
+This is pre-existing and RLS still confines the rows, but it means criterion 8 does not hold
+for that shape — and if W6's check is `can()`, a superuser passes it for any client's bytes.
+Either gate the portal on `not is_superuser` or accept it explicitly here.
 
 ## New in revision 2 — findings the review reproduced
 
@@ -310,8 +484,10 @@ only and **`app_portal` never receives a sequence privilege**.
 ### C5 — document downloads are excluded from the Marco Civil access log by construction
 
 `ACCESS_LOG_EXEMPT_PREFIXES = ["/healthz", STATIC_URL, MEDIA_URL]`. For a fiscal document
-vault, downloads are exactly the events an investigation asks for. **Must be fixed whatever
-V3/V4 decide.** Also: nothing serves `/media/` today, which is the good news — and it is one
+vault, downloads are exactly the events an investigation asks for. **Must be fixed whatever V3 decides.** *[R4→R5: V4 chose object storage with **no public
+media route**, so the download is a portal view path and is therefore already outside the
+`MEDIA_URL` exemption — C5's remaining work is the `/media/<anything>` 404 assertion on both
+hosts, plus confirming the download route does not sit under `MEDIA_URL`.]* Also: nothing serves `/media/` today, which is the good news — and it is one
 line (`static(settings.MEDIA_URL, ...)`, or a Caddy `file_server`) from every document being
 world-readable with no session, tenant, client or policy involved. Assert `/media/<anything>`
 404s on both hosts.
@@ -324,8 +500,8 @@ world-readable with no session, tenant, client or policy involved. Assert `/medi
 2. C3, C4, C5 — the write-path holes the review reproduced.
 3. Widening `app_portal` to the minimum writes the vault needs, and re-proving isolation
    under them at runtime for the first time.
-4. A document vault: storage per V4, upload, download per V3.
-5. Email notification of a new document — **only if V5 passes**.
+4. A document vault: storage per V4 (private OCI Object Storage, S3 API), upload, download
+   per V3. **No email notification — cut by V5.**
 
 ### Explicitly OUT of scope
 
@@ -359,7 +535,10 @@ INSERT on the request table and DELETE on nothing.
    excluded on purpose: with `UPDATE` granted, `UPDATE documents SET status='deleted'` is a
    delete in every sense this plan cares about. If metadata editing is genuinely needed, use
    a **column-level** grant — `GRANT UPDATE (description) ON ... TO app_portal`.
-5. Every portal view authorises through `can()`, at `LIMITED`, so the object dimension runs.
+5. Every portal view **that has an object carrying an independent `client_id`** authorises
+   through `can()` at `LIMITED`, so the object dimension runs. *[R3→R4: revision 3 said "every
+   portal view", which is unsatisfiable — on a standalone upload the only available object is
+   `request.client`, and that comparison is a tautology. Narrowed rather than left false]*
 6. The post-`migrate` grant step **runs as the table owner and verifies by effect**.
    `GRANT` without grant option is a **`WARNING`, not an error** — verified: issuing it as
    `app_runtime` reported success and granted nothing. Assert `has_table_privilege` after.
@@ -378,8 +557,8 @@ duplicated W1. All rewritten; W6–W8 are new.]*
 | **W3** | The write allow-list is pinned, `ops/sql/roles.sql` remains the oracle, and the extractor uses `re.finditer` keyed on the loop variable (`portal_table` vs `portal_write_table`) and **asserts both blocks were found** — a single `re.search` returns only the first, leaving the write list pinned by nothing while every assertion stays green |
 | **W4** | `DELETE`, `TRUNCATE`, `REFERENCES`, **`UPDATE`** and sequence privileges are asserted **flat zero at TABLE level** via `has_table_privilege`, in an assertion **structurally separate** from the allow-list. Column-level `UPDATE` grants are pinned separately via `has_any_column_privilege`. *[R2→R3: revision 2 dropped `UPDATE` from the flat-zero set — narrowing a shipped five-privilege invariant, so a blanket `GRANT UPDATE` would have passed every requirement in this plan. Unnecessary: verified on the cluster that after `GRANT UPDATE (description)`, `has_table_privilege(...,'UPDATE')` is **false** while `has_any_column_privilege(...,'UPDATE')` is **true** — flat-zero and the column grant constraint 4 permits are compatible]* |
 | **W5** | A portal user cannot write a row attributed to another client, proven at the DB layer with a positive control. Covers `INSERT`; if any column-level `UPDATE` is granted, covers `UPDATE` separately, whose semantics differ (`USING` selects the rows, `WITH CHECK` constrains the result) |
-| **W6** | A portal user issued client A's storage key, replaying it as client B, is **refused before any byte is read, by a named check whose location V4 pins**, with a positive control (B's own key succeeds in the same test). *[R2→R3: revision 2 said "at the storage layer" — a category error under V4's own recommended outcome, since `FileSystemStorage` has no layer that can refuse anything. The refusal is the Django view, which is this plan's stated single layer, and naming it that way is what makes the requirement satisfiable]* Without this, W1–W5 protect the metadata while the bytes stay open |
-| **W7** | For every table on the write allow-list, every FK column is either covered by a constraint whose key includes `client_id`, **or named in a pinned exemption literal with a justification**, in the shape of `PORTAL_DECISION_EXEMPT`. *[R2→R3: revision 2's "every FK column" is unsatisfiable — `tenant_id → tenants_tenant` and `uploaded_by_id → accounts_user` can never be client-paired, because those parents have no `client_id`. Without a pinned exemption it gets relaxed ad hoc on first contact]* |
+| **W6** | A portal user issued client A's storage key, replaying it as client B, is **refused before any byte is read, by an authorisation check in the Django download view — named here, not deferred**, with a positive control (B's own key succeeds in the same test). *[R3→R4: revision 3 delegated the naming to V4, whose three exit criteria pin a backend, key randomness and non-dependence on secrecy, and name no check and no location. Both reviewers flagged the dangling reference. W6's own note already stated the answer, so the delegation was circular]* *[R2→R3: revision 2 said "at the storage layer" — a category error under V4's own recommended outcome, since `FileSystemStorage` has no layer that can refuse anything. The refusal is the Django view, which is this plan's stated single layer, and naming it that way is what makes the requirement satisfiable]* Without this, W1–W5 protect the metadata while the bytes stay open |
+| **W7** | For every table on the write allow-list, every FK column is either covered by a constraint whose key includes `client_id`, **or named in a pinned exemption literal with a justification**, in the shape of `PORTAL_DECISION_EXEMPT`. **The exemption list must name `client_id → clients_clientcompany` up front** *[R3→R4]* — the parent has no `client_id` column because its **pk is** the client identity (`_client_id_of`, `services.py:269-275`), so the correct constraint is the tenant-paired `FOREIGN KEY (tenant_id, client_id) REFERENCES clients_clientcompany (tenant_id, id)`. It is the first FK a documents table meets, and unnamed it gets decided ad hoc on contact — the exact failure this requirement's escape hatch exists to prevent. *[R2→R3: revision 2's "every FK column" is unsatisfiable — `tenant_id → tenants_tenant` and `uploaded_by_id → accounts_user` can never be client-paired, because those parents have no `client_id`. Without a pinned exemption it gets relaxed ad hoc on first contact]* |
 | **W8** | No `ON CONFLICT` / `ignore_conflicts` / `get_or_create` on any portal write path (grep guard, with the self-test the guard family requires) |
 
 ### Inherited pins this phase will break, deliberately
@@ -410,10 +589,14 @@ tables do not exist yet".]*
 | Stage | Contents | Gate |
 | --- | --- | --- |
 | 1 | **C1 + C2.** No schema change, no write grant. *[R2→R3: not "pure `apps/authz/` and middleware work" — C2 also needs a data migration and an edit to `deep-research-report.md`]* Unblocks every portal view | — |
-| 2 | **V3, V4, V5, V6.** Decisions, not code | Stage 1 green |
+| 2 | **V3** — the only gate still open. V4, V5 and V6 are closed; V6 is already implemented | Stage 1 green |
 | 3 | **C5**, documents schema, RLS policy, client-paired FKs, `client_id`-leading unique constraints, count-pin bumps — **with the write grant still zero**, so T-056 stays green throughout | V-gates closed |
-| 4 | **The write grant**, the per-verb allow-list mechanism, C3/C4 guards, and the W1–W8 runtime proofs. Necessarily last: they need the table to exist | Stage 3 green |
-| 5 | Upload, download, notification | Stage 4 green |
+| 4 | **The write grant**, the per-verb allow-list mechanism, C3/C4 guards, and the **W1–W5, W7, W8** runtime proofs. Necessarily last: they need the table to exist | Stage 3 green |
+| 5 | Upload, download — **and W6**. No notification: cut by V5 | Stage 4 green |
+
+*[R3→R4: revision 3 put "the W1–W8 runtime proofs" in Stage 4. **W6 replays a storage key
+against a download view that Stage 5 creates**, so Stage 4 could not deliver it. Both reviewers
+flagged it]*
 
 ## Operating rules
 
@@ -436,11 +619,13 @@ Unchanged from 2a, and two added because they cost real time there:
 3. A document cannot be attached to another client's obligation — the C3 hole, closed and
    asserted.
 4. Another client's storage key, replayed, is refused **before any byte is read**, by the
-   named check V4 pins.
+   authorisation check in the Django download view named in W6.
 5. The `DenyPortalAccess` policies refuse a read at runtime, proven without a permanent grant.
 6. `app_portal` holds no `DELETE`, `TRUNCATE`, `REFERENCES` or sequence privilege, and write
    access only to the pinned allow-list.
 7. Document downloads appear in the Marco Civil access log.
-8. Every portal view authorises through `can()` at `LIMITED`.
+8. Every portal view holding an object with an independent `client_id` authorises through
+   `can()` at `LIMITED`; the paths that do not are named, and their controls (RLS `WITH CHECK`,
+   client-paired FK) are stated instead.
 9. The firm still sees everything it saw before — `pg_has_role('app_runtime','app_portal',
    'USAGE')` false, firm-side row counts unchanged.
