@@ -1,6 +1,6 @@
 # Phase 2b — Portal write access and the document vault — Work Plan
 
-> **Revision 5.** Revisions 1, 2 and 3 were each rejected by both reviewers. Revision 3's
+> **Revision 6.** Revisions 1, 2 and 3 were each rejected by both reviewers. Revision 3's
 > C1 call site was confirmed **correct** — both reviewers reproduced it on the live cluster,
 > including the dual-membership shape. It was rejected on the *consequences* of C2, which
 > revision 3 decided and did not trace. Corrections are marked **[R1→R2]**, **[R2→R3]** and
@@ -27,8 +27,8 @@
 > **Revision 5 closes V4, V5 and V6.** V6 is not merely decided — it is **implemented in this
 > change** (process-local UUIDv7 lock + `gthread` retained), so the gate is closed by effect.
 > V4 chose private OCI Object Storage over the S3 API with `FileSystemStorage` kept for dev and
-> tests; V5 cut the email notification from this phase. **V3 is the only gate still open.**
-> Revision-5 additions are marked **[R4→R5]**.
+> tests; V5 cut the email notification from this phase. **Revision 6 closes V3 — every gate is now
+> closed.** Additions are marked **[R4→R5]** and **[R5→R6]**.
 >
 > **Status: revised, NOT re-reviewed.** Round-3 reviewers also misreported the suite in
 > opposite directions (one "every test errors", one "294 green"). Measured: `tests/portal
@@ -70,7 +70,7 @@ the object bytes there is exactly one layer, and it is a Django view.
 revision 1 — "which is where plans go to fail" — and both were hard blockers. These four are
 the same shape.]*
 
-### V3 — How does a portal user receive bytes? (blocks every vault todo)
+### V3 — How does a portal user receive bytes? — **CLOSED**
 
 `PortalMiddleware._reject_streaming` raises `TypeError` for any `StreamingHttpResponse` on an
 authenticated portal request, and **`django.http.FileResponse` is a `StreamingHttpResponse`
@@ -79,29 +79,41 @@ subclass**. `FileResponse(...)`, `FileResponse(storage.open(...))` and
 criterion and its error message even says *"Build the payload in memory and return an
 HttpResponse instead."*
 
-Four ways out, with materially different security properties:
+Four ways out were on the table. **V4 eliminated two of them and the plan had already
+rejected a third** *[R5→R6]*:
 
-| Option | Cost |
+| Option | Status |
 | --- | --- |
-| Buffer into memory, capped | On 954 MiB / 1 OCPU, a large file × N concurrent is self-inflicted DoS. A MEI's DAS PDF is ~100 KB, so a cap makes this the simple correct answer |
-| `@non_atomic_requests` on the download view | `_run_without_database_context` runs it with **no role, no GUCs, no RLS** — authorisation moves wholly into application code, the exact failure mode 2a exists to prevent |
-| `X-Accel-Redirect` / `X-Sendfile` | `ops/Caddyfile` has no internal route and Caddy does not support `X-Accel-Redirect` without new configuration |
-| Pre-signed URLs | Needs an object store that does not exist; a signed URL outlives the session that minted it and cannot be revoked inside its lifetime |
+| Buffer into memory, capped | **CHOSEN** — the only survivor |
+| `@non_atomic_requests` on the download view | Rejected before V4: `_run_without_database_context` runs it with **no role, no GUCs, no RLS**, moving authorisation wholly into application code — the exact failure mode 2a exists to prevent |
+| `X-Accel-Redirect` / `X-Sendfile` | Rejected by V4's "no direct-to-storage"; `ops/Caddyfile` also has no internal route |
+| Pre-signed URLs | Rejected by V4 explicitly, and by C4: a signed URL outlives the session that minted it and cannot be revoked inside its lifetime |
 
-**Recommendation to be ratified, not assumed**: cap the size and return an in-memory
-`HttpResponse`.
+> **DECIDED — fetch the object into memory under a hard cap and return an in-memory
+> `HttpResponse`.** The cap is `PORTAL_DOCUMENT_MAX_BYTES = 10 MiB`. Arithmetic, because the
+> box is the binding constraint: 4 concurrent request slots (gthread 2x2) x 10 MiB = 40 MiB
+> worst case on 954 MiB, roughly 4%. A MEI's DAS PDF is ~100 KB, so the cap carries about 100x
+> headroom over the real workload and exists to bound the pathological case, not the normal one.
 
-**Exit criteria** *[R2→R3: revision 2 said "the decision is written down", which is
-satisfiable by writing anything down — including the wrong option. That is decoration, in
-the gate written to prevent decoration, and it violates operating rule 3.]* — all three
-checkable:
+**Exit criteria — all three checkable, and criterion 3 is now resolved rather than
+conditional** *[R5→R6]*:
 
-1. No portal response path constructs a `StreamingHttpResponse` subclass, asserted by a test
-   that walks the portal urlconf's view returns.
-2. The byte cap is a **named constant** with a test at the boundary (at the cap succeeds, one
-   over is refused).
-3. If the chosen option bypasses the portal transaction, the compensating authorisation is
-   named and has its own test.
+1. No portal response path returns a `StreamingHttpResponse` subclass, asserted **by exercise,
+   not by inspection**: a test walks the portal urlconf, issues an authenticated request to
+   every route, and asserts `not isinstance(response, StreamingHttpResponse)`. *[R5→R6: revision
+   3 said "walks the portal urlconf's view returns", and a reviewer correctly flagged that a
+   return type is not statically knowable without invoking or trusting annotations. Exercising
+   the route is what makes this falsifiable; `_reject_streaming` stays as the runtime backstop,
+   and a test that only asserts the backstop exists would pass with every view broken.]*
+2. The cap is the **named constant above**, with a boundary test: exactly at the cap succeeds,
+   one byte over is refused. The refusal is a clean response, never a `MemoryError`.
+3. **The chosen option does not bypass the portal transaction**, so no compensating
+   authorisation is required and none is invented. Stated positively so the todo author does
+   not read a dangling conditional as an open question.
+4. **The cap bounds the fetch, not only the response** *[R5→R6, from V4]*. With object storage
+   the bytes cross the network first; a cap applied after the object is fully in memory bounds
+   nothing that matters. Assert the size is checked against object metadata **before** the body
+   is read.
 
 ### V4 — Where do the bytes live, and do they survive a deploy? — **CLOSED**
 
@@ -589,7 +601,7 @@ tables do not exist yet".]*
 | Stage | Contents | Gate |
 | --- | --- | --- |
 | 1 | **C1 + C2.** No schema change, no write grant. *[R2→R3: not "pure `apps/authz/` and middleware work" — C2 also needs a data migration and an edit to `deep-research-report.md`]* Unblocks every portal view | — |
-| 2 | **V3** — the only gate still open. V4, V5 and V6 are closed; V6 is already implemented | Stage 1 green |
+| 2 | **No gate work remains** — V3, V4, V5 and V6 are all closed, and V6 is already implemented. Stage 2 collapses into Stage 3 | Stage 1 green |
 | 3 | **C5**, documents schema, RLS policy, client-paired FKs, `client_id`-leading unique constraints, count-pin bumps — **with the write grant still zero**, so T-056 stays green throughout | V-gates closed |
 | 4 | **The write grant**, the per-verb allow-list mechanism, C3/C4 guards, and the **W1–W5, W7, W8** runtime proofs. Necessarily last: they need the table to exist | Stage 3 green |
 | 5 | Upload, download — **and W6**. No notification: cut by V5 | Stage 4 green |
