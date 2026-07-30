@@ -49,19 +49,40 @@ assertions meaningful — PostgreSQL evaluates policies against the *current* ro
 membership `SET ROLE` returns `permission denied to set role` and the entire isolation
 suite fails on its first statement.
 
-## Gunicorn must run the `sync` worker with `--threads 1`
+## Gunicorn runs the `gthread` worker, and UUIDv7 generation is locked
 
-Primary keys are UUIDv7 values produced by `uuid6.uuid7()`, whose monotonic counter is
-documented as **not thread-safe**. Django calls a field `default` concurrently under
-threaded workers, so two simultaneous inserts can be handed the same key.
+Primary keys are UUIDv7 values. `uuid6.uuid7()` advances a module-global
+`_last_v7_timestamp` with a non-atomic read-modify-write and holds no lock of its own,
+so under a threaded worker that update is unsynchronised.
+
+**The exposure is monotonic ordering, not uniqueness.** A duplicate key would need the
+48-bit millisecond field *and* the 76 bits from `secrets.randbits(76)` to agree.
+Measured on this codebase at 16 threads × 4000 generations: zero duplicates and zero
+repeated timestamps — which shows the race is rare, not that it is absent, and rarity
+is not a guarantee.
+
+The race is therefore removed rather than tolerated. Every runtime UUIDv7 default
+routes through `apps.core.identifiers.uuid7`, which serialises the call on a
+process-local lock. `UUIDv7PrimaryKeyModel` is the only runtime caller, and two tests
+pin it: one asserts the lock is **held** during generation, the other asserts the field
+default **is** the wrapper. Re-pointing it back at `uuid6.uuid7`, or deleting the
+`with _LOCK`, turns the build red.
 
 ```sh
-gunicorn config.wsgi:application --worker-class sync --threads 1
+gunicorn config.wsgi:application --worker-class gthread --workers 2 --threads 2
 ```
 
-This is asserted in T-022. Celery's default prefork pool is process-based and therefore
-safe; if that pool is ever changed to `threads` or `gevent`, this constraint must be
-revisited at the same time.
+> A no-duplicates assertion would be decoration here: unlocked generation produced none
+> in 64000 attempts, so such a test passes with the lock removed. The tests assert the
+> lock, not the outcome.
+
+**UUIDv7 ordering is an index-locality property, never a business ordering guarantee.**
+No caller may infer sequence, causality, or a timestamp from a primary key — sort on an
+explicit column.
+
+This is asserted in T-022. Celery's default prefork pool is process-based, so each
+worker holds its own lock and needs no coordination; the wrapper is also what would
+make a `threads` or `gevent` pool safe if one is ever adopted.
 
 ## Row-level security
 
@@ -108,7 +129,7 @@ be wrong in.
 | Login / password reset | `5/m` | **email**, globally | Credentials are platform-global, so a tenant-keyed bucket would be a `Host`-header bypass worth 5 attempts × every firm |
 | Login / password reset | `20/m` | **IP**, globally | Catches attempts spread across many addresses |
 | Authenticated writes | `60/m` | `(tenant_id, user_id)` | The caller is identified and the tenant resolved from a membership they hold |
-| Authenticated reads | `120/m` | `(tenant_id, user_id)` | `TenantMiddleware` holds a transaction open across rendering and workers run `sync --threads 1`, so unbounded GETs are a denial-of-service vector |
+| Authenticated reads | `120/m` | `(tenant_id, user_id)` | `TenantMiddleware` holds a transaction open across rendering and the deployment holds only 4 concurrent request slots (`gthread`, 2 workers × 2 threads), so unbounded GETs are a denial-of-service vector |
 
 All four are settings (`RATELIMIT_*`), so a deployment tightens them without a code
 change. Buckets live in the Redis cache.
