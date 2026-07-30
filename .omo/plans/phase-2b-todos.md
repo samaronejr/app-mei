@@ -31,8 +31,12 @@ API signing key), plus the namespace endpoint and region.
 at the S3 backend against OCI's S3-compatible endpoint; leave `base.py`, `dev.py` and
 `test.py` on `FileSystemStorage`. Credentials come from the environment, never git.
 
-**Acceptance** — The bucket is private: an unauthenticated GET of a known key returns
-403 or 404. `storage.url()` is never called on a portal path. No public media route
+**Acceptance** — The bucket is private, proven by a PAIR: an authenticated write-read
+of a key **succeeds**, and the same key unauthenticated returns 403/404 **while the object
+demonstrably exists**. *[The unauthenticated refusal alone is decoration — OCI conflates
+"absent" with "unauthorised" so it cannot leak existence, so a 404 is identical for a
+private bucket, a missing bucket and a wrong credential. All three occurred during this
+todo.]* `storage.url()` is never called on a portal path. No public media route
 exists, asserted by `/media/<anything>` returning 404 on **both** hosts.
 
 **QA — happy**: `manage.py check` plus the private-bucket probe against the real bucket

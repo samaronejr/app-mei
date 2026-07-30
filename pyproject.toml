@@ -126,6 +126,13 @@ ignore_missing_imports = true
 module = ["django_ratelimit", "django_ratelimit.*"]
 ignore_missing_imports = true
 
+# botocore ships no py.typed marker. Its only use in this codebase is Config, built once
+# in prod.py to hand django-storages a client configuration -- so the untyped surface is
+# a single constructor call, and every value passed to it is a literal.
+[[tool.mypy.overrides]]
+module = ["botocore", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = ["-ra", "--strict-config", "--strict-markers"]

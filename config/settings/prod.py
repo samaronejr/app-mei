@@ -1,6 +1,7 @@
 """Production settings: TLS-terminated, host-only cookies, Sentry on."""
 
 import sentry_sdk
+from botocore.config import Config as BotocoreConfig
 from sentry_sdk.integrations.django import DjangoIntegration
 
 from config.settings.base import *  # noqa: F403
@@ -46,14 +47,26 @@ STORAGES = {
             # inside its lifetime. V4 forbids pre-signed URLs outright, so url() must
             # not be able to produce a working one even if a template calls it.
             "querystring_auth": False,
-            "default_acl": "private",
+            # No default_acl. OCI's S3 layer has no per-object ACLs, so sending
+            # x-amz-acl is at best ignored; the bucket itself is private and objects
+            # inherit that. Setting it would look like a control and be none.
             # A repeated storage key must not silently clobber the earlier document;
             # keys are random, so a collision means something is wrong.
             "file_overwrite": False,
-            "signature_version": "s3v4",
-            # OCI's S3 endpoint is path-style; virtual-host addressing needs per-bucket
-            # DNS that does not exist here.
-            "addressing_style": "path",
+            # One Config object, not the individual signature_version/addressing_style
+            # options: django-storages only builds its default config when
+            # client_config is None, so those settings would be silently dead here.
+            "client_config": BotocoreConfig(
+                s3={"addressing_style": "path"},
+                signature_version="s3v4",
+                # OCI rejects aws-chunked transfer encoding, which boto3 >= 1.36 turns
+                # on by default through request checksums. Measured: every PutObject
+                # fails `NotImplemented: AWS chunked encoding not supported` without
+                # this, while auth and HeadObject succeed -- so it looks like a
+                # credential problem and is not one.
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            ),
         },
     },
     "staticfiles": {
