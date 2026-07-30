@@ -9,7 +9,32 @@
 > its spec requirements: 12 conformed, and the re-review found **W1-BL-3** (below), which
 > is fixed.
 >
-> **Wave-3 status (revision 8): REVIEWED and REVISED; APPROVED for implementation.**
+> **Wave-3 status: IMPLEMENTED, CODE-REVIEWED, PATCHED, DEPLOYED.** The plan review
+> below (revision 8) approved the text; the *code* was then reviewed separately by
+> Momus and Oracle as final-verification-wave item 7, which found **two blocking
+> defects the shipped tests were built to miss**:
+>
+> 1. **The portal could not onboard anyone.** allauth's whole tree ran inside the
+>    portal transaction as `app_portal`, so `/accounts/2fa/totp/activate/` was a 500 on
+>    `account_emailaddress` and logout a 500 on `django_session`.
+>    `MFAEnforcementMiddleware` sends every unenrolled portal user to that page, so the
+>    first request a new MEI owner makes was a 500 they could never pass. Both fixtures
+>    pre-enrolled TOTP, which stepped around exactly that path. Fixed: `/accounts/`
+>    runs in the anonymous shape — both GUCs empty, still `app_runtime`.
+> 2. **An uppercase `Host` bypassed the whole isolation layer.** `portal_slug_from_host`
+>    compared a verbatim header against a lowercase suffix, so `ACME-PORTAL.example.com`
+>    no-opped every portal middleware and was served the FIRM's URL tree, `/admin/`
+>    included, while the browser still sent the portal session cookie. Fixed by
+>    lowercasing.
+>
+> It also found **three tests that could not fail** (the admin gate, the non-atomic
+> view, and two GUC assertions written as set-membership disjunctions), **two legs of
+> the positional assertion enforced by nothing** (`RateLimitMiddleware`, and the portal
+> sitting inside `MFAEnforcementMiddleware`), and **a false claim in
+> `.evidence/T-063-happy.txt`** asserting a POST sequence no test performed. All fixed
+> and falsified; failure evidence written for all three todos.
+>
+> _Original revision-8 plan review follows._
 > Momus and Oracle reviewed T-061/T-062/T-063 in parallel and converged on one worst finding.
 > All are now fixed in place, each marked "Revision 8" at the point of the change:
 >
@@ -933,7 +958,10 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 
 **Any mutation that changes nothing is a defect** — that control is decoration and must be fixed or removed.
 
-> **Status: 16 of 18 rows RUN. Every row red. Recorded in `.evidence/T-064-happy.txt`.**
+> **Status: COMPLETE — 18 of 18 rows run, every row red.** The final two were unblocked
+> by Wave 3: removing `SET LOCAL ROLE` turns two T-061 tests red, and honouring
+> `request.GET["client_id"]` turns the forgery test red. Recorded in
+> `.evidence/T-064-happy.txt`.
 > Deferred, both requiring Wave 3 to exist: *remove `SET LOCAL ROLE` from the middleware*
 > (T-061) and *forge `client_id`* (T-062).
 >
@@ -981,7 +1009,7 @@ this todo unfinishable and tripped operating rule 5 mid-wave.*
 
 **Acceptance criteria** — All suites green against staging. `app_portal` exists with the non-inheriting grant. A portal login works over HTTPS. Phase-1 assertions still hold at the S9 baseline.
 
-> **T-065 STATUS: 3 of 4 "Do" items done.** Deployed at `0865ff7` to 144.33.16.182.
+> **T-065 STATUS: COMPLETE.** Deployed at `10e3f42` to 144.33.16.182.
 > `app_portal` created via the V1 psql step (`USAGE` false, `SET` true, 0 write grants);
 > all 7 portal migrations applied, giving 8 policies that are all RESTRICTIVE and all bind
 > `app_portal` and nothing else; Caddy serves the portal host on a real wildcard
