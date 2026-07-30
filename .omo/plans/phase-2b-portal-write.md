@@ -1,6 +1,6 @@
 # Phase 2b — Portal write access and the document vault — Work Plan
 
-> **Revision 7.** Revisions 1, 2 and 3 were each rejected by both reviewers. Revision 3's
+> **Revision 8.** Revisions 1, 2 and 3 were each rejected by both reviewers. Revision 3's
 > C1 call site was confirmed **correct** — both reviewers reproduced it on the live cluster,
 > including the dual-membership shape. It was rejected on the *consequences* of C2, which
 > revision 3 decided and did not trace. Corrections are marked **[R1→R2]**, **[R2→R3]** and
@@ -68,7 +68,8 @@
 > question that would have caught all three: **can this control refuse, on a path a real
 > request can take?**
 >
-> **Status: revised, NOT re-reviewed.** Round-3 reviewers misreported the suite in
+> **Status: revised, NOT re-reviewed.** Rounds 3 and 5 both hit measurement problems — round-3
+> reviewers misreported the suite in
 > opposite directions (one "every test errors", one "294 green"). Measured: `tests/portal
 > tests/authz` = **207 passed**, `tests/authz/test_matrix.py` = **103 passed**. The tree is
 > green; the "103 errors" was one reviewer's own probe package breaking its collection.
@@ -347,7 +348,7 @@ guard, unconditionally — contradicting requirement 2. Both reviewers flagged t
 It is the same class of ambiguity that produced revision 2's defect, so it is now stated as a
 containment, not a range.]*
 
-**Eight requirements come with it** *[R3→R4: revision 3 shipped three. Both reviewers found the
+**Nine requirements come with it** *[R3→R4: revision 3 shipped three. Both reviewers found the
 same gap — the three cover the fall-through, the trigger and the test, and say nothing about
 the stash's lifetime, whose levels it holds, or what is in it. A stash is new mutable
 request state; requirements 4-8 are its contract. Revision 7 adds two more: both round-4 reviewers found
@@ -387,8 +388,13 @@ the `tenant_id` hole independently, and one built a concrete cross-tenant escala
    equivalent: **all 16 matrix slugs** costs the same 3 queries and makes requirement 1 nearly
    dead code (`granted_levels` already raises `UnknownCapability` for an unknown slug), while a
    **curated portal list** makes requirement 1 load-bearing and turns a new portal capability
-   into a **500**. Decide, and pin the set against the portal urlconf's actual `can()` call
-   sites so a new gated view cannot silently fall outside it.
+   into a **500**. **DECIDED: all 16 matrix slugs.** *[R7→R8: revision 7 said "Decide", which is
+   an open decision inside a plan claiming decision-completeness, and a round-5 reviewer called
+   it. The tie-break is that revision 7's stated reason for the other branch is wrong — it said
+   requirement 1 would be "nearly dead code" because `granted_levels` already raises
+   `UnknownCapability`. Measured under `app_portal`, `granted_levels` reads `authz_capability`
+   **before** it can raise anything, so it dies on the denied table. Requirement 1 stays
+   load-bearing either way, and 16 slugs cost the same 3 queries with no curated list to drift.]*
 7. **The stash is bound to `tenant_id`, not only to the user** *[R6→R7 — BLOCKING in both
    round-4 reviews]*. `can(user, action, obj, tenant_id=...)` takes **four** inputs.
    Requirements 1, 2 and 5 bind the trigger, the user and the capability, and leave `tenant_id`
@@ -396,13 +402,30 @@ the `tenant_id` hole independently, and one built a concrete cross-tenant escala
    from levels computed for the **portal's** tenant. A reviewer built the escalation: a user who
    is `client_owner` in T1 and holds **no membership at all** in T2 is handed T1's `FULL` for a
    T2 question whose truth is `NONE`. Real call sites already pass an explicit `tenant_id`.
-   **Consult the stash only when the user matches AND `tenant_id` is omitted or equals the
-   request's tenant; otherwise take the ordinary path.**
+   **Consult the stash only when the user matches AND the tenant matches AND the client
+   matches; otherwise RAISE the named exception from requirement 1 — never "take the ordinary
+   path".** *[R7→R8: both round-5 reviewers measured what the ordinary path means under
+   `app_portal` — `resolve_level` reads `authz_capability`, which is denied, raising
+   `ProgrammingError` and **poisoning the transaction**, so a refusal becomes a 500 with a
+   cascade. Requirement 1 forbade falling through for exactly that reason, so requirements 5 and
+   7 as written contradicted requirement 1. Fail-closed, but by the wrong mechanism and with no
+   usable diagnostic.]* **"The tenant" means the value captured into the stash when it was
+   built, never a live read of `current_tenant_id`** — `record_event` enters a nested
+   `tenant_context`, so a live read compares against a tenant that has moved.
 8. **Bind the token before the `try:`, never inside it** *[R6→R7]*. The existing two tokens are
    bound at the top for exactly this reason. The stash's call site sits inside `try:`, after
    `_apply_gucs` and the lazy `membership.client` fetch — both of which can raise — so a token
    assigned there leaves `finally` raising `UnboundLocalError`, **masking the original
    exception**. Bind it to `None` beside the other two and guard the reset.
+9. **The stash is bound to the CLIENT, which is the third input nothing bound** *[R7→R8 —
+   the ninth gap, found by both round-5 reviewers]*. `role_of` filters on
+   `current_client_id`, so a stashed level is a function of **(user, tenant, client)**.
+   Requirements 5 and 7 bind the first two. Measured: one user, one tenant, two clients —
+   `FULL` under client A and `LIMITED` under client B, the same escalation shape requirement 7
+   closes, reached through the dimension it left open. `_grant_context` already picks among
+   multiple client memberships with `order_by("client_id").first()`, so dual-client users are
+   not hypothetical. Capture the client into the stash and compare against the captured value.
+
 
 **Coverage — DECIDED, not left open** *[R6→R7: revision 4 said "state whether they read the
 stash or are banned from portal paths", which is satisfiable by writing one sentence. That is
@@ -462,22 +485,32 @@ wrongly:
 | --- | --- | --- |
 | Database row | RLS `WITH CHECK` on the child's own `client_id` | **W1** |
 | Reference | FK paired on `client_id`, `client_id NOT NULL` | **C3** |
-| Reachability | Every portal-readable table is RLS-confined on `app.client_id` | W1b |
+| Reachability | Every portal-readable table is RLS-confined on `app.client_id` — **`USING`, not just `WITH CHECK`** | **W9** *[R7→R8: revision 7 cited W1b, which covers only the `WITH CHECK` side and only for tables NOT on the write allow-list. The documents table will be ON that allow-list, so W1b would not have covered the very table this phase adds]* |
 | Application | `can()` — **firm-side only; adds nothing on the portal path** | — |
 
 **Consequences of retiring C2** *[R6→R7]*:
 
-1. **`require_can` needs no object resolver, and no startup check.** Both existed to serve
-   the demotion. The startup check was also unimplementable as written: `LIMITED` is
-   role-dependent, not static — `documents.transfer` is `FULL` firm-side and would have been
-   `LIMITED` client-side — so "a portal view gated on a LIMITED capability" is not knowable
-   at import time without reading `authz_rolegrant`.
+1. **`require_can` needs no object resolver. The startup check is RESTORED.** *[R7→R8 — I
+   over-deleted, and my own change invalidated my reason for deleting.]* Revision 7 cut both,
+   arguing the check was unimplementable because `LIMITED` is role-dependent and not knowable at
+   import time without reading `authz_rolegrant`. **Cancelling the demotion is precisely what
+   makes it static.** `documents.transfer` is now `FULL` for all six roles in the Python
+   `MATRIX` — a literal — and `Membership`'s `membership_role_matches_client_scope` CHECK
+   constraint means a portal request can only ever carry `CLIENT_OWNER` or
+   `CLIENT_COLLABORATOR`. So the check is a **pure import-time assertion with no database
+   read**: for every `require_can(action)` reachable from the portal urlconf, assert
+   `MATRIX[action]` is `FULL` for both client roles. Without it constraint 5 is unenforced
+   prose, and consequence 2 below is a live defect proving the class is real.
 2. **`require_can` still cannot be used on a portal view gated at `LIMITED`.** That defect is
    real and survives independently of C2: it calls `can(request.user, action)` with no object,
    and `_is_attached_to` returns `False` when `obj is None`, so any genuinely-`LIMITED`
    capability becomes an unconditional 403. Two capabilities are already `LIMITED` for
-   `client_collaborator` today — `invoices.issue` and `reports.view_financial` — so **a Stage
-   5 portal view gated on either 403s for every user right now**. Either gate portal views on
+   `client_collaborator` today — `invoices.issue` and `reports.view_financial` *[R7→R8: revision 7 said a Stage 5 view gated on
+   either **"403s for every user right now"**. **Measured false** by both round-5 reviewers:
+   `client_owner` holds `FULL` on both and passes; only `client_collaborator` 403s. The error
+   matters because it forecloses the only two capabilities on the entire portal surface that can
+   both admit and refuse — and a role-dependent 403 is worse than a uniform one, because it
+   passes testing as an owner and fails silently for collaborators in production.]* Either gate portal views on
    `FULL` capabilities only, or give `require_can` an object path. This is no longer C2's
    problem; it is a precondition for any portal view that calls `require_can`.
 3. **Constraint 5 and success criterion 8 are rewritten below**, not merely narrowed. Their
@@ -566,7 +599,7 @@ world-readable with no session, tenant, client or policy involved. Assert `/medi
 
 ### Covered
 
-1. C1 and C2 — no schema change, no grant, unblocks every portal view.
+1. C1 — no schema change, no grant, unblocks every portal view. *[R7→R8: C2 retired]*
 2. C3, C4, C5 — the write-path holes the review reproduced.
 3. Widening `app_portal` to the minimum writes the vault needs, and re-proving isolation
    under them at runtime for the first time.
@@ -643,11 +676,15 @@ duplicated W1. All rewritten; W6–W8 are new.]*
 | **W6** | A portal user issued client A's storage key, replaying it as client B, is **refused before any byte is read by the row lookup itself** — `Document.objects.get(storage_key=...)` returns no row under the portal's client-scoped RLS policy, so the view 404s before it ever calls storage. *[R6→R7: revisions 3-6 said "an authorisation check in the Django download view", naming a location and never the check. Both reviewers flagged that the location is not the mechanism. The mechanism is the RLS-confined lookup, which also means this plan's "one layer for the bytes" claim is wrong in the safe direction: the row lookup is RLS-backed, and the view's contribution is refusing to call storage until it succeeds.]* with a positive control (B's own key succeeds in the same test). *[R3→R4: revision 3 delegated the naming to V4, whose three exit criteria pin a backend, key randomness and non-dependence on secrecy, and name no check and no location. Both reviewers flagged the dangling reference. W6's own note already stated the answer, so the delegation was circular]* *[R2→R3: revision 2 said "at the storage layer" — a category error under V4's own recommended outcome, since `FileSystemStorage` has no layer that can refuse anything. The refusal is the Django view, which is this plan's stated single layer, and naming it that way is what makes the requirement satisfiable]* Without this, W1–W5 protect the metadata while the bytes stay open |
 | **W7** | For every table on the write allow-list, every FK column is either covered by a constraint whose key includes `client_id`, **or named in a pinned exemption literal with a justification**, in the shape of `PORTAL_DECISION_EXEMPT`. **The exemption list must name `client_id → clients_clientcompany` up front** *[R3→R4]* — the parent has no `client_id` column because its **pk is** the client identity (`_client_id_of`, `services.py:269-275`), so the correct constraint is the tenant-paired `FOREIGN KEY (tenant_id, client_id) REFERENCES clients_clientcompany (tenant_id, id)`. It is the first FK a documents table meets, and unnamed it gets decided ad hoc on contact — the exact failure this requirement's escape hatch exists to prevent. *[R2→R3: revision 2's "every FK column" is unsatisfiable — `tenant_id → tenants_tenant` and `uploaded_by_id → accounts_user` can never be client-paired, because those parents have no `client_id`. Without a pinned exemption it gets relaxed ad hoc on first contact]* |
 | **W8** | No `ON CONFLICT` / `ignore_conflicts` / `get_or_create` on any portal write path (grep guard, with the self-test the guard family requires) |
+| **W9** | **Every table the portal can `SELECT` is client-confined on its `USING` predicate**, asserted by the inherited `test_every_tenant_table_has_a_deliberate_portal_decision` plus `test_the_portal_role_can_read_the_allow_list_and_nothing_else`. *[R7→R8: retiring C2 rests entirely on this property — "any object a portal request can fetch is already client-matched". It is true of today's six tables, verified on the cluster. **This phase adds a seventh.** Leaving it as an observation rather than a requirement means the argument that retired C2 could be silently falsified by the documents table itself. The meta-test enumerates tables carrying `tenant_id`, and the documents table will carry one, so this is self-extending once stated.]* |
 
 ### Inherited pins this phase will break, deliberately
 
-*[R2→R3: revision 2 listed two. There are seven, and an incomplete list defeats the section's
-whole purpose — it exists precisely so nobody meets an unexpected red and relaxes it.]*
+*[R7→R8: the count has moved with each revision — two, then seven, now **six that break plus
+three that explicitly do NOT**. The "no longer breaks" rows stay, marked, rather than being
+deleted: a reader who remembers the demotion needs to see it was cancelled deliberately, and a
+row that predicts no red is only noise if it is unlabelled.]* *[R2→R3: an incomplete list
+defeats the section's whole purpose — it exists precisely so nobody meets an unexpected red and relaxes it.]*
 
 | Pin | Change | Stage |
 | --- | --- | --- |
@@ -656,7 +693,7 @@ whole purpose — it exists precisely so nobody meets an unexpected red and rela
 | `test_the_portal_role_holds_no_write_privilege_anywhere` | flat-zero sweep goes red the moment INSERT is granted; must split into allow-listed INSERT + flat-zero DELETE/TRUNCATE/REFERENCES/UPDATE | 4 |
 | `test_the_conftest_allow_list_matches_the_production_artifact` | reshaped when `roles.sql` gains a second `DO` block | 4 |
 | `test_the_portal_role_can_read_the_allow_list_and_nothing_else` | same | 4 |
-| `tests/authz/test_matrix.py` | 2 of 96 cells, against the `deep-research-report.md` oracle | 1 |
+| `tests/authz/test_matrix.py` | **no longer breaks** — C2 retired, so the 2 cells stay green and the oracle is not edited *[R7→R8: this row still scheduled the demotion's red at Stage 1. The two rows below were updated for the retirement and this one was missed, contradicting the retirement block's "the two matrix cells stay green"]* | — |
 | `test_the_portal_branch_alone_would_admit_a_stranger` | **no longer breaks** — C2 is retired, so `_is_attached_to` keeps its current `user` handling *[R6→R7: it would have gone red UNPREDICTED had the demotion shipped, since its own comment says so]* | — |
 | `COUNTS` in `tests/isolation/test_portal_client_isolation.py` | gains a row when the documents table gets its client policy *[R6→R7: missed by revisions 3-6]* | 3 |
 | `PORTAL_FULL_CAPABILITY` | **no longer breaks** — C2 retired, `documents.transfer` stays `FULL` | — |
@@ -673,7 +710,7 @@ tables do not exist yet".]*
 
 | Stage | Contents | Gate |
 | --- | --- | --- |
-| 1 | **C1 + C2.** No schema change, no write grant. *[R2→R3: not "pure `apps/authz/` and middleware work" — C2 also needs a data migration and an edit to `deep-research-report.md`]* Unblocks every portal view | — |
+| 1 | **C1 only** — the stash, its nine requirements, and the restored import-time startup check. No schema change, no write grant, **no data migration, and no edit to `deep-research-report.md`** *[R7→R8: this row still carried C2 and its migration note, contradicting the retirement four sections above. Both round-5 reviewers ranked it the most damaging dangler, because the stages table is what you decompose from — it would have produced a seed-migration todo for work that was cancelled]* | — |
 | 2 | **No gate work remains** — V3, V4, V5 and V6 are all closed, and V6 is already implemented. Stage 2 collapses into Stage 3 | Stage 1 green |
 | 3 | **`django-storages[s3]` + `boto3`, and `prod.py`'s `STORAGES` switched to the S3 backend** *[R6→R7: V4 decided object storage and no stage owned the dependency or the settings change; `prod.py` is still `FileSystemStorage`]*. Then **C5**, documents schema, RLS policy, client-paired FKs, `client_id`-leading unique constraints, count-pin bumps — **with the write grant still zero**, so T-056 stays green throughout | V-gates closed |
 | 4 | **The write grant**, the per-verb allow-list mechanism, C3/C4 guards, and the **W1–W5, W7, W8** runtime proofs. Necessarily last: they need the table to exist | Stage 3 green |
@@ -710,7 +747,13 @@ Unchanged from 2a, and two added because they cost real time there:
 6. `app_portal` holds no `DELETE`, `TRUNCATE`, `REFERENCES` or sequence privilege, and write
    access only to the pinned allow-list.
 7. Document downloads appear in the Marco Civil access log.
-8. Every portal view authorises through `can()` on a **`FULL`** capability, and the controls
+8. Every `require_can` reachable from the portal urlconf gates on a capability that is `FULL`
+   for **both** client roles, asserted by the **import-time startup check** — not by
+   inspection. *[R7→R8: revision 7's "every portal view authorises through `can()`" was
+   prose-satisfiable, had no mutation attached, and contradicted constraint 5's own statement
+   that `can()` adds nothing on the portal path. The startup check is what makes it
+   falsifiable: point a portal view at a non-`FULL` capability and the process refuses to
+   boot.]* The controls
    that actually confine the write — RLS `WITH CHECK` (W1) and the client-paired FK (C3) — are
    each proven by a mutation that turns them red.
 9. The firm still sees everything it saw before — `pg_has_role('app_runtime','app_portal',
