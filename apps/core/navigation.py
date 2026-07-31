@@ -48,7 +48,7 @@ NAV: Final[tuple[NavItem, ...]] = (
     NavItem(_("Vencendo"), "queue-due-soon", "das.generate"),
     NavItem(_("Atrasadas"), "queue-overdue", "das.generate"),
     NavItem(_("Onboarding"), "queue-onboarding", "clients.view_assigned"),
-    NavItem(_("Limite"), "queue-threshold", "reports.view_financial"),
+    NavItem(_("Limite"), "queue-threshold", "obligations.view_revenue_threshold_queue"),
     NavItem(
         pgettext_lazy("navigation", "Exportar clientes"),
         "clients-export-csv",

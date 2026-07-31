@@ -3,10 +3,19 @@
 Four view functions rather than one dispatching on a path segment, because each queue
 is guarded by a **different** capability and `require_can` takes a static one. Reading
 DAS deadlines is `das.generate` work, which the published matrix refuses an operations
-admin outright; the revenue queue is `reports.view_financial`, which that role holds
-only as `limited` — and `can()` answers False for a refined level with no object in
-hand, which is the correct answer for a list. Collapsing the four into one gate would
-mean picking the most permissive of them.
+admin outright. Collapsing the four into one gate would mean picking the most permissive
+of them.
+
+The revenue queue is `obligations.view_revenue_threshold_queue`, a COLLECTION capability
+added for it. It was `reports.view_financial`, which operations_admin holds only as
+`limited` — and `can()` answers False for a refined level with no object in hand, which
+is the correct answer for an object and the wrong one for a list. That made the queue an
+unconditional 403 for that role, invisibly, because `visible_nav_items` draws only
+`full`
+so the link never rendered. A list view has no object for a refined level to be
+evaluated
+against, so the fix was a capability of the right shape rather than a laxer one:
+`reports.view_financial` is unchanged and every other gate using it is untouched.
 
 The refusal is a 403 raised by the decorator, never a filter that returns nothing. A
 list view that answers 200 with zero rows is the perfect disguise for a permission
@@ -157,7 +166,7 @@ ONBOARDING = QueueSpec(
 THRESHOLD = QueueSpec(
     "threshold-warning",
     _("Limite de faturamento"),
-    "reports.view_financial",
+    "obligations.view_revenue_threshold_queue",
     threshold_warning,
     "obligations/_rows_threshold.html",
     (_("Cliente"), _("Faturado"), _("Teto"), _("Consumido"), _("Faixa")),
