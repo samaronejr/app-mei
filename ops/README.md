@@ -217,6 +217,110 @@ be wrong in.
 All four are settings (`RATELIMIT_*`), so a deployment tightens them without a code
 change. Buckets live in the Redis cache.
 
+## Backups
+
+`ops/backup.sh` takes a physical base backup, a logical dump, and prunes the WAL
+archive. [`ops/RESTORE.md`](RESTORE.md) is the other half — how to get the data back.
+
+### The schedule is a host systemd timer, and it lives in this repository now
+
+`ops/systemd/` holds `app-mei-backup.service`, `app-mei-backup.timer` and an idempotent
+`install.sh`. Install or re-install with:
+
+```sh
+ssh app-mei 'sudo /opt/app-mei/ops/systemd/install.sh'
+```
+
+The installer refuses to proceed if `ExecStart` names a script that is not there, prints
+a diff of anything it is about to overwrite, and runs `systemd-analyze verify` before it
+enables anything — because a unit that is wrong only fails at 03:00, into nobody's inbox.
+
+**Those units existed on the box before they existed here.** They had been running since
+2026-07-28 and were not in the repository, which is the same class of undocumented
+external state as the box's git deploy key: a rebuilt host would silently have had no
+backups at all and nothing would have said so. The files above are a faithful capture —
+the schedule, the `User=ubuntu`, `Nice`, `IOSchedulingClass` and the jitter are the live
+values, kept deliberately rather than re-chosen.
+
+The timer is `03:00 America/Sao_Paulo` (06:00 UTC today) with up to ten minutes of
+jitter, which is why the journal shows 03:02 and 03:07. It runs before beat's two sweeps
+(03:30 and 04:00, also local, because they are scheduled under `CELERY_TIMEZONE`), and
+`Persistent=true` means a box that was off at 03:00 runs on next boot rather than
+skipping a night in silence.
+
+It is a HOST unit, not a Celery beat task, and that is forced rather than stylistic:
+`backup.sh` drives `docker compose exec` against the db container, so from inside a
+container it would need the docker socket — root-equivalent here — bind-mounted into the
+image that serves public HTTP, and it would make the backup depend on the very stack it
+must be able to restore.
+
+```sh
+ssh app-mei 'systemctl list-timers app-mei-backup.timer --no-pager'
+ssh app-mei 'journalctl -t app-mei-backup -n 50 --no-pager'
+ssh app-mei 'sudo systemctl start app-mei-backup.service'   # force a run now
+```
+
+### A failed backup is visible at `/healthz`, and does not 503
+
+The job's real failure mode is not a crash. It is a non-zero exit written into a terminal
+that has already closed — which is exactly what happened between 2026-07-29 and
+2026-07-31, when the unit sat in `failed` state for two nights and nothing said so.
+
+So a successful run stamps a freshness marker in `obligations_schedulerheartbeat` (the
+table T-041's scheduler dead-man's switch already uses, keyed by name), written LAST and
+only on full success, so any failure above it ages the marker out. `/healthz` reports:
+
+```json
+{"status": "ok", "scheduler": "alive", "backup": "fresh"}
+```
+
+`backup` is `fresh`, `stale` (older than 36 hours, or never), or `unknown` (the database
+could not be read). **A stale backup never changes `status` and never returns 503.** The
+scheduler switch answers 503 because a dead beat means the application is not doing its
+job; a stale backup means the application is fine and a person must act. Escalating it
+would flap the container healthcheck every ten seconds, fail the deploy job's fourth
+assertion, and take the site down over a problem the site does not have.
+
+Thirty-six hours is one nightly cycle plus a half-day grace: long enough that a late or
+slow run never alarms, short enough that one skipped night always does. The scheduler's
+"three missed ticks" rule cannot be borrowed here — at one tick per day that is three
+days of silence, and the outage this exists to catch lasted two.
+
+### The backup tree's ownership is repaired on every run
+
+`/backups` is the host directory `ops/backups` bind-mounted into the db container.
+postgres inside it is uid 999, and the host keeps taking the tree back — `git reset
+--hard` in the deploy's Sync step rewrites the tracked `ops/backups/.gitkeep` as the ssh
+user whenever the index's cached stat data no longer matches, and a fresh checkout
+creates the directory itself that way. When that happens the run dies at its first
+`mkdir` with `Permission denied`.
+
+`backup.sh` therefore re-asserts the invariant from inside the container as root,
+recursively, immediately before its first write, and logs any path it had to repair. It
+does not try to stop the host from breaking it; it takes it back every night regardless
+of which host action did it. Untracking `.gitkeep` was measured and rejected: with the
+directory absent, Docker creates the bind-mount source owned by **root**, which postgres
+cannot write either.
+
+### The WAL archive is bounded by retention, and the anchor is the OLDEST base
+
+The prune runs `pg_archivecleanup` against the START WAL of the oldest **retained** base
+backup, never the newest — deleting WAL newer than that would silently make every older
+base backup unrestorable while appearing to succeed. A run that cannot read that label,
+or reads one with no `START WAL LOCATION`, now exits 3 instead of warning: an unreadable
+oldest base is not a pruning problem to defer, it means the earliest point this
+deployment can recover to does not exist.
+
+> **Open capacity decision, not yet made.** The archive generates roughly 290 segments a
+> day — 4.6 GB — because `archive_timeout=300` forces a switch every five minutes and
+> each segment is a full 16 MB whether or not it is full. At `RETENTION_DAYS=7` the
+> steady state is therefore ~32 GB on a 45 GB disk that is already 62% used, so a
+> perfectly working prune still fills it. Measured 2026-07-31: 14 GB of archive, 17 GB
+> free. The three ways out — shorter retention, a longer `archive_timeout` (which
+> loosens the documented ≤5 min RPO), or gzip in `archive_command` (which changes
+> `restore_command` and so changes the recovery procedure) — are all policy choices with
+> real costs, and none of them should be picked by whoever happens to be fixing a script.
+
 ## Deploy
 
 Staging deploys itself. A push that lands on `main` and passes both gates ships to the

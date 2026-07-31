@@ -1,0 +1,25 @@
+; Nightly trigger for app-mei-backup.service. Captured from the staging box; see the
+; header of the service unit for why this file did not exist in the repository before.
+
+[Unit]
+Description=Run app-mei backup nightly
+Documentation=file:///opt/app-mei/ops/README.md
+
+[Timer]
+; Brazilian local time, stated explicitly rather than inherited from the host clock, and
+; matching TIME_ZONE / CELERY_TIMEZONE in config/settings/base.py. 03:00 local is 06:00
+; UTC today; beat's two sweeps are 03:30 and 04:00 LOCAL (they are scheduled under
+; CELERY_TIMEZONE), so the backup finishes roughly half an hour before the first of them
+; on a box with one core. An unqualified time would move against that window silently the
+; day the host clock is changed.
+OnCalendar=*-*-* 03:00:00 America/Sao_Paulo
+; If the VM was down at 03:00 (Always Free instances can be stopped), run on next boot
+; rather than silently skipping a night.
+Persistent=true
+; Ten minutes of jitter, which is why the journal shows 03:02 and 03:07 rather than
+; 03:00. Kept from the captured unit: it keeps the backup off the exact minute that any
+; other scheduled work lands on.
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

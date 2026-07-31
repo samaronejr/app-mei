@@ -1,0 +1,47 @@
+; Runs ops/backup.sh once. Triggered by app-mei-backup.timer; there is deliberately no
+; [Install] section, so the unit stays `static` and `systemctl enable` on it fails rather
+; than quietly arranging for a backup at every boot.
+;
+; A HOST unit and not a Celery beat task, and the choice is forced rather than stylistic.
+; backup.sh drives `docker compose exec` against the db container: from inside a
+; container it would need the docker socket bind-mounted into the app image, which is
+; root-equivalent on this box and would put a filesystem-wide escape hatch into the same
+; image that serves public HTTP. It would also make the backup depend on the very stack
+; it must be able to restore — a worker that cannot start cannot back up the database
+; whose corruption stopped it.
+;
+; This file is a CAPTURE of the unit already installed on the staging box, which had been
+; running since 2026-07-28. It existed ONLY there: undocumented external state of exactly
+; the same class as the box's git deploy key, and a rebuilt box would silently have had
+; no backups at all. The schedule, the User and the scheduling priorities are its values,
+; preserved deliberately rather than re-chosen — moving a backup window is an operational
+; decision, not a side effect of putting the file under version control.
+
+[Unit]
+Description=app-mei nightly backup (pg_basebackup + pg_dump + WAL prune)
+Documentation=file:///opt/app-mei/ops/RESTORE.md
+; The script's first act is `docker compose ps`, so a run before dockerd is up would fail
+; at the precondition rather than do anything dangerous — but failing for a reason that
+; is not about the backup is how an alarm gets ignored.
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+; NOT root. This account needs the docker group and nothing else, and backup.sh never
+; writes the host filesystem itself — every write goes through `docker compose exec` into
+; the container as postgres.
+User=ubuntu
+WorkingDirectory=/opt/app-mei
+ExecStart=/opt/app-mei/ops/backup.sh
+; One identifier in the journal for the unit's own lines and the script's alike, so
+; `journalctl -t app-mei-backup` is the whole history.
+SyslogIdentifier=app-mei-backup
+; The box has 954 MiB of RAM and 1 OCPU; a backup must never contend with serving
+; traffic. A base backup that competes for the core makes the site slow at 03:00 instead
+; of making the backup fast.
+Nice=10
+IOSchedulingClass=idle
+; Measured at 27 s on staging. Half an hour is not a target, it is the point past which a
+; hung run must be killed so the next night's is not blocked behind it.
+TimeoutStartSec=1800
