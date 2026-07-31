@@ -32,3 +32,8 @@ cp .env.example .env && docker compose up -d --wait
 Every todo in the plan writes QA stdout to `.evidence/<todo-id>-<happy|failure>.txt`.
 The directory is git-ignored except for `.gitkeep`, so evidence is regenerated
 rather than inspected from a clone.
+
+<!-- CI gate probe: this branch exists only to produce a pull_request-event run.
+     .github/workflows/ci.yml is byte-identical to main here, so the absence of
+     deploy-staging in this run proves the job `if` gate, not a workflow edit.
+     DO NOT MERGE. -->
