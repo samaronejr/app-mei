@@ -40,8 +40,8 @@ The executor must **not** build any of the following. If a todo seems to require
 
 | Excluded | Belongs to |
 |---|---|
-| Client portal PWA, service worker, web push | Phase 2 |
-| Document vault, retention rules, object storage upload flows | Phase 2 |
+| ~~Client portal PWA, service worker, web push~~ **SUPERSEDED** — built deliberately under `.omo/plans/phase-2a-portal-isolation.md` / `phase-2b-portal-write.md` (2026-07); criterion 10 is measured over the remaining eight rows. | Phase 2 |
+| ~~Document vault, retention rules, object storage upload flows~~ **SUPERSEDED** — built deliberately under `.omo/plans/phase-2a-portal-isolation.md` / `phase-2b-portal-write.md` (2026-07); criterion 10 is measured over the remaining eight rows. | Phase 2 |
 | Notifications (email templates, push, reminder sweeps) | Phase 2 |
 | Invoice registry, NFS-e request workflow, artifact capture | Phase 3 |
 | Asaas / any PSP integration, Pix, boleto, subscriptions | Phase 3 |
@@ -50,6 +50,26 @@ The executor must **not** build any of the following. If a todo seems to require
 | Connector framework implementations (native/provider/portal-assist) | Phase 3+ |
 | gov.br OIDC login | Post-pilot |
 | eSocial payroll, NF-e/NFC-e, WhatsApp, support console | Out of MVP entirely |
+
+**Adjudication — 2026-07-31.** Two rows were being read as violated by code that this plan
+in fact commissioned. Both readings are settled here, and both are asserted by
+`tests/scope/test_scope_fidelity.py`, which measures criterion 10 over the eight
+non-superseded rows.
+
+1. **Row 7, "audit UI", is about a *writable* interface.** `EventAdmin`,
+   `PlatformEventAdmin` and `AccessLogAdmin` (`apps/audit/admin.py:69-100`) are **not**
+   "audit UI v1": all three derive from `ReadOnlyAdmin` and refuse add, change and
+   delete, so they are a window onto append-only tables that the database itself already
+   refuses to mutate. The excluded thing is an interface for *working* the audit trail.
+   `DataSubjectRequestAdmin` (`apps/audit/admin.py:104-110`) **is** writable and is in
+   scope **by design**: closing a rights request is how the statutory LGPD workflow is
+   answered, which its own docstring states. It is exempt from row 7, not an exception
+   to it.
+2. **The dashboard (T-047) is planned work, not "Reports v1".** Row 7's "Reports v1,
+   portfolio KPI exports" means report and KPI-**export endpoints** beyond the client CSV
+   export that T-033 commissioned. The §12 exit criterion *is* a rendered dashboard; a
+   plan cannot exclude its own deliverable. The routed surface is pinned: the only URL
+   name matching `report|kpi|export` is T-033's `clients-export-csv`.
 
 Also **not** in scope: forking or copying `clinic_project`. It is **reference only** — the executor may read it to see how a pattern was solved, but must not copy files wholesale. Every config in this plan is written fresh.
 
