@@ -140,6 +140,17 @@ MATRIX: Final[tuple[CapabilityRow, ...]] = (
         "Access support / incident console",
         (FULL, FULL, LIMITED, FULL, TICKET_ONLY, TICKET_ONLY),
     ),
+    # A COLLECTION capability, deliberately: the revenue-threshold queue lists every
+    # client at or past the warning band, so there is no single object for a refined
+    # level to be evaluated against. `reports.view_financial` is object-refined and is
+    # LIMITED for operations_admin, which makes `require_can` -- which passes no object
+    # -- an unconditional 403 for that role. Gating on client visibility instead would
+    # collapse the authorization gate into the portfolio queryset scoping.
+    CapabilityRow(
+        "obligations.view_revenue_threshold_queue",
+        "View revenue threshold queue",
+        (FULL, FULL, FULL, FULL, NONE, NONE),
+    ),
 )
 
 CAPABILITY_SLUGS: Final[frozenset[str]] = frozenset(row.slug for row in MATRIX)
