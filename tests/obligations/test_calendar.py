@@ -16,7 +16,7 @@ from datetime import date
 import pytest
 
 from apps.obligations.calendar import due_date_for, resolve_due_date
-from apps.obligations.models import ObligationType
+from apps.obligations.models import ObligationDueRule, ObligationType
 from apps.obligations.rules import Direction, DueRule, parse_due_rule
 
 pytestmark = pytest.mark.django_db
@@ -24,6 +24,14 @@ pytestmark = pytest.mark.django_db
 FORWARD = DueRule(day=20, direction=Direction.FORWARD)
 BACKWARD = DueRule(day=20, direction=Direction.BACKWARD)
 NEVER = DueRule(day=31, direction=Direction.NONE, month=5)
+
+
+def current_era(code: str) -> ObligationDueRule:
+    """Return the open-ended era for `code` — the regime in force today."""
+    return ObligationDueRule.objects.get(
+        obligation_type_id=code,
+        valid_to__isnull=True,
+    )
 
 
 def test_an_ordinary_business_day_is_returned_unchanged() -> None:
@@ -142,12 +150,13 @@ def test_changing_the_direction_in_data_changes_the_answer_with_no_code_edit() -
     assert before == date(2026, 6, 22)
 
     # When ONLY the stored rule is edited — no deploy, no code change
-    das.due_rule = {**das.due_rule, "direction": "backward"}
-    das.save(update_fields=["due_rule"])
+    era = current_era("DAS")
+    era.rule = {**era.rule, "direction": "backward"}
+    era.save(update_fields=["rule"])
 
     # Then the resolved date moves the other way. This is the property the whole
     # "engine is data" design exists to provide, asserted rather than asserted-about.
-    after = due_date_for(ObligationType.objects.get(pk="DAS"), competence).resolved
+    after = due_date_for(das, competence).resolved
     assert after == date(2026, 6, 19)
     assert after != before
 
@@ -156,14 +165,16 @@ def test_turning_the_rolling_off_in_data_leaves_the_nominal_date() -> None:
     # Given the seeded DAS rule and a competence whose nominal date is a Saturday
     das = ObligationType.objects.get(pk="DAS")
     competence = date(2026, 5, 1)
+    assert due_date_for(das, competence).resolved == date(2026, 6, 22)
 
     # When the direction is switched to none in data alone
-    das.due_rule = {**das.due_rule, "direction": "none"}
-    das.save(update_fields=["due_rule"])
+    era = current_era("DAS")
+    era.rule = {**era.rule, "direction": "none"}
+    era.save(update_fields=["rule"])
 
     # Then the deadline stays on the Saturday, proving `none` is dispatched from the
     # same enumeration as the other two rather than handled by a special case
-    result = due_date_for(ObligationType.objects.get(pk="DAS"), competence)
+    result = due_date_for(das, competence)
     assert result.resolved == date(2026, 6, 20)
     assert result.resolved == result.nominal
 
@@ -194,7 +205,7 @@ def test_an_endless_run_of_holidays_raises_instead_of_looping_forever() -> None:
 
 def test_the_resolver_reads_the_rule_it_is_given_not_a_global_default() -> None:
     # Given the seeded DASN rule parsed from the database
-    rule = parse_due_rule(ObligationType.objects.get(pk="DASN").due_rule)
+    rule = parse_due_rule(current_era("DASN").rule)
 
     # When a Sunday is resolved with it
     # Then it is unchanged, because that rule says so — the resolver holds no

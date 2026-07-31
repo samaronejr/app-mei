@@ -22,7 +22,12 @@ from datetime import date, timedelta
 
 from apps.obligations.holidays import HolidayScope, is_business_day
 from apps.obligations.models import ObligationType
-from apps.obligations.rules import Direction, DueRule, nominal_due_date, parse_due_rule
+from apps.obligations.rules import (
+    Direction,
+    DueRule,
+    DueRuleCache,
+    nominal_due_date,
+)
 
 # Longer than any real run of non-business days: the record in Brazil is Carnaval
 # adjoining a weekend, four days. Reaching this bound means the holiday table is
@@ -73,14 +78,31 @@ def due_date_for(
     obligation_type: ObligationType,
     competence: date,
     scopes: Collection[str] = (HolidayScope.NATIONAL,),
+    *,
+    rules: DueRuleCache | None = None,
 ) -> ResolvedDueDate:
     """Place and then adjust the deadline for one competence period.
 
+    **The rule is resolved as of the COMPETENCE MONTH, not as of today.** A deadline
+    belongs to the regime that was in force over the period it reports on, so
+    regenerating a 2024 calendar after a 2027 resolution restates 2024 under the 2024
+    rule. Resolving as-of today would silently rewrite history into dates that are
+    ordinary business days and wrong.
+
     Everything that decides the answer — the day, the month, the direction, the
-    periodicity — comes off the `ObligationType` row. Editing that row changes the
-    deadline with no deploy, which is the property the obligation engine exists for.
+    periodicity — comes off data: the era row for the day, month and direction, the
+    `ObligationType` row for the periodicity. Editing them changes the deadline with
+    no deploy, which is the property the obligation engine exists for.
+
+    `rules` lets a bulk caller share one resolver across every competence and every
+    client instead of paying a query each time; omitting it reads here, which is what
+    every single-shot caller does. Compared against None rather than tested for
+    truthiness: `rules or DueRuleCache()` would silently discard a caller's cache the
+    day the class grows a `__len__`, and the only visible symptom would be a query
+    budget drifting upward.
     """
-    rule = parse_due_rule(obligation_type.due_rule)
+    cache = rules if rules is not None else DueRuleCache()
+    rule = cache.rule_for(obligation_type, competence)
     nominal = nominal_due_date(rule, competence, obligation_type.periodicity)
     return ResolvedDueDate(
         nominal=nominal,

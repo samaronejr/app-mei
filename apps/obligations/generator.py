@@ -20,6 +20,7 @@ from django.db import models
 from apps.clients.models import ClientCompany
 from apps.obligations.calendar import due_date_for
 from apps.obligations.models import Obligation, ObligationType
+from apps.obligations.rules import DueRuleCache
 
 DAS_CODE = "DAS"
 CALENDAR_MONTHS = 12
@@ -60,19 +61,27 @@ def generate_das_calendar(
     client: ClientCompany,
     *,
     starting_from: date,
+    rules: DueRuleCache | None = None,
 ) -> int:
     """Create this client's next twelve DAS obligations, and return how many are new.
 
     Must be called inside the client's own tenant context: the rows are tenant-scoped
     and the row-level-security policy would reject the insert otherwise.
+
+    `rules` exists so a portfolio-wide sweep can share one resolver across every
+    client rather than re-reading the same statute per client. Omitted, one cache
+    serves this call's twelve competences, which is still one rule read rather than
+    twelve. The eras are platform reference data with no tenant dimension, so a cache
+    handed in from outside `each_tenant()` cannot carry one firm's rows into another.
     """
+    cache = rules if rules is not None else DueRuleCache()
     das = ObligationType.objects.get(pk=DAS_CODE)
     first = first_competence_for(client, starting_from)
     months = _months_from(first, CALENDAR_MONTHS)
 
     rows = []
     for competence in months:
-        due = due_date_for(das, competence)
+        due = due_date_for(das, competence, rules=cache)
         rows.append(
             Obligation(
                 tenant_id=client.tenant_id,

@@ -13,6 +13,13 @@ the 21st, November 2021 → the 22nd).
 not move for a weekend. 2025 settled this in public: 31 May 2025 was a Saturday and it
 held. The anchor document's "last business day of May" is wrong, and encoding it would
 push every annual declaration to a date the law does not recognise.
+
+**The rules no longer live where this migration put them.** `0015` copied each into
+`ObligationDueRule` as an open-ended era and `0016` dropped the column, because a rule
+stored on the obligation row can only hold the current regime. This migration keeps
+writing it — history is replayed, not rewritten — and its live-registry helper does
+not, so a fresh `migrate` and the suite's replay each get the table their own moment
+in time calls for.
 """
 
 from django.apps import apps as global_apps
@@ -56,20 +63,47 @@ OBLIGATION_TYPES = (
 )
 
 
-def seed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) -> None:
-    """Insert both obligation types. Idempotent, for re-runs and for the test suite."""
+def _seed_rows(apps: app_registry.Apps, *, with_due_rule: bool) -> None:
     obligation_type = apps.get_model("obligations", "ObligationType")
     for code, name, periodicity, due_rule, source_note in OBLIGATION_TYPES:
-        obligation_type.objects.update_or_create(
-            code=code,
-            defaults={
-                "name": name,
-                "periodicity": periodicity,
-                "due_rule": due_rule,
-                "source_url": CGSN_140,
-                "source_note": source_note,
-            },
-        )
+        defaults: dict[str, object] = {
+            "name": name,
+            "periodicity": periodicity,
+            "source_url": CGSN_140,
+            "source_note": source_note,
+        }
+        # One loop for both callers so the columns they DO share cannot drift; only
+        # the retired one is conditional. Two loops would let a corrected source note
+        # land in the migrated database and not in the suite's replay, or the reverse.
+        if with_due_rule:
+            defaults["due_rule"] = due_rule
+        obligation_type.objects.update_or_create(code=code, defaults=defaults)
+
+
+def seed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) -> None:
+    """Insert both obligation types with their rules, as this migration first did.
+
+    Frozen, and it must keep writing `due_rule`: the model this operation sees is the
+    one `0001` created, where the column is NOT NULL with no default. A database
+    migrating from scratch replays this before `0016` drops the column, so stripping
+    the write here would fail every fresh `migrate` at this operation.
+    """
+    _seed_rows(apps, with_due_rule=True)
+
+
+def seed_live(
+    apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None
+) -> None:
+    """Insert the obligation types a fully migrated database holds: no rule column.
+
+    Separate from `seed` because the two answer different questions. `seed` answers
+    "what did this migration do?", which history fixes forever; this answers "what
+    should the table contain right now?", which every later migration can change —
+    and `0016` changed it by removing the column. Collapsing them would either break
+    migrate-from-zero or make the live model reject a write to a field it no longer
+    has. The rules themselves live in `ObligationDueRule`, seeded by `0015`.
+    """
+    _seed_rows(apps, with_due_rule=False)
 
 
 def unseed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) -> None:
@@ -81,8 +115,14 @@ def unseed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) ->
 
 
 def seed_from_global_registry() -> None:
-    """Re-seed using the live app registry, for the test suite's restore fixture."""
-    seed(global_apps, None)
+    """Re-seed using the live app registry, for the test suite's restore fixture.
+
+    Routed through `seed_live`, so the replay reproduces the migrated table rather
+    than this migration's own moment in history. Through `seed` it would try to write
+    a field the live model no longer declares, and every transactional test that
+    truncated this table would die on the fixture instead of on its assertion.
+    """
+    seed_live(global_apps, None)
 
 
 class Migration(migrations.Migration):

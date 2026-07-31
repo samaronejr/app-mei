@@ -9,6 +9,13 @@ correction an INSERT and keeps the superseded regime readable.
 The refusal tests matter as much as the resolution ones. Falling back to the newest
 era regardless of date is the tempting shortcut, and it is exactly the failure this
 table exists to prevent.
+
+The boundary tests at the end close the loop the resolver alone cannot: they seed a
+successor era and then generate a REAL calendar across the changeover, so "changing
+the rule requires no deploy" is demonstrated end to end rather than asserted about a
+function. Their query budgets are part of the same claim — a resolver that is correct
+but costs one read per client is a nightly sweep that degrades silently as the
+portfolio grows.
 """
 
 import importlib
@@ -16,16 +23,24 @@ from datetime import date
 
 import pytest
 from django.apps import apps as django_apps
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import ProtectedError
+from django.test.utils import CaptureQueriesContext
 
+from apps.clients.models import ClientCompany
+from apps.core.tenancy import tenant_context
+from apps.obligations.generator import generate_das_calendar
 from apps.obligations.models import (
     FiscalParameter,
+    Obligation,
     ObligationDueRule,
     ObligationType,
     Periodicity,
 )
 from apps.obligations.rules import Direction, NoEffectiveDueRule, due_rule_for
+from apps.obligations.tasks import refresh_das_calendars
+from apps.tenants.models import Tenant
+from tests.ui.factories import client_base, make_cnpj
 
 pytestmark = pytest.mark.django_db
 
@@ -204,7 +219,6 @@ def test_an_obligation_type_with_eras_cannot_be_deleted() -> None:
         code="TEST",
         name="Fixture obligation, for the protection test",
         periodicity=Periodicity.MONTHLY,
-        due_rule={"day": 10, "direction": "forward"},
         source_url=CGSN_140,
     )
     ObligationDueRule.objects.create(
@@ -273,3 +287,127 @@ def test_the_live_parameter_registry_omits_exactly_the_retired_key() -> None:
     # passes or fails depending on the order its tests happen to run in.
     assert frozen - live == {RETIRED_KEY}
     assert live - frozen == set()
+
+
+# ------------------------------------------------ the era boundary, end to end
+
+WINDOW_START = date(2026, 7, 1)
+BOUNDARY = date(2026, 10, 1)
+SEEDED_DAY = 20
+SUCCESSOR_DAY = 25
+CLIENTS_PER_FIRM = 2
+FIRMS = ("era-sweep-alpha", "era-sweep-beta", "era-sweep-gamma")
+
+
+def make_firm(slug: str, *, clients: int = 1) -> Tenant:
+    """Create a tenant with `clients` MEI companies, inside its own context.
+
+    CNPJs come from the shared factory rather than a literal: they are unique per
+    tenant, so a repeated literal would fail the second client of any firm — and a
+    sweep budget proved on one client per firm would not distinguish a per-client
+    cache from a per-tenant one.
+    """
+    tenant = Tenant.objects.create(name=slug.title(), slug=slug)
+    with tenant_context(tenant.id):
+        for index in range(clients):
+            ClientCompany.objects.create(
+                tenant=tenant,
+                legal_name=f"{slug} MEI {index}",
+                cnpj=make_cnpj(client_base(index, seed=slug)),
+                opened_on=date(2020, 3, 10),
+            )
+    return tenant
+
+
+def supersede_das_at_the_boundary() -> None:
+    """Close the seeded DAS era on the boundary and open a day-25 successor.
+
+    This is the whole "no deploy" claim written as data: two rows change, no code
+    does. `valid_to` is exclusive, so the changeover day belongs to the successor.
+    """
+    seeded = ObligationDueRule.objects.get(
+        obligation_type=das(),
+        valid_to__isnull=True,
+    )
+    seeded.valid_to = BOUNDARY
+    seeded.save(update_fields=["valid_to"])
+    ObligationDueRule.objects.create(
+        obligation_type=das(),
+        rule={"day": SUCCESSOR_DAY, "direction": "forward"},
+        valid_from=BOUNDARY,
+        source_url=CGSN_140,
+        source_note="Hypothetical successor regime, for the end-to-end boundary test.",
+    )
+
+
+def era_reads(captured: CaptureQueriesContext) -> int:
+    """Count the statements that touched the era table, and nothing else.
+
+    Resolved from `_meta.db_table` rather than spelled out, so renaming the table
+    cannot leave this counting zero of everything and passing vacuously.
+    """
+    table = ObligationDueRule._meta.db_table
+    return len([q for q in captured.captured_queries if table in q["sql"]])
+
+
+def test_a_new_era_moves_the_calendar_from_the_boundary_on_with_no_code_change() -> (
+    None
+):
+    # Given a client, and a DAS rule superseded from 1 October 2026 in data alone
+    tenant = make_firm("era-boundary")
+    supersede_das_at_the_boundary()
+
+    # When ONE twelve-month calendar is generated straddling that date
+    with tenant_context(tenant.id):
+        client = ClientCompany.objects.get()
+        generate_das_calendar(client, starting_from=WINDOW_START)
+        placed = {row.competence_month: row for row in Obligation.objects.all()}
+
+    # Then the competences before the boundary are still placed on day 20 and the
+    # ones from it onward on day 25 — two regimes inside a single generated window,
+    # which is what makes "regenerating history restates it correctly" true rather
+    # than merely intended.
+    earlier = [row for month, row in placed.items() if month < BOUNDARY]
+    later = [row for month, row in placed.items() if month >= BOUNDARY]
+    assert len(earlier) == 3, "the window must straddle the boundary to prove anything"
+    assert len(later) == 9
+    assert {row.nominal_due_date.day for row in earlier} == {SEEDED_DAY}
+    assert {row.nominal_due_date.day for row in later} == {SUCCESSOR_DAY}
+
+    # And the two competences either side of it, named outright so a wholesale shift
+    # of the window cannot satisfy the set assertions above
+    september = placed[date(2026, 9, 1)]
+    october = placed[BOUNDARY]
+    assert september.nominal_due_date == date(2026, 10, 20)
+    assert september.resolved_due_date == date(2026, 10, 20)
+    assert october.nominal_due_date == date(2026, 11, 25)
+    assert october.resolved_due_date == date(2026, 11, 25)
+
+
+def test_one_clients_calendar_reads_the_era_table_exactly_once() -> None:
+    # Given a client whose calendar spans twelve competence months
+    tenant = make_firm("era-budget-one")
+
+    # When it is generated
+    with tenant_context(tenant.id), CaptureQueriesContext(connection) as captured:
+        generate_das_calendar(ClientCompany.objects.get(), starting_from=WINDOW_START)
+
+    # Then the era table was read once, not once per month. Twelve reads would still
+    # produce a correct calendar, which is exactly why this needs asserting.
+    assert era_reads(captured) == 1
+
+
+def test_the_nightly_sweep_reads_the_era_table_once_for_the_whole_portfolio() -> None:
+    # Given three firms with two MEI clients each
+    for slug in FIRMS:
+        make_firm(slug, clients=CLIENTS_PER_FIRM)
+
+    # When the beat task sweeps every tenant
+    with CaptureQueriesContext(connection) as captured:
+        created = refresh_das_calendars()
+
+    # Then the whole sweep read the era table once, because the task builds ONE cache
+    # outside both loops. Per-client construction would read it six times here and
+    # once per client in production — an N+1 that never shows up as a wrong deadline.
+    assert created == len(FIRMS) * CLIENTS_PER_FIRM * 12
+    assert era_reads(captured) == 1

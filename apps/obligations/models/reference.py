@@ -110,15 +110,12 @@ class FiscalParameter(models.Model):
 
 
 class ObligationType(models.Model):
-    """A recurring filing or payment, and the rule that places its deadline.
+    """A recurring filing or payment, identified by the code its documents use.
 
-    `due_rule` is structured JSON rather than a function, because the two rules this
-    product ships already disagree in direction: DAS-MEI rolls forward to the next
-    business day (Resolução CGSN nº 140/2018 art. 40 §3) while DASN-SIMEI does not
-    roll at all (art. 109). A third, DAE-MEI, anticipates backward. Encoding
-    direction as code would mean branching on the obligation code, and the next
-    obligation would add another branch. A test greps for the quoted code literal in
-    behavioural source precisely so that branch cannot appear unnoticed.
+    It holds no deadline rule of its own. Rules are effective-dated and live one era
+    per row in `ObligationDueRule`, because a column here could only ever hold the
+    current regime — so regenerating a 2024 calendar after a 2027 resolution would
+    restate history under the new day and produce dates that look entirely ordinary.
 
     The code is the primary key rather than a surrogate: `DAS` and `DASN` are what
     every Receita Federal document already calls these, and a surrogate would add a
@@ -132,7 +129,6 @@ class ObligationType(models.Model):
         max_length=16,
         choices=Periodicity.choices,
     )
-    due_rule = models.JSONField(_("due rule"))
     source_note = models.TextField(_("source note"), blank=True)
     source_url = models.URLField(_("source URL"), max_length=500)
 
@@ -177,9 +173,13 @@ class ObligationDueRule(models.Model):
         related_name="due_rules",
         verbose_name=_("obligation type"),
     )
-    # Structured JSON for the same reason `ObligationType.due_rule` was: the shipped
-    # rules disagree in direction, and encoding direction as code would mean branching
-    # on the obligation code. `rules.parse_due_rule` is the single reader.
+    # Structured JSON rather than a function: the shipped rules already disagree in
+    # direction — DAS-MEI rolls forward to the next business day (Resolução CGSN nº
+    # 140/2018 art. 40 §3), DASN-SIMEI does not roll at all (art. 109), and DAE-MEI
+    # anticipates backward. Encoding direction as code would mean branching on the
+    # obligation code, and the next obligation would add another branch; a test greps
+    # behavioural source for the quoted code literal so that branch cannot appear
+    # unnoticed. `rules.parse_due_rule` is the single reader.
     rule = models.JSONField(_("rule"))
     valid_from = models.DateField(_("valid from"))
     # Exclusive, matching FiscalParameter: the era covers dates strictly before

@@ -19,7 +19,12 @@ import pytest
 from django.db import IntegrityError, transaction
 
 from apps.fiscal.mei import MEICategory
-from apps.obligations.models import FiscalParameter, ObligationType, Periodicity
+from apps.obligations.models import (
+    FiscalParameter,
+    ObligationDueRule,
+    ObligationType,
+    Periodicity,
+)
 from apps.obligations.parameters import (
     NoEffectiveParameter,
     effective_parameter,
@@ -250,21 +255,30 @@ def test_a_validity_range_that_ends_before_it_starts_is_rejected() -> None:
         )
 
 
-def test_obligation_types_carry_their_rule_as_data() -> None:
-    # Given an obligation type written with a structured rule
-    written = ObligationType.objects.create(
+def test_obligation_types_carry_their_rule_as_dated_data() -> None:
+    # Given an obligation type and an era holding its rule
+    obligation_type = ObligationType.objects.create(
         code="TEST",
         name="Test obligation",
         periodicity=Periodicity.ANNUAL,
-        due_rule={"month": 5, "day": 31, "direction": "none"},
+        source_note="test fixture",
+        source_url=SOURCE,
+    )
+    written = ObligationDueRule.objects.create(
+        obligation_type=obligation_type,
+        rule={"month": 5, "day": 31, "direction": "none"},
+        valid_from=date(2026, 1, 1),
         source_note="test fixture",
         source_url=SOURCE,
     )
 
-    # When it is read back
-    reloaded = ObligationType.objects.get(pk=written.pk)
+    # When both are read back
+    reloaded = ObligationDueRule.objects.get(pk=written.pk)
 
-    # Then the rule round-trips as structured data, not as code. Changing a deadline
-    # must be an UPDATE, never an edit to a function.
-    assert reloaded.due_rule == {"month": 5, "day": 31, "direction": "none"}
-    assert reloaded.periodicity == Periodicity.ANNUAL
+    # Then the rule round-trips as structured data, not as code, and it carries the
+    # window it applies to. Changing a deadline must be an INSERT of a later era —
+    # never an edit to a function, and never an overwrite that erases the old regime.
+    assert reloaded.rule == {"month": 5, "day": 31, "direction": "none"}
+    assert reloaded.valid_from == date(2026, 1, 1)
+    assert reloaded.valid_to is None
+    assert reloaded.obligation_type.periodicity == Periodicity.ANNUAL

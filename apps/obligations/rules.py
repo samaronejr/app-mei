@@ -1,4 +1,4 @@
-"""Reading a `due_rule` row, and placing the deadline it describes.
+"""Reading the deadline rule in force for a date, and placing the deadline it describes.
 
 This module answers "which calendar day does this obligation nominally fall on?".
 Whether that day then moves — and in which direction — is `calendar.resolve_due_date`,
@@ -8,7 +8,7 @@ because moving it requires a holiday table and placing it does not.
 already disagree: DAS-MEI is postponed FORWARD to the next business day (Resolução
 CGSN nº 140/2018 art. 40 §3) and DASN-SIMEI does not move at all (art. 109). DAE-MEI,
 the employee payroll guide, is anticipated BACKWARD. Three obligations, three
-behaviours, one column.
+behaviours, one column of `ObligationDueRule`.
 
 **A deadline reports on a period that has already closed**, so it falls in the period
 after the one it covers: a monthly obligation is due in the following month, an annual
@@ -21,8 +21,6 @@ from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
-
-from django.db import models
 
 from apps.obligations.models import ObligationDueRule, ObligationType, Periodicity
 
@@ -44,7 +42,7 @@ class Direction(StrEnum):
 
 @dataclass(frozen=True)
 class DueRule:
-    """A parsed `ObligationType.due_rule`.
+    """A parsed `ObligationDueRule.rule` — one era's deadline rule, in memory.
 
     `month` is None for a monthly obligation, which takes the month from the
     competence it reports on; an annual obligation names its month outright.
@@ -100,31 +98,92 @@ class NoEffectiveDueRule(LookupError):  # noqa: N818
     """
 
 
+class DueRuleCache:
+    """Resolve each obligation type's eras once across a bulk pass.
+
+    A twelve-month calendar asks for the same obligation's rule twelve times, and a
+    portfolio sweep asks for it once per client. There are only ever as many distinct
+    answers as there are eras — two or three for the lifetime of a statute — so
+    without this the number of rule reads grows with the calendar and then with the
+    portfolio, which is precisely the N+1 the queue budgets exist to forbid.
+
+    **Every era for a type is loaded in one query and latest-wins is decided in
+    Python.** A per-`(type, date)` query cache would still cost one round trip per
+    competence month, because each month asks about a different date; the eras
+    themselves do not vary with the date being asked about.
+
+    **Cache lifetime is one request or one task sweep**, and never longer.
+    Deliberately not a module-level cache: an era is effective-dated reference data
+    that a resolution — or a data migration — can supersede at any moment, and a
+    process-lifetime cache would keep placing deadlines under a retired regime until
+    the worker restarted.
+
+    **Sharing one instance across tenants is safe**, which is what lets
+    `tasks.refresh_das_calendars` build a single cache for a whole sweep.
+    `obligations_obligationduerule` is listed in `NON_TENANT_TABLES`: when the DAS
+    falls due is a fact about Resolução CGSN nº 140/2018, so the table carries no
+    tenant column, no row-level-security policy, and therefore no dimension along
+    which one firm's answer could differ from another's. A cache of tenant-scoped
+    rows would leak across `each_tenant()` boundaries; a cache of this table cannot.
+    """
+
+    def __init__(self) -> None:
+        """Start with nothing loaded."""
+        self._eras: dict[str, tuple[ObligationDueRule, ...]] = {}
+        self._parsed: dict[int, DueRule] = {}
+
+    def rule_for(self, obligation_type: ObligationType, on_date: date) -> DueRule:
+        """Return the deadline rule in force for `obligation_type` on `on_date`."""
+        for era in self._eras_for(obligation_type):
+            covers = era.valid_from <= on_date and (
+                era.valid_to is None or era.valid_to > on_date
+            )
+            if covers:
+                return self._parse(era)
+        raise NoEffectiveDueRule(_no_era_message(obligation_type, on_date))
+
+    def _eras_for(
+        self, obligation_type: ObligationType
+    ) -> tuple[ObligationDueRule, ...]:
+        code = str(obligation_type.pk)
+        if code not in self._eras:
+            # Ordered newest-first so the first covering era found IS the latest-wins
+            # answer, rather than something a later comparison has to re-derive.
+            self._eras[code] = tuple(
+                ObligationDueRule.objects.filter(
+                    obligation_type=obligation_type,
+                ).order_by("-valid_from"),
+            )
+        return self._eras[code]
+
+    def _parse(self, era: ObligationDueRule) -> DueRule:
+        if era.pk not in self._parsed:
+            self._parsed[era.pk] = parse_due_rule(era.rule)
+        return self._parsed[era.pk]
+
+
+def _no_era_message(obligation_type: ObligationType, on_date: date) -> str:
+    return (
+        f"No due rule for {obligation_type.pk!r} is in force on "
+        f"{on_date.isoformat()}. Seed an era rather than assuming the current "
+        f"one: a deadline placed under the wrong regime is a plausible date "
+        f"that nothing downstream can question."
+    )
+
+
 def due_rule_for(obligation_type: ObligationType, on_date: date) -> DueRule:
     """Return the deadline rule in force for `obligation_type` on `on_date`.
 
     Latest-wins among the covering eras, exactly as `effective_parameter` resolves a
     fiscal parameter: superseding a rule is a pure INSERT, so a resolution published
     on the day it takes effect needs no deploy and no close-then-insert dance.
+
+    Routed through a throwaway `DueRuleCache` rather than issuing its own query, so
+    that latest-wins is decided in exactly one place. Two implementations of "which
+    era answers" is one edit away from disagreeing, and the disagreement would show
+    up as a deadline that is a perfectly ordinary business day and wrong.
     """
-    row = (
-        ObligationDueRule.objects.filter(
-            obligation_type=obligation_type,
-            valid_from__lte=on_date,
-        )
-        .filter(models.Q(valid_to__isnull=True) | models.Q(valid_to__gt=on_date))
-        .order_by("-valid_from")
-        .first()
-    )
-    if row is None:
-        msg = (
-            f"No due rule for {obligation_type.pk!r} is in force on "
-            f"{on_date.isoformat()}. Seed an era rather than assuming the current "
-            f"one: a deadline placed under the wrong regime is a plausible date "
-            f"that nothing downstream can question."
-        )
-        raise NoEffectiveDueRule(msg)
-    return parse_due_rule(row.rule)
+    return DueRuleCache().rule_for(obligation_type, on_date)
 
 
 def _following_period(competence: date, periodicity: str) -> tuple[int, int]:

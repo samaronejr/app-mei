@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from apps.obligations.models import ObligationType, Periodicity
+from apps.obligations.models import ObligationDueRule, ObligationType, Periodicity
 from apps.obligations.rules import Direction, nominal_due_date, parse_due_rule
 
 pytestmark = pytest.mark.django_db
@@ -34,19 +34,32 @@ def das() -> ObligationType:
     return ObligationType.objects.get(pk="DAS")
 
 
+def current_era(code: str) -> ObligationDueRule:
+    """Return the open-ended era for `code` — the regime in force today.
+
+    Selected by `valid_to IS NULL` rather than by taking the only row, so the day a
+    successor era is seeded this helper keeps naming the current regime instead of
+    raising `MultipleObjectsReturned` and reading as an unrelated breakage.
+    """
+    return ObligationDueRule.objects.get(
+        obligation_type_id=code,
+        valid_to__isnull=True,
+    )
+
+
 def test_the_dasn_rule_is_seeded_exactly_as_specified() -> None:
-    # Given the seed applied by migration
-    row = dasn()
+    # Given the era seeded by migration
+    era = current_era("DASN")
 
     # When its rule is read
     # Then it is 31 May with no rolling, and the periodicity is annual
-    assert row.due_rule == {"month": 5, "day": 31, "direction": "none"}
-    assert row.periodicity == Periodicity.ANNUAL
+    assert era.rule == {"month": 5, "day": 31, "direction": "none"}
+    assert dasn().periodicity == Periodicity.ANNUAL
 
 
 def test_none_is_a_first_class_direction_not_a_special_case() -> None:
     # Given the seeded DASN rule
-    rule = parse_due_rule(dasn().due_rule)
+    rule = parse_due_rule(current_era("DASN").rule)
 
     # When its direction is parsed
     # Then `none` is a member of the same enumeration as forward and backward,
@@ -57,7 +70,7 @@ def test_none_is_a_first_class_direction_not_a_special_case() -> None:
 
 def test_dasn_for_competence_2026_falls_on_31_may_2027() -> None:
     # Given the seeded DASN rule
-    rule = parse_due_rule(dasn().due_rule)
+    rule = parse_due_rule(current_era("DASN").rule)
 
     # When the deadline for calendar year 2026 is placed
     due = nominal_due_date(rule, date(2026, 1, 1), Periodicity.ANNUAL)
@@ -70,7 +83,7 @@ def test_dasn_for_competence_2026_falls_on_31_may_2027() -> None:
 def test_dasn_stays_on_31_may_in_a_year_when_that_is_a_sunday() -> None:
     # Given the seeded DASN rule and competence year 2025, whose deadline falls in
     # 2026 — and 31 May 2026 is a SUNDAY
-    rule = parse_due_rule(dasn().due_rule)
+    rule = parse_due_rule(current_era("DASN").rule)
     assert date(2026, 5, 31).weekday() == SUNDAY, "this case must land on a weekend"
 
     # When the deadline is placed
@@ -86,7 +99,7 @@ def test_dasn_stays_on_31_may_in_a_year_when_that_is_a_sunday() -> None:
 def test_dasn_for_competence_2024_falls_on_a_saturday_and_does_not_move() -> None:
     # Given competence 2024, whose deadline fell on Saturday 31 May 2025 — the year
     # that settled this question in public
-    rule = parse_due_rule(dasn().due_rule)
+    rule = parse_due_rule(current_era("DASN").rule)
 
     # When the deadline is placed
     due = nominal_due_date(rule, date(2024, 1, 1), Periodicity.ANNUAL)
@@ -111,7 +124,7 @@ def test_the_dasn_row_cites_the_resolution_it_comes_from() -> None:
 def test_das_is_seeded_as_day_20_rolling_forward() -> None:
     # Given the seeded DAS rule
     row = das()
-    rule = parse_due_rule(row.due_rule)
+    rule = parse_due_rule(current_era("DAS").rule)
 
     # When it is read
     # Then it is day 20, monthly, rolling FORWARD. The anchor was right about this
@@ -125,7 +138,7 @@ def test_das_is_seeded_as_day_20_rolling_forward() -> None:
 
 def test_das_falls_on_day_20_of_the_month_after_the_competence() -> None:
     # Given the seeded DAS rule
-    rule = parse_due_rule(das().due_rule)
+    rule = parse_due_rule(current_era("DAS").rule)
 
     # When deadlines are placed for two competence months
     # Then each lands on the 20th of the following month, December rolling the year
