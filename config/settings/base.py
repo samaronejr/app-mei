@@ -311,7 +311,14 @@ ACCESS_LOG_RETENTION_DAYS = env.int("ACCESS_LOG_RETENTION_DAYS", default=180)
 # Infrastructure traffic, not a person reaching personal data. The liveness probe
 # in particular is declared non_atomic_requests so a database blip cannot restart a
 # healthy process, and logging it would put that dependency straight back.
-ACCESS_LOG_EXEMPT_PREFIXES = ["/healthz", STATIC_URL, MEDIA_URL]
+#
+# MEDIA_URL is NOT here, and its absence is the control. For a fiscal document vault,
+# downloads are precisely the events an investigation asks for -- who fetched which
+# client's evidence, and when -- so exempting the media prefix would have excluded the
+# Marco Civil access log's most important rows by construction, silently, before the
+# vault existed to notice. Nothing serves /media/ either, asserted separately: the two
+# together mean the only route to a document's bytes is the portal view, which logs.
+ACCESS_LOG_EXEMPT_PREFIXES = ["/healthz", STATIC_URL]
 
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "purge-access-logs": {
