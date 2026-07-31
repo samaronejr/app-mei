@@ -27,7 +27,7 @@ countered by construction rather than by care:
 
 import re
 from pathlib import Path
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 import pytest
 from django.conf import settings
@@ -40,6 +40,7 @@ from tests.isolation.rolecheck import assert_isolated_role
 pytestmark = pytest.mark.django_db(transaction=True)
 
 PORTAL_ROLE = "app_portal"
+CLIENT_COLUMN = "client_id"
 RUNTIME_ROLE = "app_runtime"
 
 EXPECTED_TENANT_TABLE_COUNT = 15
@@ -153,17 +154,51 @@ def _has_privilege(table: str, privilege: str) -> bool:
     return bool(row[0]) if row else False
 
 
-def _allow_list_from_roles_sql() -> frozenset[str]:
-    """Read the six granted tables out of the production artifact, not the fixture."""
+EXPECTED_GRANT_LOOPS: Final[frozenset[str]] = frozenset(
+    {"portal_table", "portal_write_table"},
+)
+
+
+def _grant_loops_from_roles_sql() -> dict[str, frozenset[str]]:
+    """Read EVERY grant loop out of the production artifact, keyed on its variable.
+
+    `finditer`, not `search`, and this is the whole point of the function. roles.sql now
+    carries two loops -- the SELECT allow-list and the INSERT one -- and `re.search`
+    returns only the first match. A generic pattern with `search` would pin the read
+    list and leave the write list pinned by NOTHING, while every assertion here stayed
+    green: the write list would be free to name any table at all.
+
+    Keyed on the loop variable rather than on position, because "the first block" and
+    "the second block" are not stable facts about a file somebody will edit.
+    """
     source = Path(settings.BASE_DIR) / "ops" / "sql" / "roles.sql"
     text = source.read_text()
-    block = re.search(
-        r"FOREACH\s+portal_table\s+IN\s+ARRAY\s+ARRAY\[(.*?)\]",
-        text,
-        re.DOTALL,
+    loops = {
+        match.group(1): frozenset(re.findall(r"'([a-z0-9_]+)'", match.group(2)))
+        for match in re.finditer(
+            r"FOREACH\s+([a-z_]+)\s+IN\s+ARRAY\s+ARRAY\[(.*?)\]",
+            text,
+            re.DOTALL,
+        )
+    }
+
+    # Asserted rather than assumed. A renamed or deleted loop would otherwise make the
+    # comparisons below vacuous -- an empty set equals an empty set.
+    missing = EXPECTED_GRANT_LOOPS - loops.keys()
+    assert not missing, (
+        f"roles.sql no longer contains grant loops for {sorted(missing)}"
     )
-    assert block is not None, "roles.sql no longer contains the portal grant loop"
-    return frozenset(re.findall(r"'([a-z0-9_]+)'", block.group(1)))
+    return loops
+
+
+def _allow_list_from_roles_sql() -> frozenset[str]:
+    """The SELECT allow-list, from the production artifact rather than the fixture."""
+    return _grant_loops_from_roles_sql()["portal_table"]
+
+
+def _write_allow_list_from_roles_sql() -> frozenset[str]:
+    """The INSERT allow-list, from the production artifact rather than the fixture."""
+    return _grant_loops_from_roles_sql()["portal_write_table"]
 
 
 def _anchored(column: str, expression: str) -> bool:
@@ -307,6 +342,160 @@ def test_the_conftest_allow_list_matches_the_production_artifact() -> None:
     assert granted == set(PORTAL_TABLES), granted.symmetric_difference(PORTAL_TABLES)
 
 
+# W1b. An INDEPENDENT literal, and that is the whole requirement. Defined as
+# `_portal_policied_tables() - WRITE_ALLOWLIST` the assertion below would compare a
+# thing to itself and could never fail -- the defect this project keeps finding, in the
+# requirement written to prevent it. Spelled out, a table dropping out of runtime
+# coverage, or quietly gaining a write grant, turns the meta-test red.
+STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
+    {
+        "audit_event",
+        "clients_clientassignment",
+        "clients_clientcompany",
+        "clients_clienttag",
+        "clients_onboardingitem",
+        "clients_tag",
+        "obligations_monthlyrevenue",
+        "obligations_obligation",
+    },
+)
+
+# W7. Foreign keys on a portal-writable table that CANNOT be client-paired, with the
+# reason for each. Shaped like PORTAL_DECISION_EXEMPT: a literal carrying a
+# justification, so the decision is made once and visibly rather than ad hoc.
+CLIENT_PAIRING_EXEMPT: Final[dict[str, str]] = {
+    "tenant_id": (
+        "tenants_tenant has no client_id; the tenant IS the wider scope, and pairing "
+        "the client into a reference to it is not expressible"
+    ),
+    "client_id": (
+        "clients_clientcompany is the client registry itself: its primary key IS the "
+        "client identity, so the correct form is the tenant-paired one it carries"
+    ),
+    "uploaded_by_id": (
+        "accounts_user is platform-level and has no client_id. A user is not owned by "
+        "a client; the row's own client_id is what confines the document"
+    ),
+}
+
+
+def _portal_policed_tables() -> frozenset[str]:
+    """Every table carrying a policy bound to `app_portal`, from the catalog."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT DISTINCT c.relname FROM pg_policy p "
+            "JOIN pg_class c ON c.oid = p.polrelid "
+            "JOIN pg_roles r ON r.oid = ANY(p.polroles) "
+            "WHERE r.rolname = %s",
+            [PORTAL_ROLE],
+        )
+        return frozenset(str(row[0]) for row in cursor.fetchall())
+
+
+def _foreign_keys(table: str) -> list[tuple[str, list[str]]]:
+    """Return (constraint name, key columns) for every FK on the table."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT con.conname, array_agg(att.attname ORDER BY att.attnum)
+              FROM pg_constraint con
+              JOIN pg_class c ON c.oid = con.conrelid
+              JOIN pg_attribute att
+                ON att.attrelid = c.oid AND att.attnum = ANY(con.conkey)
+             WHERE c.relname = %s AND con.contype = 'f'
+             GROUP BY con.conname
+            """,
+            [table],
+        )
+        return [(str(name), list(cols)) for name, cols in cursor.fetchall()]
+
+
+def test_w1b_the_static_only_list_is_the_policed_set_minus_the_write_list() -> None:
+    # Given the policed set read from the catalog and the write list from roles.sql
+    assert_isolated_role()
+    policed = _portal_policed_tables()
+    writable = _write_allow_list_from_roles_sql()
+
+    # Then the independent literal equals the difference. Deriving the literal instead
+    # would make this `x == x`.
+    assert policed - writable == STATIC_ONLY_TABLES, {
+        "only_in_literal": sorted(STATIC_ONLY_TABLES - (policed - writable)),
+        "only_in_catalog": sorted((policed - writable) - STATIC_ONLY_TABLES),
+    }
+
+
+def test_w1b_no_static_only_table_is_writable_by_the_portal() -> None:
+    # Given the tables whose WITH CHECK is asserted statically and never exercised
+    assert_isolated_role()
+
+    for table in sorted(STATIC_ONLY_TABLES):
+        for privilege in WRITE_PRIVILEGES:
+            # Then the portal cannot write to any of them. Their policies are correct
+            # and unexercisable, which is only safe while this holds.
+            assert not _has_privilege(table, privilege), f"{table} {privilege}"
+
+
+def test_w7_every_foreign_key_on_a_writable_table_is_paired_or_exempt() -> None:
+    # Given every table the portal may write into
+    assert_isolated_role()
+
+    offenders: list[str] = []
+    for table in sorted(_write_allow_list_from_roles_sql()):
+        paired: set[str] = set()
+        for _name, columns in _foreign_keys(table):
+            if CLIENT_COLUMN in columns:
+                paired.update(columns)
+        for _name, columns in _foreign_keys(table):
+            if CLIENT_COLUMN in columns:
+                continue
+            offenders += [
+                f"{table}.{column}"
+                for column in columns
+                if column not in paired and column not in CLIENT_PAIRING_EXEMPT
+            ]
+
+    # Then each is either covered by a constraint whose key includes client_id, or named
+    # in the exemption literal with its reason. Without the literal this gets relaxed ad
+    # hoc the first time somebody meets tenant_id -> tenants_tenant.
+    assert not offenders, (
+        f"FK columns neither client-paired nor exempt: {sorted(set(offenders))}"
+    )
+
+
+def test_w7_the_exemption_list_is_not_a_blanket() -> None:
+    # Given the exemptions
+    assert_isolated_role()
+
+    # Then the one column that CAN be paired is not among them. An exemption list that
+    # happened to name every column would satisfy the test above while exempting the
+    # control entirely.
+    assert "obligation_id" not in CLIENT_PAIRING_EXEMPT
+    assert all(reason.strip() for reason in CLIENT_PAIRING_EXEMPT.values())
+
+
+def test_the_conftest_write_allow_list_matches_the_production_artifact() -> None:
+    # Given roles.sql's INSERT loop, which is what actually grants in dev and staging
+    assert_isolated_role()
+
+    # Then the fixture grants exactly the same tables. conftest issues the test-database
+    # INSERT grants from PORTAL_WRITE_TABLES, so using it as its own oracle could never
+    # detect divergence -- the same trap the read list is already pinned against.
+    granted = _write_allow_list_from_roles_sql()
+    assert granted == set(PORTAL_WRITE_TABLES), granted.symmetric_difference(
+        PORTAL_WRITE_TABLES,
+    )
+
+
+def test_the_write_allow_list_is_a_subset_of_the_read_one() -> None:
+    # Given both loops
+    assert_isolated_role()
+
+    # Then nothing is writable that is not also readable. A table the portal may INSERT
+    # into but not SELECT from would make its own WITH CHECK refusals unverifiable from
+    # the portal's side, and would be a shape nobody chose deliberately.
+    assert _write_allow_list_from_roles_sql() <= _allow_list_from_roles_sql()
+
+
 def test_the_portal_role_can_read_the_allow_list_and_nothing_else() -> None:
     # Given the allow-list taken from roles.sql
     assert_isolated_role()
@@ -335,7 +524,9 @@ def test_the_portal_role_holds_insert_only_on_the_write_allow_list() -> None:
     granted = {
         table for table in _all_public_tables() if _has_privilege(table, "INSERT")
     }
-    assert granted == set(PORTAL_WRITE_TABLES), sorted(granted)
+    # Compared against roles.sql rather than the fixture: conftest issues these grants,
+    # so comparing them to conftest would be comparing a thing to itself.
+    assert granted == set(_write_allow_list_from_roles_sql()), sorted(granted)
 
 
 def test_the_portal_role_holds_no_other_write_privilege_anywhere() -> None:
