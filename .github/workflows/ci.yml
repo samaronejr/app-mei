@@ -312,3 +312,248 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  deploy-staging:
+    name: Deploy to staging (main only, after the gates above)
+    runs-on: ubuntu-24.04
+    needs: [test, container-smoke]
+    # Both halves are load-bearing. `push` excludes pull_request runs, whose head is a
+    # synthetic merge commit that exists on no branch and therefore cannot be checked
+    # out on the box. The ref check excludes any branch a future trigger might add.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+
+    # Never cancel a deploy in flight: a half-loaded image or a stack caught mid-`up`
+    # is a worse state than a queue. GitHub retains only the NEWEST pending run per
+    # group, so back-to-back pushes supersede one another and the superseded deploy
+    # reports `cancelled` — by design. Anything asserting on deploy history must
+    # therefore read the latest COMPLETED run, not the latest run.
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      GIT_SHA: ${{ github.sha }}
+      COMPOSE: docker compose --env-file .env.prod -f docker-compose.prod.yml
+      HEALTHZ_URL: https://samaronefialho.dev/healthz
+      # 3 GiB. The pair is ~1.16 GB (app 1.01 GB, caddy 154 MB) and the previous
+      # generation stays resident until the prune at the very end, so the load needs
+      # room for both plus the decompressed stream.
+      MIN_FREE_KIB: "3145728"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Open an authenticated channel to the box
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        # Secrets arrive as env vars rather than `${{ }}` interpolated into the script:
+        # interpolation splices the value into the shell source, where a newline or a
+        # quote in a secret becomes executable text.
+        #
+        # IdentitiesOnly and IdentityAgent=none are not belt-and-braces. Without them
+        # ssh silently falls back to an agent identity or ~/.ssh/id_*, so a green
+        # connection would prove only that SOME key works, not that the deploy key does.
+        run: |
+          set -euo pipefail
+          install -m 700 -d "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/id_deploy"
+          chmod 600 "$RUNNER_TEMP/ssh/id_deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/known_hosts"
+
+          cat > "$RUNNER_TEMP/ssh/dssh" <<'WRAPPER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec ssh \
+            -i "$RUNNER_TEMP/ssh/id_deploy" \
+            -o IdentitiesOnly=yes \
+            -o IdentityAgent=none \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "$@"
+          WRAPPER
+          chmod 700 "$RUNNER_TEMP/ssh/dssh"
+
+          "$RUNNER_TEMP/ssh/dssh" 'echo "channel open on $(hostname)"'
+
+      # PLAIN `docker build`, never `docker compose -f docker-compose.prod.yml build`.
+      # That file carries ~15 mandatory `${VAR:?}` interpolations and no .env.prod
+      # exists on a runner, so compose aborts while PARSING — before it would ever
+      # reach a build. Reproduced; do not "simplify" this back into a compose call.
+      - name: Build both images
+        run: |
+          set -euo pipefail
+          docker build --build-arg GIT_SHA="$GIT_SHA" -t app-mei:prod .
+          docker build -t app-mei-caddy:prod ops/caddy
+          docker image ls --filter reference='app-mei*:prod' \
+            --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+
+      - name: Disk preflight on the box
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" 'df -h /var/lib/docker; echo; docker system df'
+          free_kib="$("$RUNNER_TEMP/ssh/dssh" \
+            'df -Pk /var/lib/docker | tail -n1 | tr -s " " | cut -d" " -f4')"
+          if [ "$free_kib" -lt "$MIN_FREE_KIB" ]; then
+            echo "::error::only ${free_kib} KiB free under /var/lib/docker on the box;" \
+                 "${MIN_FREE_KIB} KiB required to land the pair beside the running one"
+            exit 1
+          fi
+          echo "disk preflight ok: ${free_kib} KiB free (floor ${MIN_FREE_KIB})"
+
+      # BEFORE the load, and BOTH images: once `docker load` overwrites the :prod tags
+      # the previous generation is unreachable by name and rollback has no anchor.
+      # On the first-ever deploy app-mei-caddy:prod does not exist on the box yet, so
+      # its tag is a no-op — hence `|| true`, which must NOT be widened into ignoring
+      # a real failure on the app image.
+      - name: Anchor rollback — tag the running images :previous
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" '
+            set -eu
+            docker tag app-mei:prod app-mei:previous || true
+            docker tag app-mei-caddy:prod app-mei-caddy:previous || true
+            docker image ls --filter reference="app-mei*:previous" \
+              --format "{{.Repository}}:{{.Tag}} {{.ID}}"
+          '
+
+      - name: Ship both images to the box
+        run: |
+          set -euo pipefail
+          docker save app-mei:prod app-mei-caddy:prod \
+            | gzip -1 \
+            | "$RUNNER_TEMP/ssh/dssh" 'gunzip | docker load'
+
+      # The box needs the tree as well as the images: compose reads
+      # docker-compose.prod.yml, ops/Caddyfile and ops/sql from disk there.
+      - name: Sync the box checkout to this commit
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" "
+            set -eu
+            export GIT_TERMINAL_PROMPT=0
+            git -C '$DEPLOY_PATH' fetch --prune origin
+            git -C '$DEPLOY_PATH' reset --hard '$GIT_SHA'
+            git -C '$DEPLOY_PATH' rev-parse HEAD
+          "
+
+      # --no-build because the images were just loaded; building on a 1-vCPU box is
+      # what T-065 proved unworkable. No --force-recreate and no service list: compose
+      # already recreates exactly the containers whose image id moved, and naming
+      # services would silently skip any service added to the file later.
+      - name: Roll the stack onto the new images
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" "
+            set -eu
+            cd '$DEPLOY_PATH'
+            $COMPOSE up -d --no-build --wait
+          "
+
+      # Four assertions BY EFFECT. A green `up --wait` only proves the containers pass
+      # their own healthchecks — it cannot see a stack that came up on the old image,
+      # skipped its migrations, or is unreachable from the internet.
+      - name: 'Assert 1/4 — the running container is this commit'
+        run: |
+          set -euo pipefail
+          release="$("$RUNNER_TEMP/ssh/dssh" \
+            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web cat /app/RELEASE" \
+            | tr -d '[:space:]')"
+          if [ "$release" != "$GIT_SHA" ]; then
+            echo "::error::/app/RELEASE reads '$release' but this run deploys" \
+                 "'$GIT_SHA' — the box did not take the new image"
+            exit 1
+          fi
+          echo "assert 1/4 ok: /app/RELEASE == $GIT_SHA"
+
+      # A bare `! ... | grep -q '\[ \]'` would PASS when the command inside it dies,
+      # because a dead container emits nothing and nothing contains no pending marker.
+      # So: capture to a file, assert the probe's own exit status, assert at least one
+      # APPLIED migration as a positive control, and only then assert none pending.
+      - name: 'Assert 2/4 — migrations applied, probe positive-controlled'
+        run: |
+          set -euo pipefail
+          plan="$RUNNER_TEMP/migration-plan.txt"
+          rc=0
+          "$RUNNER_TEMP/ssh/dssh" \
+            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web sh -c 'DATABASE_URL=\"\$DATABASE_MIGRATION_URL\" python manage.py showmigrations --plan --skip-checks'" \
+            > "$plan" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::showmigrations exited $rc — the probe itself failed, so its" \
+                 "output proves nothing about migration state"
+            cat "$plan" || true
+            exit 1
+          fi
+          applied="$(grep -c '\[X\]' "$plan" || true)"
+          if [ "$applied" -lt 1 ]; then
+            echo "::error::positive control failed: zero applied migrations in a" \
+                 "$(wc -l < "$plan")-line plan, so 'no pending' would be vacuous"
+            cat "$plan"
+            exit 1
+          fi
+          if grep -q '\[ \]' "$plan"; then
+            echo "::error::migrations are pending on the box:"
+            grep -n '\[ \]' "$plan"
+            exit 1
+          fi
+          echo "assert 2/4 ok: $applied migrations applied, none pending"
+
+      - name: 'Assert 3/4 — Django system checks green in the deployed container'
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" \
+            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web python manage.py check"
+          echo "assert 3/4 ok: manage.py check clean"
+
+      # From the public internet, not from inside the stack: this is the only assertion
+      # that covers Caddy, TLS and DNS. Retried because a just-recreated web container
+      # can still be draining its first requests when compose calls it healthy.
+      - name: 'Assert 4/4 — /healthz is ok over the public edge'
+        run: |
+          set -euo pipefail
+          body=''
+          for attempt in 1 2 3; do
+            if body="$(curl -fsS --max-time 30 "$HEALTHZ_URL")"; then
+              break
+            fi
+            body=''
+            echo "healthz attempt ${attempt}/3 did not answer; retrying in 10s"
+            sleep 10
+          done
+          if [ -z "$body" ]; then
+            echo "::error::$HEALTHZ_URL never answered across 3 attempts"
+            exit 1
+          fi
+          printf '%s\n' "$body"
+          if ! printf '%s' "$body" | grep -q '"status": *"ok"'; then
+            echo "::error::$HEALTHZ_URL answered but did not report status ok"
+            exit 1
+          fi
+          echo "assert 4/4 ok: $HEALTHZ_URL reports status ok"
+
+      # Last, never earlier. Pruning before the assertions would delete the layers the
+      # :previous tags depend on for anything not shared with the new image — i.e. it
+      # would destroy the rollback while the deploy was still unproven.
+      - name: Reclaim orphaned layers
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" 'docker image prune -f; df -h /var/lib/docker'
+
+      - name: Capture stack state on failure
+        if: failure()
+        run: |
+          "$RUNNER_TEMP/ssh/dssh" "cd '$DEPLOY_PATH' && $COMPOSE ps" || true
+          "$RUNNER_TEMP/ssh/dssh" \
+            "cd '$DEPLOY_PATH' && $COMPOSE logs --tail=100 --no-log-prefix web" || true
+
+      - name: Shred the key material
+        if: always()
+        run: shred -u "$RUNNER_TEMP/ssh/id_deploy" 2>/dev/null || true

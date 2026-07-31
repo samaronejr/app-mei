@@ -287,6 +287,12 @@ services:
     # certificate can only be issued over DNS-01. See ops/caddy/Dockerfile.
     build:
       context: ./ops/caddy
+    # Named explicitly because a build-only service takes a tag derived from the Compose
+    # project name, which is the directory name — `app_mei-caddy` here, `app-mei-caddy`
+    # on the box, whatever the runner's checkout path yields in CI. CI builds this image
+    # by tag and ships it by tag, so the derived name would not be the name `up -d
+    # --no-build` then looks for. It is also what the rollback tag attaches to.
+    image: app-mei-caddy:prod
     # Terminates TLS and sets X-Forwarded-Proto, which prod.py's SECURE_PROXY_SSL_HEADER
     # requires. Without a proxy setting that header, SECURE_SSL_REDIRECT=True produces
     # an infinite redirect loop rather than an error.
