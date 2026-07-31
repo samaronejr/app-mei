@@ -34,7 +34,7 @@ from django.conf import settings
 from django.db import connection
 
 from apps.core.rls import PORTAL_DECISION_EXEMPT, portal_decision_exemption
-from tests.conftest import PORTAL_TABLES
+from tests.conftest import PORTAL_TABLES, PORTAL_WRITE_TABLES
 from tests.isolation.rolecheck import assert_isolated_role
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -63,6 +63,8 @@ EXPECTED_EXEMPT_TABLES = frozenset(
 CLIENT_IDENTITY_COLUMN = {"clients_clientcompany": "id"}
 
 WRITE_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES")
+# The flat-zero set: everything above except the one privilege Phase 2b grants.
+NON_INSERT_WRITE_PRIVILEGES = tuple(p for p in WRITE_PRIVILEGES if p != "INSERT")
 
 
 def _tables_with_tenant_id() -> list[str]:
@@ -320,16 +322,63 @@ def test_the_portal_role_can_read_the_allow_list_and_nothing_else() -> None:
         assert readable == (table in allow_listed), table
 
 
-def test_the_portal_role_holds_no_write_privilege_anywhere() -> None:
-    # Given every table in the schema
+def test_the_portal_role_holds_insert_only_on_the_write_allow_list() -> None:
+    """INSERT is granted exactly where the allow-list says and nowhere else.
+
+    Split from the flat-zero sweep below when Phase 2b granted the first write. The two
+    assertions are STRUCTURALLY separate on purpose: folded together, widening the
+    allow-list would silently relax the flat-zero guarantee for every other privilege,
+    and the test would still pass.
+    """
+    assert_isolated_role()
+
+    granted = {
+        table for table in _all_public_tables() if _has_privilege(table, "INSERT")
+    }
+    assert granted == set(PORTAL_WRITE_TABLES), sorted(granted)
+
+
+def test_the_portal_role_holds_no_other_write_privilege_anywhere() -> None:
+    """DELETE, TRUNCATE, REFERENCES and UPDATE are flat zero at TABLE level.
+
+    UPDATE is in this set deliberately: `UPDATE documents SET status='deleted'` is a
+    delete in every sense this product cares about. If metadata editing is ever needed
+    it must be a COLUMN-level grant, which `has_table_privilege` reports as false and
+    `has_any_column_privilege` reports separately -- verified on the cluster, so
+    flat-zero and a column grant are compatible rather than contradictory.
+
+    REFERENCES is in it because a role holding it can create a foreign key to a table it
+    cannot read and use the violations as an existence oracle.
+    """
     assert_isolated_role()
 
     for table in _all_public_tables():
-        for privilege in WRITE_PRIVILEGES:
-            # Then the portal cannot write. Phase 2a is read-only, and this is what
-            # makes "the privilege check fires before WITH CHECK" true rather than
-            # assumed.
+        for privilege in NON_INSERT_WRITE_PRIVILEGES:
             assert not _has_privilege(table, privilege), f"{table} {privilege}"
+
+
+def test_the_portal_role_holds_no_sequence_privilege() -> None:
+    """A granted sequence's `last_value` is a global cross-client row counter.
+
+    Readable by a role that can see zero rows, which is why every primary key here is a
+    UUIDv7 and no sequence privilege is granted anywhere.
+    """
+    assert_isolated_role()
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT c.relname FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind = 'S'",
+        )
+        sequences = [str(row[0]) for row in cursor.fetchall()]
+        for sequence in sequences:
+            for privilege in ("USAGE", "SELECT", "UPDATE"):
+                cursor.execute(
+                    "SELECT has_sequence_privilege(%s, %s, %s)",
+                    [PORTAL_ROLE, sequence, privilege],
+                )
+                assert cursor.fetchone()[0] is False, f"{sequence} {privilege}"
 
 
 def test_the_portal_grant_does_not_inherit_into_the_runtime_role() -> None:
