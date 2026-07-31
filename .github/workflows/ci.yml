@@ -112,6 +112,22 @@ jobs:
       # them once per settings module so ATOMIC_REQUESTS, the host-only cookie rules
       # and the CSRF origin rule are validated in test and prod too, not just dev.
       - name: Django system checks (dev, test, prod settings)
+        # The prod iteration selects S3 storage, and core.E011 refuses to boot while
+        # any of these five are empty. They are dummies: they prove the configuration
+        # SHAPE is complete, nothing more. As with every other credential in this file,
+        # no real value may ever appear here — production storage credentials live in
+        # the deployment environment only (see the note at the top of this job).
+        #
+        # Scoped to this step rather than the job so they never reach the pytest step
+        # below, which must exercise the suite's own storage configuration. The dev and
+        # test iterations of the loop do see them, harmlessly: those settings modules
+        # use FileSystemStorage, and E011 only inspects the S3 backend.
+        env:
+          OCI_S3_BUCKET: ephemeral-ci-bucket
+          OCI_S3_ENDPOINT_URL: https://ci-ephemeral.invalid
+          OCI_S3_REGION: ephemeral-ci-region
+          OCI_S3_ACCESS_KEY_ID: ephemeral-ci-access-key-id
+          OCI_S3_SECRET_ACCESS_KEY: ephemeral-ci-secret-access-key
         run: |
           set -euo pipefail
           for module in dev test prod; do
