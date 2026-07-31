@@ -42,7 +42,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 PORTAL_ROLE = "app_portal"
 RUNTIME_ROLE = "app_runtime"
 
-EXPECTED_TENANT_TABLE_COUNT = 14
+EXPECTED_TENANT_TABLE_COUNT = 15
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every

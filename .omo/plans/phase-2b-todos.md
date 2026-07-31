@@ -72,8 +72,11 @@ meaning, `sha256`, and the obligation FK the upload path attaches to.
 --check` is clean.
 
 **QA — happy**: migrate, inspect the column definitions → `.evidence/T-068-happy.txt`
-**QA — failure**: drop the `NOT NULL`, assert T-070's composite FK stops refusing a
-fabricated parent, revert → `.evidence/T-068-failure.txt`
+**QA — failure**: drop the `NOT NULL`, assert an INSERT with a NULL `client_id` is
+accepted where it must be refused, revert → `.evidence/T-068-failure.txt` *[corrected:
+this leg previously asserted against T-070's composite FK, which does not exist yet at
+T-068 time. The mutation has to be runnable when the todo runs, and `NOT NULL` is
+falsifiable on its own terms — T-070 proves the FK pairing separately.]*
 **Commit**: `feat(documents): the vault table, client-scoped and not-null`
 
 > `client_id NOT NULL` is load-bearing, not hygiene: PostgreSQL's default `MATCH SIMPLE`
