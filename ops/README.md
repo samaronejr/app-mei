@@ -20,7 +20,7 @@ are a different matter — see below.
 Because entrypoint scripts only run against an **empty** data directory, editing
 `roles.sql` requires `docker compose down -v` — a restart will not re-run it.
 
-### The portal grants do not survive a new migration
+### The portal grants do not survive a new migration, so `migrate` re-issues them
 
 `app_portal`'s two `GRANT` blocks are `to_regclass`-guarded, because the file runs under
 `ON_ERROR_STOP=1` against a data directory with no tables in it. The guard means those
@@ -34,19 +34,73 @@ the test database itself, so the tested database is correct while the deployed o
 not. This is exactly how the document vault reached staging with neither `SELECT` nor
 `INSERT` on `obligations_document`.
 
-After any migration that adds an allow-listed table, re-run the two `GRANT` blocks
-against the migrated database, as the table owner:
+#### The mechanism: `apps/core/grants.py`
+
+`apply_portal_grants` is connected to `post_migrate` for the core `AppConfig`
+(`dispatch_uid="core.apply_portal_grants"`), so it runs once at the end of every
+`migrate` — which is exactly where the gap opens. It reads the allow-lists **out of
+roles.sql** through the same parser `core.E012` uses, rather than a copy in Python, so
+the artifact that declares the grants and the code that issues them cannot drift apart.
+
+It computes the pairs the portal role is missing in ONE catalog query and grants only
+those, which on a healthy database is none. And it never raises: another database
+vendor, a cluster with no `app_portal`, a table no migration has created yet, and an
+unreachable database all resolve to "do nothing" with a warning in the log.
+`post_migrate` runs *inside* the `migrate` command, so an exception here would turn a
+healing failure into a deployment that cannot migrate at all.
+
+`flush` emits `post_migrate` too, so this receiver also fires on every
+`TransactionTestCase` teardown — roughly 470 times per suite. Its roles.sql parse is
+memoised and the clean path issues no DDL; keeping it near-free is a requirement, not a
+nicety.
+
+#### Every boot path checks exactly once, and only after healing
+
+Django's management commands run their system checks **before** their handler, and
+`migrate` inherits `requires_system_checks = "__all__"`. A drifted cluster would
+therefore abort `migrate` on `core.E012` before `post_migrate` could heal anything —
+the deadlock this design exists to break. So the commands that precede healing run
+`--skip-checks`, and each path checks once afterwards:
+
+| Boot path | Heals | Checks |
+| --- | --- | --- |
+| Development (`docker compose up -d --wait`) | `migrate --noinput --skip-checks` | `runserver`'s own check pass |
+| Production (`docker-compose.prod.yml`) | `migrate --noinput --skip-checks` | the explicit `manage.py check` between `migrate` and `gunicorn` |
+| CI container smoke | the stack's own entrypoint | `docker compose exec -T web python manage.py check`, post-boot |
+
+`collectstatic` also carries `--skip-checks`, although it only ever evaluates the
+`staticfiles` tag and could not have fired `core.E012`. The flag is there so the rule
+reads as "nothing before the explicit check runs checks" rather than as a per-command
+exception someone has to re-derive.
+
+`call_command("migrate")` defaults to `skip_checks=True`, so test-database creation was
+never affected by any of this. Recorded here so nobody "fixes" it.
+
+Any deploy path added later must assert `manage.py check` after `migrate` for the same
+reason the three above do: healing is silent, and the check is what makes a *failure* to
+heal loud.
+
+#### Fallback: re-running the grants by hand
+
+Needed only when a cluster cannot be migrated — the healer covers the ordinary case.
+Run the two `GRANT` blocks against the migrated database, as the table owner:
 
 ```sh
 sed -n "/-- app_portal's allow-list./,\$p" ops/sql/roles.sql \
   | docker compose exec -T db psql "$DATABASE_MIGRATION_URL" -v ON_ERROR_STOP=1
 ```
 
-**You are not expected to remember this.** `core.E012` refuses to boot when a table
-roles.sql declares exists without its grant, and the production entrypoint is
-`collectstatic && migrate && exec gunicorn` — `migrate` runs system checks, so the
-container stops instead of the upload failing. The check reads the allow-lists out of
-roles.sql rather than a copy in Python, so the two cannot drift apart.
+#### `core.E012` is the backstop, not the fix
+
+It refuses to boot when a table roles.sql declares exists without its grant. With the
+healer in place it should never fire; if it does, something stopped the healer from
+running — no `app_portal` role, a migration connection that does not own the tables, an
+unreachable database — and `apply_portal_grants` will have logged a warning saying which.
+
+`tests/conftest.py`'s own grant block is **kept** rather than deleted now that the healer
+exists. It grants the test database directly, so a bug in the healer surfaces as a failed
+assertion in `tests/core/test_portal_grant_healer.py` instead of turning every portal
+test into a `permission denied` error that hides the assertion it was meant to make.
 
 ### Running migrations as `app_runtime` fails by design
 

@@ -79,11 +79,18 @@ services:
     # migrate from more than one service would race, since Django takes no lock.
     # migrate runs as app_migrator (the schema owner) and the server as app_runtime.
     # Running migrate as app_runtime fails by design — see ops/README.md.
+    #
+    # --skip-checks on migrate, and nowhere else. migrate inherits
+    # requires_system_checks = "__all__", so it runs EVERY check BEFORE its handler —
+    # including core.E012, whose drift post_migrate is about to heal. Without the flag a
+    # fresh volume aborts here and the healer it would have run is never reached.
+    # runserver is this path's single check gate and runs AFTER the healing.
     command:
       - sh
       - -c
       - >-
         DATABASE_URL="$$DATABASE_MIGRATION_URL" python manage.py migrate --noinput
+        --skip-checks
         && python manage.py runserver 0.0.0.0:8000
     ports:
       - "127.0.0.1:8000:8000"

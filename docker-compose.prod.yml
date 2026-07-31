@@ -180,12 +180,24 @@ services:
     # service would race. collectstatic must precede gunicorn because prod.py uses
     # CompressedManifestStaticFilesStorage, which raises at request time if the manifest
     # is absent rather than degrading to unhashed paths.
+    #
+    # Everything before `manage.py check` runs --skip-checks, and the check then runs
+    # exactly once, AFTER migrate. Django's management commands run their system checks
+    # BEFORE their handler, so core.E012 — the portal-grant drift that migrate's own
+    # post_migrate receiver is about to heal — would abort this command on a fresh
+    # cluster and the healer would never execute. collectstatic checks only the
+    # staticfiles tag and could not fire E012; it carries the flag for uniformity, so
+    # that "nothing before the explicit check runs checks" is one rule, not a per-command
+    # exception. The explicit check is this path's gate: a cluster that is still drifted
+    # afterwards stops the container instead of reaching gunicorn.
     command:
       - sh
       - -c
       - >-
-        python manage.py collectstatic --noinput --clear &&
-        DATABASE_URL="$$DATABASE_MIGRATION_URL" python manage.py migrate --noinput &&
+        python manage.py collectstatic --noinput --clear --skip-checks &&
+        DATABASE_URL="$$DATABASE_MIGRATION_URL" python manage.py migrate --noinput
+        --skip-checks &&
+        python manage.py check &&
         exec gunicorn config.wsgi:application
         --bind 0.0.0.0:8000
         --workers 2 --threads 2 --worker-class gthread
