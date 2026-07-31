@@ -135,15 +135,34 @@ OLDEST=$(dbx sh -c 'ls -1 /backups/base 2>/dev/null | sort | head -1' | tr -d '\
 if [ -z "$OLDEST" ]; then
   log "no base backups retained — skipping WAL prune (keeping everything is the safe failure)"
 else
-  START_WAL=$(dbx sh -c "tar -xzOf /backups/base/${OLDEST}/base.tar.gz backup_label 2>/dev/null | awk '/^START WAL LOCATION/{print \$6}' | tr -d '()'" | tr -d '\r')
-  if [ -n "$START_WAL" ]; then
-    BEFORE=$(dbx sh -c 'ls -1 /wal_archive | wc -l' | tr -d '\r')
-    dbx pg_archivecleanup /wal_archive "$START_WAL"
-    AFTER=$(dbx sh -c 'ls -1 /wal_archive | wc -l' | tr -d '\r')
-    log "WAL pruned against oldest base ${OLDEST} (${START_WAL}): ${BEFORE} -> ${AFTER} segments"
-  else
-    log "WARNING: could not read START WAL from ${OLDEST}; skipping prune rather than guessing"
+  # `2>/dev/null` used to sit on this tar, and it cost the archive three days of growth.
+  # The label read was failing with `Cannot open: Permission denied` — the oldest base
+  # backups were owned by the host user and mode 0600, so postgres could not read the
+  # very artifact it would restore from — and the discarded stderr made that
+  # indistinguishable from a base backup that simply had no label. The script reported
+  # "skipping prune rather than guessing", which sounds like caution and was a permission
+  # error nobody could see.
+  #
+  # So the two cases are now separated, and BOTH are fatal. An unreadable oldest base is
+  # not a pruning problem that can be deferred to tomorrow: it means the oldest point
+  # this deployment can recover to does not actually exist. Exiting non-zero also leaves
+  # the freshness marker unwritten, which is what turns this into an alarm rather than a
+  # line in a log.
+  label_stderr=$(mktemp)
+  if ! LABEL=$(dbx sh -c "tar -xzOf /backups/base/${OLDEST}/base.tar.gz backup_label" 2>"$label_stderr"); then
+    log "label read failed: $(tr '\n' ' ' < "$label_stderr")"
+    rm -f "$label_stderr"
+    die 3 "cannot read the backup label of the oldest retained base ${OLDEST} — that base backup is not restorable and the WAL prune has no safe anchor"
   fi
+  rm -f "$label_stderr"
+
+  START_WAL=$(printf '%s\n' "$LABEL" | awk '/^START WAL LOCATION/{print $6}' | tr -d '()\r')
+  [ -n "$START_WAL" ] || die 3 "the label of ${OLDEST} carries no START WAL LOCATION; refusing to guess a prune anchor"
+
+  BEFORE=$(dbx sh -c 'ls -1 /wal_archive | wc -l' | tr -d '\r')
+  dbx pg_archivecleanup /wal_archive "$START_WAL"
+  AFTER=$(dbx sh -c 'ls -1 /wal_archive | wc -l' | tr -d '\r')
+  log "WAL pruned against oldest base ${OLDEST} (${START_WAL}): ${BEFORE} -> ${AFTER} segments"
 fi
 
 # --- freshness marker ---------------------------------------------------------------
