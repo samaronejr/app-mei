@@ -39,7 +39,15 @@ PORTAL_TABLES = (
     "clients_onboardingitem",
     "obligations_obligation",
     "obligations_monthlyrevenue",
+    "obligations_document",
 )
+
+# app_portal's WRITE allow-list, mirroring the second DO block in ops/sql/roles.sql. A
+# separate tuple from the read list because the two are different sets and always will
+# be: the portal reads its client's obligations and revenue, and writes only the vault.
+# INSERT only -- see the roles.sql comment for why UPDATE, DELETE, TRUNCATE, REFERENCES
+# and every sequence privilege are each withheld deliberately rather than incidentally.
+PORTAL_WRITE_TABLES = ("obligations_document",)
 
 
 @pytest.fixture(scope="session")
@@ -93,6 +101,18 @@ def django_db_setup(
                 BEGIN
                     IF to_regclass('public.{table}') IS NOT NULL THEN
                         GRANT SELECT ON {table} TO {PORTAL_ROLE};
+                    END IF;
+                END
+                $$
+                """,
+            )
+        for table in PORTAL_WRITE_TABLES:
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.{table}') IS NOT NULL THEN
+                        GRANT INSERT ON {table} TO {PORTAL_ROLE};
                     END IF;
                 END
                 $$

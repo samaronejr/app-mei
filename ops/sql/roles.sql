@@ -124,11 +124,43 @@ BEGIN
         'clients_clienttag',
         'clients_onboardingitem',
         'obligations_obligation',
-        'obligations_monthlyrevenue'
+        'obligations_monthlyrevenue',
+        'obligations_document'
     ]
     LOOP
         IF to_regclass('public.' || portal_table) IS NOT NULL THEN
             EXECUTE format('GRANT SELECT ON public.%I TO app_portal', portal_table);
+        END IF;
+    END LOOP;
+END
+$$;
+
+-- app_portal's WRITE allow-list. A SEPARATE block from the read one above, and a
+-- separate loop variable, because the two lists are different sets and always will be:
+-- the portal reads its client's obligations and revenue, and writes only into the vault.
+--
+-- INSERT and nothing else. Not UPDATE, because `UPDATE documents SET status='deleted'`
+-- is a delete in every sense this product cares about; not DELETE or TRUNCATE, because a
+-- client removing fiscal evidence is a compliance problem, and erasure routes through the
+-- existing DataSubjectRequest flow instead; not REFERENCES, because a role holding it can
+-- create a foreign key to a table it cannot read and use the violations as an existence
+-- oracle. If metadata editing is ever needed it must be a COLUMN-level grant.
+--
+-- No sequence privilege is granted anywhere: every primary key here is a UUIDv7, and a
+-- granted sequence's last_value is a global cross-client row counter readable by a role
+-- that can see zero rows.
+DO $$
+DECLARE
+    portal_write_table text;
+BEGIN
+    FOREACH portal_write_table IN ARRAY ARRAY[
+        'obligations_document'
+    ]
+    LOOP
+        IF to_regclass('public.' || portal_write_table) IS NOT NULL THEN
+            EXECUTE format(
+                'GRANT INSERT ON public.%I TO app_portal', portal_write_table
+            );
         END IF;
     END LOOP;
 END
