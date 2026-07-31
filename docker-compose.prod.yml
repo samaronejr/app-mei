@@ -109,12 +109,22 @@ services:
     # pg_stat_archiver, never as a startup error. The result is a server that looks
     # perfectly healthy while retaining zero WAL, i.e. silent, total loss of PITR.
     # Doing this in the entrypoint rather than by hand means it survives `down -v`.
+    #
+    # /backups is chowned RECURSIVELY and /wal_archive is not, and the asymmetry is the
+    # lesson of the 2026-07-29 outage. /wal_archive is a named volume that only postgres
+    # ever writes, so its contents cannot drift. /backups is a HOST bind mount whose
+    # subdirectories the host does take back — and the non-recursive form here reached
+    # only the mount point itself, leaving /backups/base and /backups/logical owned by
+    # the ssh user. The backup then failed at its first mkdir while this line had "run".
+    # Recursion is bounded by the retention policy (a handful of directories), not by
+    # the WAL archive's thousands of segments, which is why only one side gets -R.
     entrypoint:
       - /bin/bash
       - -c
       - >-
         mkdir -p /wal_archive /backups
-        && chown postgres:postgres /wal_archive /backups
+        && chown postgres:postgres /wal_archive
+        && chown -R postgres:postgres /backups
         && chmod 775 /wal_archive /backups
         && exec /usr/local/bin/docker-entrypoint.sh "$$@"
       - --

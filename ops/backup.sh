@@ -54,6 +54,37 @@ archived=$(dbx psql -tAc "select archived_count from pg_stat_archiver" | tr -d '
 log "archiver state: archived=${archived} failed=${failed}"
 [ "${failed:-1}" -eq 0 ] || die 1 "WAL archiver has ${failed} failures — PITR is not working; fix before trusting backups"
 
+# --- the backup tree must be writable by postgres, on EVERY run ---------------------
+# /backups is a HOST directory bind-mounted into the container (`./ops/backups`), and
+# the host keeps taking it back. Measured on the staging box:
+#
+#   * `git reset --hard` — the deploy's own Sync step — rewrites the tracked
+#     `ops/backups/.gitkeep` as the ssh user whenever the index's cached stat data no
+#     longer matches, which an ownership change is exactly what invalidates.
+#   * a fresh checkout creates `ops/backups` itself as the ssh user.
+#   * and if the directory were absent, Docker would create the bind-mount source as
+#     **root** — so *untracking* `.gitkeep` is strictly worse, not a fix.
+#
+# postgres inside the container is uid 999 and owns none of those, so the very first
+# write fails with `mkdir: Permission denied` and the nightly backup stops. That is not
+# hypothetical: it happened on 2026-07-29 23:16 and went unnoticed for two days.
+#
+# So this does not try to PREVENT the host from taking the tree back. It re-asserts the
+# invariant at the one moment it matters, from inside the container as root, and it is
+# recursive because the entrypoint's non-recursive chown provably did not reach
+# /backups/base/* — which is why the retained base backups stayed unreadable even after
+# the container's own boot-time repair had run.
+#
+# `-c` rather than a silent `chown`: a repair means something host-side broke the tree,
+# and that is worth a line in the log rather than a quiet fix that hides a recurrence.
+repaired=$("${C[@]}" exec -T -u root db chown -Rc postgres:postgres /backups | wc -l | tr -d '\r') \
+  || die 1 "could not assert ownership of /backups — refusing to run a backup that cannot write"
+if [ "${repaired:-0}" -gt 0 ]; then
+  log "REPAIRED ownership on ${repaired} path(s) under /backups — something host-side had taken the tree back"
+else
+  log "backup tree ownership is correct; nothing to repair"
+fi
+
 # --- physical base backup ----------------------------------------------------------
 log "starting pg_basebackup -> /backups/base/${STAMP}"
 dbx mkdir -p "/backups/base/${STAMP}"
