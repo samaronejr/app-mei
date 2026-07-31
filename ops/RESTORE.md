@@ -132,7 +132,10 @@ A restore that returns rows but loses row-level security is worse than an outage
 looks like success and leaks across tenants.
 
 ```sh
-# 1. RLS coverage must match pre-incident (8 enabled / 8 forced / 13 tenant tables)
+# 1. RLS coverage must match pre-incident. Measured 2026-07-28: 8/8/13. Measured
+#    2026-07-31 (throwaway rehearsal, below): 9 enabled / 9 forced / 14 tenant tables.
+#    The figure grows with the schema — compare against the CURRENT source database,
+#    not against a number written down here.
 docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
   -u postgres -e PGUSER=app_mei -e PGDATABASE=app_mei db psql -tAc "
 select count(*) filter (where relrowsecurity) || '/' ||
@@ -151,11 +154,154 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
 docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
   -e DJANGO_SETTINGS_MODULE=config.settings.test \
   -e TEST_DB_USER=app_test -e TEST_DB_PASSWORD="$(grep '^APP_TEST_PASSWORD=' .env.prod | cut -d= -f2- | tr -d '\"')" \
-  web python -m pytest tests/isolation -q     # expect 41 passed
+  web python -m pytest tests/isolation -q     # 41 passed 2026-07-28; 111 on 2026-07-31
 
 # 4. Application actually serves
 curl -sk https://<site>/healthz     # {"status": "ok", "scheduler": "alive"}
 ```
+
+---
+
+## Throwaway-database rehearsal
+
+Path B restores over the live database, so it cannot be rehearsed on a running system.
+This variant restores into a scratch database instead, which makes the drill repeatable
+at any time and — because the source is still there to compare against — turns "the
+restore succeeded" into a measurable claim. Executed 2026-07-31 against staging.
+
+### Measured
+
+| Step | Time |
+| --- | --- |
+| `ops/backup.sh` (base backup + logical dump + verify + prune) | 27 s |
+| `createdb` + `pg_restore` of a 220853-byte custom-format dump | 8 s |
+| Isolation suite (the control) | 703 s |
+
+### Take the dump AFTER the change you want to see restored
+
+The equality assertions below are only meaningful if the dump contains the rows. A dump
+older than the data does not fail loudly — it produces an equality check between two
+numbers that agree for the wrong reason. Assert the dump's mtime against a timestamp
+taken from the data itself:
+
+```sh
+SEED=$(… psql -tAc "select floor(extract(epoch from max(created_at))) from clients_clientcompany")
+DUMP=$(ls -1t ops/backups/logical/*.dump | head -1)
+[ "$(stat -c %Y "$DUMP")" -gt "$SEED" ] || { echo "dump predates the data"; exit 1; }
+```
+
+### The drill
+
+Every command runs as the cluster superuser role `app_mei`. `postgres` is only the OS
+user inside the container. Paths passed to `pg_restore` are **container** paths:
+`./ops/backups` is mounted at `/backups` (`docker-compose.prod.yml:127`), so a host path
+produces a confusing "no such file".
+
+```sh
+cd /opt/app-mei
+C='docker compose -f docker-compose.prod.yml --env-file .env.prod'
+DUMP=$(basename "$(ls -1t ops/backups/logical/*.dump | head -1)")
+
+$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=postgres db createdb rehearsal_scratch
+$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=rehearsal_scratch db \
+   pg_restore --no-owner --exit-on-error -d rehearsal_scratch "/backups/logical/$DUMP"
+```
+
+Then check the schema is current. **Connect as `app_mei`, not `app_migrator`:**
+`--no-owner` run by `app_mei` makes `app_mei` the owner of every restored table, and
+`pg_dump` omits an ACL entry that equals the owner default — so `app_migrator` ends up
+with no privileges at all and the probe dies with `permission denied for table
+django_migrations`, which says nothing about the schema. Schema currency is the subject
+here; role fidelity is not.
+
+```sh
+$C exec -T -e DATABASE_URL="postgres://app_mei:$(grep '^POSTGRES_PASSWORD=' .env.prod \
+   | cut -d= -f2- | tr -d '"')@db:5432/rehearsal_scratch" \
+   web python manage.py migrate --check --skip-checks     # expect exit 0
+```
+
+### Subject and control are different claims
+
+Keep them apart in whatever you write down, because they answer different questions and
+only one of them is about the restore.
+
+**Subject — the scratch database.** Row counts for `tenants_tenant`,
+`tenants_membership` and `clients_clientcompany`, plus `relrowsecurity` /
+`relforcerowsecurity` per tenant-scoped table and the `pg_policies` set. Assert the
+**source count is greater than zero first**, then assert equality: `0 == 0` is a passing
+comparison and an empty restore. The 2026-07-31 run measured 2 / 2 / 7 rows equal on
+both sides, identical RLS flags across all 14 tenant-scoped tables (9 of them enabled
+**and** forced), and 18 identical policies over 9 tables.
+
+**Control — the cluster.** The isolation suite builds its *own* database (`test_app_mei`)
+as `app_test`. It proves the cluster's roles and policies still enforce tenant isolation;
+it does not touch `rehearsal_scratch` and is not evidence about the restored data.
+
+```sh
+$C exec -T -e DJANGO_SETTINGS_MODULE=config.settings.test -e TEST_DB_USER=app_test \
+   -e TEST_DB_PASSWORD="$(grep '^APP_TEST_PASSWORD=' .env.prod | cut -d= -f2- | tr -d '"')" \
+   web python -m pytest tests/isolation -q
+```
+
+**111 passed** on 2026-07-31 (the `41` above is the 2026-07-28 figure; the suite has
+grown). Pin the assertion as a floor, not an equality, or every new isolation test turns
+the runbook red.
+
+### Prove the detector fires, then clean up
+
+A rehearsal that only ever restores a good dump does not show that a bad one would be
+caught. Truncate a **copy** and confirm the same command rejects it:
+
+```sh
+$C exec -T -u postgres -e PGUSER=app_mei db sh -c \
+  "head -c 10240 /backups/logical/$DUMP > /backups/logical/truncated.dump"
+$C exec -T -u postgres -e PGUSER=app_mei db pg_restore --list /backups/logical/truncated.dump
+# pg_restore: error: could not read from input file: end of file   (exit 1)
+```
+
+Finish by dropping the scratch database and deleting the truncated copy — and verify
+both are gone rather than assuming. Keep the dump and the base backup: they are real
+backups, not rehearsal artifacts.
+
+```sh
+$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=postgres db dropdb rehearsal_scratch
+$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=postgres db \
+   psql -tAc "select count(*) from pg_database where datname='rehearsal_scratch'"   # 0
+```
+
+> **No cleanup step may disable, drop or work around an audit or immutability control.**
+> `audit_event` and `audit_platformevent` are append-only through a trigger that binds
+> every role including the superuser. If tidying up collides with it, leave the artifact
+> and say so. An append-only trail whose entries can be removed by an operator cleaning
+> up after themselves is not append-only.
+
+### The backup directory can lose its owner while the container keeps running
+
+The 2026-07-31 rehearsal could not take its dump at first: `ops/backup.sh` exited 2 at
+line 47 with `mkdir: cannot create directory '/backups/base/…': Permission denied`. The
+archiver precondition had passed; the failure was one step later and purely filesystem.
+
+`ops/backups/base` and `ops/backups/logical` were owned by the host login user, mode
+`755`, so postgres (uid 999) could not write into them. The entrypoint
+(`docker-compose.prod.yml:112-119`) chowns `/backups` at boot precisely to prevent this,
+and it had — at the container's last start, 2026-07-28. A host-side ownership change on
+2026-07-29 undid it, and nothing restarted `db` afterwards: it runs the unmodified
+`postgres:16` image, so no deploy ever recreates it. The nightly backup had been failing
+for two days and the newest dump on the box was two days stale.
+
+Re-apply the entrypoint's own intent, as root, in the running container — no host `sudo`
+and no `down`:
+
+```sh
+$C exec -T -u root db sh -c \
+  'chown postgres:postgres /backups /backups/base /backups/logical &&
+   chmod 775 /backups /backups/base /backups/logical'
+```
+
+**A backup job that exits non-zero into nobody's inbox is a silent failure.** The
+directory's owner is worth checking whenever anything has touched `/opt/app-mei` from
+the host side, and `ops/backups/.gitkeep` being tracked means a `git reset --hard` on
+the box recreates the directory as the ssh user.
 
 ---
 
