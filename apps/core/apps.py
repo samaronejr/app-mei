@@ -6,6 +6,7 @@ from django.core.checks import register
 from apps.core.checks import (
     check_object_storage_config,
     check_portal_capability_gates,
+    check_portal_grant_drift,
     check_portal_role,
     check_tenant_middleware,
     check_tenant_slugs,
@@ -26,4 +27,5 @@ class CoreConfig(AppConfig):
         register(check_portal_role)
         register(check_portal_capability_gates)
         register(check_object_storage_config)
+        register(check_portal_grant_drift)
         register(check_tenant_slugs)

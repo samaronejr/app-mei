@@ -5,15 +5,17 @@ no visible symptom until a tenant boundary or a transaction boundary has already
 crossed. `manage.py check` runs them; CI runs it once per settings module.
 """
 
+import re
 from collections.abc import Callable, Sequence
-from typing import Any
+from pathlib import Path
+from typing import Any, Final
 
 from django.apps import apps as django_apps
 from django.apps.config import AppConfig
 from django.conf import settings
 from django.core.checks import CheckMessage, Error
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.db import DatabaseError, connections
+from django.db import DEFAULT_DB_ALIAS, DatabaseError, connections
 from django.urls import get_resolver
 
 from apps.tenants.validators import validate_tenant_slug
@@ -459,6 +461,99 @@ def _object_storage_config_errors() -> list[CheckMessage]:
             id="core.E011",
         ),
     ]
+
+
+PORTAL_GRANT_LOOPS: Final[dict[str, str]] = {
+    "portal_table": "SELECT",
+    "portal_write_table": "INSERT",
+}
+
+
+def _roles_sql_grants() -> dict[str, str]:
+    """Return {table: privilege} from roles.sql, the artifact that actually grants."""
+    source = Path(settings.BASE_DIR) / "ops" / "sql" / "roles.sql"
+    if not source.is_file():
+        return {}
+    text = source.read_text(encoding="utf-8")
+    granted: dict[str, str] = {}
+    for match in re.finditer(
+        r"FOREACH\s+([a-z_]+)\s+IN\s+ARRAY\s+ARRAY\[(.*?)\]",
+        text,
+        re.DOTALL,
+    ):
+        privilege = PORTAL_GRANT_LOOPS.get(match.group(1))
+        if privilege is None:
+            continue
+        for table in re.findall(r"'([a-z0-9_]+)'", match.group(2)):
+            # SELECT first, then INSERT: reported per privilege, so a table in both
+            # loops is checked for both rather than only the last one seen.
+            granted[f"{table}:{privilege}"] = table
+    return granted
+
+
+def _portal_grant_drift_errors() -> list[CheckMessage]:
+    """Refuse to boot when an allow-listed table exists without its portal grant.
+
+    `ops/sql/roles.sql` runs from the init hook against an EMPTY data directory, so its
+    `to_regclass`-guarded grants reach only tables that already exist. Every table
+    created
+    by a LATER migration therefore ends up with policies and no grant, and the portal
+    meets `permission denied` on first use rather than at deploy. `ops/README.md`
+    says to
+    re-run the statements after `migrate`; nothing enforced it, and the document vault
+    reached staging with neither SELECT nor INSERT on its table.
+
+    Tables that do not exist yet are skipped deliberately. On a fresh cluster
+    `collectstatic` runs system checks before `migrate` has created anything, and
+    failing
+    there would deadlock the very bootstrap this protects.
+    """
+    wanted = _roles_sql_grants()
+    if not wanted:
+        return []
+
+    missing: list[str] = []
+    try:
+        with connections[DEFAULT_DB_ALIAS].cursor() as cursor:
+            for key, table in sorted(wanted.items()):
+                privilege = key.rsplit(":", 1)[1]
+                cursor.execute("SELECT to_regclass(%s)", [f"public.{table}"])
+                if cursor.fetchone()[0] is None:
+                    continue
+                cursor.execute(
+                    "SELECT has_table_privilege(%s, %s, %s)",
+                    ["app_portal", table, privilege],
+                )
+                if cursor.fetchone()[0] is False:
+                    missing.append(f"{table} {privilege}")
+    except DatabaseError:
+        return []
+
+    if not missing:
+        return []
+    return [
+        Error(
+            "The portal role is missing grants roles.sql declares: "
+            + ", ".join(missing),
+            hint=(
+                "roles.sql only grants tables that existed when the cluster was "
+                "bootstrapped, so a table added by a later migration has policies "
+                "and no grant. Re-run its two GRANT blocks against the migrated "
+                "database, as the "
+                "table owner. Without them the portal meets permission denied on first "
+                "use, which is not a refusal anybody chose."
+            ),
+            id="core.E012",
+        ),
+    ]
+
+
+def check_portal_grant_drift(
+    app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ANN401, ARG001
+) -> list[CheckMessage]:
+    """Reject a deployment whose portal grants drifted from roles.sql."""
+    return _portal_grant_drift_errors()
 
 
 def check_object_storage_config(
