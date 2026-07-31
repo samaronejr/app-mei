@@ -289,18 +289,25 @@ days of silence, and the outage this exists to catch lasted two.
 ### The backup tree's ownership is repaired on every run
 
 `/backups` is the host directory `ops/backups` bind-mounted into the db container.
-postgres inside it is uid 999, and the host keeps taking the tree back — `git reset
---hard` in the deploy's Sync step rewrites the tracked `ops/backups/.gitkeep` as the ssh
-user whenever the index's cached stat data no longer matches, and a fresh checkout
-creates the directory itself that way. When that happens the run dies at its first
+postgres inside it is uid 999, and the host keeps taking the tree back — a fresh checkout
+creates the directory as the ssh user, `git reset --hard` in the deploy's Sync step
+re-materialises any tracked path inside it the same way whenever the index's cached stat
+data no longer matches, and if the directory is absent altogether Docker creates the
+bind-mount source owned by **root**. When any of that happens the run dies at its first
 `mkdir` with `Permission denied`.
 
 `backup.sh` therefore re-asserts the invariant from inside the container as root,
 recursively, immediately before its first write, and logs any path it had to repair. It
 does not try to stop the host from breaking it; it takes it back every night regardless
-of which host action did it. Untracking `.gitkeep` was measured and rejected: with the
-directory absent, Docker creates the bind-mount source owned by **root**, which postgres
-cannot write either.
+of which host action did it.
+
+**Nothing under `ops/backups/` may be tracked, and there is no `.gitkeep` there.** That
+is the other half of the fix and it was bought the expensive way. Once the repair above
+started chowning the directory to postgres, git on the box — running as the ssh user —
+could no longer unlink the `.gitkeep` it had been keeping there, and deploy 30672150324
+died at Sync with `error: unable to unlink old 'ops/backups/.gitkeep': Permission
+denied`. Git and postgres cannot both own that directory. The backup has the stronger
+claim, and Docker plus the db entrypoint keep the path alive without git's help.
 
 ### The WAL archive is bounded by retention, and the anchor is the OLDEST base
 

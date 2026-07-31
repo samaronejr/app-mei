@@ -65,16 +65,21 @@ log "archiver state: archived=${archived} failed=${failed}"
 # /backups is a HOST directory bind-mounted into the container (`./ops/backups`), and
 # the host keeps taking it back. Measured on the staging box:
 #
-#   * `git reset --hard` — the deploy's own Sync step — rewrites the tracked
-#     `ops/backups/.gitkeep` as the ssh user whenever the index's cached stat data no
-#     longer matches, which an ownership change is exactly what invalidates.
-#   * a fresh checkout creates `ops/backups` itself as the ssh user.
-#   * and if the directory were absent, Docker would create the bind-mount source as
-#     **root** — so *untracking* `.gitkeep` is strictly worse, not a fix.
+#   * a fresh checkout creates `ops/backups` as the ssh user;
+#   * so does `git reset --hard` — the deploy's own Sync step — for any tracked path
+#     inside it whose cached stat data no longer matches, which an ownership change is
+#     exactly what invalidates;
+#   * and if the directory is absent, Docker creates the bind-mount source as **root**.
 #
 # postgres inside the container is uid 999 and owns none of those, so the very first
 # write fails with `mkdir: Permission denied` and the nightly backup stops. That is not
 # hypothetical: it happened on 2026-07-29 23:16 and went unnoticed for two days.
+#
+# `ops/backups` therefore has NO tracked file in it (see .gitignore). That is the other
+# half of this fix and it was bought the expensive way: once the repair below started
+# chowning the directory to postgres, the deploy's `git reset --hard` could no longer
+# unlink the `.gitkeep` it used to keep there and died with `Permission denied`. Git and
+# postgres cannot both own that directory, and the backup has the stronger claim.
 #
 # So this does not try to PREVENT the host from taking the tree back. It re-asserts the
 # invariant at the one moment it matters, from inside the container as root, and it is

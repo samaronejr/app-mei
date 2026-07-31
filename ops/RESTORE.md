@@ -298,10 +298,14 @@ $C exec -T -u root db sh -c \
    chmod 775 /backups /backups/base /backups/logical'
 ```
 
-**A backup job that exits non-zero into nobody's inbox is a silent failure.** The
-directory's owner is worth checking whenever anything has touched `/opt/app-mei` from
-the host side, and `ops/backups/.gitkeep` being tracked means a `git reset --hard` on
-the box recreates the directory as the ssh user.
+**A backup job that exits non-zero into nobody's inbox is a silent failure.** Both halves
+of that sentence are now handled and the manual repair above should never be needed
+again: `ops/backup.sh` re-asserts the tree's ownership from inside the container on every
+run, and a successful run stamps a freshness marker that `/healthz` reports as
+`"backup": "fresh"` (see [`ops/README.md`](README.md)). Nothing under `ops/backups/` is
+tracked any more either — a tracked file there is unlinkable by the deploy's `git reset
+--hard` once the directory belongs to postgres, which is a deploy failure rather than a
+backup failure but has the same root.
 
 ---
 

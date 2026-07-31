@@ -36,5 +36,12 @@ htmlcov/
 .omo/run-continuation/
 
 # Production secrets — never committed.
-ops/backups/*
-!ops/backups/.gitkeep
+#
+# The whole directory, with NO tracked .gitkeep. It is a bind-mount source that must be
+# owned by postgres (uid 999) inside the db container, and git on the box runs as the ssh
+# user — a tracked file in there means git needs write on a directory it does not own, and
+# `git reset --hard` in the deploy fails with `unable to unlink old
+# 'ops/backups/.gitkeep': Permission denied`. Measured: that is exactly how deploy
+# 30672150324 died. Docker creates the directory if it is absent and the db entrypoint
+# chowns it, so nothing needs to keep the path alive in the tree.
+ops/backups/
