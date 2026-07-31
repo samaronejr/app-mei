@@ -148,6 +148,81 @@ class ObligationType(models.Model):
         return self.code
 
 
+class ObligationDueRule(models.Model):
+    """One deadline rule, and the window during which the law says it applies.
+
+    A due rule is not a permanent property of an obligation. Resolução CGSN nº
+    140/2018 has already moved the DAS due day once, and a rule stored on the
+    obligation row can only ever hold the current regime -- so regenerating a 2024
+    calendar after a 2027 rule change would silently restate history under the new
+    day and produce dates that look entirely ordinary. One era per row makes the
+    correction an INSERT and leaves the superseded regime readable.
+
+    Effective dating is **latest-wins**, exactly as in `FiscalParameter` and for the
+    same reason: `valid_to = NULL` is open-ended, so every later open-ended era
+    necessarily overlaps its predecessor and an `ExclusionConstraint` would reject
+    the insert that changing a rule without a deploy depends on. The only integrity
+    this needs is that no two eras for one obligation tie on `valid_from`, since a
+    tie makes latest-wins depend on physical row order.
+
+    `on_delete=PROTECT` on purpose: an obligation type whose eras vanished would
+    resolve to "no rule in force", and this engine refuses rather than defaults --
+    so the deletion would surface later, as a raise in a nightly calendar sweep,
+    far from whoever deleted the type.
+    """
+
+    obligation_type = models.ForeignKey(
+        ObligationType,
+        on_delete=models.PROTECT,
+        related_name="due_rules",
+        verbose_name=_("obligation type"),
+    )
+    # Structured JSON for the same reason `ObligationType.due_rule` was: the shipped
+    # rules disagree in direction, and encoding direction as code would mean branching
+    # on the obligation code. `rules.parse_due_rule` is the single reader.
+    rule = models.JSONField(_("rule"))
+    valid_from = models.DateField(_("valid from"))
+    # Exclusive, matching FiscalParameter: the era covers dates strictly before
+    # valid_to, so the changeover day belongs unambiguously to the successor.
+    valid_to = models.DateField(_("valid to"), null=True, blank=True)
+    source_note = models.TextField(_("source note"), blank=True)
+    # Not blank=True. A statutory deadline with no citation cannot be re-verified
+    # when the resolution changes, and re-verification is why this table exists.
+    source_url = models.URLField(_("source URL"), max_length=500)
+
+    class Meta:
+        """Model metadata."""
+
+        verbose_name = _("obligation due rule")
+        verbose_name_plural = _("obligation due rules")
+        ordering: ClassVar[list[str]] = ["obligation_type", "-valid_from"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            # No nulls_distinct here, unlike FiscalParameter: neither column is
+            # nullable, so PostgreSQL's NULL-distinctness never comes into play.
+            models.UniqueConstraint(
+                fields=["obligation_type", "valid_from"],
+                name="obligationduerule_type_from_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(valid_to__isnull=True)
+                | models.Q(valid_to__gt=models.F("valid_from")),
+                name="obligationduerule_validity_ordered",
+            ),
+        ]
+        indexes: ClassVar[list[models.Index]] = [
+            # Descending on valid_from because every read is "the newest era at or
+            # before this date", which is an index-ordered first row rather than a sort.
+            models.Index(
+                fields=["obligation_type", "-valid_from"],
+                name="duerule_type_from_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        """Identify the era by the obligation it governs and when it took effect."""
+        return f"{self.obligation_type_id} from {self.valid_from.isoformat()}"
+
+
 class Holiday(models.Model):
     """A day on which a payment cannot be settled, and therefore a deadline moves.
 

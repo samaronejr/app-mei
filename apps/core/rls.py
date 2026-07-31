@@ -54,6 +54,12 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         "fiscal_municipalitycapability",
         "obligations_fiscalparameter",
         "obligations_obligationtype",
+        # When the DAS falls due is a fact about Resolução CGSN nº 140/2018, not
+        # about any one accounting firm, and the same reasoning as the holiday
+        # calendar applies: a per-tenant copy would let two firms hold contradictory
+        # deadlines for the same statute and would make every firm rediscover the
+        # same regulatory change independently.
+        "obligations_obligationduerule",
         "obligations_holiday",
         "obligations_schedulerheartbeat",
     },

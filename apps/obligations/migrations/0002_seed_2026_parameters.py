@@ -92,16 +92,21 @@ PARAMETERS = (
 )
 
 
-def seed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) -> None:
-    """Insert the seven parameters in force for 2026.
+# `0015` retires this key: the DAS due day belongs to the DAS due rule, and two
+# spellings of the same statutory number are one edit away from disagreeing. It stays
+# in PARAMETERS above because a migration is frozen history and rewriting `seed` would
+# change what a fresh database is recorded as having passed through.
+RETIRED_LATER = frozenset({"das.due_day"})
 
-    Idempotent: `migrate` may re-run, and the test suite replays this after a
-    transactional test has truncated the table. Keyed on the same triple as the
-    unique constraint, whose `nulls_distinct=False` is what stops a re-run from
-    duplicating the three category-agnostic rows.
-    """
+LIVE_PARAMETERS = tuple(row for row in PARAMETERS if row[0] not in RETIRED_LATER)
+
+
+def _seed_rows(
+    apps: app_registry.Apps,
+    rows: tuple[tuple[str, str | None, str, str, str], ...],
+) -> None:
     parameter_model = apps.get_model("obligations", "FiscalParameter")
-    for key, category, value, source_url, source_note in PARAMETERS:
+    for key, category, value, source_url, source_note in rows:
         parameter_model.objects.update_or_create(
             key=key,
             mei_category=category,
@@ -113,6 +118,31 @@ def seed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) -> N
                 "source_note": source_note,
             },
         )
+
+
+def seed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) -> None:
+    """Insert the seven parameters in force for 2026, as this migration first did.
+
+    Frozen: a database migrating from scratch replays history, and `0015` removes the
+    retired row a few operations later. Idempotent, keyed on the same triple as the
+    unique constraint, whose `nulls_distinct=False` is what stops a re-run from
+    duplicating the three category-agnostic rows.
+    """
+    _seed_rows(apps, PARAMETERS)
+
+
+def seed_live(
+    apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None
+) -> None:
+    """Insert the parameters a fully migrated database holds: the seven minus the one.
+
+    Separate from `seed` because the two answer different questions. `seed` answers
+    "what did this migration do?", which history fixes forever; this answers "what
+    should the table contain right now?", which every later migration can change.
+    Collapsing them would either rewrite history or leave the suite re-seeding a row
+    `0015` exists to delete.
+    """
+    _seed_rows(apps, LIVE_PARAMETERS)
 
 
 def unseed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None) -> None:
@@ -131,8 +161,13 @@ def seed_from_global_registry() -> None:
     `RunPython`. Left empty, every resolver call would raise `NoEffectiveParameter`
     in whatever test ran next — or worse, a test written to expect that raise would
     pass while asserting nothing about the seeded path.
+
+    Routed through `seed_live`, so the replay reproduces the migrated table rather
+    than this migration's own moment in history. Through `seed` it would resurrect
+    the row `0015` deletes, and only in the tests that happen to truncate — which is
+    a suite that passes or fails depending on the order tests run in.
     """
-    seed(global_apps, None)
+    seed_live(global_apps, None)
 
 
 class Migration(migrations.Migration):

@@ -255,6 +255,33 @@ def _seeded_obligation_types(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _seeded_due_rule_eras(request: pytest.FixtureRequest) -> None:
+    """Restore the due-rule eras that a transactional test truncates away.
+
+    An empty era table does not read as "no deadline": `due_rule_for` raises, so
+    every calendar test would fail with a missing-seed error instead of the
+    assertion it was written to make.
+
+    The obligation types are pulled explicitly rather than trusted to run first.
+    Each era carries a PROTECTed foreign key to one, so a truncation that emptied
+    both tables would leave this insert failing on a missing parent — and autouse
+    fixtures at the same scope are ordered by declaration only until one of them
+    grows a dependency, which is not a property worth betting a red suite on.
+    """
+    if not _wants_database(request):
+        return
+    request.getfixturevalue("db")
+    request.getfixturevalue("_seeded_obligation_types")
+    due_rule = django_apps.get_model("obligations", "ObligationDueRule")
+    if due_rule.objects.exists():
+        return
+    migration = importlib.import_module(
+        "apps.obligations.migrations.0015_seed_due_rule_eras",
+    )
+    migration.seed_due_rule_eras_from_global_registry()
+
+
+@pytest.fixture(autouse=True)
 def _seeded_national_holidays(request: pytest.FixtureRequest) -> None:
     """Restore the holiday calendar that a transactional test truncates away.
 

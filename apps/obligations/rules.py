@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 
-from apps.obligations.models import Periodicity
+from django.db import models
+
+from apps.obligations.models import ObligationDueRule, ObligationType, Periodicity
 
 MONTHS_IN_YEAR = 12
 
@@ -84,6 +86,45 @@ def parse_due_rule(raw: dict[str, object]) -> DueRule:
         raise TypeError(msg)
 
     return DueRule(day=raw_day, direction=direction, month=raw_month)
+
+
+# Named without an Error suffix to match `NoEffectiveParameter`, which it is the
+# deadline-side twin of, and because it reads correctly at the call site.
+class NoEffectiveDueRule(LookupError):  # noqa: N818
+    """Raised when no era covers the obligation and date asked about.
+
+    Refusing rather than falling back to the newest era regardless of date is the
+    whole point of storing eras. A 2024 competence resolved against a 2027 regime
+    would place a deadline that is a perfectly ordinary business day and wrong by
+    however much the resolution moved it -- and nothing downstream could tell.
+    """
+
+
+def due_rule_for(obligation_type: ObligationType, on_date: date) -> DueRule:
+    """Return the deadline rule in force for `obligation_type` on `on_date`.
+
+    Latest-wins among the covering eras, exactly as `effective_parameter` resolves a
+    fiscal parameter: superseding a rule is a pure INSERT, so a resolution published
+    on the day it takes effect needs no deploy and no close-then-insert dance.
+    """
+    row = (
+        ObligationDueRule.objects.filter(
+            obligation_type=obligation_type,
+            valid_from__lte=on_date,
+        )
+        .filter(models.Q(valid_to__isnull=True) | models.Q(valid_to__gt=on_date))
+        .order_by("-valid_from")
+        .first()
+    )
+    if row is None:
+        msg = (
+            f"No due rule for {obligation_type.pk!r} is in force on "
+            f"{on_date.isoformat()}. Seed an era rather than assuming the current "
+            f"one: a deadline placed under the wrong regime is a plausible date "
+            f"that nothing downstream can question."
+        )
+        raise NoEffectiveDueRule(msg)
+    return parse_due_rule(row.rule)
 
 
 def _following_period(competence: date, periodicity: str) -> tuple[int, int]:

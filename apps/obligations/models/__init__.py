@@ -13,6 +13,7 @@ from apps.obligations.models.operations import (
 from apps.obligations.models.reference import (
     FiscalParameter,
     Holiday,
+    ObligationDueRule,
     ObligationType,
     Periodicity,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "Holiday",
     "MonthlyRevenue",
     "Obligation",
+    "ObligationDueRule",
     "ObligationStatus",
     "ObligationType",
     "Periodicity",

@@ -1,4 +1,9 @@
-"""The seven 2026 parameters, their categories, and the rows deliberately NOT seeded.
+"""The six 2026 parameters, their categories, and the rows deliberately NOT seeded.
+
+Six, not seven: `das.due_day` was retired by `0015_seed_due_rule_eras`, which moved the
+DAS due day into the era table where the rest of that rule already lives. The count
+assertion below is what proves the retirement reaches BOTH seed paths — the migration
+and the suite's own replay after a transactional test truncates the table.
 
 Every assertion here is about a number an accountant will act on. The category split
 matters twice over: the annual ceiling and the proportional monthly rate are BOTH
@@ -23,7 +28,7 @@ from apps.obligations.parameters import effective_parameter, parameter_for
 pytestmark = pytest.mark.django_db
 
 SEEDED_ON = date(2026, 7, 27)
-EXPECTED_ROW_COUNT = 7
+EXPECTED_ROW_COUNT = 6
 
 # key, category, value — the table the plan specifies, restated so a drifted seed is
 # a failing test rather than a silent change to a number nobody re-reads.
@@ -33,7 +38,6 @@ EXPECTED = (
     ("mei.monthly_proportional", MEICategory.COMMON, Decimal("6750.00")),
     ("mei.monthly_proportional", MEICategory.CAMINHONEIRO, Decimal("20966.67")),
     ("mei.excess_tolerance_pct", None, Decimal("0.20")),
-    ("das.due_day", None, Decimal(20)),
     ("mei.max_employees", None, Decimal(1)),
 )
 
