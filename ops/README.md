@@ -14,10 +14,39 @@ reason alone.
 
 `ops/sql/roles.sql` creates them. It is mounted into the `db` service at
 `/docker-entrypoint-initdb.d/` and is idempotent, so `docker compose down -v && docker
-compose up -d --wait` needs no manual step.
+compose up -d --wait` needs no manual step **to create the roles**. Its portal grants
+are a different matter — see below.
 
 Because entrypoint scripts only run against an **empty** data directory, editing
 `roles.sql` requires `docker compose down -v` — a restart will not re-run it.
+
+### The portal grants do not survive a new migration
+
+`app_portal`'s two `GRANT` blocks are `to_regclass`-guarded, because the file runs under
+`ON_ERROR_STOP=1` against a data directory with no tables in it. The guard means those
+grants reach **only the tables that exist at the moment roles.sql is run** — which, on
+the init hook, is none of them. `migrate` creates the tables afterwards.
+
+So a table added by a migration gets its RESTRICTIVE policies from that migration and
+**no grant at all**. The portal then meets `permission denied` on first use rather than
+at deploy, and the test suite cannot see it: `tests/conftest.py` issues those grants to
+the test database itself, so the tested database is correct while the deployed one is
+not. This is exactly how the document vault reached staging with neither `SELECT` nor
+`INSERT` on `obligations_document`.
+
+After any migration that adds an allow-listed table, re-run the two `GRANT` blocks
+against the migrated database, as the table owner:
+
+```sh
+sed -n "/-- app_portal's allow-list./,\$p" ops/sql/roles.sql \
+  | docker compose exec -T db psql "$DATABASE_MIGRATION_URL" -v ON_ERROR_STOP=1
+```
+
+**You are not expected to remember this.** `core.E012` refuses to boot when a table
+roles.sql declares exists without its grant, and the production entrypoint is
+`collectstatic && migrate && exec gunicorn` — `migrate` runs system checks, so the
+container stops instead of the upload failing. The check reads the allow-lists out of
+roles.sql rather than a copy in Python, so the two cannot drift apart.
 
 ### Running migrations as `app_runtime` fails by design
 

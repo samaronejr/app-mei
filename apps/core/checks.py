@@ -469,44 +469,48 @@ PORTAL_GRANT_LOOPS: Final[dict[str, str]] = {
 }
 
 
-def _roles_sql_grants() -> dict[str, str]:
-    """Return {table: privilege} from roles.sql, the artifact that actually grants."""
+def _roles_sql_grants() -> frozenset[tuple[str, str]]:
+    """Return the (table, privilege) pairs roles.sql grants to the portal role.
+
+    Read out of `ops/sql/roles.sql` rather than copied into Python, so this check and
+    the artifact that actually grants cannot drift apart. `PORTAL_GRANT_LOOPS` names
+    the two `FOREACH` loops; renaming one there would make this return nothing and the
+    check pass vacuously, so a test pins the names against the file.
+    """
     source = Path(settings.BASE_DIR) / "ops" / "sql" / "roles.sql"
     if not source.is_file():
-        return {}
-    text = source.read_text(encoding="utf-8")
-    granted: dict[str, str] = {}
+        return frozenset()
+    granted: set[tuple[str, str]] = set()
     for match in re.finditer(
         r"FOREACH\s+([a-z_]+)\s+IN\s+ARRAY\s+ARRAY\[(.*?)\]",
-        text,
+        source.read_text(encoding="utf-8"),
         re.DOTALL,
     ):
         privilege = PORTAL_GRANT_LOOPS.get(match.group(1))
         if privilege is None:
             continue
         for table in re.findall(r"'([a-z0-9_]+)'", match.group(2)):
-            # SELECT first, then INSERT: reported per privilege, so a table in both
-            # loops is checked for both rather than only the last one seen.
-            granted[f"{table}:{privilege}"] = table
-    return granted
+            granted.add((table, privilege))
+    return frozenset(granted)
 
 
 def _portal_grant_drift_errors() -> list[CheckMessage]:
     """Refuse to boot when an allow-listed table exists without its portal grant.
 
     `ops/sql/roles.sql` runs from the init hook against an EMPTY data directory, so its
-    `to_regclass`-guarded grants reach only tables that already exist. Every table
-    created
-    by a LATER migration therefore ends up with policies and no grant, and the portal
-    meets `permission denied` on first use rather than at deploy. `ops/README.md`
-    says to
-    re-run the statements after `migrate`; nothing enforced it, and the document vault
-    reached staging with neither SELECT nor INSERT on its table.
+    `to_regclass`-guarded grants reach only tables that already exist. `migrate` runs
+    afterwards, so EVERY table created by a migration ends up with policies and no grant
+    -- including on the documented `docker compose down -v && up -d --wait` path, which
+    is why this drift was present in development as well as on staging.
+
+    Nothing instructed anyone to re-run the grants: `ops/README.md` said roles.sql
+    "needs no manual step". The document vault duly reached staging with neither SELECT
+    nor INSERT on its table, and the suite could not see it because `tests/conftest.py`
+    issues those grants to the test database itself.
 
     Tables that do not exist yet are skipped deliberately. On a fresh cluster
     `collectstatic` runs system checks before `migrate` has created anything, and
-    failing
-    there would deadlock the very bootstrap this protects.
+    failing there would deadlock the very bootstrap this protects.
     """
     wanted = _roles_sql_grants()
     if not wanted:
@@ -515,8 +519,7 @@ def _portal_grant_drift_errors() -> list[CheckMessage]:
     missing: list[str] = []
     try:
         with connections[DEFAULT_DB_ALIAS].cursor() as cursor:
-            for key, table in sorted(wanted.items()):
-                privilege = key.rsplit(":", 1)[1]
+            for table, privilege in sorted(wanted):
                 cursor.execute("SELECT to_regclass(%s)", [f"public.{table}"])
                 if cursor.fetchone()[0] is None:
                     continue
@@ -537,11 +540,10 @@ def _portal_grant_drift_errors() -> list[CheckMessage]:
             + ", ".join(missing),
             hint=(
                 "roles.sql only grants tables that existed when the cluster was "
-                "bootstrapped, so a table added by a later migration has policies "
-                "and no grant. Re-run its two GRANT blocks against the migrated "
-                "database, as the "
-                "table owner. Without them the portal meets permission denied on first "
-                "use, which is not a refusal anybody chose."
+                "bootstrapped, so a table added by a later migration has policies and "
+                "no grant. Re-run its two GRANT blocks against the migrated database, "
+                "as the table owner. Without them the portal meets permission denied "
+                "on first use, which is not a refusal anybody chose."
             ),
             id="core.E012",
         ),
