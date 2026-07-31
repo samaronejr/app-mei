@@ -126,9 +126,16 @@ def test_healthz_returns_200_while_the_scheduler_is_reporting(client: Client) ->
     # When the probe is called
     response = client.get(reverse("healthz"))
 
-    # Then it answers 200 and says so explicitly
+    # Then it answers 200 and says so explicitly. The backup key is asserted here too,
+    # rather than being read past with a subset comparison, so that a future signal
+    # cannot be added to this body without a test acknowledging it.
+    # `tests/obligations/test_backup_freshness.py` owns that key's own behaviour.
     assert response.status_code == HTTPStatus.OK
-    assert response.json() == {"status": "ok", "scheduler": "alive"}
+    assert response.json() == {
+        "status": "ok",
+        "scheduler": "alive",
+        "backup": "stale",
+    }
 
 
 def test_healthz_returns_503_when_the_scheduler_has_gone_quiet(
@@ -158,13 +165,13 @@ def test_healthz_stays_200_when_the_database_is_unreachable(
 
     refused = "connection refused"
 
-    def explode() -> bool:
+    def explode() -> object:
         raise OperationalError(refused)
 
     # Patched where it is USED, not where it is defined: apps.core.views binds the
     # name at import, so patching the source module would leave the view calling the
     # original and the test would pass while exercising the happy path.
-    monkeypatch.setattr(views, "scheduler_is_alive", explode)
+    monkeypatch.setattr(views, "read_heartbeats", explode)
 
     # When the LIVENESS probe is called
     response = client.get(reverse("healthz"))

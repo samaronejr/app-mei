@@ -15,7 +15,14 @@
 # retained base backup, not the newest: deleting WAL newer than that would silently
 # render every older base backup unrestorable while appearing to succeed.
 #
-# Exit codes: 0 ok, 1 precondition failed, 2 backup failed, 3 pruning failed.
+# On success it stamps a freshness marker into the database, which `/healthz` reads and
+# reports as `"backup": "fresh"`. That marker is the whole alarm: this job's real failure
+# mode is not a crash, it is a non-zero exit written into a terminal nobody is watching.
+# It is written LAST and only on full success, so any failure above — including a failed
+# prune — ages the marker out and becomes visible without anyone reading a log.
+#
+# Exit codes: 0 ok, 1 precondition failed, 2 backup failed, 3 pruning failed,
+#             4 freshness marker not recorded.
 
 set -Eeuo pipefail
 
@@ -138,6 +145,21 @@ else
     log "WARNING: could not read START WAL from ${OLDEST}; skipping prune rather than guessing"
   fi
 fi
+
+# --- freshness marker ---------------------------------------------------------------
+# The last thing the run does, and the only thing anyone will notice when it stops.
+# `obligations_schedulerheartbeat` is the table the T-041 dead-man's switch already uses;
+# it is keyed by name precisely so more than one signal can live in it, and /healthz
+# reads both rows in a single query. Written in SQL rather than through manage.py because
+# this is a HOST script: it holds no Python environment and reaching one would mean
+# depending on the web container to report that the database was backed up.
+trap 'die 4 "could not record the freshness marker at line $LINENO — the backup itself succeeded"' ERR
+dbx psql -v ON_ERROR_STOP=1 -qtAc "
+  insert into obligations_schedulerheartbeat (name, updated_at)
+  values ('backup', now())
+  on conflict (name) do update set updated_at = excluded.updated_at
+" >/dev/null
+log "freshness marker recorded; /healthz reports backup=fresh"
 
 trap - ERR
 log "OK  base=${BASE_SIZE} dump=${DUMP_SIZE} wal=$(dbx sh -c 'du -sh /wal_archive | cut -f1' | tr -d '\r')"

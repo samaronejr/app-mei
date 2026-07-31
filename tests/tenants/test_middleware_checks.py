@@ -93,9 +93,14 @@ def test_the_liveness_probe_opens_no_tenant_transaction(client: Client) -> None:
         f"the tenant middleware opened its transaction on the probe: {statements}"
     )
 
-    # ...and the ONE statement the probe does make is the scheduler dead-man's switch
-    # and nothing else. T-041 requires /healthz to answer 503 when beat goes quiet,
-    # which cannot be known without asking; naming the permitted query keeps that
-    # from becoming a licence for the next person to add a second one.
+    # ...and the ONE statement the probe does make is the dead-man's-switch read and
+    # nothing else. T-041 requires /healthz to answer 503 when beat goes quiet, which
+    # cannot be known without asking; naming the permitted query keeps that from
+    # becoming a licence for the next person to add a second one.
+    #
+    # It stays at ONE statement now that the probe reports backup freshness as well,
+    # because both signals are rows of the same name-keyed table and are read by a
+    # single `name__in` filter. A second signal that needed a second query would have
+    # to justify itself here first.
     assert len(statements) == 1, f"the probe made unexpected queries: {statements}"
     assert "schedulerheartbeat" in statements[0].lower()
