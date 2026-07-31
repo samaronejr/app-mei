@@ -216,3 +216,337 @@ be wrong in.
 
 All four are settings (`RATELIMIT_*`), so a deployment tightens them without a code
 change. Buckets live in the Redis cache.
+
+## Deploy
+
+Staging deploys itself. A push that lands on `main` and passes both gates ships to the
+box with no human in the loop, and the job proves the deployment landed by observing
+its **effects** rather than by trusting that the containers came up. Everything below
+describes `deploy-staging` in `.github/workflows/ci.yml`; the manual path exists for
+the day GitHub is unavailable, not as the normal route.
+
+### The job
+
+The trigger is `push` on `refs/heads/main`, and both halves of that condition are
+load-bearing. `push` excludes `pull_request` runs, whose head is a synthetic merge
+commit that exists on no branch and therefore cannot be checked out on the box; the ref
+check excludes any branch a future trigger might add. A pull request still runs `test`
+and `container-smoke` — it just never reaches the deploy.
+
+Gating is `needs: [test, container-smoke]`, so lint, types, the migration check, the
+full suite, the isolation suite and a cold-booted `/healthz` all pass before anything
+touches the server.
+
+The mechanism is deliberately unglamorous:
+
+1. **Build both images on the runner** with plain `docker build`, never `docker compose
+   -f docker-compose.prod.yml build`. That file carries roughly fifteen mandatory
+   `${VAR:?}` interpolations and no `.env.prod` exists on a runner, so compose aborts
+   while *parsing*, before it would ever reach a build. The app image takes
+   `--build-arg GIT_SHA`; the Caddy image is built from `ops/caddy`.
+2. **Anchor the rollback** by tagging the currently running images `:previous` on the
+   box — before the load, because once `docker load` overwrites the `:prod` tags the
+   previous generation is unreachable by name.
+3. **Ship the pair** as `docker save … | gzip -1 | ssh 'gunzip | docker load'`. The
+   images are never built on the server; see the next section for why.
+4. **Sync the checkout** with `git fetch --prune origin && git reset --hard "$GIT_SHA"`.
+   The box needs the tree as well as the images, because compose reads
+   `docker-compose.prod.yml`, `ops/Caddyfile` and `ops/sql` from disk there.
+5. **Roll the stack** with `up -d --no-build --wait`, no `--force-recreate` and no
+   service list. Compose already recreates exactly the containers whose image id moved,
+   and naming services would silently skip any service added to the file later.
+6. **Assert four times, by effect** (below), and only then `docker image prune -f`.
+   Pruning earlier would delete the layers the `:previous` tags depend on, destroying
+   the rollback while the deploy was still unproven.
+
+The four assertions are the point of the job:
+
+| # | Assertion | What it catches |
+| --- | --- | --- |
+| 1 | `/app/RELEASE` inside the running `web` container equals the pushed SHA | A stack that came back up on the **old** image |
+| 2 | `showmigrations --plan` exits 0, shows at least one `[X]`, and shows no `[ ]` | Migrations that never ran, and a probe that died instead of reporting |
+| 3 | `manage.py check` inside the deployed container | Silent failure of the portal-grant healer, and every other system check |
+| 4 | `GET https://samaronefialho.dev/healthz` returns 200 with `"status": "ok"` | Caddy, TLS and DNS, which nothing inside the stack can see |
+
+Assertion 2's positive control is not decoration. A bare `! … | grep -q '\[ \]'` passes
+when the command inside it dies, because a dead container emits nothing and nothing
+contains no pending marker. So the plan is captured to a file, the probe's own exit
+status is asserted, at least one applied migration is required, and only then is
+"none pending" meaningful. The first real deploy reported `assert 2/4 ok: 94 migrations
+applied, none pending`.
+
+### Why container health is not deployment proof
+
+Both of the rules above were bought the expensive way, during the manual T-065 deploy.
+They are quoted here in full rather than referenced, because the QA artifacts that
+recorded them are regenerated per run and are not in the repository.
+
+On building Caddy on the server:
+
+> Building Caddy on the box is NOT viable: xcaddy compiles the full Caddy dependency
+> tree and ran 30+ minutes on 1 vCPU while swap-thrashing against live Celery, without
+> finishing. Both images were built locally and shipped with `docker save | ssh docker
+> load`. That should be the documented deploy path.
+
+On trusting a green `up -d`:
+
+> `--no-build` is a trap here. `web` is also built from source, so the first attempt
+> restarted it on the OLD image: containers went healthy, manage.py check passed
+> (trivially — that image has no E008), and NO migrations ran. Caught only by querying
+> the database. Verify migrations by their effect, never by container health.
+
+Every container was healthy, the check was green, and the deployment had not happened.
+That is why `--no-build` in step 5 is safe *only* because steps 1 to 3 guarantee a new
+image is already loaded, and why assertions 1 and 2 exist at all.
+
+### Rollback
+
+There are two failure classes and they have different answers. Diagnose which one you
+have **before** touching anything, because the wrong choice makes the second attempt
+harder.
+
+#### Bad image: roll back to `:previous`
+
+Both images are anchored, so both roll back. Retag `:previous` over `:prod` and bring
+the stack up without building:
+
+```sh
+ssh app-mei '
+  set -eu
+  docker tag app-mei:previous app-mei:prod
+  docker tag app-mei-caddy:previous app-mei-caddy:prod
+  cd /opt/app-mei
+  docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --no-build --wait
+'
+```
+
+If the bad release also changed `docker-compose.prod.yml`, `ops/Caddyfile` or `ops/sql`,
+reset the checkout to the previous commit as well (`git -C /opt/app-mei reset --hard
+<previous-sha>`) before the `up`, or compose will roll the old image under the new
+file.
+
+Two notes on the anchors. The job writes both `:previous` tags **before** each load, so
+they always point at the generation that was serving traffic a moment ago. And
+`app-mei-caddy:previous` did not exist after the first CI deploy: `app-mei-caddy:prod`
+was not on the box yet, so `docker tag app-mei-caddy:prod app-mei-caddy:previous`
+printed `No such image` and the job's `|| true` absorbed it, exactly as designed. From
+the second deploy onward both anchors are real. Check before relying on one:
+
+```sh
+ssh app-mei 'docker image ls --filter reference="app-mei*" --format "{{.Repository}}:{{.Tag}} {{.ID}}"'
+```
+
+#### Bad data: restore
+
+If the release corrupted or deleted data, the image is not the problem and retagging
+will not help. Follow [`ops/RESTORE.md`](RESTORE.md), which covers both the physical
+restore with WAL replay and the logical path, and ends in a verification block that
+must not be skipped.
+
+#### The schema caveat: image rollback has a hard limit
+
+**Rolling back the image is valid only while the migrations applied in between are
+backward-compatible.** The previous image's ORM talks to the *current* schema, and
+Django does not negotiate.
+
+`0016_remove_obligationtype_due_rule` is the live example. It drops
+`obligations_obligationtype.due_rule`, which the previous image's ORM still names in
+every `SELECT` it builds for that model, so after that deploy an image rollback leaves
+every `ObligationType` query raising `UndefinedColumn`. There is no forward fix from
+that state either: `0016` is documented one-way in its own module docstring, because
+its reverse re-adds a `NOT NULL` column with no default onto a populated table and
+PostgreSQL rejects it outright.
+
+So: **rollback across a schema-narrowing deploy is the RESTORE path, not the image
+path.** When a release contains a migration that drops or renames anything, say so in
+the commit message, and treat `ops/RESTORE.md` as the only rollback that exists for it.
+
+### Secrets, and what they are worth to an attacker
+
+Five repository secrets drive the job: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PATH`,
+`DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. They arrive as environment variables rather
+than `${{ }}` interpolated into the shell script, because interpolation splices the
+value into the shell *source*, where a newline or a quote in a secret becomes
+executable text. The private key is written to `$RUNNER_TEMP`, used through a wrapper
+that sets `IdentitiesOnly=yes` and `IdentityAgent=none`, and shredded in an
+`if: always()` step.
+
+The blast radius is worth stating without euphemism. The deploy key authenticates as
+`ubuntu`, and that account's groups include `docker`. Membership in `docker` is
+**root-equivalent**: it permits starting an arbitrary container with an arbitrary host
+bind-mount, which is a complete filesystem read/write as root by design of the daemon,
+not by a bug. Therefore anyone who can push to `main`, and anyone who extracts
+`DEPLOY_SSH_KEY`, controls the VPS. That includes the Postgres data volume and
+`/opt/app-mei/.env.prod`, which holds every production credential, including
+`OCI_S3_SECRET_ACCESS_KEY` and therefore the offsite backups.
+
+This is an accepted trade, approved at the planning gate: a solo staging box on a
+single-maintainer repository does not carry the operational weight of a hardened deploy
+account with a rootless daemon and a restricted `command=` in `authorized_keys`. It is
+a deliberate decision with a known cost, recorded here so that the decision is visible
+when the cost changes — a second contributor, real customer data, or a move off
+staging all change it.
+
+#### Rotate on any of these triggers
+
+- **A contributor is added.** They gain push access to `main`, which is box control.
+- **A contributor is removed.** Their access to the box outlives their access to the
+  repository otherwise.
+- **A suspected leak** of the key, a runner compromise, or a workflow that logged more
+  than it should have.
+- **Routine regeneration**, so that the procedure is known to work before it is needed.
+
+The procedure is three steps and the middle one is easy to leave half-done:
+
+```sh
+# 1. New keypair, no passphrase (the runner cannot answer a prompt).
+ssh-keygen -t ed25519 -f /tmp/deploy_new -C 'gha-deploy' -N ''
+
+# 2. Replace the secret. --body or stdin is mandatory: `gh secret set` with neither
+#    blocks forever on an interactive prompt inside a non-interactive shell.
+gh secret set DEPLOY_SSH_KEY -R samaronejr/app-mei < /tmp/deploy_new
+
+# 3. Authorise the new key, then REMOVE the old line. Adding without removing leaves
+#    the rotated-out key valid, which is not a rotation.
+ssh-copy-id -i /tmp/deploy_new.pub app-mei
+ssh app-mei 'vi ~/.ssh/authorized_keys'   # delete the previous gha-deploy entry
+```
+
+Verify the new key in isolation before deleting anything local: `ssh -i /tmp/deploy_new
+-o IdentitiesOnly=yes -o IdentityAgent=none ubuntu@<host> 'true'`. Without both options
+ssh falls back to an agent identity or `~/.ssh/id_*`, so a green connection proves only
+that *some* key works.
+
+### The box's git remote is undocumented external state
+
+The Sync step depends on `git fetch origin` succeeding **on the box**, which works today
+because a GitHub deploy key was added to the server in an earlier session. This project
+did not create that credential, cannot see it, and does not manage it. If it is ever
+revoked, the deploy fails at Sync with an authentication error while every earlier step
+looks fine.
+
+The recovery path does not need the remote at all, and was the actual mechanism of the
+T-065 deploy, so it is known to work. Push the history over the same ssh channel as a
+bundle:
+
+```sh
+git bundle create /tmp/app-mei.bundle main
+ssh app-mei 'cat > /tmp/app-mei.bundle' < /tmp/app-mei.bundle
+ssh app-mei "
+  set -eu
+  cd /opt/app-mei
+  git fetch /tmp/app-mei.bundle main
+  git reset --hard FETCH_HEAD
+  git rev-parse HEAD
+"
+```
+
+A permanent fix is to add a fresh read-only deploy key for the repository to the box's
+`~/.ssh/`, at which point the Sync step works again unchanged.
+
+### A deploy can interrupt beat, and that is not a bug
+
+Two scheduled tasks run in the early morning (`config/settings/base.py:348-368`):
+`purge-access-logs` at 03:30 and `refresh-das-calendars` at 04:00. A deploy recreates
+the `worker` and `beat` containers, so a deploy landing in that window can kill a task
+mid-flight.
+
+Nothing needs to be done about it. `CELERY_TASK_ACKS_LATE = True`, so a task whose
+worker dies is redelivered rather than lost, and both of these tasks are idempotent:
+the purge is a bounded delete over a date threshold, and the calendar refresh writes
+through a uniqueness constraint that makes a repeat a no-op. The stack self-heals on
+the next tick. This is written down so that nobody spends 4am debugging a non-bug.
+
+### Concurrency: a `cancelled` deploy is often the correct outcome
+
+The job declares `concurrency: { group: deploy-staging, cancel-in-progress: false }`.
+Never cancelling in flight is the important half: a half-loaded image or a stack caught
+mid-`up` is a worse state than a queue.
+
+The consequence is that GitHub retains only the **newest pending** run per group, so
+back-to-back pushes supersede one another and the superseded deploy reports `cancelled`
+without ever running. That is by design and not a failure. Anything that verifies deploy
+history must therefore read the latest **completed** run, not the latest run:
+
+```sh
+gh run list -R samaronejr/app-mei --workflow=ci.yml --branch=main --status=completed --limit=1
+```
+
+### Manual fallback
+
+For when GitHub Actions is unavailable. This is the CI job by hand, in the same order,
+and it must be run from a clean checkout of the commit being deployed.
+
+```sh
+sha="$(git rev-parse HEAD)"
+
+# 1. Build both images. The --build-arg is not optional: without it /app/RELEASE bakes
+#    the Dockerfile default `unknown`, and the NEXT CI deploy's assertion 1 fails --
+#    correctly, because the box would not be running what it claims.
+docker build --build-arg GIT_SHA="$sha" -t app-mei:prod .
+docker build -t app-mei-caddy:prod ops/caddy
+
+# 2. Anchor the rollback BEFORE the load, or the previous generation loses its name.
+ssh app-mei '
+  docker tag app-mei:prod app-mei:previous || true
+  docker tag app-mei-caddy:prod app-mei-caddy:previous || true
+'
+
+# 3. Ship the pair.
+docker save app-mei:prod app-mei-caddy:prod \
+  | gzip -1 \
+  | ssh app-mei 'gunzip | docker load'
+
+# 4. Sync the checkout (or use the bundle fallback above).
+ssh app-mei "cd /opt/app-mei && git fetch --prune origin && git reset --hard $sha"
+
+# 5. Roll the stack.
+ssh app-mei 'cd /opt/app-mei && docker compose --env-file .env.prod \
+  -f docker-compose.prod.yml up -d --no-build --wait'
+```
+
+Then run the four assertions by hand; a manual deploy that skips them is exactly the
+T-065 situation described above.
+
+```sh
+compose='docker compose --env-file .env.prod -f docker-compose.prod.yml'
+ssh app-mei "cd /opt/app-mei && $compose exec -T web cat /app/RELEASE"          # == $sha
+ssh app-mei "cd /opt/app-mei && $compose exec -T web sh -c \
+  'DATABASE_URL=\"\$DATABASE_MIGRATION_URL\" python manage.py showmigrations --plan --skip-checks'" \
+  | grep -c '\[X\]'                                                             # >= 1, and no [ ]
+ssh app-mei "cd /opt/app-mei && $compose exec -T web python manage.py check"
+curl -fsS https://samaronefialho.dev/healthz
+```
+
+### Command-to-evidence crossref
+
+Every command above has actually been run. The right-hand column names where, so that
+a reader can tell documented-and-exercised from documented-and-plausible. QA artifacts
+are regenerated per run and are not tracked in the repository, so they are named rather
+than linked.
+
+| Command | Exercised by |
+| --- | --- |
+| `docker build --build-arg GIT_SHA=… -t app-mei:prod .` | todo 5 QA, `FIX-05-happy`; every CI deploy |
+| `docker build -t app-mei-caddy:prod ops/caddy` | todo 5 QA, `FIX-05-happy` |
+| `docker tag app-mei:prod app-mei:previous` | CI run 30643246807, Anchor step |
+| `docker tag app-mei-caddy:prod app-mei-caddy:previous` | CI run 30643246807 (no-op on the first deploy, as designed) |
+| `docker save … \| gzip \| ssh 'gunzip \| docker load'` | T-065 manual deploy; every CI deploy |
+| `git fetch --prune origin` / `reset --hard <sha>` | todo 4 QA, `FIX-04-happy`; CI run 30643246807, Sync step |
+| `git bundle create` + `git fetch <bundle>` | T-065 manual deploy (21 commits shipped this way) |
+| `docker compose … up -d --no-build --wait` | T-065 manual deploy; CI run 30643246807 |
+| `manage.py showmigrations --plan --skip-checks` | CI run 30643246807, assert 2/4 (94 applied, none pending) |
+| `manage.py check` | todo 1 QA, `FIX-01-happy`; CI run 30643246807, assert 3/4 |
+| `curl … /healthz` | todo 3 QA, `FIX-03-happy`; CI run 30643246807, assert 4/4 |
+| `docker image ls --filter reference="app-mei*"` | todo 6 QA, `FIX-06-happy` (live, against the box) |
+| `docker image prune -f` | CI run 30643246807, Reclaim step |
+| `gh secret set` / `gh secret list` | todo 4 QA, `FIX-04-happy`; todo 6 QA, `FIX-06-happy` |
+| `gh run list --status=completed` | todo 6 QA, `FIX-06-happy` |
+
+### One orphan image on the box
+
+The box still carries `app-mei-caddy:latest` from before the images were renamed to the
+`:prod` tags the compose file now references. Nothing points at it and nothing will; it
+costs 154 MB and `docker image prune -f` will not touch it because it is tagged. Untag
+it (`docker rmi app-mei-caddy:latest`) or leave it. Recorded so that its presence is not
+mistaken for a live tag during a rollback.
