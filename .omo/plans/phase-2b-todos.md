@@ -284,6 +284,36 @@ than live — which is exactly why it is written before the templates exist.
 
 ---
 
+## Follow-up design items — not Phase 2b work
+
+### D-001 — `WARNING_AT` is the discretionary value and is the one that is hardcoded
+
+**DECIDED for Phase 2b: keep `WARNING_AT` at `0.80` and do NOT make it configurable.**
+Recorded because the split is backwards and will look like an oversight later.
+
+`apps/obligations/threshold.py` holds two module constants and reads three dated fiscal
+parameters:
+
+| Value | Where | Changeable without a deploy | Discretionary? |
+| --- | --- | --- | --- |
+| `mei.annual_ceiling` | fiscal parameter, `valid_from`, per `mei_category` | yes | no — statutory |
+| `mei.excess_tolerance_pct` | fiscal parameter, same | yes | no — statutory |
+| `CEILING_AT = 1.00` | module constant | no | no — it IS the definition of the ceiling |
+| `WARNING_AT = 0.80` | module constant | **no** | **yes — a lead-time choice** |
+
+So the two statutory numbers are data and the single judgement call is code. `CEILING_AT`
+is correctly a constant. `WARNING_AT` is the one with a defensible argument for becoming a
+parameter, and it is the one that cannot move without a release.
+
+The argument for leaving it alone: 0.80 under even revenue is crossed around month 9.6,
+leaving roughly a quarter to act, and a queue whose entry point is tuned loose stops being
+read at all. The argument for changing it: it is a firm-level operating preference wearing
+the shape of a fiscal constant.
+
+**If it is ever made configurable it must be a dated fiscal parameter like the other
+three, never a Django setting** — a setting cannot express "this threshold changed on
+1 January" and would silently reinterpret prior years.
+
 ## Out of scope, restated so it is not rediscovered
 
 Web push, WhatsApp, enabling RLS on the five deliberately-unpoliced tables, changing any
