@@ -38,10 +38,16 @@ QUEUE_URLS = (
     "queue-threshold",
 )
 
-# The three queues an operations admin is refused by the published matrix:
-# das.generate is ❌ for that role, and reports.view_financial is "Limited",
-# which can() answers False for with no object in hand.
-REFUSED_FOR_OPERATIONS = ("queue-due-soon", "queue-overdue", "queue-threshold")
+# The two queues an operations admin is refused by the published matrix: das.generate is
+# ❌ for that role, and can() answers False for it with no object in hand.
+#
+# queue-threshold was in this tuple and should not have been. It sat here because
+# reports.view_financial is "Limited" for operations_admin and require_can passes no
+# object, so the view 403'd -- which is a mechanism, not an intent. The comment above it
+# described that mechanism accurately and read it as policy. The threshold queue is a
+# COLLECTION view with no object for a refined level to be evaluated against, and it now
+# gates on obligations.view_revenue_threshold_queue, which is FULL for this role.
+REFUSED_FOR_OPERATIONS = ("queue-due-soon", "queue-overdue")
 
 PAGE_SIZE = 25
 

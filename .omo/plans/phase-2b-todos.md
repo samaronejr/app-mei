@@ -314,6 +314,31 @@ the shape of a fiscal constant.
 three, never a Django setting** — a setting cannot express "this threshold changed on
 1 January" and would silently reinterpret prior years.
 
+### D-002 — `obligations.view_revenue_threshold_queue`, a collection capability
+
+**DONE.** The revenue-threshold queue was gated on `reports.view_financial`, which is
+`Limited` for `operations_admin`; `require_can` passes no object, so
+`_is_attached_to(user, None)` returned False and the view was an unconditional 403 for
+that role — invisibly, because `visible_nav_items` draws only `full` and the link never
+rendered.
+
+A **collection** view has no object for a refined level to be evaluated against, so the
+fix is a capability of the right shape, not a laxer one. `reports.view_financial`,
+`clients.view_all`, `_is_attached_to` and `portfolio_scope` are all untouched.
+
+| role | level |
+| --- | --- |
+| platform_admin / owner / staff_accountant / operations_admin | `full` |
+| client_owner / client_collaborator | `none` |
+
+`clients.view_all` was rejected as the gate on two grounds: its published semantics
+authorize seeing *which clients exist*, not their revenue figures; and it is the ceiling
+input to `portfolio_scope`, so reusing it would collapse the authorization gate into the
+queryset scoping. Scoping remains an independent layer — the gate decides 200 or 403, and
+`visible_clients()` decides which rows appear.
+
+Evidence: `.evidence/T-002-{happy,failure}.txt`.
+
 ## Out of scope, restated so it is not rediscovered
 
 Web push, WhatsApp, enabling RLS on the five deliberately-unpoliced tables, changing any

@@ -14,6 +14,7 @@ this project:
 
 import importlib
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from django.apps import apps as django_apps
@@ -141,9 +142,16 @@ def _seeded_capability_matrix(request: pytest.FixtureRequest) -> None:
     happens to run next. Restoring it here makes the test database represent production
     rather than an artifact of the test runner.
 
-    The data migration's own seed function is reused rather than reimplemented, so the
-    matrix can never be seeded one way by migrate and another way by the suite. It is
+    The data migrations' own seed functions are reused rather than reimplemented, so the
+    matrix can never be seeded one way by migrate and another way by the suite. They are
     idempotent, and the existence check keeps the common case to one query.
+
+    EVERY authz migration exposing a `seed` is replayed, in order, rather than `0002`
+    alone. Naming one migration meant a capability added by a later one was simply
+    absent
+    after a flush: `can()` answered NONE, the view 403'd, and the test passed in
+    isolation
+    and failed in the suite. Discovery keeps the next capability from repeating it.
     """
     if not _wants_database(request):
         return
@@ -151,8 +159,12 @@ def _seeded_capability_matrix(request: pytest.FixtureRequest) -> None:
     capability = django_apps.get_model("authz", "Capability")
     if capability.objects.exists():
         return
-    migration = importlib.import_module("apps.authz.migrations.0002_seed_matrix")
-    migration.seed(django_apps, None)
+    directory = Path(__file__).resolve().parents[1] / "apps" / "authz" / "migrations"
+    for path in sorted(directory.glob("0*.py")):
+        migration = importlib.import_module(f"apps.authz.migrations.{path.stem}")
+        seed = getattr(migration, "seed", None)
+        if callable(seed):
+            seed(django_apps, None)
 
 
 @pytest.fixture(autouse=True)

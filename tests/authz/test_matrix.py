@@ -1,4 +1,4 @@
-"""All 96 cells, checked against the report rather than against what seeded them.
+"""All 102 cells, checked against the report rather than against what seeded them.
 
 The obvious version of this test compares the database to `apps.authz.matrix.MATRIX`
 and proves only that the seed ran. It would pass with a transcription error in every
@@ -25,12 +25,12 @@ from apps.tenants.models import TenantRole
 REPORT: Final[Path] = Path(__file__).resolve().parents[2] / "deep-research-report.md"
 HEADER_PREFIX: Final[str] = "| Capability | Platform admin |"
 
-# The plan pins the table to lines 51-66 and warns that counting the header and the
+# The plan pins the table to lines 51-67 and warns that counting the header and the
 # separator gives the wrong total. Both are asserted below rather than assumed.
 EXPECTED_FIRST_DATA_LINE: Final[int] = 51
-EXPECTED_LAST_DATA_LINE: Final[int] = 66
-EXPECTED_CAPABILITIES: Final[int] = 16
-EXPECTED_CELLS: Final[int] = 96
+EXPECTED_LAST_DATA_LINE: Final[int] = 67
+EXPECTED_CAPABILITIES: Final[int] = 17
+EXPECTED_CELLS: Final[int] = 102
 
 COLUMN_TO_ROLE: Final[dict[str, str]] = {
     "Platform admin": Role.PLATFORM_ADMIN,
@@ -105,7 +105,7 @@ def test_the_published_table_sits_where_the_plan_says_it_does() -> None:
     assert columns[1:] == list(COLUMN_TO_ROLE)
 
 
-def test_the_parse_produces_ninety_six_cells() -> None:
+def test_the_parse_produces_one_hundred_and_two_cells() -> None:
     # Given the parsed table
     # When its cells are counted
     # Then there are 16 x 6. A broken parse would make every assertion below vacuous.

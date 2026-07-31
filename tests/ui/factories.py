@@ -74,10 +74,21 @@ class Firm:
         return self.sign_in(self.accountant)
 
 
-def add_member(tenant: Tenant, email: str, role: str) -> User:
-    """Create a firm-side account with a verified address and TOTP enrolled."""
+def add_member(
+    tenant: Tenant,
+    email: str,
+    role: str,
+    *,
+    client: ClientCompany | None = None,
+) -> User:
+    """Create an account with a verified address and TOTP enrolled.
+
+    `client` is required for the two client-side roles and forbidden for the firm-side
+    ones -- `membership_role_matches_client_scope` rejects either mistake -- so it is
+    passed through rather than defaulted per role.
+    """
     user = User.objects.create_user(email=email, password=PASSWORD)
-    Membership.objects.create(user=user, tenant=tenant, role=role)
+    Membership.objects.create(user=user, tenant=tenant, role=role, client=client)
     EmailAddress.objects.get_or_create(
         user=user,
         email=user.email,
