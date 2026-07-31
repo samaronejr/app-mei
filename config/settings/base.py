@@ -320,6 +320,31 @@ ACCESS_LOG_RETENTION_DAYS = env.int("ACCESS_LOG_RETENTION_DAYS", default=180)
 # together mean the only route to a document's bytes is the portal view, which logs.
 ACCESS_LOG_EXEMPT_PREFIXES = ["/healthz", STATIC_URL]
 
+# V3. The portal serves document bytes from memory, never as a StreamingHttpResponse:
+# PortalMiddleware refuses one, because its iterator would be consumed after the role
+# and
+# both GUCs are gone and would yield nothing. Buffering makes the cap load-bearing.
+#
+# The arithmetic, because the box is the binding constraint rather than a formality. The
+# web container is limited to 400 MiB (docker-compose.prod.yml), NOT the host's 954 MiB,
+# and gunicorn runs gthread with 2 workers x 2 threads = 4 concurrent slots. So the
+# worst
+# case is 4 x 10 MiB = 40 MiB, about a tenth of the limit that actually kills the
+# process
+# -- and an in-memory response can hold the payload twice, fetch buffer plus response
+# body, while a slow client drains it. A MEI's DAS PDF is around 100 KB, so this bounds
+# the pathological case rather than the normal one.
+PORTAL_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
+
+# The ingest cap. Equal to the download cap DELIBERATELY: a document larger than what
+# can
+# be served would be stored and then permanently unreadable, which fails success
+# criterion
+# 1 silently. Django's own defaults bound only what is held in memory before spooling to
+# disk, not the total, so without this an authenticated portal user can fill the
+# container's filesystem -- the one direction untrusted callers fully control.
+PORTAL_UPLOAD_MAX_BYTES = PORTAL_DOCUMENT_MAX_BYTES
+
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "purge-access-logs": {
         "task": "apps.audit.tasks.purge_access_logs",

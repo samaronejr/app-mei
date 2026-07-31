@@ -27,10 +27,16 @@ because `AdminTenantMiddleware` is inert on this host.
 from django.urls import include, path
 
 from apps.core.views import healthz
-from apps.portal.views import portal_home
+from apps.portal.views import document_download, document_upload, portal_home
 
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
     path("accounts/", include("allauth.urls")),
+    path("documentos/enviar", document_upload, name="portal-document-upload"),
+    path(
+        "documentos/<str:storage_key>",
+        document_download,
+        name="portal-document-download",
+    ),
     path("", portal_home, name="portal-home"),
 ]

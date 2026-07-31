@@ -15,11 +15,36 @@ raises `permission denied`, which is why the template renders `request.client`
 rather than `request.tenant`.
 """
 
-from django.contrib.auth.decorators import login_required
-from django.http import HttpRequest, HttpResponse
-from django.shortcuts import render
+import hashlib
 
-from apps.obligations.models import Obligation
+from django.conf import settings
+from django.contrib.auth.decorators import login_required
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_http_methods
+
+from apps.accounts.models import User
+from apps.authz.services import require_can
+from apps.clients.models import ClientCompany
+from apps.obligations.models import Document, Obligation
+from apps.portal.middleware import PortalHttpRequest
+
+# FULL for both client roles, which core.E010 requires of every portal gate.
+VAULT_CAPABILITY = "documents.transfer"
+
+
+class PortalVaultRequest(PortalHttpRequest):
+    """A portal request past `login_required`, so `user` is never anonymous.
+
+    Narrower than either parent alone: `PortalHttpRequest` supplies tenant and client,
+    and this adds the guarantee `login_required` already enforces at runtime. Written as
+    a type rather than asserted in each view, so the compiler carries it.
+    """
+
+    user: User
+    client: ClientCompany
 
 
 @login_required
@@ -36,3 +61,88 @@ def portal_home(request: HttpRequest) -> HttpResponse:
         "portal/home.html",
         {"client": client, "obligation_count": obligation_count},
     )
+
+
+@require_http_methods(["POST"])
+@login_required
+@require_can(VAULT_CAPABILITY)
+def document_upload(request: PortalVaultRequest) -> HttpResponse:
+    """Store one uploaded file against the signed-in client.
+
+    `documents.transfer` is FULL for both client roles, which is what `core.E010`
+    requires of any portal gate: `require_can` passes no object, and below FULL that is
+    an unconditional 403 rather than a refusal anyone chose.
+
+    The row is attributed from `request.client`, never the request body. That is not
+    a validation shortcut -- the RESTRICTIVE `WITH CHECK` on this table compares
+    `app.client_id`, so a forged `client_id` is refused by the database, and reading it
+    from the caller would only move where the refusal happens while adding a way to get
+    it wrong.
+    """
+    upload = request.FILES.get("file")
+    if upload is None:
+        return HttpResponseBadRequest("Nenhum arquivo enviado.")
+
+    # Checked before anything is read or stored. `upload.size` comes from the
+    # Content-Length Django already parsed, so this refuses before the bytes are
+    # buffered rather than after.
+    # `size` is Optional on the base class, and a None here would silently skip the cap
+    # rather than refuse -- so an unknown size is refused outright.
+    if upload.size is None or upload.size > settings.PORTAL_UPLOAD_MAX_BYTES:
+        return HttpResponseBadRequest(
+            f"Arquivo excede o limite de {settings.PORTAL_UPLOAD_MAX_BYTES} bytes.",
+        )
+
+    payload = upload.read()
+    obligation_id = request.POST.get("obligation") or None
+    document = Document(
+        tenant=request.tenant,
+        client=request.client,
+        obligation_id=obligation_id,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        original_filename=upload.name or "documento",
+        content_type=upload.content_type or "application/octet-stream",
+        byte_size=len(payload),
+        uploaded_by=request.user,
+    )
+    default_storage.save(document.storage_key, ContentFile(payload))
+    document.save(force_insert=True)
+    return redirect("portal-home")
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_can(VAULT_CAPABILITY)
+def document_download(
+    request: PortalVaultRequest,  # noqa: ARG001
+    storage_key: str,
+) -> HttpResponse:
+    """Return one document's bytes, authorised against the row before storage is asked.
+
+    **W6.** The lookup is the refusal. `obligations_document` carries a RESTRICTIVE
+    policy comparing `app.client_id`, so another client's key matches no row and this
+    raises `Http404` -- before a single byte is read, and before the storage client is
+    invoked at all. That ordering is the requirement, not an optimisation: with the
+    storage call first, a replayed key would fetch the object and be refused afterwards,
+    which is a different and much weaker property.
+
+    Never a `StreamingHttpResponse`. `PortalMiddleware._reject_streaming` refuses one,
+    because its iterator would be consumed after the transaction closes and the role and
+    both GUCs are gone, yielding nothing.
+    """
+    document = get_object_or_404(Document, storage_key=storage_key)
+
+    # Size from metadata BEFORE the body. Under object storage this is a HEAD rather
+    # than
+    # a GET, so an oversized document is refused without transferring it.
+    if default_storage.size(document.storage_key) > settings.PORTAL_DOCUMENT_MAX_BYTES:
+        return HttpResponseBadRequest("Documento excede o limite de transferência.")
+
+    with default_storage.open(document.storage_key) as handle:
+        payload = handle.read()
+
+    response = HttpResponse(payload, content_type=document.content_type)
+    response["Content-Disposition"] = (
+        f'attachment; filename="{document.original_filename}"'
+    )
+    return response
