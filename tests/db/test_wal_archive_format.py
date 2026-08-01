@@ -7,20 +7,19 @@ somebody is already restoring:
 
 * a `restore_command` that cannot read `.gz` ends recovery at the first compressed
   segment, and PostgreSQL calls that "end of archive" and promotes;
-* a `pg_archivecleanup` without `-x .gz` deletes nothing, so the prune stops bounding the
-  archive and the disk fills anyway — which is the entire problem compression exists to
-  solve;
-* a `restore_command` that handles ONLY `.gz` cannot read the ~940 segments already in the
-  archive in plain form, so the migration breaks recovery for the whole retention window.
+* a `pg_archivecleanup` without `-x .gz` deletes nothing, so the prune stops bounding
+  the archive and the disk fills anyway — the problem compression exists to solve;
+* a `restore_command` that handles ONLY `.gz` cannot read the segments already in the
+  archive in plain form, so the migration breaks recovery for the retention window.
 
-These assertions are therefore about the *coupling*, not about any one file. They are also
-what makes the format migration reviewable: the archive is mixed for `RETENTION_DAYS`
-after the flip, and the restore path has to serve both formats for exactly that long.
+These assertions are therefore about the *coupling*, not about any one file. They also
+make the format migration reviewable: the archive is mixed for `RETENTION_DAYS` after
+the flip, and the restore path has to serve both formats for exactly that long.
 
-The `archive_timeout` and `RETENTION_DAYS` assertions belong here for a different reason.
-Three levers could relieve the same capacity pressure — retention window, RPO, restore
+The `archive_timeout` and `RETENTION_DAYS` assertions are here for a different reason.
+Three levers relieve the same capacity pressure — recovery window, RPO, restore
 procedure — and this change deliberately spends only the third. Pinning the other two
-proves that, and turns any later attempt to quietly also shorten the recovery window into
+proves it, and turns any later attempt to quietly also shorten the recovery window into
 a failing test rather than a line in a diff nobody reads.
 """
 
@@ -33,21 +32,27 @@ BACKUP_SCRIPT = REPO_ROOT / "ops" / "backup.sh"
 RESTORE_DOC = REPO_ROOT / "ops" / "RESTORE.md"
 
 ARCHIVE_COMMAND = re.compile(r"^\s*-\s*archive_command=(?P<cmd>.+)$", re.MULTILINE)
-ARCHIVE_TIMEOUT = re.compile(r"^\s*-\s*archive_timeout=(?P<value>\d+)\s*$", re.MULTILINE)
-RETENTION = re.compile(r"^RETENTION_DAYS=\$\{RETENTION_DAYS:-(?P<value>\d+)\}", re.MULTILINE)
+ARCHIVE_TIMEOUT = re.compile(
+    r"^\s*-\s*archive_timeout=(?P<value>\d+)\s*$", re.MULTILINE
+)
+RETENTION = re.compile(
+    r"^RETENTION_DAYS=\$\{RETENTION_DAYS:-(?P<value>\d+)\}", re.MULTILINE
+)
 RESTORE_COMMAND = re.compile(r"restore_command = '(?P<cmd>[^']+)'")
 
 
 def archive_command() -> str:
     """Return the one `archive_command` the production compose file sets."""
-    matches = ARCHIVE_COMMAND.findall(COMPOSE.read_text(encoding="utf-8"))
-    assert len(matches) == 1, f"expected exactly one archive_command, found {len(matches)}"
+    matches: list[str] = ARCHIVE_COMMAND.findall(COMPOSE.read_text(encoding="utf-8"))
+    assert len(matches) == 1, (
+        f"expected exactly one archive_command, found {len(matches)}"
+    )
     return matches[0].strip()
 
 
 def restore_commands() -> list[str]:
     """Return every `restore_command` the runbook tells an operator to write."""
-    found = RESTORE_COMMAND.findall(RESTORE_DOC.read_text(encoding="utf-8"))
+    found: list[str] = RESTORE_COMMAND.findall(RESTORE_DOC.read_text(encoding="utf-8"))
     assert found, "ops/RESTORE.md names no restore_command at all"
     return found
 
@@ -75,7 +80,9 @@ def test_every_restore_command_reads_the_compressed_form() -> None:
     # When each documented restore_command is read
     # Then every one of them decompresses
     for command in restore_commands():
-        assert "%f.gz" in command, f"restore_command cannot find a compressed segment: {command}"
+        assert "%f.gz" in command, (
+            f"restore_command cannot find a compressed segment: {command}"
+        )
         assert "gzip -dc" in command, f"restore_command cannot decompress: {command}"
 
 
@@ -85,7 +92,7 @@ def test_every_restore_command_still_reads_the_plain_form() -> None:
     # Then every one of them also handles a segment with no .gz suffix
     for command in restore_commands():
         assert "cp /wal_archive/%f %p" in command, (
-            f"restore_command drops the uncompressed segments already in the archive: {command}"
+            f"restore_command drops the plain segments already archived: {command}"
         )
 
 
