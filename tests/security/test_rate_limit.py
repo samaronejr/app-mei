@@ -21,6 +21,7 @@ from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
 from apps.tenants.models import Tenant
+from tests.support import pin_rate_limit_window
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -29,6 +30,31 @@ WRONG = "not-the-password"
 EMAIL = "alvo@alpha.example"
 LOGIN_ATTEMPTS_ALLOWED = 5
 IP_ATTEMPTS_ALLOWED = 20
+
+
+@pytest.fixture(autouse=True)
+def _pinned_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count every attempt in one window, which is what "within a minute" means.
+
+    django-ratelimit's window is fixed, not sliding: `_get_window` computes
+    `ts - (ts % 60) + (crc32(bucket_key) % 60)` and that value is hashed into the cache
+    key, so each bucket resets at one fixed second of every wall-clock minute -- second
+    16 for `email:alvo@alpha.example`. An attempt landing after that instant is counted
+    against a *fresh* key starting at one, so the request this suite exists to see
+    refused is served instead.
+
+    Measured, not assumed: twelve thousand real-clock runs of the first test below
+    produced exactly six failures over 6.57 minutes -- one per boundary crossing, every
+    one at second 16, none without a roll. Exposure is `elapsed / 60`, so it grows with
+    any slower or busier runner. It is wall-clock phase leaking into the assertion, not
+    state surviving between tests: this suite's cache is LocMem and `tests/conftest.py`
+    already empties it around every test.
+
+    Pinning weakens nothing. The limiter still runs, the budget is still five, and the
+    sixth attempt must still be refused; only the guarantee that all six are counted
+    against one bucket is added -- the precondition each test name already claims.
+    """
+    pin_rate_limit_window(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
