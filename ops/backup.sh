@@ -183,13 +183,18 @@ trap 'die 4 "could not record the freshness marker at line $LINENO — the backu
 # disk space too, and that was moved out — deliberately, not by accident.
 #
 # The premise was that only a host script can see the host filesystem. That premise is
-# false: with the overlay2 driver a container's `/` is an overlay whose upper layer lives
-# under the docker data root, so `statvfs` inside any container is answered by exactly
-# the filesystem the WAL archive volume and the images sit on. (On this box the
-# distinction was doubly moot — /var/lib/docker is not a separate mount, it is `/` on
-# /dev/sda1 — so the DockerRootDir lookup that used to be here resolved to the same
-# filesystem `/` would have.) The scheduler heartbeat therefore takes the reading now,
-# every five minutes instead of once a night; see apps/obligations/heartbeat.py.
+# false: a container's `/` is an overlay whose upper layer lives in the daemon's snapshot
+# store, so `statvfs` inside any container is answered by the filesystem where image
+# layers and volumes are really written. Measured 2026-08-01T03:27Z, the worker container
+# answered 16,230,788 KiB against the host's 16,230,784 KiB. The scheduler heartbeat
+# therefore takes the reading now, every five minutes instead of once a night; see
+# apps/obligations/heartbeat.py.
+#
+# The `docker info --format '{{.DockerRootDir}}'` lookup that used to live here was a
+# no-op twice over on this box: /var/lib/docker is not a separate mount (it is `/` on
+# /dev/sda1), and the daemon runs the containerd snapshotter, so the layers it was trying
+# to point at are actually under /var/lib/containerd. Measuring the container's own
+# writable layer needs neither fact to be true.
 #
 # The column is not written from two places. Left here as a secondary source it would
 # have disagreed with the heartbeat on any night the prune actually freed space — an

@@ -366,13 +366,20 @@ that version is why it changed: against the projected floor crossing of
 whose latency is most of a night is close to no fuse at all on the last night.
 
 The premise that forced the nightly design was that only a host script can see the host
-filesystem. **That premise is false.** With the overlay2 storage driver a container's `/`
-is an overlay whose upper layer lives under the docker data root, so `statvfs` inside any
-container is answered by the filesystem backing that layer — precisely the one the WAL
-archive volume, the images and the deploy job's own `MIN_FREE_KIB` preflight all sit on.
-Verified 2026-07-31: a container reported 193,466,744 KiB available and the host reported
-193,468,972 KiB on `/` a moment later. (On this box the docker-root distinction was moot
-anyway: `/var/lib/docker` is not a separate mount, it is `/` on `/dev/sda1`.)
+filesystem. **That premise is false.** A container's `/` is an overlay whose upper layer
+lives in the daemon's snapshot store, and `statvfs` on an overlay is answered by the
+filesystem backing that layer — so a container measuring its own root reports free space
+on the filesystem where image layers and volumes are really written, which is exactly
+what the deploy job's `MIN_FREE_KIB` preflight is asking about. Verified against the box
+2026-08-01T03:27Z: the worker container answered **16,230,788 KiB** available, the host's
+`df -Pk /` answered **16,230,784 KiB**, four KiB apart.
+
+This is deliberately *not* `docker info --format '{{.DockerRootDir}}'` plus `df`, which
+is what `backup.sh` used to do — and which was a no-op twice over here. `/var/lib/docker`
+is not a separate mount on this box (it is `/` on `/dev/sda1`), and the daemon runs the
+**containerd snapshotter**, so the layers that lookup was aiming at actually live under
+`/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/`. Measuring the container's
+own writable layer requires neither fact to hold.
 
 `ops/backup.sh` therefore no longer stamps free space, and **there is exactly one writer**
 of `free_disk_kib`, on the `beat` row. Keeping the nightly stamp as a secondary source

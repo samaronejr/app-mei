@@ -70,13 +70,20 @@ MIN_FREE_DISK_KIB = 12 * 1024 * 1024
 # reasonably want to widen one without the other.
 DISK_STALE_AFTER = HEARTBEAT_STALE_AFTER
 
-# The container's own root. This is NOT an approximation of the host filesystem: with
-# the overlay2 storage driver a container's `/` is an overlay whose upper layer lives
-# under the docker data root, and `statvfs` on an overlay is answered by the filesystem
-# backing that layer. So this measures precisely the filesystem the WAL archive volume,
-# the images and the deploy job's own MIN_FREE_KIB preflight all sit on — verified
-# against the host on 2026-07-31, where a container reported 193,466,744 KiB available
-# and the host reported 193,468,972 KiB on `/` a moment later.
+# The container's own root, which is NOT an approximation of the host filesystem. A
+# container's `/` is an overlay whose upper layer lives in the daemon's snapshot store,
+# and `statvfs` on an overlay is answered by the filesystem backing that layer — so this
+# reports the free space of the filesystem where image layers and volumes are actually
+# written, which is the quantity the deploy job's MIN_FREE_KIB preflight is also asking
+# about. Measuring the container's own writable layer is what makes that true; it is not
+# a proxy for `docker info --format '{{.DockerRootDir}}'` and is more robust than one,
+# because the store does not have to sit under the docker data root. On the staging box
+# it does not: the daemon runs the containerd snapshotter, so the upper layer is under
+# /var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/ while DockerRootDir reads
+# /var/lib/docker. Both are on /dev/sda1, which is also `/`.
+#
+# Verified against the box 2026-08-01T03:27Z: the worker container's statvfs answered
+# 16,230,788 KiB available while the host's `df -Pk /` answered 16,230,784 KiB.
 DISK_MEASUREMENT_PATH = "/"
 
 _KIB = 1024
