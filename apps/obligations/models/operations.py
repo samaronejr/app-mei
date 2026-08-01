@@ -28,10 +28,14 @@ class SchedulerHeartbeat(models.Model):
 
     name = models.CharField(_("name"), max_length=64, unique=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
-    # Only the host-side writer populates this: `ops/backup.sh` is the one signal that
-    # runs OUTSIDE a container and can therefore see the host filesystem at all. Beat
-    # leaves it null, and so does a marker written before this column existed — which
-    # is why it is nullable and why null reads as "unknown" rather than as "full".
+    # Populated on the `beat` row only, by `record_heartbeat`, on every five-minute
+    # tick. The `backup` row shares the column because both signals share this table,
+    # and must never carry a value: a second writer on a nightly cadence contradicts
+    # the five-minute one every time the WAL prune frees space, and the probe has no
+    # way to tell which reading describes the present.
+    #
+    # Nullable, because a `statvfs` that fails is a legitimate outcome and so is a row
+    # no measurement has ever touched. Null means "nobody knows", never "full".
     free_disk_kib = models.BigIntegerField(
         _("free disk KiB"),
         null=True,

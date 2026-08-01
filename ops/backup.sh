@@ -179,33 +179,27 @@ fi
 # depending on the web container to report that the database was backed up.
 trap 'die 4 "could not record the freshness marker at line $LINENO — the backup itself succeeded"' ERR
 
-# The marker also carries free disk space, because this script is the ONLY part of the
-# system that can measure it: /healthz runs inside a container and cannot see the host
-# filesystem at all. It rides along on a row the probe already reads, so the second
-# signal costs no extra query — and it is only as fresh as this job, which runs nightly.
+# This marker carries the backup's FRESHNESS and nothing else. It used to carry free
+# disk space too, and that was moved out — deliberately, not by accident.
 #
-# The DOCKER data root, not `/`. The WAL archive is a named volume and the images live
-# beside it, so that is the filesystem that actually fills; it is also the one the deploy
-# job's own MIN_FREE_KIB preflight measures, which lets the two floors be compared.
+# The premise was that only a host script can see the host filesystem. That premise is
+# false: with the overlay2 driver a container's `/` is an overlay whose upper layer lives
+# under the docker data root, so `statvfs` inside any container is answered by exactly
+# the filesystem the WAL archive volume and the images sit on. (On this box the
+# distinction was doubly moot — /var/lib/docker is not a separate mount, it is `/` on
+# /dev/sda1 — so the DockerRootDir lookup that used to be here resolved to the same
+# filesystem `/` would have.) The scheduler heartbeat therefore takes the reading now,
+# every five minutes instead of once a night; see apps/obligations/heartbeat.py.
 #
-# A measurement that fails writes SQL NULL rather than aborting. The backup genuinely
-# succeeded, and NULL is exactly what /healthz renders as disk=unknown — degrading the
-# weaker signal beats withholding the marker and claiming the backup never ran.
-DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}') || DOCKER_ROOT=/var/lib/docker
-FREE_KIB=$(df -Pk "$DOCKER_ROOT" | awk 'NR==2{print $4}') || FREE_KIB=''
-case "$FREE_KIB" in
-  '' | *[!0-9]*)
-    log "WARNING: could not measure free space on ${DOCKER_ROOT} (read '${FREE_KIB}'); /healthz will report disk=unknown"
-    FREE_KIB=null
-    ;;
-  *) log "disk headroom: ${FREE_KIB} KiB free on ${DOCKER_ROOT}" ;;
-esac
-
+# The column is not written from two places. Left here as a secondary source it would
+# have disagreed with the heartbeat on any night the prune actually freed space — an
+# hours-old "low" against a minutes-old "ok" — and nothing in the probe could have told
+# which one described the present. tests/obligations/test_disk_headroom.py reads this
+# file and fails if `free_disk_kib` reappears in it.
 dbx psql -v ON_ERROR_STOP=1 -qtAc "
-  insert into obligations_schedulerheartbeat (name, updated_at, free_disk_kib)
-  values ('backup', now(), ${FREE_KIB})
-  on conflict (name) do update set updated_at = excluded.updated_at,
-                                   free_disk_kib = excluded.free_disk_kib
+  insert into obligations_schedulerheartbeat (name, updated_at)
+  values ('backup', now())
+  on conflict (name) do update set updated_at = excluded.updated_at
 " >/dev/null
 log "freshness marker recorded; /healthz reports backup=fresh"
 

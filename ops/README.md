@@ -342,12 +342,12 @@ deployment can recover to does not exist.
 
 The capacity problem above had no signal at all. Free space was visible only to somebody
 who ssh'd in and ran `df`, which means the first symptom of the collision would have been
-a database that could no longer write. So the nightly job now measures the disk and
-`/healthz` reports it:
+a database that could no longer write. So the scheduler measures the disk on every tick
+and `/healthz` reports it:
 
 | `disk` | Meaning |
 | --- | --- |
-| `ok` | The last nightly run measured at least 12 GiB free |
+| `ok` | The scheduler's last tick measured at least 12 GiB free |
 | `low` | It measured less than that — **act; this is not self-healing** |
 | `unknown` | Nothing has been measured, or what was measured is too old to trust |
 
@@ -356,33 +356,52 @@ backup does not: a full-ish disk needs an operator, it does not mean the applica
 broken. Escalating it would flap the container healthcheck every ten seconds, fail the
 deploy job's fourth assertion, and take the site down over a capacity warning.
 
-#### The number is up to 24 hours old, and that is stated rather than hidden
+#### The number is minutes old, and it used to be a night old
 
-The web container cannot see the host filesystem, so the measurement can only be taken by
-something running on the host. `ops/backup.sh` already runs there nightly and already
-writes the freshness marker `/healthz` reads, so it takes `df -Pk` against the **docker
-data root** — the WAL archive is a named volume and the images sit beside it, so that is
-the filesystem that actually fills — and stamps the number onto the same row. The probe
-reads it in the same single query it already made.
+The reading rides the beat heartbeat (`record_heartbeat`, every five minutes), not the
+nightly backup. It was the other way round for exactly one commit, and the arithmetic of
+that version is why it changed: against the projected floor crossing of
+**2026-08-01T21:41Z**, a marker stamped by the 03:00 job did not read `low` until
+**2026-08-02T06:07Z** — the fuse blowing **8.5 hours after the fault**. A capacity fuse
+whose latency is most of a night is close to no fuse at all on the last night.
 
-The cost is that `disk` answers *"was there room last night"*, never *"is there room
-now"*. At ~4.5 GiB a night that is one report's worth of drift. For a multi-day fuse it
-still surfaces the condition several times before collision, which is the entire point;
-it is not, and must not be mistaken for, a real-time gauge.
+The premise that forced the nightly design was that only a host script can see the host
+filesystem. **That premise is false.** With the overlay2 storage driver a container's `/`
+is an overlay whose upper layer lives under the docker data root, so `statvfs` inside any
+container is answered by the filesystem backing that layer — precisely the one the WAL
+archive volume, the images and the deploy job's own `MIN_FREE_KIB` preflight all sit on.
+Verified 2026-07-31: a container reported 193,466,744 KiB available and the host reported
+193,468,972 KiB on `/` a moment later. (On this box the docker-root distinction was moot
+anyway: `/var/lib/docker` is not a separate mount, it is `/` on `/dev/sda1`.)
 
-Two consequences follow from the staleness and are deliberate:
+`ops/backup.sh` therefore no longer stamps free space, and **there is exactly one writer**
+of `free_disk_kib`, on the `beat` row. Keeping the nightly stamp as a secondary source
+would have produced two readings that disagree every time the prune actually freed space —
+an hours-old `low` against a minutes-old `ok` — with nothing in the probe able to say
+which one described the present. `tests/obligations/test_disk_headroom.py` reads
+`ops/backup.sh` and fails if the column reappears in its executable body.
 
-- **A stale marker downgrades `ok` to `unknown`.** The WAL prune lives *inside* the
-  nightly job, so the disk fills fastest in exactly the window where the marker stops
-  being refreshed. Reporting yesterday's comfort there would be the fuse lying at the
-  only moment it is load-bearing.
-- **A stale marker keeps `low`.** Free space only moves one way between runs, so an old
-  low reading is at worst an understatement, and discarding it would throw away a true
-  alarm.
+Three properties are deliberate and each has a test:
 
-If `backup.sh` cannot measure at all it writes SQL `NULL` and the field reads `unknown`,
-rather than aborting: the backup genuinely succeeded, and degrading the weaker signal
-beats withholding the marker and claiming the backup never ran.
+- **A stalled heartbeat downgrades `ok` to `unknown`.** Carried over unchanged from the
+  nightly design, because the reasoning survived the move: a dead writer means nobody is
+  watching the number, and a dead scheduler is *also* a WAL prune that is not being
+  triggered — so the disk fills fastest in exactly the window where the reading stops
+  being refreshed. Reporting the last comfortable value there would be the fuse lying at
+  the only moment it is load-bearing.
+- **A stalled heartbeat keeps `low`.** Nothing frees space unless the prune runs, so an
+  old low reading is at worst an understatement, and discarding it would throw away a
+  true alarm.
+- **The probe never measures.** `/healthz` answers from the stored number and issues no
+  syscall. It is hit every ten seconds by the container healthcheck against four
+  concurrent request slots, and the value only changes on beat's cadence anyway.
+
+The measurement is `statvfs`, not a `df` subprocess — that removes failure modes rather
+than handling them: no fork on a box short of memory, no timeout to arm, no stdout to
+misparse. Its entire failure surface is `OSError`, which is caught, logged, and answers
+`None`; `/healthz` renders that as `unknown`. **A failed measurement must never abort the
+heartbeat**, because an exception escaping there would leave the liveness stamp unwritten,
+flip the probe to 503 fifteen minutes later, and turn a capacity *warning* into an outage.
 
 #### Why 12 GiB, and why a fixed floor rather than a percentage
 
@@ -390,10 +409,18 @@ The floor is derived, not chosen. The deploy job refuses to land an image pair w
 than 3 GiB free (`MIN_FREE_KIB` in `.github/workflows/ci.yml`), and the archive accrues
 ~4.5 GiB a night. `3 + 2 × 4.5 = 12 GiB` is therefore the smallest floor that fires
 **while deploys still work** — a warning that only arrives after deploys have started
-failing is not a warning — and still leaves **two nightly reports** to act on. Lead time
-is counted in reports rather than in hours precisely because the number only moves once a
-night. `tests/obligations/test_disk_headroom.py` reads `MIN_FREE_KIB` out of the workflow
-and asserts that relationship, so the two floors cannot drift apart silently.
+failing is not a warning — and still leaves **two nights** to act.
+`tests/obligations/test_disk_headroom.py` reads `MIN_FREE_KIB` out of the workflow and
+recomputes `3 + 2 × 4.5` against it, so the two floors cannot drift apart silently and a
+second hardcoded copy of the floor could not agree with the derivation.
+
+**Making the reading fresh did not buy back any of the floor**, and the runway is still
+counted in nights. Alert latency and response time are different quantities: what the
+fuse demands is a capacity decision — shorten `RETENTION_DAYS`, lengthen
+`archive_timeout`, or gzip `archive_command`, each trading recovery window, RPO or
+restore procedure — and that is days of an operator's attention no matter how promptly
+the alarm lands. What the five-minute cadence bought is that the alarm lands *when the
+floor is crossed* rather than the next morning.
 
 It is an absolute byte count rather than a share of the disk because WAL accrues at a
 fixed 16 MiB per forced switch regardless of how large the disk is. The question an
