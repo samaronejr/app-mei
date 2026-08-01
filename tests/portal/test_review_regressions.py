@@ -26,7 +26,7 @@ from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.models import Membership, Tenant, TenantRole
-from tests.support import enrol_totp
+from tests.support import enrol_totp, pin_rate_limit_window
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -216,7 +216,30 @@ def test_the_portal_mounts_allauth_at_the_same_paths_as_the_firm() -> None:
     assert compared > 1, "nothing was actually compared"
 
 
-def test_the_portal_login_post_is_rate_limited(portal_user: User) -> None:
+def test_the_portal_login_post_is_rate_limited(
+    portal_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given every attempt counted in ONE window, which is what "the budget" means.
+    # django-ratelimit's window is fixed rather than sliding: `_get_window` computes
+    # `ts - (ts % 60) + (crc32(bucket_key) % 60)` and hashes that value into the cache
+    # key, so `email:novo@mei.example` resets at second 15 of every wall-clock minute.
+    # An attempt landing after it is counted against a FRESH key starting at one,
+    # neither half of the split budget reaches five, and every response below is 200 --
+    # the refusal this test exists to watch for simply never happens.
+    #
+    # Measured, not assumed: 4022 real-clock runs of the body below, nothing patched,
+    # spanning 2.50 boundary crossings produced exactly two all-200 runs, both starting
+    # at second 15 and none away from it. Exposure is `elapsed / 60`, so it is
+    # near-invisible here and common on a slower runner. Only this test in the module
+    # is exposed -- the rest issue no request, or one against a 120/m budget, or assert
+    # `< 500`, which a 429 satisfies.
+    #
+    # Pinning weakens nothing: the limiter still runs, the budget is still five, and
+    # the seventh attempt must still be refused. It adds only the precondition the test
+    # name already claims.
+    pin_rate_limit_window(monkeypatch)
+
     # Given the credential limiter, which keys on url_name through request.urlconf
     assert "account_login" in settings.RATELIMIT_PUBLIC_POST_URL_NAMES
     allowed = int(settings.RATELIMIT_LOGIN_EMAIL.split("/")[0])
