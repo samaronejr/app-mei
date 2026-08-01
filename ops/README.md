@@ -338,6 +338,55 @@ deployment can recover to does not exist.
 > **What HAS been done is making the collision impossible to hit silently** — see the
 > disk fuse below. The decision above is still owed.
 
+### The third option is built and rehearsed on branch `wal-gzip`, and not merged
+
+The question the branch exists to answer is "merge or discard", not "may I rewrite the
+recovery path". Nothing about it is live: `main` is untouched, nothing is deployed, and
+the live `archive_command`, `restore_command`, `archive_timeout` and `RETENTION_DAYS` are
+exactly what they were. **No existing WAL segment or base backup was compressed, moved or
+deleted.**
+
+What the measurement says, taken on the real archive: it is ~99.5% zero padding, because
+`archive_timeout=300` forces a full 16 MiB switch every five minutes on a near-idle box
+and the hourly histogram is flat at exactly 12 segments/hour. Aggregate `gzip` ratio
+**219x** — 14.66 GiB of archive is ~68 MiB compressed.
+
+| | Today | On the branch |
+| --- | --- | --- |
+| Per forced segment | 16 MiB | ~90 KiB (`gzip -6`, measured) |
+| Burn | 4.57 GiB/day | ~26 MiB/day |
+| Steady state at `RETENTION_DAYS=7` | ~32 GiB | ~180 MiB |
+| Cost per segment | `cp`, 17 ms | `gzip -6`, 46 ms |
+
+`-6` rather than `-1` (105x, 33 ms) or `-9` (198x, 83 ms): `-6` takes most of the ratio
+for 29 ms more than a plain copy, and matches the `--compress=6` already used for
+`pg_basebackup` and `pg_dump`. The archiver has 300 s between forced switches and spends
+46 ms of it, a duty cycle of 0.015%; it would need to run roughly 6500x slower than
+measured before it could fail to keep up at 12 segments/hour.
+
+**Existing segments would be left exactly as they are.** Compressing them in place is a
+separate, riskier operation — it rewrites the artifacts recovery depends on, while the
+only thing standing behind them is the very archive being rewritten — and the branch does
+not do it and does not need it to. The consequence is that the ~14.6 GiB already on disk
+is **not** reclaimed by merging: it drains as `pg_archivecleanup` ages those segments out
+over `RETENTION_DAYS`, so the reclaim arrives about a week after the flip and arrives on
+its own. Until then the archive is **mixed**, and every part of the recovery path handles
+both formats — that is what the rehearsal in `ops/RESTORE.md` exists to prove, and why a
+`restore_command` that reads only `.gz` would be a regression rather than the new normal.
+
+Two things the branch found that are worth knowing whichever way the decision goes:
+
+- **`ALTER SYSTEM SET archive_command` is a silent no-op here.** The setting comes from
+  the compose `command:` list, and argv outranks `postgresql.auto.conf`. The statement
+  succeeds, writes the file, and changes nothing. Flipping the format means editing
+  `docker-compose.prod.yml` and letting compose recreate the `db` container — a short
+  outage, and never `down -v`.
+- **`pg_stat_archiver.failed_count` cannot see a missing archiving binary.** Exit code
+  127 is fatal to the archiver, which dies before it can report, so the counter stays 0
+  while nothing is archived. `ops/backup.sh` therefore now also refuses to run when
+  segments are queueing in `pg_ls_archive_statusdir()`. That gap exists on `main` today —
+  it is just harder to reach with `cp`, which is always present, than with `gzip`.
+
 ### The disk fuse: `/healthz` reports headroom, and does not 503
 
 The capacity problem above had no signal at all. Free space was visible only to somebody
