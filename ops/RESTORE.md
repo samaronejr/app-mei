@@ -14,6 +14,12 @@ the archive.
 | Base backup size | 4.4 MB gzip | near-empty database; grows with data |
 | Logical dump size | 164 KB | `pg_dump -Fc` |
 | WAL segment size | 16 MB each | PostgreSQL default |
+| Archived segment size | ~90 KB | `gzip -6`; a timeout-forced segment is ~99.5% zero padding |
+| Compression cost | 46 ms/segment | measured `gzip -6` on a real 16 MiB segment |
+
+Compression changes the restore *procedure*, not the restore *guarantees*: `RETENTION_DAYS`
+and `archive_timeout` are both unchanged, so the recovery window and the RPO below are
+exactly what they were.
 
 ### The RPO is not zero, and it is not negotiable by wishing
 
@@ -66,12 +72,34 @@ docker run --rm \
     set -e
     tar -xzf /backups/base/$BASE/base.tar.gz -C /pgdata
     touch /pgdata/recovery.signal
-    echo \"restore_command = 'cp /wal_archive/%f %p'\" >> /pgdata/postgresql.auto.conf
+    cat >> /pgdata/postgresql.auto.conf <<'EOF'
+restore_command = 'if [ -f /wal_archive/%f.gz ]; then gzip -dc /wal_archive/%f.gz > %p; else cp /wal_archive/%f %p; fi'
+EOF
     chown -R postgres:postgres /pgdata
     chmod 700 /pgdata"
 
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait
 ```
+
+> **Use the `cat`/heredoc, not `echo`.** The command contains `[`, `>` and `;`, and the
+> quoting needed to push it through `echo` inside a `bash -c "…"` inside a shell is the
+> kind of thing that half-works: a mangled `restore_command` does not fail loudly, it
+> fails as "recovery found no WAL", which looks like an empty archive.
+
+### The `restore_command` reads BOTH formats, and that is not belt-and-braces
+
+Segments are archived compressed (`ops/…/docker-compose.prod.yml`, `archive_command`).
+Segments archived **before** that change are still there in plain form, and they stay
+plain — nothing rewrites them. So for `RETENTION_DAYS` after the flip the archive is
+genuinely **mixed**, and after that it is all `.gz`.
+
+A `restore_command` that handles only `.gz` is therefore not "the new one", it is a
+restore path that cannot read the older half of its own archive. The `if/else` above
+prefers `.gz`, falls back to plain, and — importantly — still exits **non-zero** when
+neither exists, which is how PostgreSQL learns it has reached the end of the archive.
+
+Rehearsed end to end on 2026-08-01 against a throwaway cluster whose archive held ten
+plain segments followed by six compressed ones; see "Rehearsing the mixed archive" below.
 
 ### Confirm recovery really happened
 
@@ -96,6 +124,21 @@ database system is ready to accept connections
 **`restored log file ... from archive` is the load-bearing line.** Without it the server
 started from the base backup alone and every write since that backup is gone — while the
 container still reports healthy and the application still serves traffic.
+
+**That line will never say `.gz`.** PostgreSQL logs `%f`, the segment name it asked for,
+not the file `restore_command` actually opened. So the log cannot tell you whether a
+segment came from a compressed or a plain file, and it looks identical either way. To see
+which formats a recovery genuinely crossed, compare the names in the log against the
+archive:
+
+```sh
+docker run --rm -v app-mei_wal_archive:/wal_archive postgres:16 \
+  sh -c 'ls -1 /wal_archive | sed -n "s/\.gz$/  compressed/p; s/^\([0-9A-F]\{24\}\)$/\1  plain/p"'
+```
+
+The absence of `.gz` in the log is expected and proves nothing either way. What proves
+the compressed half replayed is `redo done` landing at an LSN inside a segment that only
+exists as `.gz`.
 
 ### Point-in-time (stop before a bad transaction)
 
@@ -309,9 +352,94 @@ backup failure but has the same root.
 
 ---
 
+## Rehearsing the mixed archive
+
+Executed 2026-08-01 against **throwaway** clusters, never the live box and never the live
+archive. Nothing in production was changed, compressed, moved or deleted by this drill.
+
+The point of the drill is the *migration*, not the end state. An archive that is entirely
+compressed proves nothing about the day the format changes, which is the only day the
+restore path has to serve both. So the rig is built to straddle the boundary:
+
+| Phase | `archive_command` | Segments produced |
+| --- | --- | --- |
+| base backup taken here | plain `cp` | — |
+| A | plain `cp` | `…0001`–`…000A`, uncompressed |
+| **container recreated** | | |
+| B | gzip | `…000B`–`…0010`, `.gz` |
+
+Recovery starts at the base backup's `START WAL` — a plain segment — and must replay
+forward through the flip. Two restores were run from that one archive:
+
+| Restore | Target | Result |
+| --- | --- | --- |
+| Full | end of archive | 22500 rows, `md5` of every row identical to the source |
+| PITR | a timestamp inside phase B | 18500 rows, **0** rows from after the target |
+
+The PITR log ended `recovery stopping before commit of transaction 755, time
+2026-08-01 04:32:38.72+00`, with `redo done` inside `00000001000000000000000E` — a segment
+that exists only as `.gz`. That is the assertion that the boundary was actually crossed;
+a PITR that stopped in the plain half would have proved nothing.
+
+> **Assert the source is non-empty before asserting equality.** `0 == 0` passes, and an
+> empty restore compared against an empty source is the classic way a recovery drill
+> reports success. Both restores above assert `count > 0` on the source first.
+
+### Flipping the format needs a container recreate, not `ALTER SYSTEM`
+
+`archive_command` is set on the server's **command line** (the `command:` list in
+`docker-compose.prod.yml`), and argv outranks `postgresql.auto.conf`. So:
+
+```sql
+ALTER SYSTEM SET archive_command = '…';
+SELECT pg_reload_conf();
+```
+
+returns success, writes the value into `postgresql.auto.conf`, and **changes nothing**.
+Measured: `pg_settings.source` stayed `command line` and `SHOW archive_command` still
+reported the old value. There is no error and no warning anywhere.
+
+Confirm which value is actually live before believing a flip happened:
+
+```sh
+… db psql -tAc "select setting, source from pg_settings where name='archive_command'"
+```
+
+`source` must read `command line`, and the setting must be the compressed form. Changing
+it for real means editing `docker-compose.prod.yml` and letting compose recreate the `db`
+container — which is a short database outage, and **must not** be done with `down -v`.
+
+The last segment the old container archives is written **plain**, during its shutdown
+checkpoint, before the archiver exits. The boundary is therefore clean: every segment
+belongs entirely to one format, and none is half-written across the change.
+
+---
+
 ## Traps found during the rehearsal
 
 Each of these was hit for real, not anticipated.
+
+0. **A pipeline in `archive_command` loses segments silently.** `cat %p | gzip -c >
+   /wal_archive/%f.gz` is the natural way to write it and it is a data-loss bug: `sh`
+   returns the status of the **last** stage, so a `cat` that cannot read `%p` is
+   invisible. Reproduced 2026-08-01: `archived_count` **rose**, `failed_count` stayed
+   **0**, no `.ready` files were retained — and the archive held two 20-byte files that
+   decompress to **zero bytes**. Two segments gone, and every signal this deployment has,
+   including `ops/backup.sh`'s own `failed_count == 0` precondition, reported healthy.
+   The shipped command is a `&&` chain into a `.part` file plus an atomic `mv`, so a
+   failure at any stage leaves no `.gz` at all.
+
+0b. **`failed_count` cannot see a missing archiving binary.** PostgreSQL treats exit code
+   127 as fatal (`wait_result_is_any_signal(rc, include_command_not_found=true)`), so the
+   archiver `ereport(FATAL)`s and dies *before* reporting the failure. Measured with
+   `gzip` removed from the image: seven `archive command failed with exit code 127` lines
+   in the log and `failed_count` still `0`, `last_failed_wal` still NULL. An ordinary
+   non-zero exit — permission denied, disk full — logs at `LOG`, the archiver survives,
+   and `failed_count` does rise. **No WAL is lost either way**: the `.ready` files are
+   retained, `pg_wal` grows, and everything is archived intact once the fault clears
+   (verified: the held segment decompressed to a full 16777216 bytes). The danger is that
+   `pg_wal` grows unbounded on a box that is already short of disk, so `ops/backup.sh`
+   now also refuses to run when segments are piling up in `pg_ls_archive_statusdir()`.
 
 1. **The archive silently did nothing for 70 segments.** `/wal_archive` is a named volume,
    so Docker created it `root:root`; postgres (uid 999) could not write. PostgreSQL
