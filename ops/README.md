@@ -355,20 +355,42 @@ The mechanism is deliberately unglamorous:
    `${VAR:?}` interpolations and no `.env.prod` exists on a runner, so compose aborts
    while *parsing*, before it would ever reach a build. The app image takes
    `--build-arg GIT_SHA`; the Caddy image is built from `ops/caddy`.
-2. **Anchor the rollback** by tagging the currently running images `:previous` on the
+2. **Sync the checkout** with `git fetch --prune origin && git reset --hard "$GIT_SHA"`.
+   The box needs the tree as well as the images, because compose reads
+   `docker-compose.prod.yml`, `ops/Caddyfile` and `ops/sql` from disk there. **This runs
+   before anything lands on the box**, and the ordering is load-bearing — see below.
+3. **Anchor the rollback** by tagging the currently running images `:previous` on the
    box — before the load, because once `docker load` overwrites the `:prod` tags the
    previous generation is unreachable by name.
-3. **Ship the pair** as `docker save … | gzip -1 | ssh 'gunzip | docker load'`. The
+4. **Ship the pair** as `docker save … | gzip -1 | ssh 'gunzip | docker load'`. The
    images are never built on the server; see the next section for why.
-4. **Sync the checkout** with `git fetch --prune origin && git reset --hard "$GIT_SHA"`.
-   The box needs the tree as well as the images, because compose reads
-   `docker-compose.prod.yml`, `ops/Caddyfile` and `ops/sql` from disk there.
 5. **Roll the stack** with `up -d --no-build --wait`, no `--force-recreate` and no
    service list. Compose already recreates exactly the containers whose image id moved,
    and naming services would silently skip any service added to the file later.
 6. **Assert four times, by effect** (below), and only then `docker image prune -f`.
    Pruning earlier would delete the layers the `:previous` tags depend on, destroying
    the rollback while the deploy was still unproven.
+
+#### Sync before the load, because only one of those two is reversible
+
+Steps 2 and 4 do not depend on each other. The Sync touches only git under
+`$DEPLOY_PATH`; the load touches only the docker daemon. Neither reads what the other
+writes, so the order is free to choose — and exactly one choice is safe.
+
+`docker load` **overwrites** the `:prod` tags. While Sync ran after the load, a Sync
+failure left `app-mei:prod` naming an image the stack was not running, on a box whose
+checkout was still on the previous commit. That is not hypothetical: deploy
+`30672150324` shipped both images successfully and then died at Sync on `error: unable
+to unlink old 'ops/backups/.gitkeep': Permission denied`, leaving precisely that split.
+The stack kept serving the old containers, so nothing was down — but `:prod` was a lie,
+and the next `compose up` anyone ran by hand would have rolled a new image under an old
+tree.
+
+Syncing first inverts that. The cheap, fully reversible half fails before the
+irreversible half has happened at all, and a failed deploy leaves the box in the state
+it started in. The disk preflight moved with it and now runs *after* the Sync, so the
+free space it measures is what the load will actually find — the checkout writes to the
+same filesystem as the docker data root.
 
 The four assertions are the point of the job:
 
@@ -597,19 +619,21 @@ sha="$(git rev-parse HEAD)"
 docker build --build-arg GIT_SHA="$sha" -t app-mei:prod .
 docker build -t app-mei-caddy:prod ops/caddy
 
-# 2. Anchor the rollback BEFORE the load, or the previous generation loses its name.
+# 2. Sync the checkout (or use the bundle fallback above) BEFORE any image lands. This
+#    is the reversible half; once the load overwrites :prod it cannot be undone by
+#    re-running, and a failure here would strand :prod against a stale tree.
+ssh app-mei "cd /opt/app-mei && git fetch --prune origin && git reset --hard $sha"
+
+# 3. Anchor the rollback BEFORE the load, or the previous generation loses its name.
 ssh app-mei '
   docker tag app-mei:prod app-mei:previous || true
   docker tag app-mei-caddy:prod app-mei-caddy:previous || true
 '
 
-# 3. Ship the pair.
+# 4. Ship the pair.
 docker save app-mei:prod app-mei-caddy:prod \
   | gzip -1 \
   | ssh app-mei 'gunzip | docker load'
-
-# 4. Sync the checkout (or use the bundle fallback above).
-ssh app-mei "cd /opt/app-mei && git fetch --prune origin && git reset --hard $sha"
 
 # 5. Roll the stack.
 ssh app-mei 'cd /opt/app-mei && docker compose --env-file .env.prod \

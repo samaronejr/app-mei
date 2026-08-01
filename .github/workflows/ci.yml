@@ -396,6 +396,31 @@ jobs:
           docker image ls --filter reference='app-mei*:prod' \
             --format '{{.Repository}}:{{.Tag}} {{.Size}}'
 
+      # BEFORE anything lands on the box. The box needs the tree as well as the images —
+      # compose reads docker-compose.prod.yml, ops/Caddyfile and ops/sql from disk there —
+      # and the two halves are genuinely independent: this step touches only git under
+      # $DEPLOY_PATH, the load below touches only the docker daemon. Neither reads what
+      # the other writes, so the order is free to choose and only one choice is safe.
+      #
+      # `docker load` OVERWRITES the :prod tags. While this step ran LAST, a Sync failure
+      # left app-mei:prod naming an image the stack was not running, with the checkout
+      # still on the previous commit — which is exactly how deploy 30672150324 ended when
+      # `git reset --hard` died on a permission error. Syncing first means the cheap,
+      # fully reversible half of the deploy fails before the irreversible half has
+      # happened at all, and the box is left untouched rather than half-updated.
+      - name: Sync the box checkout to this commit
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" "
+            set -eu
+            export GIT_TERMINAL_PROMPT=0
+            git -C '$DEPLOY_PATH' fetch --prune origin
+            git -C '$DEPLOY_PATH' reset --hard '$GIT_SHA'
+            git -C '$DEPLOY_PATH' rev-parse HEAD
+          "
+
+      # After the Sync, so the free space measured is what the load will actually find:
+      # the checkout writes to the same filesystem the docker data root lives on.
       - name: Disk preflight on the box
         run: |
           set -euo pipefail
@@ -431,19 +456,6 @@ jobs:
           docker save app-mei:prod app-mei-caddy:prod \
             | gzip -1 \
             | "$RUNNER_TEMP/ssh/dssh" 'gunzip | docker load'
-
-      # The box needs the tree as well as the images: compose reads
-      # docker-compose.prod.yml, ops/Caddyfile and ops/sql from disk there.
-      - name: Sync the box checkout to this commit
-        run: |
-          set -euo pipefail
-          "$RUNNER_TEMP/ssh/dssh" "
-            set -eu
-            export GIT_TERMINAL_PROMPT=0
-            git -C '$DEPLOY_PATH' fetch --prune origin
-            git -C '$DEPLOY_PATH' reset --hard '$GIT_SHA'
-            git -C '$DEPLOY_PATH' rev-parse HEAD
-          "
 
       # --no-build because the images were just loaded; building on a 1-vCPU box is
       # what T-065 proved unworkable. No --force-recreate and no service list: compose
