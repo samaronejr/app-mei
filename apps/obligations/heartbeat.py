@@ -13,6 +13,7 @@ is indistinguishable from no alarm at all.
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from enum import StrEnum
 
 from django.utils import timezone
 
@@ -30,19 +31,57 @@ BACKUP_INTERVAL = timedelta(days=1)
 # the 2026-07-29 outage — the reason this signal exists — lasted two.
 BACKUP_STALE_AFTER = timedelta(hours=36)
 
+# 12 GiB, derived rather than chosen. The deploy job refuses to land an image pair below
+# 3 GiB free (`MIN_FREE_KIB` in .github/workflows/ci.yml), and the WAL archive accrues
+# 288 x 16 MiB = 4.5 GiB a night because `archive_timeout=300` forces a segment switch
+# every five minutes whether or not the segment holds anything. 3 + 2 x 4.5 is therefore
+# the smallest floor that fires while deploys still work AND leaves two nightly reports
+# to act on — lead time is counted in reports, because ops/backup.sh refreshes this
+# number once a night and never in between.
+#
+# ABSOLUTE, not a percentage. WAL accrues at a fixed rate regardless of disk size, so
+# the question an operator needs answered — how many nights do I have — is free / rate.
+# A percentage floor would silently shorten that on a smaller disk and lengthen it on a
+# larger one, which is backwards.
+MIN_FREE_DISK_KIB = 12 * 1024 * 1024
+
+
+class DiskHeadroom(StrEnum):
+    """How much room the box had left when it last looked."""
+
+    OK = "ok"
+    LOW = "low"
+    UNKNOWN = "unknown"
+
 
 @dataclass(frozen=True, slots=True)
 class HeartbeatReport:
-    """Both operational dead-man's switches, read together."""
+    """Every operational signal this deployment reports, read together."""
 
     scheduler_alive: bool
     backup_fresh: bool
+    disk: DiskHeadroom
 
 
 def _is_within(stamp: datetime | None, window: timedelta, now: datetime) -> bool:
     if stamp is None:
         return False
     return now - stamp <= window
+
+
+def _headroom(free_kib: int | None, *, measurement_is_fresh: bool) -> DiskHeadroom:
+    if free_kib is None:
+        return DiskHeadroom.UNKNOWN
+    if free_kib < MIN_FREE_DISK_KIB:
+        # Reported regardless of the measurement's age. Free space only moves one way
+        # between runs, so an old low reading is at worst an understatement, and
+        # discarding it would throw away a true alarm.
+        return DiskHeadroom.LOW
+    # A stale "ok" is the one answer this must never give. The WAL prune lives inside
+    # the nightly job, so the disk fills FASTEST in exactly the window where the marker
+    # has stopped being refreshed — reporting yesterday's comfort there would be the
+    # fuse lying at the only moment it is load-bearing.
+    return DiskHeadroom.OK if measurement_is_fresh else DiskHeadroom.UNKNOWN
 
 
 def read_heartbeats() -> HeartbeatReport:
@@ -53,22 +92,26 @@ def read_heartbeats() -> HeartbeatReport:
     real constraint rather than a stylistic one. Both signals live in one table keyed by
     name, which is what makes a single filtered read enough.
     """
-    stamps: dict[str, datetime] = dict(
-        SchedulerHeartbeat.objects.filter(
+    rows: dict[str, tuple[datetime, int | None]] = {
+        name: (updated_at, free_disk_kib)
+        for name, updated_at, free_disk_kib in SchedulerHeartbeat.objects.filter(
             name__in=(SCHEDULER_HEARTBEAT_NAME, BACKUP_HEARTBEAT_NAME),
-        ).values_list("name", "updated_at"),
-    )
+        ).values_list("name", "updated_at", "free_disk_kib")
+    }
     now = timezone.now()
+    scheduler = rows.get(SCHEDULER_HEARTBEAT_NAME)
+    backup = rows.get(BACKUP_HEARTBEAT_NAME)
+    backup_fresh = _is_within(backup[0] if backup else None, BACKUP_STALE_AFTER, now)
     return HeartbeatReport(
         scheduler_alive=_is_within(
-            stamps.get(SCHEDULER_HEARTBEAT_NAME),
+            scheduler[0] if scheduler else None,
             HEARTBEAT_STALE_AFTER,
             now,
         ),
-        backup_fresh=_is_within(
-            stamps.get(BACKUP_HEARTBEAT_NAME),
-            BACKUP_STALE_AFTER,
-            now,
+        backup_fresh=backup_fresh,
+        disk=_headroom(
+            backup[1] if backup else None,
+            measurement_is_fresh=backup_fresh,
         ),
     )
 
@@ -81,6 +124,20 @@ def backup_is_fresh() -> bool:
     switch has to say, not a case it has no opinion about.
     """
     return read_heartbeats().backup_fresh
+
+
+def disk_headroom() -> DiskHeadroom:
+    """Report how much room the box had left when the nightly job last measured it.
+
+    Only `ops/backup.sh` writes this number, because it is the one part of this system
+    that runs on the host rather than in a container and can therefore see the real
+    filesystem. The consequence is that the reading is up to twenty-four hours old, and
+    the WAL archive grows about 4.5 GiB a night — so this answers "was there room last
+    night", never "is there room now". That is still several nights of warning before a
+    disk this size collides, which is the entire point: the condition it watches for
+    would otherwise arrive with no warning at all.
+    """
+    return read_heartbeats().disk
 
 
 def record_heartbeat() -> None:

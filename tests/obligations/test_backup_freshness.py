@@ -124,6 +124,7 @@ def test_healthz_reports_a_fresh_backup(client: Client) -> None:
         "status": "ok",
         "scheduler": "alive",
         "backup": "fresh",
+        "disk": "unknown",
     }
 
 
@@ -146,6 +147,7 @@ def test_healthz_reports_a_stale_backup_without_taking_the_site_down(
         "status": "ok",
         "scheduler": "alive",
         "backup": "stale",
+        "disk": "unknown",
     }
 
 
@@ -167,6 +169,7 @@ def test_healthz_still_answers_503_for_the_scheduler_while_a_backup_is_fresh(
         "status": "degraded",
         "scheduler": "stale",
         "backup": "fresh",
+        "disk": "unknown",
     }
 
 
@@ -198,4 +201,5 @@ def test_healthz_reports_backup_unknown_when_the_database_is_unreachable(
         "status": "ok",
         "scheduler": "unknown",
         "backup": "unknown",
+        "disk": "unknown",
     }

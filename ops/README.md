@@ -271,7 +271,7 @@ table T-041's scheduler dead-man's switch already uses, keyed by name), written 
 only on full success, so any failure above it ages the marker out. `/healthz` reports:
 
 ```json
-{"status": "ok", "scheduler": "alive", "backup": "fresh"}
+{"status": "ok", "scheduler": "alive", "backup": "fresh", "disk": "ok"}
 ```
 
 `backup` is `fresh`, `stale` (older than 36 hours, or never), or `unknown` (the database
@@ -318,15 +318,88 @@ or reads one with no `START WAL LOCATION`, now exits 3 instead of warning: an un
 oldest base is not a pruning problem to defer, it means the earliest point this
 deployment can recover to does not exist.
 
-> **Open capacity decision, not yet made.** The archive generates roughly 290 segments a
-> day — 4.6 GB — because `archive_timeout=300` forces a switch every five minutes and
-> each segment is a full 16 MB whether or not it is full. At `RETENTION_DAYS=7` the
-> steady state is therefore ~32 GB on a 45 GB disk that is already 62% used, so a
-> perfectly working prune still fills it. Measured 2026-07-31: 14 GB of archive, 17 GB
-> free. The three ways out — shorter retention, a longer `archive_timeout` (which
-> loosens the documented ≤5 min RPO), or gzip in `archive_command` (which changes
-> `restore_command` and so changes the recovery procedure) — are all policy choices with
-> real costs, and none of them should be picked by whoever happens to be fixing a script.
+> **Open capacity decision, still not made.** The archive generates roughly 288 segments
+> a day — ~4.5 GiB — because `archive_timeout=300` forces a switch every five minutes and
+> each segment is a full 16 MiB whether or not it is full. At `RETENTION_DAYS=7` the
+> steady state is ~34 GB of WAL beside ~14 GB of everything else, on a 45 GB disk: a
+> perfectly working prune still fills it. Measured 2026-08-01: 15 GB of archive, 16.6 GB
+> free, 64% used. The prune also cannot engage until the 2026-07-28 base ages out around
+> 2026-08-04, so the trajectory until then is monotone.
+>
+> The three ways out all have real costs and none should be picked by whoever happens to
+> be fixing a script:
+>
+> | Option | What it costs |
+> | --- | --- |
+> | Shorter `RETENTION_DAYS` | Narrows the recovery window — the oldest point you can restore to moves closer to now |
+> | Longer `archive_timeout` | Loosens the documented ≤5 min RPO; a crash can lose up to the new interval |
+> | `gzip` in `archive_command` | Changes `restore_command` too, so it changes the documented recovery procedure in `ops/RESTORE.md` |
+>
+> **What HAS been done is making the collision impossible to hit silently** — see the
+> disk fuse below. The decision above is still owed.
+
+### The disk fuse: `/healthz` reports headroom, and does not 503
+
+The capacity problem above had no signal at all. Free space was visible only to somebody
+who ssh'd in and ran `df`, which means the first symptom of the collision would have been
+a database that could no longer write. So the nightly job now measures the disk and
+`/healthz` reports it:
+
+| `disk` | Meaning |
+| --- | --- |
+| `ok` | The last nightly run measured at least 12 GiB free |
+| `low` | It measured less than that — **act; this is not self-healing** |
+| `unknown` | Nothing has been measured, or what was measured is too old to trust |
+
+**`low` never changes `status` and never returns 503**, for exactly the reason a stale
+backup does not: a full-ish disk needs an operator, it does not mean the application is
+broken. Escalating it would flap the container healthcheck every ten seconds, fail the
+deploy job's fourth assertion, and take the site down over a capacity warning.
+
+#### The number is up to 24 hours old, and that is stated rather than hidden
+
+The web container cannot see the host filesystem, so the measurement can only be taken by
+something running on the host. `ops/backup.sh` already runs there nightly and already
+writes the freshness marker `/healthz` reads, so it takes `df -Pk` against the **docker
+data root** — the WAL archive is a named volume and the images sit beside it, so that is
+the filesystem that actually fills — and stamps the number onto the same row. The probe
+reads it in the same single query it already made.
+
+The cost is that `disk` answers *"was there room last night"*, never *"is there room
+now"*. At ~4.5 GiB a night that is one report's worth of drift. For a multi-day fuse it
+still surfaces the condition several times before collision, which is the entire point;
+it is not, and must not be mistaken for, a real-time gauge.
+
+Two consequences follow from the staleness and are deliberate:
+
+- **A stale marker downgrades `ok` to `unknown`.** The WAL prune lives *inside* the
+  nightly job, so the disk fills fastest in exactly the window where the marker stops
+  being refreshed. Reporting yesterday's comfort there would be the fuse lying at the
+  only moment it is load-bearing.
+- **A stale marker keeps `low`.** Free space only moves one way between runs, so an old
+  low reading is at worst an understatement, and discarding it would throw away a true
+  alarm.
+
+If `backup.sh` cannot measure at all it writes SQL `NULL` and the field reads `unknown`,
+rather than aborting: the backup genuinely succeeded, and degrading the weaker signal
+beats withholding the marker and claiming the backup never ran.
+
+#### Why 12 GiB, and why a fixed floor rather than a percentage
+
+The floor is derived, not chosen. The deploy job refuses to land an image pair with less
+than 3 GiB free (`MIN_FREE_KIB` in `.github/workflows/ci.yml`), and the archive accrues
+~4.5 GiB a night. `3 + 2 × 4.5 = 12 GiB` is therefore the smallest floor that fires
+**while deploys still work** — a warning that only arrives after deploys have started
+failing is not a warning — and still leaves **two nightly reports** to act on. Lead time
+is counted in reports rather than in hours precisely because the number only moves once a
+night. `tests/obligations/test_disk_headroom.py` reads `MIN_FREE_KIB` out of the workflow
+and asserts that relationship, so the two floors cannot drift apart silently.
+
+It is an absolute byte count rather than a share of the disk because WAL accrues at a
+fixed 16 MiB per forced switch regardless of how large the disk is. The question an
+operator needs answered — *how many nights do I have* — is `free / rate`, an absolute. A
+percentage floor would silently shorten the lead time on a smaller disk and lengthen it
+on a larger one, which is backwards.
 
 ## Deploy
 

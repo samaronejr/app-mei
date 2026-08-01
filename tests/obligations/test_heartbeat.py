@@ -126,15 +126,17 @@ def test_healthz_returns_200_while_the_scheduler_is_reporting(client: Client) ->
     # When the probe is called
     response = client.get(reverse("healthz"))
 
-    # Then it answers 200 and says so explicitly. The backup key is asserted here too,
-    # rather than being read past with a subset comparison, so that a future signal
-    # cannot be added to this body without a test acknowledging it.
-    # `tests/obligations/test_backup_freshness.py` owns that key's own behaviour.
+    # Then it answers 200 and says so explicitly. The backup and disk keys are asserted
+    # here too, rather than being read past with a subset comparison, so that a future
+    # signal cannot be added to this body without a test acknowledging it — which is how
+    # the disk key came to be listed below. `test_backup_freshness.py` and
+    # `test_disk_headroom.py` own those keys' own behaviour.
     assert response.status_code == HTTPStatus.OK
     assert response.json() == {
         "status": "ok",
         "scheduler": "alive",
         "backup": "stale",
+        "disk": "unknown",
     }
 
 

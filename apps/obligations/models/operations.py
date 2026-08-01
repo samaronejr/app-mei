@@ -28,6 +28,15 @@ class SchedulerHeartbeat(models.Model):
 
     name = models.CharField(_("name"), max_length=64, unique=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
+    # Only the host-side writer populates this: `ops/backup.sh` is the one signal that
+    # runs OUTSIDE a container and can therefore see the host filesystem at all. Beat
+    # leaves it null, and so does a marker written before this column existed — which
+    # is why it is nullable and why null reads as "unknown" rather than as "full".
+    free_disk_kib = models.BigIntegerField(
+        _("free disk KiB"),
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         """Model metadata."""
