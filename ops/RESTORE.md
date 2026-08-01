@@ -110,7 +110,15 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs db \
   | grep -E "redo starts|restored log file|consistent recovery|redo done|ready to accept"
 ```
 
-The rehearsal produced:
+Two different rehearsals are quoted below, and they are **not** the same drill. Their
+LSNs do not agree and are not meant to. Before you compare a live recovery against
+either one, be sure which of the two you are reading.
+
+#### Rehearsal 1: 2026-07-28, live staging host, archive was entirely plain
+
+This is the drill named at the top of this file: the data volume was destroyed for real
+and the database recovered from an archive whose every segment was plain `cp` output,
+because compression did not exist yet. It is where the 207 s RTO comes from.
 
 ```
 redo starts at 0/D000028
@@ -123,13 +131,53 @@ database system is ready to accept connections
 
 **`restored log file ... from archive` is the load-bearing line.** Without it the server
 started from the base backup alone and every write since that backup is gone — while the
-container still reports healthy and the application still serves traffic.
+container still reports healthy and the application still serves traffic. That is the
+claim this excerpt carries, and it holds whatever format the archive is in. What it
+proves nothing about is the format boundary, because there was no boundary to cross.
 
-**That line will never say `.gz`.** PostgreSQL logs `%f`, the segment name it asked for,
-not the file `restore_command` actually opened. So the log cannot tell you whether a
-segment came from a compressed or a plain file, and it looks identical either way. To see
-which formats a recovery genuinely crossed, compare the names in the log against the
-archive:
+#### Rehearsal 2: 2026-08-01, throwaway cluster, archive was mixed
+
+Same commands, a deliberately mixed archive: ten plain segments (`…0001` to `…000A`)
+followed by six compressed ones (`…000B` to `…0010`), with the base backup taken in the
+plain half so that recovery has no choice but to run forward through the flip. Full
+details are in "Rehearsing the mixed archive" below; these are the log lines the grep
+above returns.
+
+The full replay ran to the end of the archive:
+
+```
+restored log file "000000010000000000000003" from archive     <- plain
+redo starts at 0/3000028
+consistent recovery state reached at 0/3000100
+...
+restored log file "00000001000000000000000B" from archive     <- first compressed one
+...
+redo done at 0/F054F10                                        <- inside …000F, a .gz-only segment
+database system is ready to accept connections
+```
+
+That restore came back with 22500 rows and an `md5` taken over every row identical to
+the source, not merely a matching row count.
+
+The point-in-time leg of the same drill replayed the same archive but stopped at a
+timestamp inside the compressed half, so it ends earlier and on purpose:
+
+```
+recovery stopping before commit of transaction 755, time 2026-08-01 04:32:38.72+00
+redo done at 0/E054C28                                        <- inside …000E, a .gz-only segment
+```
+
+18500 rows, and zero rows written after the target. `0/E054C28` sits inside
+`00000001000000000000000E`, which in that archive exists **only** as `.gz`.
+
+#### Which format a recovery actually crossed
+
+**The `restored log file` line will never say `.gz`.** PostgreSQL logs `%f`, the segment
+name it asked for, not the file `restore_command` actually opened. So the log cannot tell
+you whether a segment came from a compressed or a plain file, and it looks identical
+either way. That is why neither excerpt above can be told apart by reading its filenames,
+and it is the whole reason they have to be labelled by hand. To see which formats a
+recovery genuinely crossed, compare the names in the log against the archive:
 
 ```sh
 docker run --rm -v app-mei_wal_archive:/wal_archive postgres:16 \
@@ -138,7 +186,11 @@ docker run --rm -v app-mei_wal_archive:/wal_archive postgres:16 \
 
 The absence of `.gz` in the log is expected and proves nothing either way. What proves
 the compressed half replayed is `redo done` landing at an LSN inside a segment that only
-exists as `.gz`.
+exists as `.gz`. Both of rehearsal 2's `redo done` lines are that: `0/F054F10` falls in
+`…000F` and `0/E054C28` in `…000E`, and each of those segments exists in that archive
+only as `.gz`. Rehearsal 1's `0/F000060` is a different cluster's LSN in a different
+archive and carries no such claim, which is the mistake this section is arranged to
+prevent.
 
 ### Point-in-time (stop before a bad transaction)
 
