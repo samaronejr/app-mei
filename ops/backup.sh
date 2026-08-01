@@ -61,6 +61,32 @@ archived=$(dbx psql -tAc "select archived_count from pg_stat_archiver" | tr -d '
 log "archiver state: archived=${archived} failed=${failed}"
 [ "${failed:-1}" -eq 0 ] || die 1 "WAL archiver has ${failed} failures — PITR is not working; fix before trusting backups"
 
+# failed_count has a blind spot, and gzip in archive_command walks straight into it.
+# PostgreSQL classifies exit code 127 — "command not found" — as fatal via
+# wait_result_is_any_signal(rc, include_command_not_found=true), so the archiver
+# ereport(FATAL)s and DIES before it can report the failure to the statistics
+# collector. Measured 2026-08-01 on a throwaway cluster: gzip removed from the image,
+# seven consecutive "archive command failed with exit code 127" lines in the log, and
+# failed_count still 0 with last_failed_wal NULL. The check above passes and this
+# script would have declared PITR healthy while nothing at all was being archived.
+# (An ordinary non-zero exit — permission denied, disk full, gzip exit 1 — logs at LOG,
+# the archiver survives, and failed_count does rise. That is the fault the check above
+# catches, and it is the one that actually happened in July 2026.)
+#
+# The unmissable signal is the work queue itself: a segment stays .ready until it is
+# archived, so a stalled archiver accumulates them monotonically whatever killed it.
+# pg_ls_archive_statusdir() reads that queue in SQL and needs no path into PGDATA.
+#
+# Four is 20 minutes of archive_timeout=300 switches left unarchived. A healthy box
+# clears each in well under a second (gzip -6 on a 16 MiB segment measured 46 ms), so
+# the steady state is 0 or a transient 1 — this cannot fire on a burst of writes, and
+# a false positive here would exit non-zero, leave the freshness marker unwritten and
+# page somebody over a working backup.
+pending=$(dbx psql -tAc \
+  "select count(*) from pg_ls_archive_statusdir() where name like '%.ready'" | tr -d '\r')
+log "archiver queue: ${pending} segment(s) pending"
+[ "${pending:-99}" -le 4 ] || die 1 "${pending} WAL segments are waiting to be archived — the archiver is stalled even though failed_count is ${failed}; PITR is not working"
+
 # --- the backup tree must be writable by postgres, on EVERY run ---------------------
 # /backups is a HOST directory bind-mounted into the container (`./ops/backups`), and
 # the host keeps taking it back. Measured on the staging box:
@@ -164,8 +190,19 @@ else
   START_WAL=$(printf '%s\n' "$LABEL" | awk '/^START WAL LOCATION/{print $6}' | tr -d '()\r')
   [ -n "$START_WAL" ] || die 3 "the label of ${OLDEST} carries no START WAL LOCATION; refusing to guess a prune anchor"
 
+  # `-x .gz` is what makes the prune see compressed segments, and without it this
+  # script would silently stop bounding the archive at all. pg_archivecleanup decides
+  # what to delete with IsXLogFileName(), which demands a 24-character name, so
+  # `00000001000000000000000B.gz` is not a WAL file to it and is never a candidate.
+  # Dry-run on the mixed archive built for the 2026-08-01 rehearsal: without the flag
+  # it listed the 10 plain segments and none of the 6 compressed ones.
+  #
+  # The flag is safe across BOTH formats and that is why one invocation covers a mixed
+  # archive. -x only ever TRIMS a suffix that is present (TrimExtension is a tail
+  # strcmp), so a plain 24-character segment passes through untouched and still
+  # matches. Handling the migration therefore needs no second pass and no branch here.
   BEFORE=$(dbx sh -c 'ls -1 /wal_archive | wc -l' | tr -d '\r')
-  dbx pg_archivecleanup /wal_archive "$START_WAL"
+  dbx pg_archivecleanup -x .gz /wal_archive "$START_WAL"
   AFTER=$(dbx sh -c 'ls -1 /wal_archive | wc -l' | tr -d '\r')
   log "WAL pruned against oldest base ${OLDEST} (${START_WAL}): ${BEFORE} -> ${AFTER} segments"
 fi
