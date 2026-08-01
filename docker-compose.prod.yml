@@ -96,7 +96,31 @@ services:
       - -c
       - archive_mode=on
       - -c
-      - archive_command=test ! -f /wal_archive/%f && cp %p /wal_archive/%f
+      # Compressed, and every clause is load-bearing. Measured on this archive: a
+      # timeout-forced segment is ~99.5% zero padding and gzips ~190x at -6, so the
+      # 16 MiB written every 300 s becomes ~90 KiB. -6 rather than -1 (105x, 33 ms) or
+      # -9 (198x, 83 ms): -6 buys most of the ratio for 46 ms and matches the
+      # --compress=6 ops/backup.sh already passes to pg_basebackup and pg_dump.
+      #
+      #   test ! -f %f && test ! -f %f.gz  refuse to overwrite an existing segment in
+      #     EITHER format. The first half is the stock PostgreSQL guard; the second is
+      #     what stops a re-archive after the migration writing X.gz beside a plain X
+      #     and leaving two candidate answers for the same segment.
+      #   gzip -6 -c %p > %f.part          write under a name nothing reads. `.part` is
+      #     29 chars, so IsXLogFileName() rejects it and neither pg_archivecleanup nor
+      #     restore_command will ever mistake a partial write for a segment.
+      #   && mv %f.part %f.gz              rename within one directory is atomic, so
+      #     `%f.gz exists` implies `%f.gz is complete`. Without it a gzip killed
+      #     mid-write leaves a truncated .gz that the guard above then treats as
+      #     already-archived forever — a corrupt segment that never self-heals.
+      #
+      # NOT a pipeline. `cat %p | gzip -c > %f.gz` is the natural thing to write and it
+      # is a data-loss bug: sh returns the LAST command's status, so a cat that cannot
+      # read %p is invisible, gzip cheerfully writes a valid 20-byte archive of nothing,
+      # archive_command exits 0, and PostgreSQL drops the .ready and recycles the WAL.
+      # Rehearsed 2026-08-01: archived=2, failed=0, two segments gone, every signal
+      # green — including backup.sh's own failed_count precondition.
+      - archive_command=test ! -f /wal_archive/%f && test ! -f /wal_archive/%f.gz && gzip -6 -c %p > /wal_archive/%f.part && mv /wal_archive/%f.part /wal_archive/%f.gz
       - -c
       - archive_timeout=300
       - -c
