@@ -78,6 +78,14 @@
   --color-late-ink: oklch(0.46 0.16 22);
   --color-late-line: oklch(0.86 0.08 20);
 
+  /* `info` is guidance, not a status, so it borrows the accent hue rather than
+   * inventing a sixth one, and takes the `ok` ramp's lightness steps verbatim — a
+   * column of notices then carries one optical weight whichever fired. Measured: ink
+   * on soft is 6.71:1. */
+  --color-info-soft: oklch(0.95 0.04 175);
+  --color-info-ink: oklch(0.42 0.11 175);
+  --color-info-line: oklch(0.85 0.07 175);
+
   --color-surface: oklch(1 0 0);
   --color-surface-sunken: oklch(0.984 0.003 250);
 
@@ -206,6 +214,22 @@
     @apply bg-ink-50;
   }
 
+  /* A destructive control should not be the loudest thing on the screen, so the solid
+   * fill is the hover state rather than the resting one. Both readings clear AA:
+   * 6.53:1 at rest, 7.76:1 once committed. */
+  .btn-danger {
+    @apply border border-late-line bg-late-soft text-late-ink;
+  }
+
+  .btn-danger:hover {
+    @apply border-late-ink bg-late-ink text-white;
+  }
+
+  /* 2.75rem is 44px — the smallest target a thumb hits reliably. */
+  .btn-lg {
+    @apply min-h-11 px-5 py-2.5 text-base;
+  }
+
   .nav-link {
     @apply rounded-control px-3 py-2 text-sm font-medium text-ink-600
       transition-colors;
@@ -236,6 +260,24 @@
     @apply bg-ink-50;
   }
 
+  /* `.notice-error` predates this family and stays self-sufficient, so the base class
+   * carries shape only and each variant carries nothing but its ramp. */
+  .notice {
+    @apply rounded-control border px-4 py-3 text-sm;
+  }
+
+  .notice-success {
+    @apply border-ok-line bg-ok-soft text-ok-ink;
+  }
+
+  .notice-info {
+    @apply border-info-line bg-info-soft text-info-ink;
+  }
+
+  .notice-warn {
+    @apply border-warn-line bg-warn-soft text-warn-ink;
+  }
+
   .notice-error {
     @apply rounded-control border border-late-line bg-late-soft px-4 py-3 text-sm
       text-late-ink;
@@ -260,6 +302,136 @@
 
   .calendar-rolled {
     @apply text-[0.6875rem] leading-tight;
+  }
+
+  .field {
+    @apply flex flex-col gap-1.5;
+  }
+
+  .field-label {
+    @apply text-sm font-medium text-ink-700;
+  }
+
+  .field-input {
+    @apply w-full rounded-control border border-ink-300 bg-surface px-3 py-2 text-sm
+      text-ink-900 transition-colors;
+  }
+
+  .field-input::placeholder {
+    @apply text-ink-400;
+  }
+
+  .field-input:hover {
+    @apply border-ink-400;
+  }
+
+  .field-input:disabled {
+    @apply cursor-not-allowed border-ink-200 bg-ink-50 text-ink-500;
+  }
+
+  /* The invalid border is a second signal, never the only one — a field marked this
+   * way still owes the user a `.field-error`, or it fails WCAG 1.4.1. */
+  .field-input[aria-invalid="true"] {
+    @apply border-late-line;
+  }
+
+  .field-error {
+    @apply text-xs font-medium text-late-ink;
+  }
+
+  .field-help {
+    @apply text-xs text-ink-500;
+  }
+
+  .form-errors {
+    @apply flex flex-col gap-1 rounded-control border border-late-line bg-late-soft
+      px-4 py-3 text-sm text-late-ink;
+  }
+
+  .form-errors ul {
+    @apply list-disc space-y-1 pl-5;
+  }
+
+  /* Lucide glyphs are pasted in as inline SVG partials, so they take their size from
+   * the type beside them rather than a fixed pixel value, and inherit its colour. */
+  .icon {
+    @apply size-[1em] shrink-0 fill-none stroke-current;
+  }
+
+  .table-wrap {
+    @apply w-full overflow-x-auto;
+  }
+
+  /* Stacked rows: each cell regrows the column header it lost out of `data-label`,
+   * so a template using `.row-stack` must emit that attribute. `thead` is hidden
+   * visually rather than removed, so it survives in the accessibility tree. */
+  @media (width < theme(--breakpoint-sm)) {
+    .row-stack thead {
+      @apply sr-only;
+    }
+
+    .row-stack tr {
+      @apply block border-b border-ink-200 px-5 py-3;
+    }
+
+    .row-stack td {
+      @apply flex items-baseline justify-between gap-4 border-0 px-0 py-1;
+    }
+
+    .row-stack td::before {
+      content: attr(data-label);
+      @apply text-xs font-semibold uppercase tracking-wide text-ink-500;
+    }
+  }
+
+  .checklist {
+    @apply flex flex-col gap-2 text-sm text-ink-700;
+  }
+
+  /* Struck through as well as dimmed, so "done" never rests on colour alone. */
+  .checklist-done {
+    @apply text-ink-500 line-through decoration-ink-300;
+  }
+
+  .upload-field {
+    @apply flex flex-col items-start gap-2 rounded-control border border-dashed
+      border-ink-300 bg-surface-sunken px-5 py-6 text-sm text-ink-600;
+  }
+
+  .upload-field:hover {
+    @apply border-accent-400 bg-accent-50;
+  }
+
+  /* Phone-width navigation. Nothing here reaches for a safe-area inset — this is a
+   * browser page, not an installed app shell. */
+  .bottom-nav {
+    @apply fixed inset-x-0 bottom-0 z-40 flex border-t border-ink-200 bg-surface
+      shadow-raised sm:hidden;
+  }
+
+  .bottom-nav-link {
+    @apply flex min-h-11 flex-1 flex-col items-center justify-center gap-1 px-2 py-2
+      text-xs font-medium text-ink-600 transition-colors;
+  }
+
+  .bottom-nav-link:hover {
+    @apply bg-ink-100 text-ink-900;
+  }
+
+  .bottom-nav-link[aria-current="page"] {
+    @apply bg-accent-50 text-accent-700;
+  }
+
+  .crumbs {
+    @apply flex flex-wrap items-center gap-2 text-xs text-ink-500;
+  }
+
+  .crumbs a:hover {
+    @apply text-ink-700 underline;
+  }
+
+  .crumbs [aria-current="page"] {
+    @apply font-medium text-ink-700;
   }
 }
 
