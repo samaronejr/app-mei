@@ -71,15 +71,27 @@ docker run --rm \
   postgres:16 bash -c "
     set -e
     tar -xzf /backups/base/$BASE/base.tar.gz -C /pgdata
-    touch /pgdata/recovery.signal
+    sed -i '/^restore_command[[:space:]]*=/d' \
+      /pgdata/postgresql.auto.conf
     cat >> /pgdata/postgresql.auto.conf <<'EOF'
 restore_command = 'if [ -f /wal_archive/%f.gz ]; then gzip -dc /wal_archive/%f.gz > %p; else cp /wal_archive/%f %p; fi'
 EOF
+    touch /pgdata/recovery.signal
     chown -R postgres:postgres /pgdata
     chmod 700 /pgdata"
 
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait
 ```
+
+> **The `sed` is not optional and it must run before the append.** `pg_basebackup` copies
+> `postgresql.auto.conf` verbatim, so a base taken before 2026-08-06 arrives carrying
+> `restore_command = 'cp /wal_archive/%f %p'` — which now matches nothing, because the
+> archive is entirely `.gz`. A later assignment does win over an earlier one, so appending
+> alone happens to work *while the appended line parses*; a malformed append silently
+> leaves the stale line in force and recovery reads zero segments. Deleting first makes a
+> broken append fail loudly instead of quietly restoring nothing. The pattern tolerates
+> whitespace around `=` because `postgresql.auto.conf` is machine-written and
+> `ALTER SYSTEM` does not promise a fixed spacing.
 
 > **Use the `cat`/heredoc, not `echo`.** The command contains `[`, `>` and `;`, and the
 > quoting needed to push it through `echo` inside a `bash -c "…"` inside a shell is the

@@ -40,6 +40,9 @@ RETENTION = re.compile(
 )
 RESTORE_COMMAND = re.compile(r"restore_command = '(?P<cmd>[^']+)'")
 
+SH_BLOCK = re.compile(r"```sh\n(?P<body>.*?)\n```", re.DOTALL)
+SED_DELETION = re.compile(r"sed -i\s+'(?P<pattern>[^']+)'")
+
 
 def archive_command() -> str:
     """Return the one `archive_command` the production compose file sets."""
@@ -50,17 +53,131 @@ def archive_command() -> str:
     return matches[0].strip()
 
 
+STALE_PLAIN_ONLY = "cp /wal_archive/%f %p"
+
+
 def restore_commands() -> list[str]:
-    """Return every `restore_command` the runbook tells an operator to write."""
+    """Return the `restore_command`s the runbook prescribes; the quoted counterexample
+    is excluded by exact match and pinned separately, so going green cannot mean
+    deleting the warning."""
     found: list[str] = RESTORE_COMMAND.findall(RESTORE_DOC.read_text(encoding="utf-8"))
     assert found, "ops/RESTORE.md names no restore_command at all"
-    return found
+    prescribed = [command for command in found if command != STALE_PLAIN_ONLY]
+    assert prescribed, "ops/RESTORE.md prescribes no restore_command at all"
+    return prescribed
+
+
+def test_the_stale_plain_only_command_is_kept_as_a_counterexample() -> None:
+    # Given the runbook
+    found = RESTORE_COMMAND.findall(RESTORE_DOC.read_text(encoding="utf-8"))
+
+    # When it is searched for the inherited command a pre-flip base carries
+    # Then it is still quoted verbatim, because an operator who cannot recognise it
+    # cannot tell whether the base they just extracted is one of the affected ones
+    assert STALE_PLAIN_ONLY in found, (
+        "the runbook no longer shows the inherited plain-only restore_command, so "
+        "restore_commands()'s exclusion now silently hides a real prescription"
+    )
 
 
 def executable_backup_body() -> str:
     """Return ops/backup.sh with comments stripped, so prose cannot satisfy a check."""
     lines = BACKUP_SCRIPT.read_text(encoding="utf-8").splitlines()
     return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+
+
+def canonical_preparation_block() -> str:
+    """Return the executable Path A block; a step explained only in prose never runs."""
+    blocks = [
+        match.group("body")
+        for match in SH_BLOCK.finditer(RESTORE_DOC.read_text(encoding="utf-8"))
+    ]
+    prepared = [block for block in blocks if "postgres:16 bash -c" in block]
+    assert len(prepared) == 1, (
+        f"expected exactly one canonical Path A block, found {len(prepared)}"
+    )
+    return prepared[0]
+
+
+def test_the_canonical_block_deletes_inherited_restore_commands() -> None:
+    # Given the block an operator actually executes
+    block = canonical_preparation_block()
+
+    # When it is read for the deletion
+    deletions = SED_DELETION.findall(block)
+
+    # Then it strips what pg_basebackup copied in. A base taken before the compression
+    # flip carries `restore_command = 'cp /wal_archive/%f %p'` verbatim, which now
+    # matches nothing, and recovery reporting "end of archive" is what that looks like.
+    assert deletions, (
+        "the canonical block never deletes the inherited restore_command; a pre-flip "
+        "base restores with a plain-only command that matches no segment"
+    )
+    assert any("restore_command" in pattern for pattern in deletions)
+
+
+def test_the_deletion_precedes_the_append() -> None:
+    # Given the canonical block
+    block = canonical_preparation_block()
+
+    # When the deletion and the append are located
+    deletion = SED_DELETION.search(block)
+    assert deletion is not None
+    append = block.index("cat >> /pgdata/postgresql.auto.conf")
+
+    # Then the deletion runs FIRST. Ordering is the whole point: a later assignment does
+    # win over an earlier one, so appending alone works only while the appended line
+    # parses. Delete-then-append makes a malformed append fail loudly instead of quietly
+    # leaving the stale plain-only line in force.
+    assert deletion.start() < append, (
+        "the sed runs AFTER the append, so a malformed append silently leaves the "
+        "inherited plain-only restore_command as the effective setting"
+    )
+
+
+def test_the_canonical_block_appends_exactly_one_dual_format_command() -> None:
+    # Given the canonical block
+    block = canonical_preparation_block()
+
+    # When its appended restore_command assignments are counted
+    appended = RESTORE_COMMAND.findall(block)
+
+    # Then there is exactly one, and it serves both formats
+    assert len(appended) == 1, (
+        f"expected exactly one appended restore_command, found {len(appended)}"
+    )
+    command = appended[0]
+    assert "%f.gz" in command, (
+        f"the canonical restore_command cannot find a compressed segment: {command}"
+    )
+    assert "gzip -dc" in command, (
+        f"the canonical restore_command cannot decompress: {command}"
+    )
+    assert STALE_PLAIN_ONLY in command, (
+        f"the canonical restore_command drops the plain fallback: {command}"
+    )
+
+
+def test_the_deletion_pattern_tolerates_whitespace_around_the_equals() -> None:
+    # Given the deletion pattern the runbook actually ships
+    deletion = SED_DELETION.search(canonical_preparation_block())
+    assert deletion is not None
+    posix = deletion.group("pattern").removeprefix("/").removesuffix("/d")
+    pattern = re.compile(posix.replace("[[:space:]]", r"\s"))
+
+    # When it is applied to the spacings postgresql.auto.conf actually produces
+    # Then every one of them is matched. The file is machine-written and ALTER SYSTEM
+    # promises no fixed spacing, so a pattern anchored on `restore_command=` would skip
+    # the very line pg_basebackup copies in and leave it as the effective setting.
+    for line in (
+        "restore_command = 'cp /wal_archive/%f %p'",
+        "restore_command='cp /wal_archive/%f %p'",
+        "restore_command\t=\t'cp /wal_archive/%f %p'",
+    ):
+        assert pattern.match(line), f"deletion pattern misses this spacing: {line!r}"
+
+    # And a commented-out line survives, because the anchor is a line start
+    assert not pattern.match("#restore_command = 'cp /wal_archive/%f %p'")
 
 
 def test_the_archive_command_compresses() -> None:
