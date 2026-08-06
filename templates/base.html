@@ -20,6 +20,16 @@
   {% endcomment %}
   <script src="{% static 'js/htmx.min.js' %}" defer></script>
   <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>
+  {% comment %}
+    First-party, and last of the three: deferred scripts run in document order, so
+    this one is guaranteed both bundles above it have already been evaluated.
+
+    Loaded here and nowhere else. The MEI client portal renders from its own
+    standalone layout under a database role holding SELECT on seven tables, and it
+    ships no JavaScript at all — a shared script is a shared attack surface across
+    the one boundary in this product that RLS is enforcing.
+  {% endcomment %}
+  <script src="{% static 'js/app.js' %}" defer></script>
   {% block head %}{% endblock %}
 </head>
 <body class="min-h-screen">
@@ -61,6 +71,21 @@
   </header>
 
   {% comment %}
+    The one place static/js/app.js writes swap announcements. Deliberately outside
+    <main>: everything HTMX replaces lives inside it, and a live region destroyed by
+    the swap it was meant to describe announces nothing.
+
+    Assertive rather than polite because it carries two kinds of news a user cannot
+    afford to wait for — that the region they are standing in has just been replaced,
+    and that a request failed. Exactly one such region exists on the page; a second
+    would interrupt the first and leave whichever lost the race unread.
+
+    Empty at load. A live region announces changes made after it exists, so seeding
+    it with text would say that text once and then never be heard from again.
+  {% endcomment %}
+  <div id="htmx-announce" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
+
+  {% comment %}
     tabindex="-1" makes the skip link's target focusable. Without it the browser moves
     the viewport but leaves focus in the header, so the next Tab returns the user to
     the navigation they just skipped.
@@ -71,6 +96,56 @@
   {% endcomment %}
   <main id="conteudo" tabindex="-1" class="mx-auto max-w-7xl px-6 py-8">
     <h1 class="mb-6 text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "app-mei" %}{% endblock %}</h1>
+
+    {% comment %}
+      The recovery path for a request that never arrived, pre-rendered so that the
+      failure handler has only to unhide it. Building this element in JavaScript
+      would put the markup for "the network is broken" behind the network.
+
+      The link is a plain GET at the current address: no HTMX attribute, so it
+      survives whatever went wrong with the last one, and it still works if the
+      script never ran. Rendering with no request leaves it empty, which the browser
+      resolves to the current document — the same reload, by a different route.
+
+      No role and no live region of its own. The announcement is already made by
+      #htmx-announce above; a second assertive element here would say it twice.
+    {% endcomment %}
+    <div id="htmx-error-fallback" class="notice notice-error mb-6" hidden>
+      <p>
+        {% translate "Não foi possível carregar esta parte da página." %}
+        <a class="underline" href="{{ request.get_full_path }}">{% translate "Tentar novamente" %}</a>
+      </p>
+    </div>
+
+    {% comment %}
+      Rendered on every page whether or not it holds anything, because it is the
+      element a later out-of-band swap has to find in order to replace it — and an
+      empty wrapper carrying no spacing utilities occupies no height. The padding
+      belongs to the inner block, which exists only when there is news.
+
+      Django's warning tag is `warning` and this partial's variant is `warn`, so the
+      four levels are mapped one at a time rather than passed straight through. A
+      pass-through looks correct, renders the info ramp for every warning, and is
+      invisible until someone wonders why a warning is blue.
+    {% endcomment %}
+    <div id="messages" role="status" aria-live="polite">
+      {% if messages %}
+        <div class="grid gap-3 pb-6">
+          {% for message in messages %}
+            {% if message.level_tag == 'success' %}
+              {% include 'partials/pure/notice.html' with message=message variant='success' only %}
+            {% elif message.level_tag == 'warning' %}
+              {% include 'partials/pure/notice.html' with message=message variant='warn' only %}
+            {% elif message.level_tag == 'error' %}
+              {% include 'partials/pure/notice.html' with message=message variant='error' only %}
+            {% else %}
+              {% include 'partials/pure/notice.html' with message=message variant='info' only %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
     {% block content %}{% endblock %}
   </main>
 
