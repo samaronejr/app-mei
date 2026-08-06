@@ -4,12 +4,24 @@
 {% block content %}
   {% include "obligations/_counts.html" %}
 
+  {% comment %}
+    hx-sync drops an in-flight request the moment a newer one starts. Two selects and
+    an impatient hand produce overlapping GETs whose responses arrive in whatever
+    order the network settles on, and the last one to land wins the table -- so the
+    queue would show the filter the accountant had already moved off.
+
+    The indicator is named by selector rather than nested inside the swapped region:
+    #fila is replaced outerHTML, so an element living in there is destroyed by the
+    very swap it exists to report on.
+  {% endcomment %}
   <form class="my-6 flex flex-wrap items-end gap-4"
         method="get"
         hx-get="{% url queue_url_name %}"
         hx-target="#fila"
         hx-swap="outerHTML"
-        hx-trigger="change">
+        hx-trigger="change"
+        hx-sync="this:replace"
+        hx-indicator="#fila-indicator">
     <div>
       <label class="mb-1 block text-xs font-medium text-ink-600" for="responsavel">{% translate "Responsável" %}</label>
       <select id="responsavel" name="responsavel" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
@@ -31,6 +43,17 @@
       </div>
     {% endif %}
     <noscript><button type="submit" class="btn btn-primary">{% translate "Filtrar" %}</button></noscript>
+    {% comment %}
+      Visual only, and deliberately so. static/js/app.js already announces the swap
+      through the one live region this layout owns; a second region here would say
+      the same news twice and race the first for the screen reader's attention.
+    {% endcomment %}
+    <span id="fila-indicator"
+          class="htmx-indicator inline-flex items-center gap-2 text-sm text-ink-500"
+          aria-hidden="true">
+      {% include "partials/pure/icons/calendar-clock.html" %}
+      {% translate "Atualizando…" %}
+    </span>
   </form>
 
   {% include "obligations/_queue.html" %}

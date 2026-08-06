@@ -1,8 +1,14 @@
-{% load i18n ptbr %}
-<tr>
-  <td>{{ row.client.legal_name }}</td>
-  <td>{{ row.obligation_type.code }}</td>
-  <td>{{ row.competence_month|competencia }}</td>
-  <td><time datetime="{{ row.resolved_due_date|date:'Y-m-d' }}">{{ row.resolved_due_date|data }}</time></td>
-  <td>{{ row.get_status_display }}</td>
+{% load i18n ptbr %}{% comment %}
+  One <tr>, and nothing else: the queue includes this template by a name held on the
+  spec, so the row element is the whole contract between them.
+
+  Every cell names its column. Below the stacking breakpoint the header row is hidden
+  and each cell regrows its own label out of that attribute, so a missing one is a
+  value on a phone with nothing saying what it measures.
+{% endcomment %}<tr>
+  <td data-label="{% translate 'Cliente' %}">{{ row.client.legal_name }}</td>
+  <td data-label="{% translate 'Obrigação' %}">{{ row.obligation_type.code }}</td>
+  <td data-label="{% translate 'Competência' %}">{{ row.competence_month|competencia }}</td>
+  <td data-label="{% translate 'Vencimento' %}"><time datetime="{{ row.resolved_due_date|date:'Y-m-d' }}">{{ row.resolved_due_date|data }}</time></td>
+  <td data-label="{% translate 'Situação' %}">{{ row.get_status_display }}</td>
 </tr>

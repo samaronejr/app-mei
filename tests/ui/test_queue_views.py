@@ -7,8 +7,10 @@ refusal here is asserted as a 403 with a non-empty queue behind it, so a mutatio
 turns the guard into a silent filter cannot pass.
 """
 
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
+from html.parser import HTMLParser
 from http import HTTPStatus
 
 import pytest
@@ -427,3 +429,309 @@ def test_a_membership_revoked_between_requests_stops_working(alpha: Firm) -> Non
         is_active=False,
     )
     assert session.get(reverse("queue-due-soon")).status_code == HTTPStatus.FORBIDDEN
+
+
+# ------------------------------------------------------- progressive enhancement
+
+# The control the assignee filter is keyed on. Spelled out here rather than imported
+# from the view, so that renaming the query parameter without renaming the form field
+# — or the reverse — turns this red instead of silently agreeing with itself.
+FILTER_CONTROL = "responsavel"
+
+# A <button> carrying no type attribute submits: "submit" is the HTML default, so a
+# form whose only submit control relies on that default still works with no script.
+SUBMITTING_INPUT_TYPES = frozenset({"submit", "image"})
+CONTROL_TAGS = frozenset({"button", "input", "select", "textarea"})
+EMPTY_STATE_CLASS = "empty-state"
+
+
+@dataclass(frozen=True, slots=True)
+class _ScannedForm:
+    """One rendered <form>: how it submits, what it carries, and whether it can."""
+
+    method: str
+    controls: tuple[str, ...]
+    submit_controls: int
+
+
+class _FormScanner(HTMLParser):
+    """Collect every form on a page, counting what can submit each one.
+
+    A control inside a <noscript> counts like any other, and must: it is a
+    legitimate no-JavaScript fallback and the pattern the queue filter already
+    ships. `html.parser` makes that countable because it treats only <script> and
+    <style> as raw text, so <noscript> markup parses into real elements here — a
+    scan blind to it would report a working filter as having no way to submit.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[_ScannedForm] = []
+        self._open = False
+        self._method = ""
+        self._controls: list[str] = []
+        self._submit_controls = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Open a form, or record one control inside the form already open."""
+        attributes = {key: (value or "") for key, value in attrs}
+        if tag == "form":
+            self._open = True
+            # A form with no method attribute is a GET, per HTML.
+            self._method = attributes.get("method", "get").lower()
+            self._controls = []
+            self._submit_controls = 0
+            return
+        if not self._open or tag not in CONTROL_TAGS:
+            return
+        name = attributes.get("name", "")
+        if name:
+            self._controls.append(name)
+        if _submits(tag, attributes):
+            self._submit_controls += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        """Bank the form that just closed."""
+        if tag == "form" and self._open:
+            self.forms.append(
+                _ScannedForm(
+                    method=self._method,
+                    controls=tuple(self._controls),
+                    submit_controls=self._submit_controls,
+                ),
+            )
+            self._open = False
+
+
+def _submits(tag: str, attributes: dict[str, str]) -> bool:
+    """Report whether this element submits the form it belongs to."""
+    kind = attributes.get("type", "").lower()
+    if tag == "button":
+        return kind in {"", "submit"}
+    return tag == "input" and kind in SUBMITTING_INPUT_TYPES
+
+
+def _forms_on(html: str) -> list[_ScannedForm]:
+    """Parse every form out of a rendered page."""
+    scanner = _FormScanner()
+    scanner.feed(html)
+    scanner.close()
+    return scanner.forms
+
+
+@pytest.mark.parametrize("name", QUEUE_URLS)
+def test_the_queue_filter_can_be_applied_without_javascript(
+    alpha: Firm,
+    name: str,
+) -> None:
+    """Changing the responsible accountant must not require JavaScript.
+
+    The select fires its request from `hx-trigger="change"`, which is a scripting
+    affordance: with JavaScript off, changing the option does nothing whatsoever and
+    the accountant is looking at a filter that appears to work and does not. A submit
+    control — inside a <noscript> or out of one — is what turns the same form into a
+    plain GET the browser performs on its own.
+
+    A regression guard rather than a new demand: queue.html has shipped its
+    <noscript> submit since the queue's first commit, and this pins that pattern so
+    a later restyle of the filter cannot quietly drop it. Asserted against every
+    queue because one template is rendered under four specs, and only the rendering
+    can say whether all four actually receive the control.
+    """
+    body = alpha.as_owner().get(reverse(name)).content.decode()
+    forms = _forms_on(body)
+
+    # Non-vacuity, inside the scan rather than beside it: the page has to have parsed
+    # into forms, the scan has to be telling them apart rather than matching all of
+    # them, and the form it selects has to really carry the control this test is
+    # named for. Without all three the loop below iterates over nothing and passes.
+    assert forms, f"{name}: the rendered page parsed into no <form> at all"
+    filters = [form for form in forms if FILTER_CONTROL in form.controls]
+    assert filters, (
+        f"{name}: no rendered form carries a {FILTER_CONTROL!r} control, so this "
+        f"guard would pass over an empty list"
+    )
+    assert len(filters) < len(forms), (
+        f"{name}: all {len(forms)} form(s) on the page matched as filter forms, so "
+        f"the scan is not discriminating and the assertions below are untargeted"
+    )
+
+    for position, form in enumerate(filters, start=1):
+        assert form.method == "get", (
+            f"{name}: filter form #{position} in templates/obligations/queue.html "
+            f"submits with method={form.method!r}; a filter that is not a GET cannot "
+            f"be linked to, bookmarked, or re-run from the address bar"
+        )
+        assert form.submit_controls, (
+            f"{name}: filter form #{position} in templates/obligations/queue.html "
+            f"has no submit control — none outside <noscript> and none inside one — "
+            f"so with JavaScript off, changing {FILTER_CONTROL!r} can never become a "
+            f"request"
+        )
+
+
+# --------------------------------------------------------------- the empty state
+
+
+@dataclass(frozen=True, slots=True)
+class _QueueTable:
+    """The queue table as rendered: its headers, its rows, and its empty cell."""
+
+    headers: tuple[str, ...]
+    body_rows: int
+    empty_state_colspans: tuple[str, ...]
+
+
+class _QueueTableScanner(HTMLParser):
+    """Read the table inside #fila: header cells, body rows, and the empty cell.
+
+    Scoped to #fila by counting <div> nesting from the point that id appears, so a
+    table added elsewhere on the page — or in the layout — cannot be mistaken for
+    the queue's own and quietly satisfy the column count below.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.headers: list[str] = []
+        self.body_rows = 0
+        self.empty_state_colspans: list[str] = []
+        self._fila = 0
+        self._in_head = False
+        self._in_body = False
+        self._heading: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Enter #fila, or record one cell of the table it holds."""
+        attributes = {key: (value or "") for key, value in attrs}
+        if tag == "div":
+            self._track_fila(attributes)
+        elif self._fila:
+            self._record_cell(tag, attributes)
+
+    def _track_fila(self, attributes: dict[str, str]) -> None:
+        if self._fila:
+            self._fila += 1
+        elif attributes.get("id") == "fila":
+            self._fila = 1
+
+    def _record_cell(self, tag: str, attributes: dict[str, str]) -> None:
+        if tag == "thead":
+            self._in_head = True
+        elif tag == "tbody":
+            self._in_body = True
+        elif tag == "th" and self._in_head:
+            self._heading = []
+        elif tag == "tr" and self._in_body:
+            self.body_rows += 1
+        elif tag == "td" and self._in_body:
+            classes = attributes.get("class", "").split()
+            if EMPTY_STATE_CLASS in classes:
+                # Absent, HTML reads colspan as 1; recorded verbatim so the failure
+                # can quote what the template actually shipped.
+                self.empty_state_colspans.append(attributes.get("colspan", "1"))
+
+    def handle_data(self, data: str) -> None:
+        """Accumulate the text of the header cell currently open, if any."""
+        if self._heading is not None:
+            self._heading.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        """Close a header cell, a section, or #fila itself."""
+        if tag == "div" and self._fila:
+            self._fila -= 1
+            return
+        if not self._fila:
+            return
+        if tag == "thead":
+            self._in_head = False
+        elif tag == "tbody":
+            self._in_body = False
+        elif tag == "th" and self._heading is not None:
+            self.headers.append("".join(self._heading).strip())
+            self._heading = None
+
+
+def _queue_table_on(html: str) -> _QueueTable:
+    """Parse the queue table out of a rendered page or fragment."""
+    scanner = _QueueTableScanner()
+    scanner.feed(html)
+    scanner.close()
+    return _QueueTable(
+        headers=tuple(scanner.headers),
+        body_rows=scanner.body_rows,
+        empty_state_colspans=tuple(scanner.empty_state_colspans),
+    )
+
+
+@pytest.mark.parametrize("name", QUEUE_URLS)
+def test_the_empty_state_spans_exactly_the_columns_the_queue_declares(
+    alpha: Firm,
+    name: str,
+) -> None:
+    """The "nothing here" cell must span the header row it sits under, per queue.
+
+    One template renders four queues whose header counts differ — five columns for
+    the two obligation queues and the threshold queue, four for onboarding — so a
+    single literal in the cell cannot be right for all of them. Too few and the row
+    stops short of the table's width; too many and the cell pushes the table wider
+    than its own header, which is the state a screen reader reports as a malformed
+    grid.
+
+    The column count therefore has to come from `spec.headings`, the same source the
+    header row is built from, rather than from a number typed once and never revisited.
+    """
+    from apps.obligations.views import URL_NAMES  # noqa: PLC0415
+
+    spec = next(queue for queue in ALL_QUEUES if URL_NAMES[queue.slug] == name)
+
+    # Somebody on this firm's roster with nothing assigned to them. Filtering by them
+    # narrows every queue's book of business to zero clients, which is how the empty
+    # row is reached from the outside without deleting the fixture's data.
+    idle = add_member(
+        alpha.tenant,
+        f"vazio@{alpha.tenant.slug}.example.com",
+        TenantRole.STAFF_ACCOUNTANT,
+    )
+    body = (
+        alpha.as_owner()
+        .get(reverse(name), {FILTER_CONTROL: str(idle.pk)})
+        .content.decode()
+    )
+    table = _queue_table_on(body)
+    expected = len(spec.headings)
+
+    # Non-vacuity, inside the scan: the header row must have rendered, it must be the
+    # one this spec produced, and the page must actually have reached the empty
+    # branch. Any of these failing means the comparison below has nothing to compare.
+    assert table.headers, (
+        f"{name}: no <th> found inside #fila, so templates/obligations/_queue.html "
+        f"rendered no header row and there is no column count to check against"
+    )
+    assert len(table.headers) == expected, (
+        f"{name}: #fila rendered {len(table.headers)} header cell(s) "
+        f"({', '.join(table.headers)}) but spec {spec.slug!r} declares {expected} "
+        f"headings — the scan is not reading the table this spec produced"
+    )
+    assert table.body_rows == 1, (
+        f"{name}: expected the single empty row in <tbody> but found "
+        f"{table.body_rows} — filtering by an unassigned member did not empty this "
+        f"queue, so the empty state was never rendered and this test proves nothing"
+    )
+    assert len(table.empty_state_colspans) == 1, (
+        f"{name}: found {len(table.empty_state_colspans)} cell(s) carrying "
+        f"class={EMPTY_STATE_CLASS!r} in templates/obligations/_queue.html, "
+        f"expected exactly one"
+    )
+
+    (raw,) = table.empty_state_colspans
+    assert raw.isdigit(), (
+        f"{name}: the empty-state cell in templates/obligations/_queue.html carries "
+        f"colspan={raw!r}, which is not a column count"
+    )
+    assert int(raw) == expected, (
+        f"{name}: templates/obligations/_queue.html spans the empty state across "
+        f"{raw} column(s) while spec {spec.slug!r} declares {expected} heading(s) "
+        f"({', '.join(table.headers)}) — the colspan is hard-coded instead of coming "
+        f"from spec.headings, so it is wrong for every queue whose header count is "
+        f"not {raw}"
+    )
