@@ -60,3 +60,66 @@ Colours, radii, shadows and fonts are declared in `@theme` and are the only way 
 name them; a hard-coded hex in a template resolves to nothing. Status colours are
 named after the domain (`ok`, `warn`, `over`, `late`) rather than after hues, so
 retuning the palette cannot make a badge lie.
+
+## Icons
+
+Sixteen Lucide glyphs are committed as inline-SVG partials under
+`templates/partials/pure/icons/`, one file per glyph. Nothing is installed and nothing
+is fetched: an inline `<svg>` is markup the parser has already consumed, so it needs no
+CSP allowance, no widened `img-src`, and no entry in the vendored-JS manifest — which
+stays JS-only, because `test_vendored_bundles_are_committed` resolves every entry as
+`static/js/<file>`. `package.json` is untouched by design.
+
+| | |
+| --- | --- |
+| Source | `https://github.com/lucide-icons/lucide` |
+| Version | `1.28.0` — git tag, published 2026-07-30. Every glyph comes from this one release. |
+| Licence | ISC, plus MIT for the Feather-derived glyphs — `static/icons/LICENSE-lucide.txt` |
+
+Six of the sixteen (`alert-triangle`, `chevron-right`, `download`, `info`, `upload`,
+`x-circle`) are Feather-derived, so the MIT notice covers them as well as the ISC
+licence. Both are reproduced in full; shipping only the ISC half would under-attribute.
+
+Four names here are names Lucide retired before its 1.0 release, so searching upstream
+for them finds nothing. Same glyph, two names:
+
+| This project | Lucide 1.28.0 |
+| --- | --- |
+| `alert-triangle` | `triangle-alert` |
+| `check-circle` | `circle-check` |
+| `home` | `house` |
+| `x-circle` | `circle-x` |
+
+### Decorative by default
+
+Every partial carries `aria-hidden="true"` and `focusable="false"` on the root, so a
+glyph is never announced beside a label that already says the word, and never becomes a
+tab stop. Each also carries `class="icon"`, which is where size and colour come from — a
+`1em` box and a `currentColor` stroke — so a glyph matches the text beside it instead of
+the 24px it was drawn at. `tests/ui/test_icons.py` enforces those three, and the absence
+of a script, an external origin and a `data:` URI.
+
+An icon is never the only carrier of meaning. Status is always a token colour **and** a
+pt-BR word, with the glyph as reinforcement; a monochrome print, a colour-blind reader
+and a screen reader must all reach the same answer.
+
+### An icon-only control REQUIRES its own name
+
+Because the glyph is `aria-hidden`, a control containing nothing else has no accessible
+name at all — it announces as "button" and is unusable. Give it visible text, or
+`.visually-hidden` text where the design cannot afford it:
+
+```html
+<button type="button" class="btn btn-quiet">
+  {% include 'partials/pure/icons/download.html' %}
+  <span class="visually-hidden">Baixar DAS</span>
+</button>
+```
+
+### Adding a glyph
+
+Copy it from the same pinned release, keep the path data byte-identical, and add the
+name to `EXPECTED_ICONS` in `tests/ui/test_icons.py` — the scan refuses to run against
+a set that does not contain every name it expects, so a partial nobody registered and a
+name nobody vendored both fail loudly. No rebuild is needed: every glyph reuses `.icon`
+and introduces no new class.
