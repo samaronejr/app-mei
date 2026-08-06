@@ -338,13 +338,41 @@ deployment can recover to does not exist.
 > **What HAS been done is making the collision impossible to hit silently** — see the
 > disk fuse below. The decision above is still owed.
 
-### The third option is built and rehearsed on branch `wal-gzip`, and not merged
+### Resolved 2026-08-06: gzip was chosen, merged, deployed, and the archive compacted
 
-The question the branch exists to answer is "merge or discard", not "may I rewrite the
-recovery path". Nothing about it is live: `main` is untouched, nothing is deployed, and
-the live `archive_command`, `restore_command`, `archive_timeout` and `RETENTION_DAYS` are
-exactly what they were. **No existing WAL segment or base backup was compressed, moved or
-deleted.**
+**The decision above is made.** `wal-gzip` merged as `c921e3e` and is live. None of the
+three costs in that table were paid: `RETENTION_DAYS` is still 7, `archive_timeout` is
+still 300, the ≤5 min RPO stands, and every base backup and logical dump was retained.
+
+It was forced by an incident rather than chosen at leisure. The disk reached 100% on
+2026-08-04 and archiving wedged for 31 hours; the deploy that would have fixed it could
+not run, because `git fetch` on the box needs free space. The way out was that
+`archive_command` lives in the `db` service's compose `command:`, and `postgres:16` was
+already on the box — so the compressed form could be activated by recreating **only**
+`db`, with no image build, no pull, and no application deploy.
+
+The existing 1,956 plain segments were then converted in place rather than pruned:
+30.56 GiB → 90.36 MiB, an aggregate **346x**, disk free 623 MB → 30.85 GiB. Every
+conversion was proven byte-identical before its original was unlinked, and the whole
+archive was afterwards restored from end to end with matching content checksums —
+`ops/RESTORE.md`, "Rehearsal 3" and "The one-time archive compaction of 2026-08-06".
+
+Two things that incident established, which the sections below predate:
+
+- **A partial `cp` poisons its own retry forever.** The old `archive_command` wrote
+  straight to the final name, so an ENOSPC mid-copy left a truncated file there. The
+  leading `test ! -f` then saw it and short-circuited on every subsequent attempt —
+  archiving stayed wedged even after space was freed, because the blocker was the stub,
+  not the disk. The shipped form writes `%f.part` and atomically renames, which is why
+  it cannot happen again.
+- **`pg_archivecleanup` is downstream of a guard the full disk trips.** It runs inside
+  `backup.sh`, which aborts on `failed_count > 0`. Disk fills → archiving fails → the
+  counter rises → the backup aborts → the prune that would free space never runs. The
+  prune cannot be relied on to rescue a full disk; it is the first thing a full disk
+  disables.
+
+The original analysis is kept below because its measurements are what the decision rested
+on, and because "what it would cost" is still the right frame if the question reopens.
 
 What the measurement says, taken on the real archive: it is ~99.5% zero padding, because
 `archive_timeout=300` forces a full 16 MiB switch every five minutes on a near-idle box

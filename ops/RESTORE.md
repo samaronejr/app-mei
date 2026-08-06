@@ -89,9 +89,6 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait
 ### The `restore_command` reads BOTH formats, and that is not belt-and-braces
 
 Segments are archived compressed (`ops/…/docker-compose.prod.yml`, `archive_command`).
-Segments archived **before** that change are still there in plain form, and they stay
-plain — nothing rewrites them. So for `RETENTION_DAYS` after the flip the archive is
-genuinely **mixed**, and after that it is all `.gz`.
 
 A `restore_command` that handles only `.gz` is therefore not "the new one", it is a
 restore path that cannot read the older half of its own archive. The `if/else` above
@@ -100,6 +97,40 @@ neither exists, which is how PostgreSQL learns it has reached the end of the arc
 
 Rehearsed end to end on 2026-08-01 against a throwaway cluster whose archive held ten
 plain segments followed by six compressed ones; see "Rehearsing the mixed archive" below.
+
+**The plain fallback is still required even though no plain segment remains.** The
+one-time compaction of 2026-08-06 (below) converted every one, so the archive is
+currently 100% `.gz` — but a base backup restored from an external copy, or a future
+`archive_command` regression, reintroduces plain segments immediately. The `if/else`
+costs one `test -f` per segment and removes a class of failure that presents as an
+empty archive rather than as an error.
+
+### A base backup taken before 2026-08-06 carries a restore_command that cannot work
+
+`pg_basebackup` copies `postgresql.auto.conf` verbatim, so every base backup taken
+before the compression flip contains:
+
+```
+restore_command = 'cp /wal_archive/%f %p'
+```
+
+Extract such a backup, start it, and that line is read as configuration. The archive is
+now entirely `.gz`, so `cp /wal_archive/000000020000000700000041 …` finds nothing,
+recovery retrieves **zero** segments, and PostgreSQL reports having reached the end of
+the archive. It does not error — it stops early and looks finished, which is the exact
+"recovery found no WAL" failure this file warns about at the top.
+
+So the restore procedure's `cat >> postgresql.auto.conf` is not sufficient on its own
+for a pre-2026-08-06 base. **Strip the inherited line first**, then append:
+
+```sh
+sed -i '/^restore_command/d' /pgdata/postgresql.auto.conf
+```
+
+A later assignment does win over an earlier one, so appending alone happens to work —
+but only while the appended line is syntactically valid. A malformed append leaves the
+*stale* line as the effective setting and recovery silently reads nothing. Deleting
+first makes a broken append fail loudly instead.
 
 ### Confirm recovery really happened
 
@@ -169,6 +200,65 @@ redo done at 0/E054C28                                        <- inside …000E,
 
 18500 rows, and zero rows written after the target. `0/E054C28` sits inside
 `00000001000000000000000E`, which in that archive exists **only** as `.gz`.
+
+#### Rehearsal 3: 2026-08-06, live staging archive, every segment retro-compressed
+
+The first two drills used archives built for the drill. This one used the **production
+archive**, after the one-time compaction below rewrote all 1,956 of its plain segments.
+
+Restored from the retained `20260804T060720Z` base — deliberately not the newest, so
+replay had to cross ~145 segments — with the archive volume mounted **read-only**, so a
+failed rehearsal could not damage the thing it was rehearsing.
+
+```
+restored log file "00000002.history" from archive
+restored log file "000000020000000700000041" from archive
+redo starts at 7/41000028
+consistent recovery state reached at 7/41000138
+redo done at 7/D4000100    system usage: elapsed: 171.59 s
+selected new timeline ID: 3
+archive recovery complete
+```
+
+Every segment named there exists on disk **only** as `.gz`. The proof is not the row
+count on its own — it is the content checksum over the window both databases share:
+
+| | Restored | Live |
+| --- | --- | --- |
+| `audit_accesslog` rows at or before `redo done` (03:32:38) | 2901 | 2901 |
+| `md5` over those rows | `4f5aec06b49fdbaeb54b1cc8d80b0bb1` | `4f5aec06b49fdbaeb54b1cc8d80b0bb1` |
+| user tables | 44 | 44 |
+
+The live table held four more rows than the restore. That is not drift — they were
+written after `redo done` and cannot be in it. Bounding the comparison at the recovery
+point is what turns "the counts nearly match" into an equality that means something.
+
+#### The one-time archive compaction of 2026-08-06
+
+`archive_command` was flipped to the compressed form by recreating **only** the `db`
+service, which needs no application image and therefore no deploy — worth knowing,
+because on that day the disk was full and the deploy could not run.
+
+The existing plain archive was then converted in place, one segment at a time. Each
+conversion compressed to a scratch name, required a zero exit, passed `gzip -t`,
+decompressed and compared **byte-for-byte** against the source, preserved `999:999` and
+mode `600`, fsynced, atomically renamed, and was fetched back through the documented
+`restore_command` — and only then was the plain original unlinked. Any failure at any
+step left the original untouched, and the procedure was resumable after interruption.
+
+| | Before | After |
+| --- | --- | --- |
+| Plain segments | 1,956 | 0 |
+| Archive size | 30.56 GiB | 90.36 MiB |
+| Aggregate ratio | — | **346x** |
+| Disk free | 623 MB | 30.85 GiB |
+
+**Nothing was deleted to reclaim that space.** Every segment, every base backup and
+every logical dump was retained; the seven-day physical recovery window and the ≤5 min
+RPO were both preserved, and `archive_timeout` is still `300`. This is recorded because
+it is the one time the archive was rewritten wholesale — a future reader comparing
+segment mtimes against `.backup` label dates will find them inconsistent, and this is
+why.
 
 #### Which format a recovery actually crossed
 
