@@ -25,23 +25,57 @@
   <section aria-labelledby="calendario" class="mb-8">
     <h2 id="calendario" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Calendário do DAS — 12 meses" %}</h2>
 
+    {% comment %}
+      hx-sync drops an in-flight request the moment a newer one starts. A hand moving
+      down the client list faster than the network answers produces overlapping GETs
+      whose responses land in whatever order the wire settles on, and the last to
+      arrive wins the strip -- so the calendar would end up showing a client the
+      accountant had already moved off.
+
+      The indicator is named by selector and lives in the form, not in the strip:
+      #calendario-strip is replaced outerHTML, so an element inside it is destroyed by
+      the very swap it exists to report on. It is visual only -- static/js/app.js
+      already announces the swap through the one live region this layout owns, and a
+      second region here would say the same news twice.
+
+      The select is written out rather than passed through partials/pure/field.html:
+      that partial reads a Django BoundField, and this filter is a bare query
+      parameter the view resolves itself. It carries the three classes the partial
+      emits, so the two render identically, and it owes neither aria-invalid nor an
+      aria-describedby chain because it has no error and no help line.
+
+      The noscript submit is the whole point of the form element. hx-trigger is
+      JavaScript; without it nothing sends the selection, and the accountant is stuck
+      on whichever client the view picked.
+    {% endcomment %}
     <form method="get" class="mb-4 flex flex-wrap items-end gap-3"
           hx-get="{% url 'dashboard' %}"
           hx-target="#calendario-strip"
           hx-select="#calendario-strip"
           hx-swap="outerHTML"
-          hx-trigger="change">
-      <div>
-        <label class="mb-1 block text-xs font-medium text-ink-600" for="cliente">{% translate "Cliente" %}</label>
-        <select id="cliente" name="cliente" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
+          hx-trigger="change"
+          hx-sync="this:replace"
+          hx-indicator="#calendario-indicator">
+      <div class="field">
+        <label class="field-label" for="cliente">{% translate "Cliente" %}</label>
+        <select id="cliente" name="cliente" class="field-input">
           {% for company in clients %}
             <option value="{{ company.pk }}" {% if calendar_client.pk == company.pk %}selected{% endif %}>{{ company.legal_name }}</option>
           {% endfor %}
         </select>
       </div>
+      <noscript><button type="submit" class="btn btn-primary">{% translate "Aplicar" %}</button></noscript>
+      <span id="calendario-indicator"
+            class="htmx-indicator inline-flex items-center gap-2 text-sm text-ink-500"
+            aria-hidden="true">
+        {% include "partials/pure/icons/calendar-clock.html" %}
+        {% translate "Atualizando…" %}
+      </span>
     </form>
 
-    <div id="calendario-strip" class="card p-5">
+    <div id="calendario-strip" class="card p-5"
+         role="region"
+         aria-label="{% translate 'Calendário do DAS' %}">
       {% if calendar_client %}
         <p class="mb-4 text-sm text-ink-600">
           {{ calendar_client.legal_name }} — {{ calendar_client.cnpj|cnpj_mask }}
@@ -69,25 +103,33 @@
 
   <section aria-labelledby="limite">
     <h2 id="limite" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Clientes perto do limite" %}</h2>
-    <div class="card overflow-hidden">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th scope="col">{% translate "Cliente" %}</th>
-            <th scope="col">{% translate "Faturado" %}</th>
-            <th scope="col">{% translate "Teto" %}</th>
-            <th scope="col">{% translate "Consumido" %}</th>
-            <th scope="col">{% translate "Faixa" %}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in threshold_rows %}
-            {% include "obligations/_rows_threshold.html" %}
-          {% empty %}
-            <tr><td colspan="5" class="empty-state">{% translate "Nenhum cliente perto do limite." %}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    {% comment %}
+      The card clipped its own overflow before, which on a phone did not shrink this
+      five-column table -- it hid the columns past the viewport with no way to reach
+      them. The scroll container goes inside the card instead, so the money columns
+      stay reachable and the card keeps owning the border and the radius.
+    {% endcomment %}
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Cliente" %}</th>
+              <th scope="col">{% translate "Faturado" %}</th>
+              <th scope="col">{% translate "Teto" %}</th>
+              <th scope="col">{% translate "Consumido" %}</th>
+              <th scope="col">{% translate "Faixa" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in threshold_rows %}
+              {% include "obligations/_rows_threshold.html" %}
+            {% empty %}
+              <tr><td colspan="5" class="empty-state">{% translate "Nenhum cliente perto do limite." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </section>
 {% endblock %}

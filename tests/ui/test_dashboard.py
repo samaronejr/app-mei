@@ -11,9 +11,12 @@ human sees, so it is the first place the isolation model is visible, and a leak 
 is a churn event rather than a bug report.
 """
 
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
+from html.parser import HTMLParser
 from http import HTTPStatus
+from typing import Final
 
 import pytest
 from django.db.models import F
@@ -344,3 +347,164 @@ def test_the_platform_host_has_no_dashboard(alpha: Firm) -> None:
     response = session.get(reverse("dashboard"))
     assert response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.FORBIDDEN}
     assert Client(SERVER_NAME="localhost") is not None
+
+
+# ------------------------------------------------- progressive enhancement (no JS)
+
+DASHBOARD_TEMPLATE: Final[str] = "templates/core/dashboard.html"
+
+# The tags a filter form is built from. `option` is tracked as well, because a filter
+# with a single option cannot be switched at all, and asking whether such a form can
+# be submitted without JavaScript would be a question about nothing.
+CONTROL_TAGS: Final[frozenset[str]] = frozenset(
+    {"button", "input", "option", "select", "textarea"},
+)
+MIN_FILTER_OPTIONS: Final[int] = 2
+
+# The shape `templates/obligations/queue.html:33` already ships, held here as a
+# literal rather than read from that file: the scanner has to be calibrated against a
+# document this test owns, so that a red result on the dashboard is the dashboard's
+# fault and not a parser that quietly swallows everything inside <noscript>.
+KNOWN_GOOD_FILTER: Final[str] = (
+    '<form method="get" hx-trigger="change">'
+    '<select id="cliente" name="cliente">'
+    '<option value="1">Um</option><option value="2">Dois</option>'
+    "</select>"
+    '<noscript><button type="submit">Filtrar</button></noscript>'
+    "</form>"
+)
+
+
+@dataclass
+class _Form:
+    attrs: dict[str, str]
+    controls: list[tuple[str, dict[str, str]]] = field(default_factory=list)
+
+
+class _FormScanner(HTMLParser):
+    """Collect each `<form>` in a rendered document together with its controls.
+
+    `<noscript>` is deliberately not opaque here: Python's parser hides the content of
+    `script` and `style` only, so a submit button written inside `<noscript>` — the
+    no-JavaScript fallback the queue page already uses — arrives as a real element and
+    is counted like any other. Controls outside every form are kept separately, so a
+    button associated by `form="..."` can still be credited to the form it submits.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[_Form] = []
+        self.detached: list[tuple[str, dict[str, str]]] = []
+        self._open: list[_Form] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        pairs = {name.lower(): value or "" for name, value in attrs}
+        if tag == "form":
+            form = _Form(attrs=pairs)
+            self.forms.append(form)
+            self._open.append(form)
+        elif tag in CONTROL_TAGS:
+            if self._open:
+                self._open[-1].controls.append((tag, pairs))
+            else:
+                self.detached.append((tag, pairs))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self._open:
+            self._open.pop()
+
+
+def _submits(tag: str, attrs: dict[str, str]) -> bool:
+    kind = attrs.get("type", "").strip().lower()
+    if tag == "button":
+        # A <button> with no type attribute defaults to submit, per HTML.
+        return kind in {"", "submit"}
+    if tag == "input":
+        return kind in {"submit", "image"}
+    return False
+
+
+def _describe(tag: str, attrs: dict[str, str]) -> str:
+    return f"{tag}[type={attrs.get('type', '')}]"
+
+
+def _filter_form_submits(html: str, *, source: str) -> list[str]:
+    """Return the submit controls of the form owning `<select name="cliente">`.
+
+    Both gates live in this function rather than in tests of their own on purpose.
+    `pytest -k` deselects a sentinel test, and an assertion leaning on one would then
+    quantify over an empty document and pass while proving nothing at all.
+    """
+    scanner = _FormScanner()
+    scanner.feed(html)
+    scanner.close()
+
+    owning = [
+        form
+        for form in scanner.forms
+        if any(
+            tag == "select" and attrs.get("name") == "cliente"
+            for tag, attrs in form.controls
+        )
+    ]
+    assert len(owning) == 1, (
+        f'{source}: expected exactly one <form> around <select name="cliente">, '
+        f"found {len(owning)} — with no filter form to inspect, the submit-control "
+        f"scan below would quantify over nothing and pass"
+    )
+    form = owning[0]
+
+    options = [tag for tag, _ in form.controls if tag == "option"]
+    assert len(options) >= MIN_FILTER_OPTIONS, (
+        f"{source}: the client filter offers {len(options)} option(s), so there is "
+        f"nothing to switch between and whether it can be submitted is moot"
+    )
+
+    identifier = form.attrs.get("id", "")
+    associated = [
+        (tag, attrs)
+        for tag, attrs in scanner.detached
+        if identifier and attrs.get("form") == identifier
+    ]
+    return [
+        _describe(tag, attrs)
+        for tag, attrs in [*form.controls, *associated]
+        if _submits(tag, attrs)
+    ]
+
+
+def _calendar_filter_submits(html: str) -> list[str]:
+    """Scan a dashboard document, after proving the scanner can see the target shape."""
+    calibration = _filter_form_submits(
+        KNOWN_GOOD_FILTER,
+        source="KNOWN_GOOD_FILTER (the queue.html shape)",
+    )
+    assert calibration == ["button[type=submit]"], (
+        f'the scanner cannot see a <noscript><button type="submit"> placed directly '
+        f"in front of it (found {calibration!r}), so an empty result on the dashboard "
+        f"would say nothing about the dashboard"
+    )
+    return _filter_form_submits(html, source=DASHBOARD_TEMPLATE)
+
+
+def test_the_calendar_filter_can_be_submitted_without_javascript(alpha: Firm) -> None:
+    """The calendar's client filter has to work with JavaScript switched off.
+
+    `hx-trigger="change"` is the entire submit path today, and HTMX is JavaScript: with
+    scripting unavailable — a corporate lock-down, a failed CDN fetch, a slow line where
+    the document paints before the bundle arrives — the `<select>` is decoration and the
+    accountant cannot look at any client but the default one. The queue page already
+    ships the fix a line above its own `</form>`.
+    """
+    body = alpha.as_owner().get(reverse("dashboard")).content.decode()
+
+    assert _calendar_filter_submits(body), (
+        f"{DASHBOARD_TEMPLATE}: the calendar filter form around "
+        f'<select name="cliente"> has no submit control — no <button type="submit">, '
+        f'no <input type="submit">, '
+        f"neither visible nor inside <noscript>. Without JavaScript nothing fires "
+        f'hx-trigger="change", so the filter can never be applied. '
+        f"templates/obligations/queue.html:33 already carries the shape this file is "
+        f'missing: <noscript><button type="submit">Filtrar</button></noscript> as the '
+        f"last child of the form."
+    )
