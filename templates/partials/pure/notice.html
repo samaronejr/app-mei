@@ -1,0 +1,34 @@
+{% load i18n %}{% comment %}
+A status banner, from context alone.
+
+Context:
+  message  -- the text to announce. Absent or empty renders nothing at all, so a
+              view that has no news does not leave an empty coloured box behind.
+  variant  -- success | info | warn | error. Anything else falls back to info.
+  title    -- optional bolder first line, for a message that needs a summary.
+
+The variant classes are written as literals on both sides of the branch rather than
+interpolated into a single dynamic name. Tailwind v4 compiles only the utilities it
+finds by scanning this file, and `tests/ui/test_asset_pipeline.py` asserts every
+class token in a template has a compiled rule -- an interpolated name is invisible
+to both, so it would ship unstyled and untested.
+
+String literals inside a tag that sits within an HTML attribute are single-quoted
+throughout this family. `class_tokens()` reads attributes with a regex before it
+strips template syntax, so a double quote inside a class attribute ends that
+attribute early and feeds `{%`, `if` and `==` to the stale-stylesheet guard as
+class names.
+
+That same regex reads the whole file, this comment included -- writing an example
+class attribute in prose here registers its value as a real class token and reds
+the guard. Comments in this family therefore describe attributes, never spell them.
+
+`role` follows the urgency: an error interrupts (alert), everything else waits for a
+pause in the screen reader's output (status). Announcing a success banner with
+`alert` is how an interface becomes something people stop listening to.
+{% endcomment %}{% if message or title %}
+<div class="notice {% if variant == 'success' %}notice-success{% elif variant == 'warn' %}notice-warn{% elif variant == 'error' %}notice-error{% else %}notice-info{% endif %}" role="{% if variant == 'error' %}alert{% else %}status{% endif %}">
+  {% if title %}<p class="font-medium">{{ title }}</p>{% endif %}
+  {% if message %}<p>{{ message }}</p>{% endif %}
+</div>
+{% endif %}

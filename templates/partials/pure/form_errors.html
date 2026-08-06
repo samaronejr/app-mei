@@ -1,0 +1,31 @@
+{% load i18n %}{% comment %}
+The error summary that sits above a form, from context alone.
+
+Context:
+  form -- any bound Django form. An unbound or clean one renders nothing.
+
+Three things make this worth a partial rather than a paragraph per page:
+
+1. `role="alert"` on the container, so the summary is announced the moment the
+   re-rendered page lands. A validation failure that is only visible is a validation
+   failure a screen reader user has to hunt for.
+2. One `<a href="#{{ field.auto_id }}">` per erroring field. The id is the same one
+   `field.html` puts on the control, so the link moves keyboard focus onto the input
+   that needs fixing rather than merely scrolling near it.
+3. Non-field errors last, unlinked, because they point at no single control.
+
+Nothing is emitted for a form without errors -- not an empty `.form-errors` box, not
+an empty `role="alert"` region. An empty live region still gets announced.
+{% endcomment %}{% if form.errors %}
+<div class="form-errors" role="alert">
+  <p class="font-medium">{% blocktranslate count total=form.errors|length %}Corrija 1 campo antes de enviar.{% plural %}Corrija {{ total }} campos antes de enviar.{% endblocktranslate %}</p>
+  <ul>
+    {% for field in form %}{% for error in field.errors %}
+    <li><a class="underline" href="#{{ field.auto_id }}">{{ field.label }}: {{ error }}</a></li>
+    {% endfor %}{% endfor %}
+    {% for error in form.non_field_errors %}
+    <li>{{ error }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

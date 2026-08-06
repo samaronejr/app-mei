@@ -1,0 +1,51 @@
+{% load i18n %}{% comment %}
+One form field -- label, control, help, error -- from context alone.
+
+Context:
+  field -- a Django BoundField. Nothing else is read, and nothing is looked up.
+
+Why the markup is hand-written rather than `{{ field }}`:
+
+Django's own widget templates live in site-packages, which Tailwind's `@source` does
+not scan and `class_tokens()` does not walk. A class written there has no compiled
+rule and no test watching it, so the control would ship unstyled while every guard
+stayed green. Every class-bearing tag here is therefore emitted by this file.
+
+Why one tag rather than one branch per widget:
+
+`aria-invalid` and the `aria-describedby` chain are the whole point of the partial,
+and they are identical for an input, a select and a textarea. Repeating them per
+variant is how the three drift apart. So the branch chooses the opening tag and its
+type-specific attributes, then all the shared attributes -- name, id, class,
+required, and the two accessibility ones -- are written exactly once.
+
+The accessibility contract, in order of how quietly each fails:
+
+  * `aria-describedby` names the help id, the error id, both (space separated), or
+    the attribute is omitted. It is never emitted empty: an empty value points at no
+    element, which reads to assistive technology as a broken reference.
+  * `aria-invalid="true"` appears only while the field has errors. The clean state
+    omits it rather than saying "false", because `.field-input[aria-invalid="true"]`
+    is what draws the error border -- and a literal "false" would also make every
+    untouched field on a fresh form announce a validity state nobody asked about.
+  * The label is always rendered and always visible, with `for` bound to the same id
+    the control carries. A placeholder is not a label; it disappears on first
+    keystroke, which is when a person most needs to re-read it.
+
+A password value is never echoed back into the markup, and neither is a file input's
+-- the browser rejects the second and the first is a credential in a page cache.
+
+Grouped `<optgroup>` choices are not rendered; no form in this project uses them.
+{% endcomment %}{% with aid=field.auto_id kind=field.widget_type itype=field.field.widget.input_type|default:'text' %}{% if field.is_hidden %}
+<input type="hidden" name="{{ field.html_name }}" id="{{ aid }}" value="{{ field.value|default_if_none:'' }}">
+{% else %}
+<div class="field">
+  {% if kind == 'checkbox' %}<div class="flex items-center gap-2">{% else %}
+  <label class="field-label" for="{{ aid }}">{{ field.label }}{% if field.field.required %} <span class="text-late-ink" aria-hidden="true">*</span>{% endif %}</label>
+  {% endif %}
+  {% if kind == 'select' or kind == 'selectmultiple' %}<select{% if kind == 'selectmultiple' %} multiple{% endif %}{% elif kind == 'textarea' %}<textarea rows="4"{% else %}<input type="{{ itype }}"{% if itype != 'password' and itype != 'file' and itype != 'checkbox' %} value="{{ field.value|default_if_none:'' }}"{% endif %}{% if kind == 'checkbox' and field.value %} checked{% endif %}{% if field.field.max_length %} maxlength="{{ field.field.max_length }}"{% endif %}{% endif %} name="{{ field.html_name }}" id="{{ aid }}" class="{% if kind == 'checkbox' %}h-4 w-4 shrink-0 rounded-control border border-ink-300{% else %}field-input{% endif %}"{% if field.field.required %} required{% endif %}{% if field.errors %} aria-invalid="true"{% endif %}{% if field.help_text and field.errors %} aria-describedby="{{ aid }}_help {{ aid }}_error"{% elif field.help_text %} aria-describedby="{{ aid }}_help"{% elif field.errors %} aria-describedby="{{ aid }}_error"{% endif %}>{% if kind == 'select' or kind == 'selectmultiple' %}{% for choice_value, choice_label in field.field.choices %}<option value="{{ choice_value }}"{% if choice_value|stringformat:'s' == field.value|default_if_none:''|stringformat:'s' %} selected{% endif %}>{{ choice_label }}</option>{% endfor %}</select>{% elif kind == 'textarea' %}{{ field.value|default_if_none:'' }}</textarea>{% endif %}
+  {% if kind == 'checkbox' %}<label class="field-label" for="{{ aid }}">{{ field.label }}</label></div>{% endif %}
+  {% if field.help_text %}<p id="{{ aid }}_help" class="field-help">{{ field.help_text }}</p>{% endif %}
+  {% if field.errors %}<p id="{{ aid }}_error" class="field-error">{% for error in field.errors %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</p>{% endif %}
+</div>
+{% endif %}{% endwith %}
