@@ -12,11 +12,35 @@
     <h2 id="carteira" class="mb-3 text-sm font-semibold text-ink-700">
       {% blocktranslate with total=portfolio_total %}Carteira ({{ total }} clientes){% endblocktranslate %}
     </h2>
+    {% comment %}
+      The tile is named HERE rather than by the view, which is the same rule the client
+      portal's payments page already follows: entry.label is the model's own choice
+      label, and the model declares these four in English. Three of them arrive on
+      screen unchanged; the fourth reads ativo, because Django's BUNDLED catalogue
+      happens to translate that one msgid and no other. A Carteira that says
+      "onboarding / ativo / suspended / closed" is not a translation, it is three
+      leaks and a coincidence.
+
+      Mapping it in the model instead is not available. Membership.role and
+      ClientCompany.status both declare choices= from these enums, so editing a label
+      changes serialized field metadata and the autodetector emits an AlterField --
+      a migration for a display string.
+
+      entry.status is the stored value the view already read, so the chain follows no
+      relation and the dashboard budget does not move. The last arm keeps entry.label
+      as the fallback: a status added to the enum and not to this chain then renders
+      the word the database has for it rather than an empty tile, which is a legible
+      failure instead of a silent one.
+
+      The data attribute above deliberately keeps the RAW code. It is how the tests
+      and any future automation find a tile, and it is an attribute rather than text,
+      so no reader ever sees it.
+    {% endcomment %}
     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {% for entry in portfolio %}
         <div class="metric" data-portfolio-{{ entry.status }}="{{ entry.count }}">
           <span class="metric-value">{{ entry.count }}</span>
-          <span class="metric-label">{{ entry.label }}</span>
+          <span class="metric-label">{% if entry.status == 'onboarding' %}{% translate "Em onboarding" %}{% elif entry.status == 'active' %}{% translate "Ativo" %}{% elif entry.status == 'suspended' %}{% translate "Suspenso" %}{% elif entry.status == 'closed' %}{% translate "Encerrado" %}{% else %}{{ entry.label }}{% endif %}</span>
         </div>
       {% endfor %}
     </div>

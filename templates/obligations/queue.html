@@ -32,12 +32,28 @@
       </select>
     </div>
     {% if spec.accepts_status %}
+      {% comment %}
+        The option VALUE stays the stored code and must: it is the parameter the view
+        matches against ObligationStatus.values before it will honour the filter at
+        all, so a translated value would silently narrow nothing. Only the option's
+        TEXT is mapped, and it is mapped to the same five words this product's clients
+        already read on the portal payments page -- an accountant and her client have
+        to call the same row by the same name.
+
+        The chain is here rather than in the view because the view hands down
+        ObligationStatus.choices, whose labels ARE the stored English words; and
+        editing the labels on the enum would alter serialized field metadata on every
+        field declaring choices= from it and emit an AlterField, which is a migration
+        for a display string. The last arm keeps the incoming label, so a status added
+        to the enum and not to this chain renders the word the database has for it
+        rather than an empty option nobody can pick.
+      {% endcomment %}
       <div>
         <label class="mb-1 block text-xs font-medium text-ink-600" for="situacao">{% translate "Situação" %}</label>
         <select id="situacao" name="situacao" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
           <option value="">{% translate "Todas" %}</option>
           {% for value, label in statuses %}
-            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{% if value == 'scheduled' %}{% translate "Programada" %}{% elif value == 'due' %}{% translate "A pagar" %}{% elif value == 'paid' %}{% translate "Paga" %}{% elif value == 'overdue' %}{% translate "Em atraso" %}{% elif value == 'waived' %}{% translate "Dispensada" %}{% else %}{{ label }}{% endif %}</option>
           {% endfor %}
         </select>
       </div>
