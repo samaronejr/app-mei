@@ -1,23 +1,178 @@
-"""Client registry views. Currently one: the CSV export.
+"""Client registry views: the list screen, and the CSV export.
 
-The export is gated on `clients.view_all` rather than `clients.view_assigned`. A file
-containing the whole registry is exactly what the `limited` level exists to withhold,
-and a staff accountant restricted to their own assignments must not be able to obtain
-every client's CNPJ by changing the URL.
+The two are gated differently on purpose. The export is `clients.view_all`, because a
+file containing the whole registry is exactly what the `limited` level exists to
+withhold. The list is `clients.view_assigned`, because a staff accountant's own book of
+business is theirs to read — and what keeps that from becoming the whole firm is not
+the capability but `visible_clients()`, which narrows an accountant to their
+assignments *even though* the published matrix grants them `clients.view_all`.
+
+Every row on the list therefore comes from `visible_clients()` and from nothing else.
+`ClientCompany.objects.all()` would be scoped to the tenant and still wrong: it would
+hand a staff accountant the firm's entire client base, silently, on the one screen
+built for browsing it.
 """
 
-from django.http import HttpRequest, HttpResponse
+from collections.abc import Callable
+from functools import wraps
+from http import HTTPStatus
+from urllib.parse import urlencode
+from uuid import UUID
+
+from django.contrib.auth.decorators import login_required
+from django.core.paginator import EmptyPage, Page, Paginator
+from django.db.models import QuerySet
+from django.http import Http404, HttpRequest, HttpResponse
+from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.models import User
+from apps.accounts.views import AuthenticatedRequest
 from apps.audit.models import AuditAction
 from apps.audit.services import record_event
+from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
 from apps.clients.exports import UTF8_BOM, build_client_csv
+from apps.clients.managers import search_filter
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import current_tenant_id
+from apps.tenants.models import Tenant
 
 EXPORT_FILENAME = "clientes.csv"
+
+# A directory rather than a worklist: the queues page at 25 because a short page is a
+# unit of work to grind through, while this screen is scanned and searched, so a denser
+# page means fewer round trips to reach a client whose name is already known.
+PAGE_SIZE = 50
+PAGE_PARAM = "pagina"
+SEARCH_PARAM = "q"
+
+
+def _tenant(request: AuthenticatedRequest) -> Tenant:
+    """Return the firm this request resolved to, or 404.
+
+    The platform host resolves no tenant, and a registry with no firm behind it is not
+    found rather than empty or refused. Both alternatives answer a question the caller
+    should not be able to ask: an empty 200 asserts the firm exists and keeps no books,
+    and a 403 asserts the screen is there and merely closed to this account.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        raise Http404
+    resolved: Tenant = tenant
+    return resolved
+
+
+def require_tenant(
+    view: Callable[[AuthenticatedRequest], HttpResponse],
+) -> Callable[[AuthenticatedRequest], HttpResponse]:
+    """Resolve the firm before the capability is consulted, or 404.
+
+    **The position of this decorator is load-bearing and reordering it reintroduces an
+    existence oracle.** `require_can` denies with a 403, and on the platform host it
+    denies every account, because no firm-side membership resolves there. So a screen
+    that consults the capability first answers "this screen exists and is closed to
+    you" about a firm that is not there at all — which is a fact about the platform
+    that anyone who can reach the host could then harvest. A 404 answers nothing.
+
+    Stacked ABOVE `require_can`, this turns that request into the honest 404 and leaves
+    the capability to decide only the cases where a firm really was found.
+
+    Raising `Http404` from inside the view body — the shape `apps/core/dashboard.py`
+    uses — cannot achieve this: the decorator has already returned 403 by then, which
+    is exactly why `test_the_platform_host_has_no_dashboard` has to accept either
+    status. That dashboard bug is real and is tracked separately; it is not fixed here.
+    """
+
+    @wraps(view)
+    def wrapped(request: AuthenticatedRequest) -> HttpResponse:
+        _tenant(request)
+        return view(request)
+
+    return wrapped
+
+
+def _searched(
+    clients: QuerySet[ClientCompany],
+    term: str,
+) -> QuerySet[ClientCompany]:
+    """Narrow the portfolio by the search box, or hand it back untouched.
+
+    `search_filter` answers `None` for a blank term, and that case must skip the filter
+    rather than apply it. `ClientCompanyManager.search("")` deliberately returns the
+    empty queryset — right for an export, wrong here — so composing it unconditionally
+    would blank the whole registry the moment an accountant cleared the box.
+
+    A term that matches nothing is still applied. Falling back to the unfiltered
+    registry for an unusable query would turn `?q=%` into a one-click export of every
+    client the account can see, which is the failure the manager guards at its own
+    layer.
+    """
+    matches = search_filter(term)
+    if matches is None:
+        return clients
+    return clients.filter(matches)
+
+
+def _page(
+    clients: QuerySet[ClientCompany],
+    request: HttpRequest,
+) -> Page[ClientCompany]:
+    """Return the requested page, falling back to the first for unusable input.
+
+    An out-of-range or non-numeric page is a stale bookmark or a typed URL, not an
+    error worth interrupting a working session over.
+    """
+    paginator = Paginator(clients, PAGE_SIZE)
+    raw = request.GET.get(PAGE_PARAM, "1")
+    try:
+        return paginator.page(int(raw))
+    except (ValueError, EmptyPage):
+        return paginator.page(1)
+
+
+def _filter_query(term: str) -> str:
+    """Render the active search as a querystring prefix for the pagination links.
+
+    Without it, paging away from a search silently drops it and the reader is looking
+    at a different list than the one they were reading.
+    """
+    encoded = urlencode({SEARCH_PARAM: term}) if term else ""
+    return f"{encoded}&" if encoded else ""
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_tenant
+@require_can("clients.view_assigned")
+def clients_list_view(request: AuthenticatedRequest) -> HttpResponse:
+    """List the clients this account keeps books for, searchable and paginated.
+
+    The ordering is `("legal_name", "pk")` and the trailing `pk` is load-bearing. Two
+    clients may legitimately share a legal name, and under `("legal_name",)` alone the
+    comparison between them is fully tied — PostgreSQL may then return them in a
+    different order for each `LIMIT/OFFSET`, so a row slips between page one and page
+    two and is never seen. An order is total exactly when it ends in a unique column.
+    """
+    tenant = _tenant(request)
+    term = request.GET.get(SEARCH_PARAM, "").strip()
+
+    clients = visible_clients(request.user, tenant_id=UUID(str(tenant.pk)))
+    # `distinct` because the assignment lens joins: an accountant holding two
+    # assignments on one client would otherwise read that client twice, on a screen
+    # whose entire promise is that each row is one client.
+    rows = _searched(clients, term).order_by("legal_name", "pk").distinct()
+
+    return render(
+        request,
+        "clients/list.html",
+        {
+            "page": _page(rows, request),
+            "term": term,
+            "filter_query": _filter_query(term),
+        },
+        status=HTTPStatus.OK,
+    )
 
 
 @require_http_methods(["GET"])
