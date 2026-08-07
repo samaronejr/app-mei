@@ -63,12 +63,19 @@ CLIENT_ROLES: frozenset[str] = frozenset(
 
 
 def firm_role_choices() -> list[tuple[str, str]]:
-    """Return only the roles an invitation may grant.
+    """Return only the roles a FIRM-SIDE invitation may grant.
 
-    An invite creates a membership with no client, so offering a client role would
-    produce a row the `membership_role_matches_client_scope` CHECK rejects — an
-    IntegrityError at accept time rather than a validation error at issue time.
-    Portal memberships are created against a specific client, never by invitation.
+    An invitation naming no client creates a membership with no client, so offering a
+    client role here would produce a row the `membership_role_matches_client_scope`
+    CHECK rejects — an IntegrityError at accept time rather than a validation error at
+    issue time.
+
+    This docstring used to close by saying portal memberships are created against a
+    specific client and never by invitation. That has been false since `7d71ff6`: an
+    invitation may now name a client and grant a portal seat, which is what
+    `client_role_choices` below offers. The two lists are disjoint for exactly the
+    reason this one is filtered at all — each names the arm of the CHECK its own
+    invitations are able to satisfy.
     """
     return [(role.value, str(role.label)) for role in TenantRole if role in FIRM_ROLES]
 
