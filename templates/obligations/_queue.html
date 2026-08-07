@@ -12,6 +12,13 @@
   request vocabulary and costs no query, which is what lets a product shipping no
   JavaScript reuse it unchanged.
 
+  hx-sync on that wrapper, and not on the anchors, because it is the wrapper the
+  anchors inherit it from: HTMX resolves `this` to the nearest ancestor carrying the
+  attribute, so one queue is shared by every page link instead of one queue each. It
+  earns its place for the same reason the filter form above has one -- both write
+  #fila, and a hand clicking Próxima twice, or filtering while a page is still in
+  flight, otherwise leaves whichever response the network delivers last on screen.
+
   The empty cell spans spec.headings, the same source the header row is built from.
   Four queues render through this one template and their header counts differ, so a
   literal here is wrong for at least three of them -- and a table whose empty row is
@@ -42,7 +49,7 @@
     </table>
   </div>
 
-  <div hx-boost="true" hx-target="#fila" hx-swap="outerHTML">
+  <div hx-boost="true" hx-target="#fila" hx-swap="outerHTML" hx-sync="this:replace">
     {% include "partials/pure/pagination.html" %}
   </div>
 </div>

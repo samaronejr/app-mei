@@ -2,10 +2,15 @@
  * Firm-side interface behaviour. Loaded by templates/base.html and by nothing else:
  * the RLS-isolated client portal ships no JavaScript at all.
  *
- * Two jobs, both of which exist because an HTMX swap is not a navigation. The
+ * Three jobs. The first two exist because an HTMX swap is not a navigation. The
  * browser moves focus and announces a page on navigation; it does neither when a
  * fragment is replaced in place, so a keyboard user is left with focus on an element
  * that no longer exists and a screen reader user is told nothing happened.
+ *
+ * The third is the mirror image: an ordinary form POST *is* a navigation, and the
+ * gap between the click and the new document is exactly where a second click lands.
+ * It is presentation only — server-side Post/Redirect/Get is what makes the second
+ * request harmless, and it holds with this file deleted.
  *
  * Everything here is written against a Content-Security-Policy of `script-src 'self'`
  * with no 'unsafe-eval' (apps/security/csp.py), and against `allowEval: false` in the
@@ -146,4 +151,58 @@
   for (var index = 0; index < FAILURES.length; index += 1) {
     document.body.addEventListener(FAILURES[index], onFailure);
   }
+
+  /*
+   * Double submit, and what it is not. The guarantee that a filing is recorded once
+   * is server-side Post/Redirect/Get, asserted in the view tests and unaffected by
+   * anything below: a browser with no script, a stale tab, or a request forged past
+   * this listener meets the same redirect and is answered the same way.
+   *
+   * What this buys is that the accountant is not left watching two identical requests
+   * with no way to tell which one was answered. It is a statement about the interface,
+   * not about the database, and it must never be read as the protection.
+   */
+  var SUBMITTERS = 'button[type="submit"], input[type="submit"]';
+
+  /*
+   * Deferred by a tick rather than disabled inside the handler. A disabled control is
+   * omitted from the form data, and the browser serializes that data after this
+   * listener returns -- so disabling synchronously drops the submit button's own name
+   * and value from the POST. No form here carries a named submitter today; the tick
+   * is what stops the first one that does from failing for an invisible reason.
+   */
+  var DISABLE_DELAY_MS = 0;
+
+  function setDisabled(controls, state) {
+    for (var position = 0; position < controls.length; position += 1) {
+      controls[position].disabled = state;
+    }
+  }
+
+  function onSubmit(event) {
+    var form = event.target;
+    if (!form || form.nodeType !== 1) {
+      return;
+    }
+    var controls = form.querySelectorAll(SUBMITTERS);
+    window.setTimeout(function () {
+      setDisabled(controls, true);
+    }, DISABLE_DELAY_MS);
+  }
+
+  document.body.addEventListener("submit", onSubmit);
+
+  /*
+   * A restore from the back/forward cache replays the document exactly as it was left,
+   * disabled buttons included. Without this, Back lands on a form that cannot be
+   * submitted again -- which reads as the product being broken, by the one mechanism
+   * a user reaches for when they think something went wrong.
+   */
+  function onPageShow(event) {
+    if (event.persisted) {
+      setDisabled(document.querySelectorAll(SUBMITTERS), false);
+    }
+  }
+
+  window.addEventListener("pageshow", onPageShow);
 })();
