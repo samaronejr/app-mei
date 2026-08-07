@@ -19,9 +19,11 @@ import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+from http import HTTPStatus
 from typing import Any, Final
 
 from django.conf import settings
+from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
@@ -30,6 +32,7 @@ from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.models import User
@@ -46,6 +49,25 @@ VAULT_CAPABILITY = "documents.transfer"
 PAYMENTS_PAGE_SIZE: Final = 12
 # Spelled as the firm side spells it, so one product has one word for a page number.
 PAYMENTS_PAGE_PARAM: Final = "pagina"
+
+# Twelve rows again, matching the payments window rather than choosing a size of its
+# own: the two lists sit one tap apart in the same navigation bar, and a client moving
+# between them should not have to learn a second rhythm. Kept as a separate constant
+# because the REASONS differ -- twelve months of DAS is a calendar, twelve documents is
+# a screenful -- and a shared one would tie the two together on nothing but the number
+# happening to agree today.
+DOCUMENTS_PAGE_SIZE: Final = 12
+
+KIB: Final = 1024
+MIB: Final = KIB * KIB
+
+MISSING_FILE: Final = "missing"
+OVERSIZED: Final = "oversized"
+
+# Success AND what it means. "Enviado com sucesso" tells a MEI owner the byte transfer
+# worked, which is not what she was asking; she sent the file so that somebody would act
+# on it, and this is the sentence that answers the question she actually had.
+UPLOAD_CONFIRMATION = _("Documento enviado. Sua contadora já pode vê-lo.")
 
 
 class PortalVaultRequest(PortalHttpRequest):
@@ -280,11 +302,99 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _size_label(byte_size: int) -> str:
+    """Render a byte count the way a person reads one, with a comma decimal mark.
+
+    Computed here because the template can divide nothing and the portal ships no
+    JavaScript that could. Deliberately NOT `filesizeformat`: that filter renders
+    through Django's active locale, which a request influences with `Accept-Language`,
+    and a client sizing a file against "10.0 MB" on one visit and "10,0 MB" on the next
+    is reading two different promises about the same cap.
+    """
+    if byte_size >= MIB:
+        return f"{byte_size / MIB:.1f}".replace(".", ",") + " MB"
+    if byte_size >= KIB:
+        return f"{byte_size / KIB:.1f}".replace(".", ",") + " kB"
+    return f"{byte_size} bytes"
+
+
+def _documents_page(
+    rows: QuerySet[Document],
+    request: HttpRequest,
+) -> Page[Document]:
+    """Return the requested slice of the client's vault, first page for bad input.
+
+    `_payments_page` above is the same shape and is deliberately not shared: making one
+    helper serve both would mean editing the payments call site, and this todo does not
+    touch that view. The querystring word IS shared, because one product has one word
+    for a page number and two constants both spelling "pagina" is one rename away from
+    being two different words.
+
+    As there, this is the only parameter the page reads and it selects nothing: it moves
+    a window over rows the database has already confined. A NARROWING parameter would be
+    a different thing entirely -- someone who can filter a confined list can interrogate
+    it, because the shape of the answer reports on the rows the policy is keeping out of
+    reach.
+    """
+    paginator = Paginator(rows, DOCUMENTS_PAGE_SIZE)
+    raw = request.GET.get(PAYMENTS_PAGE_PARAM, "1")
+    try:
+        return paginator.page(int(raw))
+    except (ValueError, EmptyPage):
+        return paginator.page(1)
+
+
 @require_http_methods(["GET"])
 @login_required
-def portal_documents(request: HttpRequest) -> HttpResponse:
-    """Render the client's document vault. Placeholder until the list lands."""
-    return render(request, "portal/documents.html")
+@require_can(VAULT_CAPABILITY)
+def portal_documents(request: PortalVaultRequest) -> HttpResponse:
+    """Render this client's own evidence, newest first, above the form that adds to it.
+
+    **The gate is `require_can`, and that is a real difference from `portal_payments`
+    rather than an inconsistency.** `core.E010` requires any capability a portal view
+    names to be FULL for BOTH client roles. No payment-side capability is —
+    `das.generate` is VIEW_CONFIRM for `client_owner` — so an object-less `require_can`
+    there would 403 a MEI owner on her own payment list, and sign-in is the whole gate.
+    `documents.transfer` IS FULL for both, which is why the upload and download siblings
+    below already carry it and why this page carries it too. The two screens genuinely
+    differ; harmonising them would either lock both client roles out of payments or drop
+    a gate the vault is entitled to.
+
+    No client filter is applied, on purpose, exactly as on the two pages above. The
+    RESTRICTIVE policy comparing `app.client_id` confines every row, and
+    `.filter(client=client)` would make the confinement test pass with that policy
+    dropped — hiding the very failure the test exists to catch.
+
+    **Model instances rather than `.values()`, which inverts the payments reasoning
+    deliberately.** There, flattening to scalars stops a template following
+    `obligation_type` onto a table `app_portal` holds no SELECT on. Here it would buy
+    the opposite of what it looks like it buys. This model's foreign keys point at
+    `accounts_user`, `obligations_obligation` and `clients_clientcompany`; a `.values()`
+    row renders `{{ document.uploaded_by.email }}` as an empty string, so a template
+    reaching for the uploader would produce a page that looked entirely correct while
+    the structural guard was the only thing that ever noticed. Handing the template the
+    row makes that same mistake `permission denied` on the spot — loud, in development,
+    on the first render — and the guard becomes a second line of defence rather than the
+    only one.
+
+    The size beside each row is paired with the row rather than attached to it: the page
+    needs one figure this model does not store, and computing it here keeps the template
+    rendering values instead of deriving them.
+    """
+    rows = Document.objects.order_by("-created_at", "pk")
+    page = _documents_page(rows, request)
+    return render(
+        request,
+        "portal/documents.html",
+        {
+            "page": page,
+            "documents": [
+                (document, _size_label(document.byte_size))
+                for document in page.object_list
+            ],
+            "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+        },
+    )
 
 
 @require_http_methods(["GET"])
@@ -292,6 +402,33 @@ def portal_documents(request: HttpRequest) -> HttpResponse:
 def portal_account(request: HttpRequest) -> HttpResponse:
     """Render the client's account page. Placeholder until the links land."""
     return render(request, "portal/account.html")
+
+
+def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
+    """Answer a refused upload with a page a person can read, still at 400.
+
+    **The status is the part that must not move.** Two cases in
+    `tests/portal/test_document_vault.py` pin `BAD_REQUEST` on these branches, and they
+    pin it because the cap is a real control: an authenticated caller is the one party
+    who fully controls how much this container writes to disk. What changes here is only
+    what the client SEES. A bare `HttpResponseBadRequest` renders one line of unstyled
+    text on a blank page, which is indistinguishable from the site being broken — so a
+    MEI owner whose photo of a nota fiscal was a megabyte too large is told nothing
+    about which of the two happened, or what to do next.
+
+    The page carries the upload form again rather than a link back to it. A refusal that
+    dead-ends is a client who gives up, and a file input cannot be pre-filled anyway, so
+    the retry costs exactly one form and saves a navigation.
+    """
+    return render(
+        request,
+        "portal/upload_error.html",
+        {
+            "reason": reason,
+            "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+        },
+        status=HTTPStatus.BAD_REQUEST,
+    )
 
 
 @require_http_methods(["POST"])
@@ -312,7 +449,7 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
     """
     upload = request.FILES.get("file")
     if upload is None:
-        return HttpResponseBadRequest("Nenhum arquivo enviado.")
+        return _upload_refused(request, MISSING_FILE)
 
     # Checked before anything is read or stored. `upload.size` comes from the
     # Content-Length Django already parsed, so this refuses before the bytes are
@@ -320,9 +457,7 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
     # `size` is Optional on the base class, and a None here would silently skip the cap
     # rather than refuse -- so an unknown size is refused outright.
     if upload.size is None or upload.size > settings.PORTAL_UPLOAD_MAX_BYTES:
-        return HttpResponseBadRequest(
-            f"Arquivo excede o limite de {settings.PORTAL_UPLOAD_MAX_BYTES} bytes.",
-        )
+        return _upload_refused(request, OVERSIZED)
 
     payload = upload.read()
     obligation_id = request.POST.get("obligation") or None
@@ -338,7 +473,13 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
     )
     default_storage.save(document.storage_key, ContentFile(payload))
     document.save(force_insert=True)
-    return redirect("portal-home")
+    # Back to the vault rather than to the landing page, so the client lands on the list
+    # their upload just joined and can see it there. The confirmation is queued rather
+    # than rendered here: this response is a redirect, and a message written into the
+    # session survives it because the session is written back in a response phase that
+    # runs OUTSIDE the portal transaction, after the role and both GUCs are gone.
+    messages.success(request, UPLOAD_CONFIRMATION)
+    return redirect("portal-documents")
 
 
 @require_http_methods(["GET"])
