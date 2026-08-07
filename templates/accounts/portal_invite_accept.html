@@ -1,0 +1,66 @@
+{% extends "allauth/layouts/entrance.html" %}{% load i18n %}
+{% block head_title %}{% translate "Aceitar convite" %}{% endblock head_title %}
+{% block heading %}{% blocktranslate with firm=firm_name %}Convite de {{ firm }}{% endblocktranslate %}{% endblock heading %}
+{% block content %}
+  {% comment %}
+    The first screen a MEI owner ever sees of this product, and it is served on the
+    portal host to somebody who has no account, no seat and no session.
+
+    THE ENTRANCE SHELL, NOT THE FIRM SHELL, AND THAT IS LOAD-BEARING.
+
+    templates/accounts/invite_accept.html is the firm-side twin of this page and cannot
+    be reused for it: that file extends the firm layout, whose footer reverses a name
+    apps/portal/urls.py deliberately does not mount, so every render on this host would
+    be a NoReverseMatch 500 -- on the one screen the product cannot afford to lose and
+    the one host nobody develops against. The entrance layout was made standalone and
+    dual-host precisely so this page could stand on it, and it is the same shell the
+    enrolment screen this flow hands over to already uses.
+
+    NOTHING HERE FOLLOWS A RELATION.
+
+    Both values are scalars the view resolved and passed down. The invited address and
+    the firm's name are the only two facts this page states, and reading either one
+    through the invitation object would put a lazy fetch inside the render -- on a path
+    that establishes no tenant context at all, where the client table answers nothing
+    and a template is the worst possible place to discover it.
+
+    THE ADDRESS IS THE MOST LOAD-BEARING THING ON THE PAGE.
+
+    Acceptance is refused outright when the session does not own it, and the whole
+    invitation is addressed to it, so it is given a label that says what it is rather
+    than being left as a line of grey text somebody could read as the sender or the
+    support desk. The reader has to recognise theirs before typing a password.
+
+    The notice states the three conditions the code actually enforces, before rather
+    than after they bite: the link is single use, it has a deadline, and it must be
+    opened by the address it was sent to. All three end on the refusal page next door,
+    which nobody should meet for the first time without having been told these rules.
+
+    WORDING THAT HOLDS FOR BOTH BRANCHES THIS TEMPLATE SERVES.
+
+    The view renders it with a form for a brand-new account, and with form set to None
+    for somebody already signed in -- an accountant of this firm being given a seat in
+    a client's own portal -- who only confirms. So nothing here may promise a password
+    box: the field loop and the error summary quietly render nothing in that second
+    case, and the submit control names the action rather than the fields, because the
+    action is the same in both.
+
+    The control is drawn at the large size. This surface is a phone in the hand of
+    somebody who is not an accountant, and the touch-target floor the portal holds
+    itself to is 44px rather than the 24 the success criterion asks for.
+  {% endcomment %}
+  {% translate "Este link vale para um único uso e tem prazo de validade. Ele precisa ser aberto pelo endereço para o qual foi enviado." as condicoes %}
+  {% include 'partials/pure/notice.html' with message=condicoes variant='info' only %}
+
+  <div>
+    <p class="text-sm font-medium text-ink-700">{% translate "Convite emitido para" %}</p>
+    <p class="text-sm text-ink-600">{{ invited_email }}</p>
+  </div>
+
+  <form method="post" class="space-y-4">
+    {% csrf_token %}
+    {% include "partials/pure/form_errors.html" with form=form only %}
+    {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+    <button type="submit" class="btn btn-primary btn-lg w-full">{% translate "Aceitar convite" %}</button>
+  </form>
+{% endblock content %}

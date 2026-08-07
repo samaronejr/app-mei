@@ -1,15 +1,19 @@
-{% extends "base.html" %}{% load i18n ptbr %}
+{% extends "base.html" %}{% load authz i18n ptbr %}
 {% block title %}{{ client.legal_name }}{% endblock %}
 {% block heading %}{{ client.legal_name }}{% endblock %}
 {% block content %}
   {% comment %}
-    A read-only file on one client. There is no edit, no upload and no delete here, and
-    this directory ships no POST form at all: the registry is fed by onboarding and by
-    the CSV import, and a second write path would be a second place a CNPJ can be
-    entered unnormalized.
+    A read-only file ABOUT THE CLIENT. There is still no edit, no upload and no delete:
+    every field of the record is fed by onboarding and by the CSV import, and a second
+    write path here would be a second place a CNPJ can be entered unnormalized.
+
+    The one control that writes lives at the foot of the page and writes somewhere
+    else. It creates an invitation, never a column of the client being read, and §17-G
+    authorises it from here because this is where an accountant already is when they
+    decide a client should be able to watch their own obligations.
 
     Every section is a landmark with a heading, and each heading is referenced by the
-    section that owns it. A screen reader then offers this page as a list of four named
+    section that owns it. A screen reader then offers this page as a list of named
     regions rather than one undifferentiated run of text, which is the difference
     between finding the calendar and scrolling through everything before it. The h1
     belongs to the layout, so the sections start at h2.
@@ -131,7 +135,7 @@
     </div>
   </section>
 
-  <section aria-labelledby="onboarding">
+  <section aria-labelledby="onboarding" class="mb-8">
     <h2 id="onboarding" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Checklist de onboarding" %}</h2>
     <div class="card p-5">
       {% comment %}
@@ -160,4 +164,55 @@
       </ul>
     </div>
   </section>
+
+  {% comment %}
+    The one control on this screen that writes, and the only one §17-G authorises here.
+
+    Asked of the capability matrix as well as of the server, and the duplication is the
+    point -- the same pairing the registry's export button uses next door. The endpoint
+    behind this form is decorated with the matching require_can, so THAT decorator is
+    the control and a request forged past a hidden form is still refused; what the tag
+    buys is honesty, because a control offered to a role that would be answered 403
+    teaches an accountant the product is broken. Three queries, carried deliberately in
+    a budget that was sized with headroom for exactly this kind of purchase.
+
+    The address goes in the body and the CLIENT does not: it comes from the URL and is
+    resolved through the firm's own portfolio lens on the far side. A hidden field here
+    would mean the one value deciding whose books are opened arrives from the same
+    place as everything the form distrusts.
+
+    No error summary, because this form is never re-rendered bound. A rejected
+    submission is answered by the shared refusal page and an accepted one redirects to
+    the shared confirmation, which are the same two destinations the firm-side invite
+    form already ends on -- so the two flows cannot start reporting the same outcome
+    differently.
+
+    The glyph is decorative and marked so inside the partial; the word beside it is
+    what is announced and what is read by anyone who does not recognise the mark.
+  {% endcomment %}
+  {% can user "users.create" as pode_convidar %}
+  {% if pode_convidar %}
+    <section aria-labelledby="portal">
+      <h2 id="portal" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/user-round.html" %}
+        <span>{% translate "Acesso ao portal" %}</span>
+      </h2>
+      <div class="card max-w-2xl p-5">
+        <p class="text-sm text-ink-600">
+          {% translate "O convite abre o portal desta empresa e de mais nenhuma. Quem aceitar passa a ver as obrigações, os pagamentos e os documentos deste CNPJ, e nada do restante da carteira." %}
+        </p>
+        <form method="post" action="{% url 'portal-invite-issue' client.pk %}" class="mt-5 space-y-4">
+          {% csrf_token %}
+          {% for field in portal_invite_form %}{% include "partials/pure/field.html" %}{% endfor %}
+          <button type="submit" class="btn btn-primary">
+            {% include "partials/pure/icons/users.html" %}
+            <span>{% translate "Convidar para o portal" %}</span>
+          </button>
+        </form>
+        <p class="mt-5 text-xs text-ink-500">
+          {% translate "O link vai por e-mail, vale para um único uso e tem prazo de validade. Quem recebe define a própria senha ao abrir. Até ser aceito, o convite fica em Convites pendentes, na página da equipe." %}
+        </p>
+      </div>
+    </section>
+  {% endif %}
 {% endblock %}

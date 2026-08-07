@@ -27,6 +27,7 @@ from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
+from apps.accounts.forms import PortalInviteIssueForm
 from apps.accounts.models import User
 from apps.accounts.views import AuthenticatedRequest
 from apps.audit.models import AuditAction
@@ -244,10 +245,25 @@ def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse
     one level up: on the platform host no firm-side membership resolves, so a
     capability consulted first would answer 403 about a firm that is not there.
 
-    Read-only by construction. There is no edit, no upload and no delete here, and
-    `templates/clients/` ships no POST form at all — the registry is fed by onboarding
-    and by the CSV import, and a second write path would be a second place a CNPJ can
-    be entered unnormalized.
+    Read-only ABOUT THE RECORD, which is a narrower promise than the one this docstring
+    used to make and is the one that actually protects the registry. There is still no
+    edit, no upload and no delete: every field of a `ClientCompany` is fed by onboarding
+    and by the CSV import, and a second write path here would be a second place a CNPJ
+    can be entered unnormalized.
+
+    The screen now carries exactly ONE control that writes, and it writes somewhere
+    else. §17-G authorises the portal invitation from this page, because this is where
+    an accountant already is when they decide a client should be able to see their own
+    obligations — and the row it creates is a `tenants_invite`, never a column of the
+    client being viewed. It posts to `portal-invite-issue`, whose own
+    `@require_can(users.create)` is the authorization; the form below is handed to the
+    template unbound so that the control can be drawn at all.
+
+    `PortalInviteIssueForm()` is instantiated rather than resolved from anything, so it
+    costs no query and cannot move the budget. What DOES cost is the template's own
+    `{% can %}` on the same capability — three queries, bought for the reason the
+    registry's export button bought its three: a control offered to an account that
+    would be answered 403 teaches an accountant the product is broken.
     """
     tenant = _tenant(request)
     tenant_id = UUID(str(tenant.pk))
@@ -289,6 +305,13 @@ def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse
                 "pk",
             ),
             "banda": _band_for(request, tenant_id, client),
+            # Unbound, always, and never re-rendered with errors: the issue endpoint
+            # answers a rejected submission with the shared refusal page rather than
+            # bouncing back here, so this key only ever carries an empty form. Passing
+            # the form object instead of writing the two controls by hand is what keeps
+            # the field ids, the label binding and the described-by chain identical to
+            # every other form in this product.
+            "portal_invite_form": PortalInviteIssueForm(),
             "page_title": client.legal_name,
         },
         status=HTTPStatus.OK,

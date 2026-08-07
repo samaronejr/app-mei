@@ -37,6 +37,22 @@ composition — the template that rendered the page must be OURS, and it must wr
 own `head_title` rather than inherit allauth's compiled pt-BR string. Both are read off
 the response that was actually rendered, not off the loader, so a file that exists but
 never reaches the document cannot satisfy them.
+
+THE INVITATION ENTRANCE, ADDED AT THE FOOT OF THIS FILE.
+
+The three legs above enter the gate as an account that already exists. A real MEI owner
+never does: they arrive holding a link their accountant sent, with no account, no seat
+and no session, and the enrolment gate is something they meet on the way rather than
+somewhere they start. `test_a_client_invited_from_the_firm_reaches_inicio_on_day_one`
+walks that whole road — the firm's own screen, the invitation, the acceptance form, the
+gate these legs already pin, and the landing page on the far side of it — reusing
+`_walk` rather than restating it, so the bound, the never-leave-the-host rule and the
+reauthentication answer are the same ones the legs are measured against.
+
+It computes one real TOTP code, which the paragraph above says this file does not.
+That is the single unavoidable exception: enrolment is the step under test there, and
+there is no way to complete it without answering the authenticator. `tests/support.py`
+documents the time-step boundary this can land on.
 """
 
 import re
@@ -48,6 +64,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from django.conf import settings
+from django.core import mail
 from django.test import Client
 from django.urls import reverse
 from pytest_django.fixtures import SettingsWrapper
@@ -56,6 +73,8 @@ from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Membership, Tenant, TenantRole
+from tests.support import totp_code
+from tests.ui.factories import Firm, add_client, assign, make_firm
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
     from django.test.client import _MonkeyPatchedWSGIResponse
@@ -322,3 +341,316 @@ def test_the_enrolment_walkthrough_ends_on_a_page_this_project_composed(
         f"{leg.label}: {leg.page_template} did not set head_title to {leg.title!r}; "
         f"the document still carries whichever title it inherited"
     )
+
+
+# ------------------------------------------ the invitation entrance to the same gate
+#
+# Everything above enters as an account that already exists. This is the road a MEI
+# owner actually travels, and it crosses four surfaces that fail independently:
+#
+#   1. the firm's client screen, where an accountant decides this client should be
+#      able to watch their own obligations, and where the control has to be VISIBLE to
+#      a role that holds `users.create` and absent from one that does not;
+#   2. the mailed link, which has to name that firm's portal host and no other;
+#   3. the acceptance page on the portal host, which cannot be the firm-side accept
+#      template — that one reaches the firm shell, whose footer reverses a name the
+#      portal urlconf does not mount, so it is a NoReverseMatch 500 here;
+#   4. the enrolment gate the legs above pin, and the landing page past it.
+#
+# Walked as ONE test rather than four, because the interesting failures are the joins.
+# Each of the four is separately green in a product where the invited owner still
+# cannot reach Início.
+
+# DERIVED from PORTAL_HOST, never spelled beside it. `_walk` sends every request to that
+# constant, so the firm this walk invites from has to be the firm that host names — and
+# the failure when the two drift is silent: an unresolvable slug leaves `request.client`
+# unset, the landing page answers 200 with its no-company branch, and every status,
+# origin and redirect assertion still holds.
+INVITE_FIRM_SLUG: Final = PORTAL_HOST.removesuffix(".localhost").removesuffix("-portal")
+INVITE_FIRM_HOST: Final = f"{INVITE_FIRM_SLUG}.localhost"
+INVITED_EMAIL: Final = "dona@padaria.example"
+INVITED_CLIENT: Final = "Padaria da Esquina MEI"
+
+# The acceptance path out of the mailed body. Matched rather than rebuilt from the
+# token, because what this walk is testing is that the link a person receives works —
+# a path reconstructed here would be green against a message nobody could act on.
+ACCEPT_PATH: Final = re.compile(r"(/convites/aceitar/[^/\s]+/)")
+
+# The shared secret, read off the enrolment page's readonly control. That control
+# exists so somebody without a camera can enrol; here it is the only way the walk can
+# answer the authenticator, which makes this assertion a live pin on it.
+SECRET_FIELD: Final = re.compile(r'id="authenticator_secret"[^>]*\svalue="([^"]+)"')
+
+ACCEPT_TEMPLATE: Final = "accounts/portal_invite_accept.html"
+DETAIL_TEMPLATE: Final = "clients/detail.html"
+PORTAL_HOME_TEMPLATE: Final = "portal/home.html"
+
+# The portal's own template tree, which is an app directory rather than the project one
+# every other origin check in this file uses.
+PORTAL_TEMPLATE_ROOT: Final[Path] = (
+    Path(settings.BASE_DIR) / "apps" / "portal" / "templates"
+)
+
+# The layout's single heading, read for what is INSIDE it. The class list is not pinned:
+# what this walk cares about is that the invitee's own company names the page, and
+# retuning the type scale is not a defect.
+HEADING = re.compile(r"<h1\b[^>]*>(.*?)</h1>", re.IGNORECASE | re.DOTALL)
+
+CURRENT_PAGE: Final = 'aria-current="page"'
+
+# The label on the firm-side control, and the label on the portal-side submit. Both are
+# the msgid itself: `locale/` ships no compiled catalogue.
+INVITE_ACTION_LABEL: Final = "Convidar para o portal"
+ACCEPT_LABEL: Final = "Aceitar convite"
+
+# What the portal's bar calls the landing page, and what the layout titles it.
+INICIO: Final = "Início"
+PORTAL_TITLE: Final = "Portal do cliente"
+
+
+@pytest.fixture
+def invited_firm() -> Firm:
+    """A firm with one MEI client, and a staff accountant assigned to it.
+
+    The accountant is not decoration. `users.create` is NONE for that role, so they are
+    the control proving the invitation form is gated rather than merely present — and
+    the assignment is what lets them reach the client's page at all, so an absent form
+    cannot be passing because the whole screen was refused.
+    """
+    firm = make_firm(INVITE_FIRM_SLUG)
+    company = add_client(firm, legal_name=INVITED_CLIENT, base="112223330001")
+    assign(firm, company, firm.accountant)
+    return firm
+
+
+def _firm_session(user: User) -> Client:
+    """Sign in on the firm host without computing a code.
+
+    `force_login` rather than the real allauth flow, for the reason the module docstring
+    gives: the firm side is the SETTING of this walk, not its subject, and driving a
+    genuine TOTP sign-in here would add a second time-step boundary to a test that
+    already has to cross one.
+    """
+    http = Client()
+    http.force_login(user)
+    return http
+
+
+def _detail_body(http: Client, firm: Firm) -> str:
+    target = reverse("client-detail", args=[firm.clients[0].pk])
+    response = http.get(target, headers={"host": INVITE_FIRM_HOST})
+    assert response.status_code == HTTPStatus.OK, (
+        f"the client screen answered {response.status_code} at {target}, so nothing "
+        f"read off it is a statement about a rendered page"
+    )
+    assert _origin_of(response, DETAIL_TEMPLATE, "client detail").is_relative_to(
+        PROJECT_TEMPLATES,
+    )
+    return str(response.content.decode())
+
+
+def _accept_path_from_outbox() -> str:
+    assert mail.outbox, (
+        "no message was sent, so the invitee never received a link and every hop "
+        "below would be walking a path this test invented"
+    )
+    body = str(mail.outbox[-1].body)
+    assert f"{INVITE_FIRM_SLUG}-portal." in body, (
+        f"the mailed link does not name {INVITE_FIRM_SLUG}'s portal host: {body!r}. A "
+        f"link built against the firm subdomain or the platform host lands the invitee "
+        f"where the acceptance route is not mounted at all"
+    )
+    found = ACCEPT_PATH.search(body)
+    assert found is not None, f"no acceptance path in the message body: {body!r}"
+    return found.group(1)
+
+
+def _secret_from(body: str) -> str:
+    found = SECRET_FIELD.search(body)
+    assert found is not None, (
+        "the enrolment page renders no readable authenticator secret, so somebody "
+        "without a camera cannot enrol and this walk cannot answer the code"
+    )
+    return found.group(1)
+
+
+def test_the_invitation_control_is_offered_only_to_a_role_that_may_use_it(
+    invited_firm: Firm,
+) -> None:
+    """Visibility is convenience; the decorator is the authorization.
+
+    Both halves are asserted, because either alone is the wrong lesson. A hidden form
+    that is not actually guarded is a control anybody can post to; a guarded form drawn
+    for everybody is a button that teaches an accountant the product is broken.
+    """
+    company = invited_firm.clients[0]
+    issue = reverse("portal-invite-issue", args=[company.pk])
+
+    # Given the owner, who holds `users.create`
+    offered = _detail_body(_firm_session(invited_firm.owner), invited_firm)
+    assert f'action="{issue}"' in offered, (
+        f"the owner's client screen draws no form posting to {issue}; the one control "
+        f"§17-G authorises on this page is missing"
+    )
+    assert INVITE_ACTION_LABEL in offered, (
+        f"{INVITE_ACTION_LABEL!r} is absent from the owner's client screen, so the "
+        f"control is unlabelled or drawn under some other name"
+    )
+
+    # And the staff accountant, who does not — reaching the same client through their
+    # own assignment, so the absence below is the gate and not a refused page
+    withheld = _detail_body(_firm_session(invited_firm.accountant), invited_firm)
+    assert company.legal_name in withheld, (
+        "the accountant did not actually reach the client's page, so the absences "
+        "below hold for the wrong reason"
+    )
+    assert f'action="{issue}"' not in withheld, (
+        "the accountant is offered the invitation form even though `users.create` is "
+        "NONE for their role; the endpoint answers 403, so this is a dead control"
+    )
+    assert INVITE_ACTION_LABEL not in withheld
+
+    # Then posting anyway is still refused, which is the half the template cannot do
+    refused = _firm_session(invited_firm.accountant).post(
+        issue,
+        {"email": INVITED_EMAIL, "role": TenantRole.CLIENT_OWNER},
+        headers={"host": INVITE_FIRM_HOST},
+    )
+    assert refused.status_code == HTTPStatus.FORBIDDEN, (
+        f"a role without `users.create` posted the invitation form and was answered "
+        f"{refused.status_code}; hiding the control is not what refuses it"
+    )
+
+
+def test_a_client_invited_from_the_firm_reaches_inicio_on_day_one(
+    invited_firm: Firm,
+) -> None:
+    """The whole road: the firm's screen to Início, on the hosts that actually serve it.
+
+    The acceptance criterion for the invitation UI, and it is deliberately end-to-end.
+    Every hop below has its own narrower pin somewhere in this suite; what none of them
+    can see is whether the road joins up — and a MEI owner who cannot reach their own
+    landing page does not care which of the five surfaces let go.
+    """
+    company = invited_firm.clients[0]
+
+    # Given an accountant on the client's own screen, who invites them to the portal
+    # through the control that screen now draws
+    issue = reverse("portal-invite-issue", args=[company.pk])
+    assert f'action="{issue}"' in _detail_body(
+        _firm_session(invited_firm.owner),
+        invited_firm,
+    )
+    issued = _firm_session(invited_firm.owner).post(
+        issue,
+        {"email": INVITED_EMAIL, "role": TenantRole.CLIENT_OWNER},
+        headers={"host": INVITE_FIRM_HOST},
+    )
+    assert issued.status_code == HTTPStatus.FOUND, (
+        f"issuing the invitation answered {issued.status_code} rather than redirecting "
+        f"to the confirmation the firm-side invite flow already ends on"
+    )
+    assert issued["Location"] == reverse("invite-issued")
+
+    # When the invited owner opens the link that reached their mailbox, holding no
+    # account and no session at all
+    accept = _accept_path_from_outbox()
+    invitee = Client()
+    opened = invitee.get(accept, headers={"host": PORTAL_HOST})
+
+    # Then the acceptance page is served on the portal host, drawn by THIS project's
+    # template on the entrance shell. Status alone is satisfied by upstream markup and
+    # by the unstyled placeholder this page replaced, so the origin, the title and the
+    # stylesheet are asserted with it.
+    assert opened.status_code == HTTPStatus.OK, (
+        f"the acceptance link answered {opened.status_code} on {PORTAL_HOST}; "
+        f"{opened.get('Location', 'no Location header')}"
+    )
+    landing = opened.content.decode()
+    assert _origin_of(opened, ACCEPT_TEMPLATE, "accept").is_relative_to(
+        PROJECT_TEMPLATES,
+    ), f"{ACCEPT_TEMPLATE} is not this project's file"
+    assert STYLE_MARKER in landing, (
+        f"the acceptance page rendered without {STYLE_MARKER}, so no layout of ours "
+        f"ran and the first screen a MEI owner sees is bare markup"
+    )
+    assert f"<title>{ACCEPT_LABEL}</title>" in landing
+    assert len(H1.findall(landing)) == 1, (
+        f"the acceptance page renders {len(H1.findall(landing))} top-level headings; "
+        f"the entrance layout owns exactly one"
+    )
+    assert INVITED_EMAIL in landing, (
+        "the acceptance page does not name the address the invitation was issued to, "
+        "so the reader cannot tell whether the link is theirs before typing a password"
+    )
+    assert invited_firm.tenant.name in landing, (
+        "the acceptance page does not name the firm that issued the invitation"
+    )
+
+    # When they set a password
+    submitted = invitee.post(
+        accept,
+        {"full_name": "Dona Maria", "password1": PASSWORD, "password2": PASSWORD},
+        headers={"host": PORTAL_HOST},
+    )
+    assert submitted.status_code == HTTPStatus.FOUND, (
+        f"setting the password answered {submitted.status_code} rather than signing "
+        f"the new owner in and sending them onward"
+    )
+    home = reverse("portal-home", urlconf=PORTAL_URLCONF)
+    assert submitted["Location"] == home
+
+    # Then the enrolment gate takes over before any page renders, exactly as it does
+    # for the three legs above, and the walk ends on the activation screen
+    gate = _walk(
+        invitee,
+        Leg(
+            label="invite",
+            entry=home,
+            terminal=_path("mfa_activate_totp"),
+            page_template="mfa/totp/activate_form.html",
+            title="Ativar autenticador",
+            least_redirects=1,
+        ),
+    )
+
+    # When they enrol with a code their authenticator would produce from the secret
+    # this very page handed them
+    enrolled = invitee.post(
+        _path("mfa_activate_totp"),
+        {"code": totp_code(_secret_from(gate.content.decode()))},
+        headers={"host": PORTAL_HOST},
+    )
+    assert enrolled.status_code in REDIRECTED, (
+        f"the authenticator code was refused ({enrolled.status_code}), so enrolment "
+        f"never completed and the landing page below would be the gate again"
+    )
+
+    # Then Início is theirs, on their own firm's portal host, and the gate lets them
+    # through without diverting at all
+    inicio = _walk(
+        invitee,
+        Leg(
+            label="inicio",
+            entry="/",
+            terminal=home,
+            page_template=PORTAL_HOME_TEMPLATE,
+            title=PORTAL_TITLE,
+            least_redirects=0,
+        ),
+    )
+    arrived = inicio.content.decode()
+    headings = [found.strip() for found in HEADING.findall(arrived)]
+    assert headings == [company.legal_name], (
+        f"the landing page's heading is {headings} rather than "
+        f"[{company.legal_name!r}]; the invitee reached Início without their own "
+        f"company on it, which is the one thing this seat was granted for"
+    )
+    bar = arrived[arrived.index("<nav") :]
+    assert CURRENT_PAGE in bar[: bar.index(INICIO)], (
+        f"the portal bar does not mark {INICIO} as the page being viewed, so the "
+        f"invitee landed somewhere other than the portal's own home"
+    )
+    assert _origin_of(inicio, PORTAL_HOME_TEMPLATE, "inicio").is_relative_to(
+        PORTAL_TEMPLATE_ROOT,
+    ), "the landing page is not the shipped portal template"
