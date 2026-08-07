@@ -1,0 +1,49 @@
+{% load i18n %}{% comment %}
+The portal's entire navigation: four destinations, identical on every screen.
+
+Static by construction, and that is the whole design rather than a simplification.
+Every one of these pages is granted in full to both client roles, so there is nothing
+to decide -- and deciding anything here would mean resolving a capability while the
+page renders, which happens inside the portal transaction under a role holding SELECT
+on none of the three tables such a lookup reads. There is therefore no capability tag
+anywhere in this file, and a guard test refuses one.
+
+Each destination is reversed twice, on purpose. The captured form is what the active
+comparison needs, because a template condition cannot contain a tag; but the captured
+form fails SILENTLY when a name is missing, leaving an empty destination on a page that
+still returns 200. The form written into the anchor raises instead, so a route deleted
+from the portal tree is loud on the next request rather than a dead control nobody
+notices. A pinned test reverses all four names against that tree as well.
+
+The active item is decided by comparing the request's own path with a destination the
+tag already built: a string comparison, no query, and nothing a view has to remember to
+pass down.
+
+String literals inside a tag that sits within an HTML attribute are single-quoted
+throughout this project. The class-token scanner reads attributes with a regex before
+it strips template syntax, so a double quote inside one ends the attribute early and
+feeds the tag's own words to the stale-stylesheet guard as class names. That same
+scanner reads this comment, which is why nothing here is written in attribute form.
+
+The glyphs are decorative and are marked as such. The word beside each one is what an
+assistive technology announces, and it is what a reader who does not recognise the
+glyph reads instead -- so the label is never optional and the icon never stands alone.
+{% endcomment %}{% url 'portal-home' as home_url %}{% url 'portal-payments' as payments_url %}{% url 'portal-documents' as documents_url %}{% url 'portal-account' as account_url %}
+<nav aria-label="{% translate 'Navegação principal' %}" class="bottom-nav">
+  <a class="bottom-nav-link" href="{% url 'portal-home' %}"{% if request.path == home_url %} aria-current="page"{% endif %}>
+    {% include "partials/pure/icons/home.html" %}
+    <span>{% translate "Início" %}</span>
+  </a>
+  <a class="bottom-nav-link" href="{% url 'portal-payments' %}"{% if request.path == payments_url %} aria-current="page"{% endif %}>
+    {% include "partials/pure/icons/wallet.html" %}
+    <span>{% translate "Pagamentos" %}</span>
+  </a>
+  <a class="bottom-nav-link" href="{% url 'portal-documents' %}"{% if request.path == documents_url %} aria-current="page"{% endif %}>
+    {% include "partials/pure/icons/folder.html" %}
+    <span>{% translate "Documentos" %}</span>
+  </a>
+  <a class="bottom-nav-link" href="{% url 'portal-account' %}"{% if request.path == account_url %} aria-current="page"{% endif %}>
+    {% include "partials/pure/icons/user-round.html" %}
+    <span>{% translate "Conta" %}</span>
+  </a>
+</nav>

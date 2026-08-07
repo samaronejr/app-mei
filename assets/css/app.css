@@ -475,16 +475,37 @@
     @apply border-accent-400 bg-accent-50;
   }
 
-  /* Phone-width navigation. Nothing here reaches for a safe-area inset — this is a
-   * browser page, not an installed app shell. */
+  /* The client portal's only navigation. Pinned to the bottom edge on a phone, where
+   * the thumb already is, and released into the document flow at `md`, where a fixed
+   * strip would spend a band of a large screen on four links that fit comfortably
+   * under the header.
+   *
+   * One element at both widths rather than a bar and a desktop copy of it. A second
+   * copy costs nothing to render — these destinations are constants — but it puts two
+   * nav landmarks and two current-page markers on every page, and the people who hear
+   * this interface rather than see it pay for both.
+   *
+   * `hidden` above the breakpoint is what this used to say, and it cannot be what it
+   * says now: this is the portal's whole navigation, so hiding it on a wide screen
+   * leaves that screen with no way to move between pages at all.
+   *
+   * Nothing here reaches for a safe-area inset — this is a browser page, not an
+   * installed app shell. The page below reserves its own bottom padding instead, so
+   * the last line of content is never left underneath the bar. */
   .bottom-nav {
     @apply fixed inset-x-0 bottom-0 z-40 flex border-t border-ink-200 bg-surface
-      shadow-raised sm:hidden;
+      shadow-raised md:static md:justify-center md:border-b md:border-t-0
+      md:shadow-none;
   }
 
+  /* 2.75rem is 44px — the smallest target a thumb hits reliably, and the reason the
+   * minimum height is set rather than left to the padding. The glyph sits above the
+   * word on a phone, where four equal columns divide the width, and beside it at `md`,
+   * where the links are a row that takes only the space it needs. */
   .bottom-nav-link {
     @apply flex min-h-11 flex-1 flex-col items-center justify-center gap-1 px-2 py-2
-      text-xs font-medium text-ink-600 transition-colors;
+      text-xs font-medium text-ink-600 transition-colors md:flex-none md:flex-row
+      md:px-4 md:text-sm;
   }
 
   .bottom-nav-link:hover {

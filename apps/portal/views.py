@@ -63,6 +63,33 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     )
 
 
+@require_http_methods(["GET"])
+@login_required
+def portal_payments(request: HttpRequest) -> HttpResponse:
+    """Render the client's deadlines. Placeholder until the list lands.
+
+    The route exists now rather than with the page, because the shell's navigation
+    names it on every portal screen and `{% url %}` on an unregistered name raises
+    during rendering — so a bar pointing at a page that does not yet exist is not a
+    dead link, it is a 500 on the whole portal.
+    """
+    return render(request, "portal/payments.html")
+
+
+@require_http_methods(["GET"])
+@login_required
+def portal_documents(request: HttpRequest) -> HttpResponse:
+    """Render the client's document vault. Placeholder until the list lands."""
+    return render(request, "portal/documents.html")
+
+
+@require_http_methods(["GET"])
+@login_required
+def portal_account(request: HttpRequest) -> HttpResponse:
+    """Render the client's account page. Placeholder until the links land."""
+    return render(request, "portal/account.html")
+
+
 @require_http_methods(["POST"])
 @login_required
 @require_can(VAULT_CAPABILITY)

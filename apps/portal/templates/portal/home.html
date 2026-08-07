@@ -1,16 +1,27 @@
 {% extends "portal/base.html" %}
-{% load i18n %}
+{% load i18n %}{% comment %}
+The company's own name fills the layout's heading rather than being written as a second
+heading underneath it. One heading per page is the shell's contract, and a page whose
+subject is a single company has nothing to call itself that is truer than its name.
+
+The value elements carry no attributes and must keep none: the isolation suite asserts
+the obligation count by its exact rendered element, and that assertion is the only
+falsifiable half of the test proving the database confined the count rather than the
+view filtering it. Figures line up column-wise because the list sets fixed-width
+numerals, which is an inherited property and therefore reaches them from the parent.
+{% endcomment %}
+
+{% block heading %}{% if client %}{{ client.legal_name }}{% else %}{% translate "Portal do cliente" %}{% endif %}{% endblock %}
 
 {% block content %}
   {% if client %}
-    <h2>{{ client.legal_name }}</h2>
-    <dl>
-      <dt>{% translate "CNPJ" %}</dt>
+    <dl class="card grid grid-cols-2 gap-y-3 px-5 py-4 text-sm tabular-nums">
+      <dt class="text-ink-500">{% translate "CNPJ" %}</dt>
       <dd>{{ client.masked_cnpj }}</dd>
-      <dt>{% translate "Obrigações" %}</dt>
+      <dt class="text-ink-500">{% translate "Obrigações" %}</dt>
       <dd>{{ obligation_count }}</dd>
     </dl>
   {% else %}
-    <p>{% translate "Nenhuma empresa vinculada a esta conta." %}</p>
+    <p class="card empty-state">{% translate "Nenhuma empresa vinculada a esta conta." %}</p>
   {% endif %}
 {% endblock %}
