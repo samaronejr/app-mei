@@ -25,13 +25,23 @@
     requester is most likely to be surprised by later. Someone told now that fiscal
     documents survive an erasure request reads the eventual answer as the law working;
     someone told for the first time in that answer reads it as a refusal.
+
+    The glyph on the heading is the calendar-with-clock, and it is there because this
+    section is about WHEN. That is the one question this page cannot answer with a
+    figure — no service window is written down anywhere in this repo, so the deadline
+    is named by its article instead — and a reader scanning for a date needs to land on
+    this section rather than hunt the prose for one. It reinforces the subject; it is
+    not the subject. The deadline is still stated in words, in the paragraph below.
   {% endcomment %}
   <div class="max-w-2xl">
     {% translate "Sua solicitação foi registrada e encaminhada ao encarregado." as received %}
     {% include 'partials/pure/notice.html' with message=received variant='success' only %}
 
     <section class="card mt-6 p-6" aria-labelledby="prazo-de-resposta">
-      <h2 id="prazo-de-resposta" class="mb-3 text-sm font-semibold text-ink-700">{% translate "O que acontece agora" %}</h2>
+      <h2 id="prazo-de-resposta" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/calendar-clock.html" %}
+        <span>{% translate "O que acontece agora" %}</span>
+      </h2>
       <p class="text-sm text-ink-600">
         {% translate "O encarregado analisa o pedido e responde para o e-mail informado no formulário, dentro do prazo legal previsto no art. 19 da LGPD." %}
       </p>

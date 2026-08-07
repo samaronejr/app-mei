@@ -2,13 +2,57 @@
 {% block title %}{% translate "Solicitação de titular de dados" %}{% endblock %}
 {% block heading %}{% translate "Solicitação de titular de dados" %}{% endblock %}
 {% block content %}
-  <div class="card max-w-2xl p-6">
-    <p class="mb-4 text-sm text-ink-600">{% translate "Use este canal para exercer os direitos previstos no art. 18 da LGPD." %}</p>
-    <form method="post" class="space-y-4">
-      {% csrf_token %}
-      {% include "partials/pure/form_errors.html" %}
-      {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
-      <button type="submit" class="btn btn-primary">{% translate "Enviar" %}</button>
-    </form>
+  {% comment %}
+    The most public screen this product has. `data_subject_request_view` is
+    unauthenticated by design — art. 18 rights belong to a data subject, and most of
+    the people this platform processes data about have no login here — so this page is
+    read by someone who has never seen the interface, arriving from the footer link,
+    about to type a CPF into a form belonging to a company they may never have heard of.
+
+    Which is why the notice is the first thing and says the two facts that decide
+    whether the form gets filled in at all: no account is needed, and the answer goes
+    to the address typed below. The second is not a courtesy — `request_received.html`
+    promises a reply "para o e-mail informado no formulário", and a typo there is a
+    request that can never be answered and cannot be corrected afterwards, because the
+    view keeps no other channel back to the requester.
+
+    The section under the form explains the only two controls a stranger hesitates on.
+    The relationship field offers exactly two values in the model, holder and
+    representative, and it is the field that decides who the answer may be handed to.
+    The CPF is the one piece of data on this page a person is right to be careful with,
+    so the page says what it is for and where it lands: `DataSubjectRequest` is
+    deliberately NOT append-only — its own docstring says so — precisely so the number
+    can be erased later, while the audit trail beside it never records a document at all.
+
+    The glyph is on that section and nowhere else. It marks the part of the page that
+    is about a PERSON rather than about the request, which is the distinction the two
+    paragraphs under it turn on; the form's own controls are labelled and need no help.
+  {% endcomment %}
+  <div class="max-w-2xl space-y-6">
+    {% translate "Não é preciso ter conta. A resposta vai para o e-mail informado abaixo, então confira o endereço antes de enviar." as canal %}
+    {% include 'partials/pure/notice.html' with message=canal variant='info' only %}
+
+    <div class="card p-6">
+      <p class="mb-4 text-sm text-ink-600">{% translate "Use este canal para exercer os direitos previstos no art. 18 da LGPD." %}</p>
+      <form method="post" class="space-y-4">
+        {% csrf_token %}
+        {% include "partials/pure/form_errors.html" %}
+        {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        <button type="submit" class="btn btn-primary">{% translate "Enviar" %}</button>
+      </form>
+    </div>
+
+    <section class="card p-6" aria-labelledby="quem-pode-pedir">
+      <h2 id="quem-pode-pedir" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/user-round.html" %}
+        <span>{% translate "Quem pode pedir, e para que serve o CPF" %}</span>
+      </h2>
+      <p class="text-sm text-ink-600">
+        {% translate "O pedido pode partir do próprio titular dos dados ou de quem o represente. É essa a relação que o formulário pergunta, e ela decide a quem a resposta pode ser entregue." %}
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% translate "O CPF serve para localizar os dados certos e confirmar de quem eles são. Ele fica no registro desta solicitação, que é apagável — diferente da trilha de auditoria, que não guarda documento nenhum." %}
+      </p>
+    </section>
   </div>
 {% endblock %}

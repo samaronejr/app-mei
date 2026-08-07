@@ -2,13 +2,47 @@
 {% block title %}{% translate "Aceitar convite" %}{% endblock %}
 {% block heading %}{% blocktranslate with firm=invite.tenant.name %}Convite para {{ firm }}{% endblocktranslate %}{% endblock %}
 {% block content %}
-  <div class="card max-w-2xl p-6">
-    <p class="mb-4 text-sm text-ink-600">{{ invite.email }}</p>
-    <form method="post" class="space-y-4">
-      {% csrf_token %}
-      {% include "partials/pure/form_errors.html" %}
-      {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
-      <button type="submit" class="btn btn-primary">{% translate "Aceitar" %}</button>
-    </form>
+  {% comment %}
+    The invitee's first screen, and until now it opened with a bare e-mail address
+    floating above a password form. That address is the single most load-bearing thing
+    on the page — `InviteEmailMismatchError` refuses the redemption outright when the
+    session belongs to somebody else, and the whole invitation is addressed to it — and
+    it was rendered as an unlabelled line of grey text somebody could reasonably read as
+    the sender, the support desk, or an example.
+
+    So it is given a heading that says what it is, and a glyph that says it names a
+    PERSON. That is the functional job here: nothing else on this page is an identity,
+    and the reader has to recognise theirs before typing a password. The address itself
+    still carries the meaning; the glyph only tells them where to look for it.
+
+    The notice states the three conditions the code actually enforces, before rather
+    than after they bite: `InviteAlreadyAcceptedError` is what makes the link
+    single-use, `InviteExpiredError` is the deadline, and the mismatch above is why the
+    address matters. All three produce `invite_refused.html`, which is a page nobody
+    should meet for the first time without having been told these rules once.
+
+    Wording that holds for BOTH branches this template serves. `accept_invite_view`
+    renders it with a form for a brand-new account and with `form` set to None for
+    somebody already signed in, who only confirms — so nothing here may promise a
+    password box, and the field loop and the summary quietly render nothing in that
+    second case. The submit control is the same in both, because the action is.
+  {% endcomment %}
+  <div class="max-w-2xl space-y-6">
+    {% translate "Este link vale para um único uso e tem prazo de validade. Ele precisa ser aberto pelo endereço para o qual foi enviado." as condicoes %}
+    {% include 'partials/pure/notice.html' with message=condicoes variant='info' only %}
+
+    <section class="card p-6" aria-labelledby="convite-emitido-para">
+      <h2 id="convite-emitido-para" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/user-round.html" %}
+        <span>{% translate "Convite emitido para" %}</span>
+      </h2>
+      <p class="mb-5 text-sm text-ink-600">{{ invite.email }}</p>
+      <form method="post" class="space-y-4">
+        {% csrf_token %}
+        {% include "partials/pure/form_errors.html" %}
+        {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        <button type="submit" class="btn btn-primary">{% translate "Aceitar" %}</button>
+      </form>
+    </section>
   </div>
 {% endblock %}
