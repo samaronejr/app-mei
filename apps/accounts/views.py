@@ -8,6 +8,7 @@ acceptance link would 403 for precisely the people it was sent to.
 """
 
 from http import HTTPStatus
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 from django.conf import settings
@@ -23,7 +24,11 @@ from django.urls import reverse
 from django.utils.translation import gettext as _
 from django.views.decorators.http import require_http_methods, require_POST
 
-from apps.accounts.forms import InviteAcceptForm, InviteIssueForm
+from apps.accounts.forms import (
+    InviteAcceptForm,
+    InviteIssueForm,
+    PortalInviteIssueForm,
+)
 from apps.accounts.invites import (
     INVITE_CAPABILITY,
     InviteAccountExistsError,
@@ -31,11 +36,14 @@ from apps.accounts.invites import (
     InviteEmailMismatchError,
     InviteError,
     InviteExpiredError,
+    InviteHostMismatchError,
     InviteNotFoundError,
     InviteNotPermittedError,
     InviteNotRevocableError,
     InviteRevokedError,
+    InviteScopeMismatchError,
     accept_invite,
+    issue_client_invite,
     issue_invite,
     register_and_accept,
     resolve_invite,
@@ -44,8 +52,11 @@ from apps.accounts.invites import (
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
+from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
+from apps.portal.middleware import PORTAL_URLCONF
 from apps.tenants.models import Invite, Membership, TenantRole
+from apps.tenants.validators import PORTAL_HOST_SUFFIX
 
 
 class AuthenticatedRequest(HttpRequest):
@@ -72,6 +83,12 @@ class MemberLifecycleError(Exception):
 
 _STATUS_BY_ERROR: dict[type[InviteError], HTTPStatus] = {
     InviteNotFoundError: HTTPStatus.NOT_FOUND,
+    # Listed individually although both subclass InviteNotFoundError: the lookup below
+    # is on `type(error)` exactly, so inheritance buys nothing here and an unlisted
+    # subclass would quietly fall through to 400 — reporting a wrong-firm link as
+    # malformed input rather than as no link at all.
+    InviteHostMismatchError: HTTPStatus.NOT_FOUND,
+    InviteScopeMismatchError: HTTPStatus.NOT_FOUND,
     InviteExpiredError: HTTPStatus.GONE,
     InviteAlreadyAcceptedError: HTTPStatus.GONE,
     # GONE, alongside its two siblings, because the three say the same thing to the
@@ -83,8 +100,19 @@ _STATUS_BY_ERROR: dict[type[InviteError], HTTPStatus] = {
 }
 
 
+def status_for_invite_error(error: InviteError) -> HTTPStatus:
+    """Return the status an invitation refusal answers with, on either host.
+
+    Public because the portal's acceptance route refuses the same domain errors and must
+    answer them identically. A second copy of this mapping would let one host report a
+    withdrawn link as gone and the other as merely malformed, and the invitee reading
+    two different sentences about the same token has no way to know which is true.
+    """
+    return _STATUS_BY_ERROR.get(type(error), HTTPStatus.BAD_REQUEST)
+
+
 def _refuse(request: HttpRequest, error: InviteError) -> HttpResponse:
-    status = _STATUS_BY_ERROR.get(type(error), HTTPStatus.BAD_REQUEST)
+    status = status_for_invite_error(error)
     return render(
         request,
         REFUSAL_TEMPLATE,
@@ -140,6 +168,117 @@ def _mail_invitation(email: str, tenant_name: str, raw_token: str) -> None:
         from_email=None,
         recipient_list=[email],
     )
+
+
+def portal_accept_link(tenant_slug: str, raw_token: str) -> str:
+    """Build the absolute acceptance URL on ONE firm's portal host.
+
+    The host is derived rather than configured, because there is no second setting to
+    derive it from: `PLATFORM_URL` names the deployment, and every portal lives at
+    `<slug>-portal` under the same domain and port by construction — the reserved-slug
+    validator exists to keep that mapping total.
+
+    The path is reversed against the PORTAL urlconf explicitly. `reverse()` with no
+    `urlconf` resolves against whatever tree the current request set, and this runs on a
+    firm subdomain where that tree does not carry the name at all — so the default would
+    raise `NoReverseMatch` on the one call site that exists.
+    """
+    parts = urlsplit(settings.PLATFORM_URL)
+    host = f"{tenant_slug}{PORTAL_HOST_SUFFIX}.{parts.hostname or ''}"
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    path = reverse(
+        "portal-invite-accept",
+        args=[raw_token],
+        urlconf=PORTAL_URLCONF,
+    )
+    return str(urlunsplit((parts.scheme, host, path, "", "")))
+
+
+def _mail_portal_invitation(
+    email: str,
+    tenant_name: str,
+    tenant_slug: str,
+    raw_token: str,
+) -> None:
+    """Send the portal invitation down the same outbound path the firm invite uses.
+
+    `send_mail` and nothing else, deliberately. A second transport — a task, a client, a
+    provider SDK — would be a second place a bearer token can be logged, retried into a
+    dead-letter queue, or delivered from an address the firm's domain does not
+    authenticate. There is one way out of this product and this is it.
+    """
+    link = portal_accept_link(tenant_slug, raw_token)
+    send_mail(
+        subject=_("Acesso ao portal de %(firm)s") % {"firm": tenant_name},
+        message=_(
+            "Você foi convidado para acompanhar sua empresa no portal de "
+            "%(firm)s.\n\nAcesse: %(link)s\n",
+        )
+        % {"firm": tenant_name, "link": link},
+        from_email=None,
+        recipient_list=[email],
+    )
+
+
+@require_POST
+@login_required
+@require_can(INVITE_CAPABILITY)
+def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
+    """Invite somebody into ONE client's portal, from the firm side.
+
+    The client is selected out of `visible_clients()` and a miss raises `Http404`, which
+    is `clients_detail_view`'s contract and is inherited rather than reinvented: the
+    manager is tenant-scoped, so an unscoped lookup would already refuse another firm's
+    client, but only the portfolio lens narrows a staff accountant to the clients they
+    are actually assigned. A 404 also refuses to say whether the id names a real client,
+    so the address bar cannot be walked to enumerate the firm's book.
+
+    `require_can` sits above the tenant check here, inverting `clients_detail_view`'s
+    order, and it is safe in this one direction only because the refusal it produces is
+    UNIFORM: on the platform host no firm-side membership resolves, so `users.create` is
+    NONE and every id — real, foreign or invented — answers 403 alike. Nothing is
+    learned
+    from a constant.
+
+    No page, no confirmation of its own: the success redirect lands on `invite-issued`,
+    which the firm invitation already uses and says the one thing that is true of both.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        raise Http404
+    client = (
+        visible_clients(request.user, tenant_id=UUID(str(tenant.pk)))
+        .filter(pk=pk)
+        .first()
+    )
+    if client is None:
+        raise Http404
+    form = PortalInviteIssueForm(request.POST)
+    if not form.is_valid():
+        return render(
+            request,
+            REFUSAL_TEMPLATE,
+            {"reason": _("Dados inválidos.")},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+    try:
+        _invite, raw_token = issue_client_invite(
+            actor=request.user,
+            tenant=tenant,
+            client=client,
+            email=form.cleaned_data["email"],
+            role=form.cleaned_data["role"],
+        )
+    except InviteNotPermittedError as error:
+        raise PermissionDenied(str(error)) from error
+    _mail_portal_invitation(
+        form.cleaned_data["email"],
+        tenant.name,
+        tenant.slug,
+        raw_token,
+    )
+    return HttpResponseRedirect(reverse("invite-issued"))
 
 
 @require_http_methods(["GET", "POST"])

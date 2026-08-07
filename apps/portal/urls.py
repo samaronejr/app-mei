@@ -27,6 +27,7 @@ because `AdminTenantMiddleware` is inert on this host.
 from django.urls import include, path
 
 from apps.core.views import healthz
+from apps.portal.invite_views import portal_invite_accept
 from apps.portal.views import (
     document_download,
     document_upload,
@@ -62,5 +63,15 @@ urlpatterns = [
         name="portal-document-download",
     ),
     path("conta/", portal_account, name="portal-account"),
+    # Not a navigation destination and deliberately absent from the bar: it is reachable
+    # only by holding a token, and an invitee is anonymous when they arrive. The prefix
+    # is `convites/` because `PortalMiddleware.INVITE_PREFIX` matches on exactly that
+    # string -- move the path and the route keeps resolving while the role and the
+    # membership gate silently come back, which is a 500 for every acceptance.
+    path(
+        "convites/aceitar/<str:token>/",
+        portal_invite_accept,
+        name="portal-invite-accept",
+    ),
     path("", portal_home, name="portal-home"),
 ]

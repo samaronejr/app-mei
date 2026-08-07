@@ -11,7 +11,7 @@ protected at the application layer by filtering on `request.user`.
 import hashlib
 import secrets
 from datetime import datetime, timedelta
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from django.conf import settings
 from django.db import models
@@ -21,6 +21,9 @@ from django.utils.translation import gettext_lazy as _
 from apps.core.access import PlatformScopedManager, TenantRootManager
 from apps.core.models import UUIDv7PrimaryKeyModel
 from apps.tenants.validators import validate_tenant_slug
+
+if TYPE_CHECKING:
+    from apps.clients.models import ClientCompany
 
 INVITE_TOKEN_BYTES = 32
 INVITE_VALIDITY = timedelta(days=7)
@@ -68,6 +71,39 @@ def firm_role_choices() -> list[tuple[str, str]]:
     Portal memberships are created against a specific client, never by invitation.
     """
     return [(role.value, str(role.label)) for role in TenantRole if role in FIRM_ROLES]
+
+
+# The two roles a PORTAL invitation may grant, stated as a pair rather than filtered out
+# of `TenantRole` the way `firm_role_choices` above filters its own.
+#
+# Two reasons, and the second is the load-bearing one. The order here is the order a
+# chooser offers, and it is chosen — `client_owner` first, because that is the seat a
+# MEI owner takes and the collaborator is the exception. Filtering `TenantRole` would
+# inherit declaration order by accident instead.
+#
+# And `tests/authz/test_role_check_guard.py` pins this module to FIVE role references,
+# character for character, as the price of its data-shape exemption. `if role in
+# CLIENT_ROLES` would be a sixth, and the guard is explicit that a sixth has to be
+# argued for rather than inherited. Nothing here needs to compare a role: the pair IS
+# the answer. `CLIENT_ROLES` remains the authority the CHECK constraints below evaluate
+# against, and `test_the_portal_choices_agree_with_the_check_constraint` holds the two
+# together so this tuple cannot drift out of it.
+PORTAL_INVITE_ROLES: Final[tuple["TenantRole", ...]] = (
+    TenantRole.CLIENT_OWNER,
+    TenantRole.CLIENT_COLLABORATOR,
+)
+
+
+def client_role_choices() -> list[tuple[str, str]]:
+    """Return only the roles a PORTAL invitation may grant.
+
+    The twin of `firm_role_choices`, and it exists for the mirror-image reason. A portal
+    invitation creates a membership against one client, so offering a FIRM role would
+    produce a row `membership_role_matches_client_scope` rejects — an IntegrityError at
+    accept time, for the invitee, rather than a validation error at issue time, for the
+    firm, which is the one moment anybody can still fix it.
+    """
+    return [(member.value, str(member.label)) for member in PORTAL_INVITE_ROLES]
 
 
 class TenantPlan(models.TextChoices):
@@ -266,18 +302,26 @@ class Invite(UUIDv7PrimaryKeyModel):
         tenant: Tenant,
         email: str,
         role: str,
+        client: "ClientCompany | None" = None,
         expires_at: datetime | None = None,
     ) -> tuple["Invite", str]:
         """Create an invite and return it with the one-time raw token.
 
         The raw token is returned rather than stored so the caller can mail it. It is
         unrecoverable afterwards, which is the point.
+
+        `client` defaults to None, which is what makes every existing firm-side caller
+        keep issuing firm-side invitations unchanged. A value makes this a portal
+        invitation, and the pairing with `role` is checked by `invite_role_is_firm_side`
+        in the database rather than here — one arm of that CHECK is the whole reason the
+        column is on this row at all.
         """
         raw_token = secrets.token_urlsafe(INVITE_TOKEN_BYTES)
         invite = cls.objects.create(
             tenant=tenant,
             email=email,
             role=role,
+            client=client,
             token=cls.hash_token(raw_token),
             expires_at=expires_at or timezone.now() + INVITE_VALIDITY,
         )

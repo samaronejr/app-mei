@@ -287,6 +287,17 @@ RATELIMIT_PUBLIC_POST_URL_NAMES = [
     "account_reset_password_from_key",
     "mfa_authenticate",
     "dsr-submit",
+    # Portal invitation acceptance. Anonymous by construction, and the POST it accepts
+    # both creates an account and mints a membership -- so unlimited it is a way to
+    # brute-force a token AND an unauthenticated account-creation endpoint.
+    #
+    # The email bucket collapses to `email:unknown` here, exactly as it already does for
+    # `mfa_authenticate` and `account_reset_password_from_key`: the credential is the
+    # token in the URL, so the form carries no address to key on. That is the correct
+    # trade rather than a gap. Adding an email field would let a caller mint a fresh
+    # bucket per address they invent, which is a limit with a bypass built in; the IP
+    # bucket is what actually binds a flood, and it still does.
+    "portal-invite-accept",
 ]
 
 
