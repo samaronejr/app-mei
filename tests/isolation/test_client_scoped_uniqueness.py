@@ -29,6 +29,28 @@ CLIENT_COLUMN: Final = "client_id"
 # carries the meaning. Same reasoning as W7's foreign-key exemption.
 EXEMPT_TABLES: Final[frozenset[str]] = frozenset({"clients_clientcompany"})
 
+# Exempt by CONSTRAINT, not by table. `tenants_invite` entered this test's scope the
+# moment W7 gave it a nullable `client_id`, and exactly one of its unique constraints
+# does not name that column.
+#
+# The oracle argument does not reach this one, in both directions. Reaching the
+# collision requires already holding the raw token -- `token` stores sha256 of
+# `secrets.token_urlsafe(32)`, so a caller who can provoke `23505` here is a caller who
+# could have redeemed the invitation instead, and the "one bit" is the whole credential
+# rather than a leak about it.
+#
+# Scoping it would also break redemption outright. `resolve_invite` looks the digest up
+# with NO client and NO tenant in hand -- the invitee is anonymous until the token
+# resolves -- so `(client_id, token)` would permit two invitations to share a digest and
+# turn that lookup into `MultipleObjectsReturned`. Global uniqueness is what makes the
+# bearer token a key at all.
+#
+# Named one constraint at a time so this stays an exemption rather than an amnesty: a
+# later `UNIQUE (tenant_id, email)` on the same table -- "one pending invite per
+# address", the obvious next constraint -- IS a cross-client oracle once portal
+# invitations exist, and it must fail here.
+EXEMPT_CONSTRAINTS: Final[frozenset[str]] = frozenset({"tenants_invite_token_key"})
+
 
 def _client_scoped_tables() -> list[str]:
     with connection.cursor() as cursor:
@@ -92,10 +114,31 @@ def test_no_unique_constraint_omits_the_client_column() -> None:
             for name, columns in _unique_constraints(table)
             # The primary key is `id` alone by design -- a UUIDv7 is globally unique
             # and discloses nothing, since a caller holding one learned it elsewhere.
-            if columns != ["id"] and CLIENT_COLUMN not in columns
+            if columns != ["id"]
+            and CLIENT_COLUMN not in columns
+            and name not in EXEMPT_CONSTRAINTS
         ]
 
     assert not offenders, (
         f"unique constraints not naming {CLIENT_COLUMN}: {offenders}. A collision "
         f"on one is a one-bit existence oracle for a row in another client."
+    )
+
+
+def test_the_constraint_exemption_is_not_a_blanket() -> None:
+    # Given the named exemptions
+    # Then each still exists on a real table, so a stale name cannot sit in the literal
+    # pretending to justify something. And each is one constraint, never a table: the
+    # only reason `tenants_invite_token_key` is here is that its key is a bearer-token
+    # digest, which the table's other constraints are not.
+    assert EXEMPT_CONSTRAINTS, "an empty exemption list means the wiring above is dead"
+    live = {
+        name
+        for table in _client_scoped_tables()
+        for name, _columns in _unique_constraints(table)
+    }
+    stale = EXEMPT_CONSTRAINTS - live
+    assert not stale, {"named but not present": sorted(stale)}
+    assert not EXEMPT_CONSTRAINTS & set(EXEMPT_TABLES), (
+        "a table name in the constraint list would exempt nothing and read as if it did"
     )

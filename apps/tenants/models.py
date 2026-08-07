@@ -186,6 +186,20 @@ class Invite(UUIDv7PrimaryKeyModel):
         related_name="invites",
         verbose_name=_("tenant"),
     )
+    # An invitation is a promise of a membership, so it carries the same optional
+    # client the membership will. NULL means firm-side: the seat is in the firm. A
+    # value means portal-side: the seat is inside that one client. Which of the two an
+    # invitation is gets decided when it is issued, never when it is redeemed — the
+    # token is already in the invitee's hands by then, and a seat that could be
+    # re-scoped at accept time would be a bearer credential for an unbounded grant.
+    client = models.ForeignKey(
+        "clients.ClientCompany",
+        on_delete=models.CASCADE,
+        related_name="portal_invites",
+        verbose_name=_("client"),
+        null=True,
+        blank=True,
+    )
     email = models.EmailField(_("email address"))
     role = models.CharField(_("role"), max_length=32, choices=TenantRole.choices)
     token = models.CharField(_("token digest"), max_length=64, unique=True)
@@ -215,13 +229,23 @@ class Invite(UUIDv7PrimaryKeyModel):
         verbose_name_plural = _("invites")
         ordering: ClassVar[list[str]] = ["-created_at"]
         constraints: ClassVar[list[models.BaseConstraint]] = [
-            # Accepting an invite creates a membership with no client, so a client
-            # role here would violate membership_role_matches_client_scope at accept
-            # time — an IntegrityError for the invitee rather than a validation error
-            # for the firm. The form offers firm roles only; this is the layer that
-            # holds when something writes an Invite without going through the form.
+            # Accepting an invite writes Membership(client=invite.client), so this is
+            # membership_role_matches_client_scope evaluated one step earlier, against
+            # the same two arms. An invitation the membership constraint would reject
+            # is an IntegrityError for the INVITEE at accept time — they arrive with a
+            # valid token and cannot get in — rather than a refusal for the firm at
+            # issue time, which is the one moment anyone can still fix it.
+            #
+            # The name predates the portal invitation and is kept deliberately:
+            # renaming a CHECK is a drop-and-recreate that changes no behaviour, and
+            # the arm it names is still the one that carries the most weight — a
+            # client role on a client-less invite is how a portal seat escapes a
+            # client and becomes firm-wide.
             models.CheckConstraint(
-                condition=models.Q(role__in=FIRM_ROLES),
+                condition=(
+                    models.Q(role__in=FIRM_ROLES, client__isnull=True)
+                    | models.Q(role__in=CLIENT_ROLES, client__isnull=False)
+                ),
                 name="invite_role_is_firm_side",
             ),
         ]

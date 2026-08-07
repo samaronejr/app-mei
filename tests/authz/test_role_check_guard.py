@@ -99,7 +99,21 @@ ROLE_SHAPE_EXEMPT: Final[dict[str, str]] = {
 #   firm_role_choices          -- which roles an invitation may offer
 #   membership CHECK, arm 1    -- a firm role has no client
 #   membership CHECK, arm 2    -- a client role names one
-#   invite CHECK               -- an invitation is firm-side only
+#   invite CHECK, arm 1        -- a firm-side invitation names no client
+#   invite CHECK, arm 2        -- a portal invitation names the client it is for
+#
+# The last entry was `condition=models.Q(role__in=FIRM_ROLES),` until W7 opened. While
+# portal invitations were gated, an invitation could only ever be firm-side, and that
+# single arm was the whole rule; the absence of `Invite.client` was itself the evidence
+# that the gated feature had not been pre-built. W7's approved schema gives the
+# invitation the same optional client the membership it creates carries, so the CHECK
+# becomes the same two-armed rule. The pin is RETARGETED, not relaxed: five exact lines,
+# still character-for-character, still refusing a sixth.
+#
+# The two CHECKs now read identically, and that is the finding rather than an oversight
+# — they are one rule evaluated one step apart. Nothing is lost by the repetition: a
+# permission gate never spells itself `models.Q(role__in=..., client__isnull=...)`, so
+# the swap this pin exists to catch still cannot hide inside a duplicate.
 EXEMPT_ROLE_CHECK_SOURCE: Final[dict[str, tuple[str, ...]]] = {
     "apps/tenants/models.py": (
         (
@@ -108,7 +122,8 @@ EXEMPT_ROLE_CHECK_SOURCE: Final[dict[str, tuple[str, ...]]] = {
         ),
         "models.Q(role__in=FIRM_ROLES, client__isnull=True)",
         "| models.Q(role__in=CLIENT_ROLES, client__isnull=False)",
-        "condition=models.Q(role__in=FIRM_ROLES),",
+        "models.Q(role__in=FIRM_ROLES, client__isnull=True)",
+        "| models.Q(role__in=CLIENT_ROLES, client__isnull=False)",
     ),
 }
 

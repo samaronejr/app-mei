@@ -301,9 +301,12 @@ def _visible_invite(request: AuthenticatedRequest, pk: UUID) -> Invite:
     invitations, in silence. `tests/accounts/test_invite_revocation.py` is what
     stands in for the guard that cannot see this.
 
-    No `client` filter, unlike the membership twin: this model has no such column. An
-    invitation always creates a firm-side membership, which the
-    `invite_role_is_firm_side` CHECK constraint enforces at the row level.
+    No `client` filter, unlike the membership twin. W7 gave `Invite` a nullable
+    `client` and widened `invite_role_is_firm_side` to admit a client role when it is
+    set, so "an invitation is always firm-side" is no longer true of the SCHEMA — but
+    it is still true of every row this view can reach, because nothing issues a
+    client-scoped invitation. Tenant is the boundary the firm-side team screens turn
+    on. A view that lists or withdraws PORTAL invitations has to answer this again.
     """
     tenant = getattr(request, "tenant", None)
     if tenant is None:
