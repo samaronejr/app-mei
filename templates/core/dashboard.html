@@ -73,32 +73,17 @@
       </span>
     </form>
 
-    <div id="calendario-strip" class="card p-5"
-         role="region"
-         aria-label="{% translate 'Calendário do DAS' %}">
-      {% if calendar_client %}
-        <p class="mb-4 text-sm text-ink-600">
-          {{ calendar_client.legal_name }} — {{ calendar_client.cnpj|cnpj_mask }}
-        </p>
-      {% endif %}
-      {% if calendar %}
-        <ol class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          {% for cell in calendar %}
-            <li class="calendar-cell {% if cell.was_rolled %}border-warn-line bg-warn-soft{% else %}border-ink-200{% endif %}">
-              <span class="calendar-month {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-500{% endif %}">{{ cell.competence|competencia }}</span>
-              <time class="calendar-due {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-900{% endif %}"
-                    datetime="{{ cell.resolved|date:'Y-m-d' }}"
-                    data-competence="{{ cell.competence|date:'Y-m' }}">{{ cell.resolved|data }}</time>
-              {% if cell.was_rolled %}
-                <span class="calendar-rolled text-warn-ink">{% blocktranslate with nominal=cell.nominal|data %}adiado de {{ nominal }}{% endblocktranslate %}</span>
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ol>
-      {% else %}
-        <p class="empty-state">{% translate "Nenhum vencimento gerado para este cliente ainda." %}</p>
-      {% endif %}
-    </div>
+    {% comment %}
+      The strip itself lives in obligations/_calendar_strip.html because the client
+      detail page draws the same twelve months. Two copies would drift -- and the one
+      that drifted would be a calendar, which is the artefact this product exists to
+      make trustworthy.
+
+      The element the filter above swaps is inside that partial, id and all, so the
+      htmx contract survives the extraction: this include renders the same element the
+      selector has always named.
+    {% endcomment %}
+    {% include "obligations/_calendar_strip.html" %}
   </section>
 
   <section aria-labelledby="limite">

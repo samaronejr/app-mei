@@ -45,6 +45,12 @@ from apps.clients.models import ClientCompany
 from apps.core.navigation import visible_nav_items
 from apps.core.templatetags.ptbr import cnpj_mask
 from apps.core.tenancy import tenant_context
+from apps.fiscal.capabilities import (
+    CapabilityStatus,
+    capability_for,
+    unknown_capability,
+)
+from apps.fiscal.models import Municipality
 from apps.tenants.models import TenantRole
 from tests.isolation.rolecheck import assert_isolated_role
 from tests.support import totp_code
@@ -153,6 +159,62 @@ ALPHANUMERIC_PREFIX: Final = "12abc"
 
 ALPHANUMERIC_NAME: Final = "Alfanumérica Servicos ME"
 LEGACY_NAME: Final = "Legada Transportes ME"
+
+
+# ------------------------------------------------------- the detail screen's contract
+#
+# The detail screen is a SINGLETON, and every constant below exists because a singleton
+# fails differently from the collection above it.
+#
+# A list page leaks by rendering a row. A detail page leaks by answering a *status*:
+# the URL carries the client's primary key, so the response code alone is an oracle.
+# 403 says "this id names a real client and you may not read it"; 404 says nothing at
+# all. Both feel like a refusal to whoever wrote them, and only one of them is. That is
+# why the two refusal tests below assert `== NOT_FOUND` rather than `!= OK`, and why
+# each of them proves the record genuinely exists — through a second account that can
+# read it — before claiming the 404 was confinement rather than an empty database.
+DETAIL_URL_NAME: Final = "client-detail"
+
+# Sixty, and the ceiling is only half the claim. A max-assert is satisfied at 20 and at
+# 60 alike, so it cannot distinguish a screen that got slower from one that was always
+# cheap — which is why `_detail_cost` measures with `CaptureQueriesContext` and reports
+# the number it actually saw, and why `test_the_detail_query_count_does_not_grow_with_
+# the_portfolio` pins the shape rather than the size.
+#
+# The list screen next door is measured at QUERY_BUDGET = 30 against 60 clients, and its
+# breakdown at lines 96-134 is the floor this budget is built on: the detail screen runs
+# the same middleware, the same `require_can`, the same `visible_clients` and the same
+# navigation bar, so roughly 26 of those 30 are structural and unavoidable here too.
+# What replaces the list's `Paginator COUNT(*)` and 50-row page is one scoped row read
+# plus one `select_related("capability")` municipality lookup. Sixty therefore leaves
+# about thirty queries of headroom for whatever the screen goes on to show — enough for
+# assignments, obligations and documents, and nowhere near enough to hide an N+1.
+DETAIL_QUERY_BUDGET: Final = 60
+
+# Two real municipalities, neither of them a state capital, so neither is seeded by
+# `apps/fiscal/migrations/0002_seed_capitals.py`. They are not asserted to be unknown by
+# assumption: each test calls `capability_for` on its own code first and fails there if
+# a future seed ever makes the fixture known, rather than silently testing the KNOWN
+# path while claiming to test the UNKNOWN one.
+ABSENT_IBGE: Final = "3548500"  # Santos/SP — not in the municipality table at all.
+UNASSESSED_IBGE: Final = "3552205"  # Sorocaba/SP — in the table, never assessed.
+
+# The two halves of the UNKNOWN contract at `apps/fiscal/capabilities.py:68-117`, quoted
+# rather than paraphrased. `locale/` holds no compiled catalogue, so `gettext_lazy`
+# returns its own msgid and these are literally the bytes a template emits.
+#
+# They are spelled out here AND compared against the module that produces them, in the
+# same assertion. Only the literal can catch a template that stops rendering the note;
+# only the comparison can catch a literal that drifted from the source. Importing alone
+# would let the copy be rewritten into something reassuring with this file still green.
+ABSENT_DISCLAIMER: Final = (
+    "This municipality is not in the capability registry. The values shown are "
+    "conservative defaults, not verified facts."
+)
+UNASSESSED_DISCLAIMER: Final = (
+    "This municipality is registered but its capabilities have not been assessed. "
+    "The values shown are conservative defaults."
+)
 
 
 @pytest.fixture(autouse=True)
@@ -768,3 +830,251 @@ def test_the_registry_renders_a_whole_page(alpha: Firm) -> None:
     body = _body(alpha.as_owner())
     assert body.lstrip().startswith("<!DOCTYPE html>")
     assert "<main" in body
+
+
+# ----------------------------------------------------------------------- detail screen
+
+
+def _detail_body(session: Client, company: ClientCompany) -> str:
+    """GET one client's detail page and return the document it rendered.
+
+    Both gates live in here rather than in tests of their own. `pytest -k` can deselect
+    a standalone sentinel, and every refusal assertion below would then be comparing a
+    404 against a screen that answers 404 to everybody — which reads as airtight
+    confinement and is in fact a broken route.
+    """
+    response = session.get(reverse(DETAIL_URL_NAME, args=[company.pk]))
+    assert response.status_code == HTTPStatus.OK, (
+        f"the detail screen answered {response.status_code} for {company.legal_name}, "
+        f"so the document scanned below is not a rendered client"
+    )
+    body = str(response.content.decode())
+    assert company.legal_name in body, (
+        f"the detail screen answered 200 for {company.legal_name} without naming it "
+        f"anywhere, so this is not that client's page and anything asserted against "
+        f"it is a statement about some other document"
+    )
+    return body
+
+
+def _refusal(session: Client, company: ClientCompany) -> tuple[int, str]:
+    """GET a detail page expecting to be turned away, and report exactly how."""
+    response = session.get(reverse(DETAIL_URL_NAME, args=[company.pk]))
+    return response.status_code, str(response.content.decode())
+
+
+def _detail_cost(firm: Firm, company: ClientCompany) -> int:
+    """Return the MEASURED query count of a warmed-up detail request.
+
+    Counted with `CaptureQueriesContext`, never bounded with a max-assert. A ceiling of
+    60 is satisfied by a screen costing 20 and by one costing 60, so it cannot tell a
+    budget with headroom from a budget already spent — and it is satisfied outright by
+    a 404, which costs almost nothing at all. `_detail_body` renders the page before
+    the meter starts, so the number returned is the cost of a real document and the
+    caller can put it in its own failure message.
+    """
+    session = firm.as_owner()
+    _detail_body(session, company)
+    reset_queries()
+    with CaptureQueriesContext(connection) as captured:
+        session.get(reverse(DETAIL_URL_NAME, args=[company.pk]))
+    return len(captured)
+
+
+def _set_municipality(firm: Firm, company: ClientCompany, ibge_code: str) -> None:
+    """Point a client at a municipality, in its own tenant context."""
+    with tenant_context(firm.tenant.id):
+        ClientCompany.objects.filter(pk=company.pk).update(
+            municipality_ibge_code=ibge_code,
+        )
+    company.municipality_ibge_code = ibge_code
+
+
+def test_another_firms_client_is_not_found_rather_than_refused(alpha: Firm) -> None:
+    """A neighbouring firm's primary key must answer 404, and nothing else.
+
+    Resolved out of `visible_clients()` and never through
+    `get_object_or_404(ClientCompany, pk=...)`. The manager scopes that lookup to the
+    tenant, so it would also fail — but it would fail as a *lookup*, and the
+    distinction survives the first refactor that reaches for `.all()` or for an
+    unscoped `objects` manager. Selecting from the portfolio makes the confinement a
+    property of the queryset the screen is built on rather than of a filter someone
+    remembered to write. `_selected_client` at `apps/core/dashboard.py:91-113` resolves
+    the dashboard's calendar the same way and for the same reason.
+
+    Both gates matter and neither is a test of its own. Alpha's own client proves the
+    screen renders for this session; beta's own owner proves the row is real and
+    renderable, so the 404 below is confinement rather than a primary key that names
+    nothing.
+    """
+    assert_isolated_role()
+    beta = make_firm("beta-det", client_count=2)
+    intruder = beta.clients[0]
+
+    session = alpha.as_owner()
+    _detail_body(session, alpha.clients[0])
+    _detail_body(beta.as_owner(), intruder)
+
+    status, body = _refusal(session, intruder)
+    assert status == HTTPStatus.NOT_FOUND, (
+        f"another firm's client {intruder.legal_name} was answered {status} rather "
+        f"than 404; 403 confirms the primary key names a real client and 200 hands "
+        f"it over"
+    )
+    assert intruder.legal_name not in body, f"{intruder.legal_name} leaked in the 404"
+    assert intruder.cnpj not in body, f"{intruder.cnpj} leaked in the 404"
+    assert cnpj_mask(intruder.cnpj) not in body, f"{intruder.cnpj} leaked masked"
+
+
+def test_an_unassigned_client_of_the_same_firm_is_not_found_rather_than_refused(
+    alpha: Firm,
+) -> None:
+    """The security core: 404 for a real client of your own firm, never 403.
+
+    This is the case the cross-tenant test above cannot reach. The client is inside the
+    accountant's own tenant, so every tenant filter in the stack passes it through and
+    RLS has no opinion; the only thing standing between this account and the record is
+    `visible_clients()`, which narrows a staff accountant to their assignments *even
+    though* the published matrix grants them `clients.view_all`
+    (`apps/authz/portfolio.py:55-88`).
+
+    And the status is the whole assertion. 403 would answer "this id names a client of
+    your firm and you are not on it", which is the firm's client list leaking one
+    primary key at a time to an account that was deliberately not given it — a book of
+    business enumerable by anyone with a session and a UUID generator. 404 answers
+    nothing.
+
+    Nothing here asserts that a role lacks `clients.view_assigned`, and re-adding such
+    an assertion would pin a falsehood: that row is `(FULL, FULL, FULL, FULL, FULL,
+    FULL)` at `apps/authz/matrix.py:88-92` — FULL for all six roles. The capability is
+    not what confines this account. The portfolio is.
+
+    Two gates, both inside the test. The accountant's own assigned client proves the
+    screen is open to them at all, so a 404 caused by a broken route cannot pass as
+    confinement; and the owner's successful render proves the unassigned record exists
+    and is renderable, so the 404 cannot be passing against a missing row.
+    """
+    assigned, unassigned = alpha.clients[0], alpha.clients[1]
+
+    accountant = alpha.as_accountant()
+    _detail_body(accountant, assigned)
+    _detail_body(alpha.as_owner(), unassigned)
+
+    status, body = _refusal(accountant, unassigned)
+    assert status == HTTPStatus.NOT_FOUND, (
+        f"{TenantRole.STAFF_ACCOUNTANT} was answered {status} for "
+        f"{unassigned.legal_name}, a client of their own firm they hold no assignment "
+        f"on; 403 confirms the record exists and turns the URL into an enumeration "
+        f"oracle for the firm's whole book of business"
+    )
+    assert unassigned.legal_name not in body, (
+        f"{unassigned.legal_name} is named in the body of its own 404, so the screen "
+        f"discloses the client it just declined to show"
+    )
+    assert unassigned.cnpj not in body, f"{unassigned.cnpj} leaked in the 404"
+    assert cnpj_mask(unassigned.cnpj) not in body, f"{unassigned.cnpj} leaked masked"
+
+
+def test_the_detail_screen_stays_inside_its_query_budget() -> None:
+    """One client's page, measured against a portfolio far larger than it needs."""
+    firm = make_firm("detalhe-custo", client_count=BUDGET_CLIENTS)
+    measured = _detail_cost(firm, firm.clients[0])
+
+    assert measured, "the detail request issued no queries at all"
+    assert measured <= DETAIL_QUERY_BUDGET, (
+        f"one client's detail page cost {measured} queries against a portfolio of "
+        f"{BUDGET_CLIENTS}, over the budget of {DETAIL_QUERY_BUDGET}"
+    )
+
+
+def test_the_detail_query_count_does_not_grow_with_the_portfolio(alpha: Firm) -> None:
+    """A page about one client must cost the same in a firm keeping sixty books.
+
+    This is the claim that protects the product; the ceiling above is only a ratchet.
+    A detail screen has no reason to touch the portfolio at all, so any dependence on
+    its size is a query issued per row somewhere — and a firm large enough to matter is
+    exactly the firm that discovers it.
+    """
+    small = _detail_cost(alpha, alpha.clients[0])
+    assert small, "the small firm's detail request issued no queries at all"
+
+    large = make_firm("detalhe-grande", client_count=BUDGET_CLIENTS)
+    big = _detail_cost(large, large.clients[0])
+
+    assert big <= small, (
+        f"one client's detail page costs {big} queries in a firm of "
+        f"{BUDGET_CLIENTS} clients and {small} in a firm of {SMALL_FIRM_CLIENTS}; the "
+        f"page is about a single client and must not scale with the portfolio"
+    )
+
+
+def test_an_unregistered_municipality_renders_the_conservative_disclaimer() -> None:
+    """5,543 of Brazil's municipalities are unassessed, so this IS the common path.
+
+    The screen must say so in words. A page that renders the conservative defaults —
+    no national emitter, a certificate required — without the note reports an
+    unverified guess in exactly the shape of a verified fact, which is the single
+    conflation `apps/fiscal/capabilities.py` exists to prevent.
+
+    The two assertions before the render are the non-vacuity gates, and they read from
+    the source rather than trusting this file's copy of it: the first fails if a future
+    seed ever makes this fixture KNOWN, at which point the test would be checking the
+    verified path while claiming to check the unknown one; the second fails if the
+    module's wording drifts from the literal asserted against the document.
+    """
+    firm = make_firm("mun-ausente", client_count=1)
+    company = firm.clients[0]
+    _set_municipality(firm, company, ABSENT_IBGE)
+
+    assert capability_for(ABSENT_IBGE).status == CapabilityStatus.UNKNOWN, (
+        f"IBGE {ABSENT_IBGE} is in the capability registry after all, so this fixture "
+        f"exercises the KNOWN path and proves nothing about the unknown one"
+    )
+    assert unknown_capability(ABSENT_IBGE).notes == ABSENT_DISCLAIMER, (
+        f"apps/fiscal/capabilities.py now produces "
+        f"{unknown_capability(ABSENT_IBGE).notes!r} rather than "
+        f"{ABSENT_DISCLAIMER!r}, so the document assertion below is searching for "
+        f"copy the product never emits"
+    )
+
+    body = _detail_body(firm.as_owner(), company)
+    assert ABSENT_DISCLAIMER in body, (
+        f"{company.legal_name} sits in an unassessed municipality and its page carries "
+        f"no disclaimer, so the conservative defaults are presented as verified facts"
+    )
+
+
+def test_a_registered_but_unassessed_municipality_renders_its_own_disclaimer() -> None:
+    """Being in the registry and having been assessed are different facts.
+
+    The final assertion is what separates the two: a template that hardcodes one
+    disclaimer, or picks it on `is_known` alone, renders the wrong sentence here and
+    tells an accountant the city is unknown to the product when in truth it is known
+    and merely unmeasured.
+    """
+    firm = make_firm("mun-sem-aval", client_count=1)
+    company = firm.clients[0]
+    Municipality.objects.create(ibge_code=UNASSESSED_IBGE, name="Sorocaba", uf="SP")
+    _set_municipality(firm, company, UNASSESSED_IBGE)
+
+    answer = capability_for(UNASSESSED_IBGE)
+    assert answer.status == CapabilityStatus.UNKNOWN, (
+        f"IBGE {UNASSESSED_IBGE} was seeded with a capability row, so this fixture no "
+        f"longer exercises the registered-but-unassessed branch"
+    )
+    assert answer.notes == UNASSESSED_DISCLAIMER, (
+        f"apps/fiscal/capabilities.py now produces {answer.notes!r} for a registered "
+        f"but unassessed municipality rather than {UNASSESSED_DISCLAIMER!r}"
+    )
+
+    body = _detail_body(firm.as_owner(), company)
+    assert UNASSESSED_DISCLAIMER in body, (
+        f"{company.legal_name} sits in a registered municipality nobody has assessed "
+        f"and its page carries no disclaimer, so conservative defaults are presented "
+        f"as verified facts"
+    )
+    assert ABSENT_DISCLAIMER not in body, (
+        f"the page reports {UNASSESSED_IBGE} as absent from the registry when the "
+        f"municipality is in it and merely unassessed; the disclaimer is hardcoded "
+        f"rather than read from the capability answer"
+    )

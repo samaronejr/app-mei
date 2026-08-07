@@ -16,12 +16,13 @@ built for browsing it.
 from collections.abc import Callable
 from functools import wraps
 from http import HTTPStatus
+from typing import Concatenate
 from urllib.parse import urlencode
 from uuid import UUID
 
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import EmptyPage, Page, Paginator
-from django.db.models import QuerySet
+from django.db.models import Model, QuerySet
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
@@ -34,8 +35,12 @@ from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
 from apps.clients.exports import UTF8_BOM, build_client_csv
 from apps.clients.managers import search_filter
-from apps.clients.models import ClientCompany
+from apps.clients.models import ClientCompany, OnboardingItem
+from apps.core.dashboard import das_calendar
 from apps.core.tenancy import current_tenant_id
+from apps.fiscal.capabilities import capability_for
+from apps.obligations.models import Obligation
+from apps.obligations.queries import ThresholdRow, threshold_warning
 from apps.tenants.models import Tenant
 
 EXPORT_FILENAME = "clientes.csv"
@@ -46,6 +51,11 @@ EXPORT_FILENAME = "clientes.csv"
 PAGE_SIZE = 50
 PAGE_PARAM = "pagina"
 SEARCH_PARAM = "q"
+
+# A year of history on the detail screen's first page, so "did we file last year's
+# December?" is answered without paging. The registry's 50 would be three years of a
+# monthly obligation and would bury the calendar strip below it.
+OBLIGATION_PAGE_SIZE = 12
 
 
 def _tenant(request: AuthenticatedRequest) -> Tenant:
@@ -63,9 +73,9 @@ def _tenant(request: AuthenticatedRequest) -> Tenant:
     return resolved
 
 
-def require_tenant(
-    view: Callable[[AuthenticatedRequest], HttpResponse],
-) -> Callable[[AuthenticatedRequest], HttpResponse]:
+def require_tenant[**P](
+    view: Callable[Concatenate[AuthenticatedRequest, P], HttpResponse],
+) -> Callable[Concatenate[AuthenticatedRequest, P], HttpResponse]:
     """Resolve the firm before the capability is consulted, or 404.
 
     **The position of this decorator is load-bearing and reordering it reintroduces an
@@ -82,12 +92,22 @@ def require_tenant(
     uses — cannot achieve this: the decorator has already returned 403 by then, which
     is exactly why `test_the_platform_host_has_no_dashboard` has to accept either
     status. That dashboard bug is real and is tracked separately; it is not fixed here.
+
+    The signature is generic over the trailing parameters so the same decorator guards
+    a view taking a URL argument. The detail screen receives a primary key, and a
+    decorator that only accepted a bare request would force that screen to resolve the
+    firm in its own body — precisely the shape documented above as unable to 404.
     """
 
     @wraps(view)
-    def wrapped(request: AuthenticatedRequest) -> HttpResponse:
+    def wrapped(
+        request: AuthenticatedRequest,
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> HttpResponse:
         _tenant(request)
-        return view(request)
+        return view(request, *args, **kwargs)
 
     return wrapped
 
@@ -114,16 +134,17 @@ def _searched(
     return clients.filter(matches)
 
 
-def _page(
-    clients: QuerySet[ClientCompany],
+def _page[ModelT: Model](
+    clients: QuerySet[ModelT],
     request: HttpRequest,
-) -> Page[ClientCompany]:
+    size: int = PAGE_SIZE,
+) -> Page[ModelT]:
     """Return the requested page, falling back to the first for unusable input.
 
     An out-of-range or non-numeric page is a stale bookmark or a typed URL, not an
     error worth interrupting a working session over.
     """
-    paginator = Paginator(clients, PAGE_SIZE)
+    paginator = Paginator(clients, size)
     raw = request.GET.get(PAGE_PARAM, "1")
     try:
         return paginator.page(int(raw))
@@ -170,6 +191,105 @@ def clients_list_view(request: AuthenticatedRequest) -> HttpResponse:
             "page": _page(rows, request),
             "term": term,
             "filter_query": _filter_query(term),
+        },
+        status=HTTPStatus.OK,
+    )
+
+
+def _band_for(
+    request: AuthenticatedRequest,
+    tenant_id: UUID,
+    client: ClientCompany,
+) -> ThresholdRow | None:
+    """Return this client's revenue band, when the band is one worth showing.
+
+    Read out of `threshold_warning` rather than computed here, so the detail screen and
+    the dashboard's "perto do limite" table can never disagree about which band a
+    client is in — and so the four bands keep exactly one definition. The queue costs a
+    fixed number of queries however large the portfolio is
+    (`apps/obligations/queries.py:15-20`), which is what makes scanning it for one
+    client acceptable on a page budgeted per request rather than per client.
+
+    `None` means the client is not in an attention band, and the screen then says
+    nothing rather than inventing a reassurance. Absence here is the same absence the
+    dashboard table already renders by simply not listing the client.
+    """
+    for row in threshold_warning(request.user, tenant_id=tenant_id):
+        if row.client.pk == client.pk:
+            return row
+    return None
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_tenant
+@require_can("clients.view_assigned")
+def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
+    """Show one client: who they are, what falls due, and what onboarding still owes.
+
+    **The client is selected out of `visible_clients()` and a miss raises `Http404`.**
+    Not `get_object_or_404(ClientCompany, pk=pk)`, and the difference is the whole
+    security contract of this screen rather than a matter of taste. That manager is
+    tenant-scoped, so the unscoped form would also refuse another firm's client — but
+    it would refuse it as a *lookup*, leaving nothing to stop a staff accountant
+    reading a client of their own firm they hold no assignment on. `visible_clients`
+    is the only thing that narrows an accountant to their assignments, because the
+    published matrix grants them `clients.view_all` outright
+    (`apps/authz/portfolio.py:55-88`).
+
+    And the refusal is 404, never 403. The URL carries the primary key, so a 403 would
+    answer "this id names a real client of your firm and you are not on it" — turning
+    the address bar into an enumeration oracle for the firm's whole book of business,
+    one UUID at a time. `require_tenant` sits above `require_can` for the same reason
+    one level up: on the platform host no firm-side membership resolves, so a
+    capability consulted first would answer 403 about a firm that is not there.
+
+    Read-only by construction. There is no edit, no upload and no delete here, and
+    `templates/clients/` ships no POST form at all — the registry is fed by onboarding
+    and by the CSV import, and a second write path would be a second place a CNPJ can
+    be entered unnormalized.
+    """
+    tenant = _tenant(request)
+    tenant_id = UUID(str(tenant.pk))
+
+    client = visible_clients(request.user, tenant_id=tenant_id).filter(pk=pk).first()
+    if client is None:
+        raise Http404
+
+    obligations = (
+        Obligation.objects.filter(client=client)
+        # Rendered on every row, so without this the table issues a query per row and
+        # the detail screen's budget is what notices.
+        .select_related("obligation_type")
+        # Newest competence first, because the question this table answers is "what is
+        # outstanding now". The primary key closes the order: two obligations can share
+        # a competence month, and under the month alone a row can appear on both pages
+        # or on neither.
+        .order_by("-competence_month", "pk")
+    )
+
+    return render(
+        request,
+        "clients/detail.html",
+        {
+            "client": client,
+            # The whole view object under a neutral key, never unpacked into flags
+            # here. `MunicipalityCapabilityView` carries its own `status`, and a view
+            # that pulled two booleans out of it would drop the third state — the one
+            # that says nobody has checked this municipality — and report an
+            # unverified guess in the shape of a verified fact.
+            "municipio": capability_for(client.municipality_ibge_code),
+            "calendar": das_calendar(client),
+            "calendar_client": client,
+            "page": _page(obligations, request, OBLIGATION_PAGE_SIZE),
+            "filter_query": "",
+            "checklist": OnboardingItem.objects.filter(client=client).order_by(
+                "position",
+                "key",
+                "pk",
+            ),
+            "banda": _band_for(request, tenant_id, client),
+            "page_title": client.legal_name,
         },
         status=HTTPStatus.OK,
     )

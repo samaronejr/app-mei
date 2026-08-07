@@ -1,0 +1,154 @@
+{% extends "base.html" %}{% load i18n ptbr %}
+{% block title %}{{ client.legal_name }}{% endblock %}
+{% block heading %}{{ client.legal_name }}{% endblock %}
+{% block content %}
+  {% comment %}
+    A read-only file on one client. There is no edit, no upload and no delete here, and
+    this directory ships no POST form at all: the registry is fed by onboarding and by
+    the CSV import, and a second write path would be a second place a CNPJ can be
+    entered unnormalized.
+
+    Every section is a landmark with a heading, and each heading is referenced by the
+    section that owns it. A screen reader then offers this page as a list of four named
+    regions rather than one undifferentiated run of text, which is the difference
+    between finding the calendar and scrolling through everything before it. The h1
+    belongs to the layout, so the sections start at h2.
+  {% endcomment %}
+  <nav class="crumbs my-4" aria-label="{% translate 'Trilha de navegação' %}">
+    <a href="{% url 'clients-list' %}">{% translate "Clientes" %}</a>
+    <span aria-hidden="true">/</span>
+    <span aria-current="page">{{ client.legal_name }}</span>
+  </nav>
+
+  <section aria-labelledby="identificacao" class="mb-8">
+    <h2 id="identificacao" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Identificação" %}</h2>
+    {% include "clients/_identity.html" %}
+  </section>
+
+  {% if banda %}
+    <section aria-labelledby="limite" class="mb-8">
+      <h2 id="limite" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Limite de faturamento" %}</h2>
+      {% comment %}
+        The same row partial the dashboard and the threshold queue render, under the
+        same five headers. Reused rather than rewritten so that a client's band, ceiling
+        and consumed percentage read identically wherever they appear -- three spellings
+        of one number is how a firm ends up arguing with its own screens.
+
+        Drawn only when the client is actually in an attention band. Absence says
+        nothing, which is correct: the queue's job is to raise clients that need acting
+        on, and inventing a reassurance for everyone else would be a claim this page did
+        not compute.
+      {% endcomment %}
+      <div class="card">
+        <div class="table-wrap">
+          <table class="data-table row-stack">
+            <caption class="visually-hidden">{% translate "Consumo do limite anual" %}</caption>
+            <thead>
+              <tr>
+                <th scope="col">{% translate "Cliente" %}</th>
+                <th scope="col">{% translate "Faturado" %}</th>
+                <th scope="col">{% translate "Teto" %}</th>
+                <th scope="col">{% translate "Consumido" %}</th>
+                <th scope="col">{% translate "Faixa" %}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% include "obligations/_rows_threshold.html" with row=banda %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
+  <section aria-labelledby="calendario" class="mb-8">
+    <h2 id="calendario" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Calendário do DAS — 12 meses" %}</h2>
+    {% comment %}
+      The dashboard's strip, not a copy of it. The markup lives in
+      obligations/_calendar_strip.html precisely so that a correction to how a rolled
+      deadline is drawn reaches both screens at once. There is no client filter here
+      because the client is the page.
+    {% endcomment %}
+    {% include "obligations/_calendar_strip.html" %}
+  </section>
+
+  <section aria-labelledby="obrigacoes" class="mb-8">
+    <h2 id="obrigacoes" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Obrigações" %}</h2>
+    <div class="card overflow-hidden">
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <caption class="visually-hidden">{% translate "Obrigações deste cliente" %}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Competência" %}</th>
+              <th scope="col">{% translate "Obrigação" %}</th>
+              <th scope="col">{% translate "Vencimento" %}</th>
+              <th scope="col">{% translate "Situação" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for obligation in page.object_list %}
+              {% comment %}
+                Every cell names its column. Below the stacking breakpoint the header
+                row is hidden and each cell regrows its label out of that attribute, so
+                a missing one is a value on a phone with nothing saying what it
+                measures.
+
+                The badge carries the word as well as the colour: colour alone is not a
+                status, it is a status only the sighted majority receives. Paid reads
+                ok, overdue is the one that needs somebody today so it reads late, due
+                is approaching so it reads warn, and scheduled and waived are quiet.
+
+                The date shown is the resolved one, because that is the day the client
+                must actually pay by. Both dates are stored and the strip above is
+                where a deferral is announced.
+              {% endcomment %}
+              <tr>
+                <td data-label="{% translate 'Competência' %}">{{ obligation.competence_month|competencia }}</td>
+                <td data-label="{% translate 'Obrigação' %}">{{ obligation.obligation_type.name }}</td>
+                <td data-label="{% translate 'Vencimento' %}">{{ obligation.resolved_due_date|data }}</td>
+                <td data-label="{% translate 'Situação' %}"><span class="badge {% if obligation.status == 'paid' %}badge-ok{% elif obligation.status == 'overdue' %}badge-late{% elif obligation.status == 'due' %}badge-warn{% else %}badge-neutral{% endif %}">{{ obligation.get_status_display }}</span></td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="4" class="empty-state">{% translate "Nenhuma obrigação gerada para este cliente ainda." %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% include "partials/pure/pagination.html" %}
+    </div>
+  </section>
+
+  <section aria-labelledby="onboarding">
+    <h2 id="onboarding" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Checklist de onboarding" %}</h2>
+    <div class="card p-5">
+      {% comment %}
+        The label is read off the item rather than off the template row it came from.
+        apps/clients/models/onboarding.py copies key and label onto the item on purpose:
+        a template row may later be retired or reworded, and a client's historical
+        checklist has to keep saying what was actually asked of them at the time.
+
+        A blocked item always shows its reason. The database refuses a blocked row with
+        an empty one, so the only way this renders nothing is if the item is not blocked
+        -- which means a client stuck with nobody able to say on what cannot exist here
+        or in the table underneath.
+      {% endcomment %}
+      <ul class="checklist">
+        {% for item in checklist %}
+          <li class="flex flex-wrap items-center gap-2">
+            <span class="badge {% if item.status == 'done' %}badge-ok{% elif item.status == 'blocked' %}badge-late{% elif item.status == 'pending' %}badge-warn{% else %}badge-neutral{% endif %}">{{ item.get_status_display }}</span>
+            <span {% if item.status == 'done' %}class="checklist-done"{% endif %}>{{ item.label }}</span>
+            {% if item.status == 'blocked' %}
+              <span class="text-xs text-ink-500">{{ item.blocked_reason }}</span>
+            {% endif %}
+          </li>
+        {% empty %}
+          <li class="empty-state">{% translate "Nenhum item de onboarding para este cliente." %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+{% endblock %}

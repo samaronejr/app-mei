@@ -1,0 +1,56 @@
+{% load i18n ptbr %}{% comment %}
+  The twelve-month DAS strip, rendered from context alone so that the dashboard and a
+  client's detail page draw the same calendar rather than two that drift apart.
+
+  Context:
+    calendar        -- CalendarCell rows, already read from the Obligation table. Empty
+                       renders the explicit "nothing generated" line, never a blank
+                       grid: a strip that silently draws nothing looks the same on a
+                       morning the scheduler failed as on a client with no rows yet.
+    calendar_client -- the client the strip is about, named above it. Absent draws no
+                       caption at all, for a page that already says whose calendar
+                       this is somewhere above.
+
+  The id is what the dashboard's filter swaps by selector -- its target, its select and
+  its outerHTML swap all name #calendario-strip -- so the id belongs to the element
+  rather than to the page including it, and both callers get it for free.
+
+  **The indentation below is absolute, not relative, and it is load-bearing.** Django's
+  include tag emits a partial's text verbatim: only the first line inherits the caller's
+  indentation, and every following line carries whatever this file spells. The dashboard
+  exit criterion in tests/ui/test_dashboard.py compares a rendered cell against a
+  literal that includes the newline and the twenty spaces in front of `data-competence`,
+  because that assertion is how the anchor's §12 criterion is checked end to end. So the
+  depths here are the ones this markup had inside core/dashboard.html, and re-indenting
+  the file to look tidy standing alone turns that criterion red. Both callers therefore
+  include it at four spaces.
+
+  No attribute is spelled out with an equals sign anywhere in this note. The guard
+  tests parse attributes out of raw template text before any template syntax is
+  stripped, so a sample attribute written inside a comment is read as a real one.
+{% endcomment %}<div id="calendario-strip" class="card p-5"
+         role="region"
+         aria-label="{% translate 'Calendário do DAS' %}">
+      {% if calendar_client %}
+        <p class="mb-4 text-sm text-ink-600">
+          {{ calendar_client.legal_name }} — {{ calendar_client.cnpj|cnpj_mask }}
+        </p>
+      {% endif %}
+      {% if calendar %}
+        <ol class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          {% for cell in calendar %}
+            <li class="calendar-cell {% if cell.was_rolled %}border-warn-line bg-warn-soft{% else %}border-ink-200{% endif %}">
+              <span class="calendar-month {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-500{% endif %}">{{ cell.competence|competencia }}</span>
+              <time class="calendar-due {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-900{% endif %}"
+                    datetime="{{ cell.resolved|date:'Y-m-d' }}"
+                    data-competence="{{ cell.competence|date:'Y-m' }}">{{ cell.resolved|data }}</time>
+              {% if cell.was_rolled %}
+                <span class="calendar-rolled text-warn-ink">{% blocktranslate with nominal=cell.nominal|data %}adiado de {{ nominal }}{% endblocktranslate %}</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      {% else %}
+        <p class="empty-state">{% translate "Nenhum vencimento gerado para este cliente ainda." %}</p>
+      {% endif %}
+    </div>

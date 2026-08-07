@@ -1,0 +1,103 @@
+{% load i18n ptbr %}{% comment %}
+  Who this client is, and what their municipality will require of them.
+
+  Context:
+    client    -- the ClientCompany, already scoped by the view.
+    municipio -- the whole MunicipalityCapabilityView, passed under a neutral key.
+
+  The capability is read HERE rather than unpacked in Python, and that is a hard rule
+  rather than a preference. tests/scope/test_scope_fidelity.py row 4 pins the municipal
+  invoice vocabulary to five files under apps/ and forbids it in every other Python
+  source, because an invoice request workflow is Phase 3 and the registry is only meant
+  to record a fact. The scan reads .py files, so the view hands over the whole answer
+  object and the naming happens in markup.
+
+  Three states, never two. `is_known` separates a verified answer from a placeholder,
+  and the placeholder still shows its flags -- conservative defaults are what an
+  accountant has to plan against -- but shows them under the note that says so. A card
+  that rendered the same two rows either way would report a guess in the exact shape of
+  a fact, which is the one conflation apps/fiscal/capabilities.py exists to prevent.
+{% endcomment %}<div class="card p-5">
+  <h3 class="card-heading">{% translate "Identificação" %}</h3>
+  <dl class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Razão social" %}</dt>
+      <dd class="text-sm text-ink-900">{{ client.legal_name }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Nome fantasia" %}</dt>
+      <dd class="text-sm text-ink-900">{{ client.trade_name|default:"—" }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "CNPJ" %}</dt>
+      <dd class="text-sm text-ink-900 tabular">{{ client.cnpj|cnpj_mask }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Situação" %}</dt>
+      <dd>
+        {% comment %}
+          Both sides of every branch are written as literals. Tailwind compiles only
+          the names it can find in the source, so a name assembled out of a variable
+          would ship with no rule behind it. The same four states as the registry list,
+          mapped onto the same ramp, so a client does not change colour between the two
+          screens.
+        {% endcomment %}
+        <span class="badge {% if client.status == 'active' %}badge-ok{% elif client.status == 'onboarding' %}badge-warn{% elif client.status == 'suspended' %}badge-late{% else %}badge-neutral{% endif %}">{{ client.get_status_display }}</span>
+      </dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Abertura" %}</dt>
+      <dd class="text-sm text-ink-900">{{ client.opened_on|data }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "CNAE principal" %}</dt>
+      <dd class="text-sm text-ink-900">{{ client.main_cnae|default:"—" }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Categoria MEI" %}</dt>
+      <dd class="text-sm text-ink-900">{{ client.get_mei_category_display }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Nível gov.br" %}</dt>
+      <dd class="text-sm text-ink-900">{{ client.get_govbr_trust_level_display }}</dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Município" %}</dt>
+      <dd class="text-sm text-ink-900">
+        {% if municipio.name %}{{ municipio.name }}/{{ municipio.uf }}{% else %}{{ client.municipality_ibge_code|default:"—" }}{% endif %}
+      </dd>
+    </div>
+  </dl>
+
+  <h3 class="card-heading mt-6">{% translate "Emissão de nota no município" %}</h3>
+  {% if not municipio.is_known %}
+    <p class="notice notice-warn mt-3">{{ municipio.notes }}</p>
+  {% endif %}
+  <dl class="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Emissor nacional de NFS-e" %}</dt>
+      <dd>
+        <span class="badge {% if municipio.nfse_national_emitter %}badge-ok{% else %}badge-neutral{% endif %}">
+          {% if municipio.nfse_national_emitter %}{% translate "Sim" %}{% else %}{% translate "Não" %}{% endif %}
+        </span>
+      </dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Exige certificado digital" %}</dt>
+      <dd>
+        <span class="badge {% if municipio.requires_certificate %}badge-warn{% else %}badge-neutral{% endif %}">
+          {% if municipio.requires_certificate %}{% translate "Sim" %}{% else %}{% translate "Não" %}{% endif %}
+        </span>
+      </dd>
+    </div>
+    <div>
+      <dt class="text-xs font-medium text-ink-500">{% translate "Verificado em" %}</dt>
+      <dd class="text-sm text-ink-900">
+        {% if municipio.is_known and municipio.verified_on %}{{ municipio.verified_on|data }}{% else %}{% translate "não verificado" %}{% endif %}
+      </dd>
+    </div>
+  </dl>
+  {% if municipio.is_known and municipio.notes %}
+    <p class="mt-3 text-sm text-ink-600">{{ municipio.notes }}</p>
+  {% endif %}
+</div>
