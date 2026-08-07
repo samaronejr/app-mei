@@ -289,6 +289,190 @@ def test_a_threshold_client_is_listed_with_its_band(alpha: Firm) -> None:
     assert "perto do limite" in body
 
 
+# ----------------------------------------------------- the way into a workspace
+
+DETAIL_URL_NAME: Final[str] = "client-detail"
+CALENDAR_STRIP_ID: Final[str] = "calendario-strip"
+CALENDAR_STRIP_TEMPLATE: Final[str] = "obligations/_calendar_strip.html"
+
+
+class _AnchorScanner(HTMLParser):
+    """Collect every anchor with the text it labels, optionally inside one <div> id.
+
+    The scoping matters for the calendar: this page carries a navigation bar, a skip
+    link and a portfolio of tiles, all of which are anchors. Unscoped, a link drawn
+    anywhere in the layout would answer for the one the strip is supposed to draw.
+    """
+
+    def __init__(self, within: str | None = None) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self.entered = within is None
+        self._within = within
+        self._depth = 0 if within is not None else 1
+        self._href: str | None = None
+        self._label: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Enter the scoping element, or open an anchor inside it."""
+        attributes = {key: (value or "") for key, value in attrs}
+        if tag == "div" and self._within is not None:
+            if self._depth:
+                self._depth += 1
+            elif attributes.get("id") == self._within:
+                self._depth = 1
+                self.entered = True
+            return
+        if self._depth and tag == "a":
+            self._href = attributes.get("href", "")
+            self._label = []
+
+    def handle_data(self, data: str) -> None:
+        """Accumulate the text of the anchor currently open, if any."""
+        if self._href is not None:
+            self._label.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        """Close an anchor, or leave the scoping element."""
+        if tag == "div" and self._within is not None and self._depth:
+            self._depth -= 1
+        elif tag == "a" and self._href is not None:
+            self.links.append(("".join(self._label).strip(), self._href))
+            self._href = None
+            self._label = []
+
+
+def _anchors_on(html: str, *, within: str | None = None, where: str) -> dict[str, str]:
+    """Return `{anchor text: href}` for the links in `html`, or in one element of it.
+
+    Both non-vacuity gates live in here rather than beside each caller, because both
+    are ways for a caller to quantify over nothing and pass: markup that never
+    rendered the element being scoped to, and an element that rendered no link at
+    all, each yield an empty mapping — and an empty mapping satisfies every statement
+    made about its entries.
+    """
+    scanner = _AnchorScanner(within)
+    scanner.feed(html)
+    scanner.close()
+
+    assert scanner.entered, (
+        f"{where}: nothing with id {within!r} rendered, so the scan never reached the "
+        f"element it was scoped to and is reporting on some other markup"
+    )
+    assert scanner.links, (
+        f"{where}: not one <a> rendered in the scanned markup, so there is no link "
+        f"for the assertions below to be about"
+    )
+    return dict(scanner.links)
+
+
+def test_the_threshold_row_links_the_client_to_their_workspace(alpha: Firm) -> None:
+    """A client near the ceiling is the row acted on soonest; it has to lead there.
+
+    The dashboard renders `obligations/_rows_threshold.html`, the same partial the
+    threshold queue renders, so this covers the include as well as the partial — the
+    queue passing is no evidence the dashboard's header row is wired to the same
+    template.
+    """
+    company = alpha.clients[2]
+    with tenant_context(alpha.tenant.id):
+        MonthlyRevenue.objects.create(
+            tenant=alpha.tenant,
+            client=company,
+            competence_month=date(TODAY.year, 1, 1),
+            gross_amount=Decimal("78000.00"),
+        )
+    body = alpha.as_owner().get(reverse("dashboard")).content.decode()
+
+    # The section has to have listed this client at all, or "it is not linked" and
+    # "it is not there" are the same observation and this proves the wrong one.
+    assert "perto do limite" in body
+    assert company.legal_name in body, (
+        "the threshold section did not list the client, so there is no row whose "
+        "client could be linked"
+    )
+
+    links = _anchors_on(body, where="the dashboard")
+    assert company.legal_name in links, (
+        f"the dashboard names {company.legal_name!r} in its threshold table, but no "
+        f"link carries that name — the ones it does carry are {sorted(links)}"
+    )
+    assert links[company.legal_name] == reverse(DETAIL_URL_NAME, args=[company.pk])
+
+
+def test_the_calendar_names_its_client_as_a_way_into_the_workspace(
+    alpha: Firm,
+) -> None:
+    """The strip's caption says whose calendar this is; it has to lead to them too."""
+    body = alpha.as_owner().get(reverse("dashboard")).content.decode()
+    links = _anchors_on(
+        body,
+        within=CALENDAR_STRIP_ID,
+        where="the dashboard calendar strip",
+    )
+
+    expected = {
+        company.legal_name: reverse(DETAIL_URL_NAME, args=[company.pk])
+        for company in alpha.clients
+    }
+    named = {text: href for text, href in links.items() if text in expected}
+    assert named, (
+        f"the calendar strip carries {len(links)} link(s) — {sorted(links)} — but "
+        f"none of them is labelled with a client's legal name, so the caption is not "
+        f"what leads anywhere"
+    )
+
+    for legal_name, href in sorted(named.items()):
+        assert href == expected[legal_name], (
+            f"the calendar caption for {legal_name!r} links to {href!r}, but that "
+            f"client's workspace is at {expected[legal_name]!r}"
+        )
+
+
+def test_the_calendar_caption_is_plain_text_unless_the_caller_asks_for_a_link(
+    alpha: Firm,
+) -> None:
+    """The client detail screen includes this same strip, about the client it is on.
+
+    A link there points at the page the reader is already standing on. The partial
+    therefore draws a bare name by default and the dashboard opts in, so the flag
+    must genuinely be off when nobody passes it — a partial that linked regardless
+    would satisfy the test above and quietly put a self-link on the detail screen,
+    which nothing on that screen's side asserts about.
+    """
+    from django.template.loader import render_to_string  # noqa: PLC0415
+
+    company = alpha.clients[0]
+    context = {"calendar_client": company, "calendar": []}
+
+    with tenant_context(alpha.tenant.id):
+        plain = render_to_string(CALENDAR_STRIP_TEMPLATE, context)
+        linked = render_to_string(
+            CALENDAR_STRIP_TEMPLATE,
+            context
+            | {
+                "calendar_client_linked": True,
+            },
+        )
+
+    href = reverse(DETAIL_URL_NAME, args=[company.pk])
+
+    # Both halves, or this says nothing: without the second, a partial that never
+    # links at all passes, which is the opposite failure and just as wrong.
+    assert company.legal_name in plain, (
+        "the unflagged render dropped the caption entirely, so its lack of a link "
+        "says nothing about the flag"
+    )
+    assert href in linked, (
+        f"the flagged render carries no link to {href}, so the flag does nothing and "
+        f"the assertion below passes for the wrong reason"
+    )
+    assert href not in plain, (
+        "the strip links its caption with no caller asking it to, which puts a link "
+        "to the current page on the client detail screen"
+    )
+
+
 # --------------------------------------------------------------------------- shape
 
 

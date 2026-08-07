@@ -82,8 +82,15 @@
       The element the filter above swaps is inside that partial, id and all, so the
       htmx contract survives the extraction: this include renders the same element the
       selector has always named.
+
+      The flag turns the caption's client name into a link into that client's
+      workspace. It is passed here rather than defaulted inside the partial because the
+      client detail screen includes the same strip, and there the caption names the
+      client whose page the reader is already on -- a link to itself. The primary key
+      is on calendar_client, which the view already resolved, so the href follows no
+      relation and the dashboard budget does not move.
     {% endcomment %}
-    {% include "obligations/_calendar_strip.html" %}
+    {% include "obligations/_calendar_strip.html" with calendar_client_linked=True %}
   </section>
 
   <section aria-labelledby="limite">

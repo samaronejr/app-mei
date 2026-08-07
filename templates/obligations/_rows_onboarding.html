@@ -5,8 +5,12 @@
   Every cell names its column. Below the stacking breakpoint the header row is hidden
   and each cell regrows its own label out of that attribute, so a missing one is a
   value on a phone with nothing saying what it measures.
+
+  A blocked item is the one queue row that always needs the client's own workspace to
+  resolve, so the name is the link out. row.client_id is the foreign key column on the
+  item itself, so the href follows no relation and adds no query per row.
 {% endcomment %}<tr>
-  <td data-label="{% translate 'Cliente' %}">{{ row.client.legal_name }}</td>
+  <td data-label="{% translate 'Cliente' %}"><a class="link" href="{% url 'client-detail' row.client_id %}">{{ row.client.legal_name }}</a></td>
   <td data-label="{% translate 'Item' %}">{{ row.label }}</td>
   <td data-label="{% translate 'Motivo' %}">{{ row.blocked_reason|default:"—" }}</td>
   <td data-label="{% translate 'Situação' %}"><span class="badge badge-over">{{ row.get_status_display }}</span></td>

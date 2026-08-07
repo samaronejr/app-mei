@@ -10,6 +10,16 @@
     calendar_client -- the client the strip is about, named above it. Absent draws no
                        caption at all, for a page that already says whose calendar
                        this is somewhere above.
+    calendar_client_linked
+                    -- opt in to making that name a link into the client's workspace.
+                       Off by default, and the default is the important half: the
+                       client detail screen includes this same strip, and there the
+                       caption names the very client whose page the reader is already
+                       standing on. A link there leads nowhere and reads as a promise
+                       the product does not keep. The dashboard, whose strip is about
+                       whichever client the filter selected, turns it on. The flag
+                       travels on the include tag, so neither view had to grow a
+                       context key and the detail screen stays untouched.
 
   The id is what the dashboard's filter swaps by selector -- its target, its select and
   its outerHTML swap all name #calendario-strip -- so the id belongs to the element
@@ -33,7 +43,7 @@
          aria-label="{% translate 'Calendário do DAS' %}">
       {% if calendar_client %}
         <p class="mb-4 text-sm text-ink-600">
-          {{ calendar_client.legal_name }} — {{ calendar_client.cnpj|cnpj_mask }}
+          {% if calendar_client_linked %}<a class="link" href="{% url 'client-detail' calendar_client.pk %}">{{ calendar_client.legal_name }}</a>{% else %}{{ calendar_client.legal_name }}{% endif %} — {{ calendar_client.cnpj|cnpj_mask }}
         </p>
       {% endif %}
       {% if calendar %}

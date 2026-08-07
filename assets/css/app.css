@@ -315,6 +315,24 @@
     @apply bg-ink-50;
   }
 
+  /* An in-content link — a client name in a queue row, a caption above the calendar.
+   * Tailwind's preflight strips the user agent's colour AND its underline from every
+   * anchor, so an unclassed link inside a table cell is indistinguishable from the
+   * text beside it and nothing announces that the row leads anywhere.
+   *
+   * Underlined at rest rather than coloured only: WCAG 1.4.1 does not accept hue as
+   * the sole carrier of meaning, and a reader who does not separate teal from ink sees
+   * a coloured client name as emphasis. Hover deepens both the text and the rule, so
+   * the affordance strengthens rather than merely shifting hue. */
+  .link {
+    @apply rounded-control font-medium text-accent-700 underline decoration-ink-300
+      underline-offset-2 transition-colors;
+  }
+
+  .link:hover {
+    @apply text-accent-900 decoration-accent-600;
+  }
+
   /* `.notice-error` predates this family and stays self-sufficient, so the base class
    * carries shape only and each variant carries nothing but its ramp. */
   .notice {

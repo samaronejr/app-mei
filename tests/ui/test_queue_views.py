@@ -735,3 +735,158 @@ def test_the_empty_state_spans_exactly_the_columns_the_queue_declares(
         f"from spec.headings, so it is wrong for every queue whose header count is "
         f"not {raw}"
     )
+
+
+# --------------------------------------------------- the way out of the queue
+
+DETAIL_URL_NAME = "client-detail"
+
+
+class _RowLinkScanner(HTMLParser):
+    """Collect every anchor inside the queue table's body, with the text it labels.
+
+    Scoped to #fila by counting <div> nesting the same way _QueueTableScanner is, so
+    the layout's own navigation — which links plenty of places — cannot be mistaken
+    for a queue row's link and satisfy the assertions below on its behalf.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self.body_rows = 0
+        self.saw_fila = False
+        self._fila = 0
+        self._in_body = False
+        self._href: str | None = None
+        self._label: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Enter #fila, or open a body row or one of its anchors."""
+        attributes = {key: (value or "") for key, value in attrs}
+        if tag == "div":
+            if self._fila:
+                self._fila += 1
+            elif attributes.get("id") == "fila":
+                self._fila = 1
+                self.saw_fila = True
+            return
+        if not self._fila:
+            return
+        if tag == "tbody":
+            self._in_body = True
+        elif tag == "tr" and self._in_body:
+            self.body_rows += 1
+        elif tag == "a" and self._in_body:
+            self._href = attributes.get("href", "")
+            self._label = []
+
+    def handle_data(self, data: str) -> None:
+        """Accumulate the text of the anchor currently open, if any."""
+        if self._href is not None:
+            self._label.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        """Close an anchor, the table body, or #fila itself."""
+        if tag == "div" and self._fila:
+            self._fila -= 1
+            return
+        if not self._fila:
+            return
+        if tag == "tbody":
+            self._in_body = False
+        elif tag == "a" and self._href is not None:
+            self.links.append(("".join(self._label).strip(), self._href))
+            self._href = None
+            self._label = []
+
+
+def _row_links_on(html: str, *, where: str) -> dict[str, str]:
+    """Return `{anchor text: href}` for every link inside the queue table's body.
+
+    The non-vacuity gates live in here rather than beside each caller, because every
+    one of them is a way for a caller to quantify over nothing and pass: a page that
+    never rendered #fila, a table with no rows in its body, or rows that carry no
+    link at all each leave the mapping empty, and an empty mapping satisfies any
+    statement made about its entries.
+    """
+    scanner = _RowLinkScanner()
+    scanner.feed(html)
+    scanner.close()
+
+    assert scanner.saw_fila, (
+        f"{where}: the response contains no element with id 'fila', so the scan never "
+        f"entered the queue table and whatever it reports is about some other markup"
+    )
+    assert scanner.body_rows, (
+        f"{where}: #fila rendered no <tr> inside <tbody>, so the queue is empty and "
+        f"there is no row whose client could lead anywhere"
+    )
+    assert scanner.links, (
+        f"{where}: {scanner.body_rows} queue row(s) rendered and not one of them "
+        f"carries an <a> — the rows are a dead end"
+    )
+    return dict(scanner.links)
+
+
+@pytest.mark.parametrize("name", QUEUE_URLS)
+def test_every_queue_row_links_its_own_client_to_the_workspace(
+    alpha: Firm,
+    name: str,
+) -> None:
+    """A queue names a client; the name has to be the way into that client's page.
+
+    Four queues render through four row partials, and a link added to one of them is
+    no evidence about the other three — so this is asserted against every queue rather
+    than against the one whose partial was edited last.
+
+    The href is compared against the URL of the client the row is *about*, not merely
+    matched for the shape of a detail URL. A partial that wrapped every name in a link
+    to the same client would satisfy "there is a client-detail link on the page" and
+    would send an accountant to the wrong books.
+    """
+    body = alpha.as_owner().get(reverse(name)).content.decode()
+    links = _row_links_on(body, where=name)
+
+    expected = {
+        company.legal_name: reverse(DETAIL_URL_NAME, args=[company.pk])
+        for company in alpha.clients
+    }
+    named = {text: href for text, href in links.items() if text in expected}
+
+    # The fourth way this could quantify over nothing, and the one the helper cannot
+    # see: the rows link somewhere, but the client name is not what was wrapped.
+    assert named, (
+        f"{name}: the queue rows carry {len(links)} link(s) — "
+        f"{sorted(links)} — but none of them is labelled with a client's legal name, "
+        f"so the client name is not what leads to the workspace"
+    )
+
+    for legal_name, href in sorted(named.items()):
+        assert href == expected[legal_name], (
+            f"{name}: the row for {legal_name!r} links to {href!r}, but that client's "
+            f"workspace is at {expected[legal_name]!r}"
+        )
+
+
+@pytest.mark.parametrize("name", QUEUE_URLS)
+def test_a_row_link_leads_to_a_page_this_firm_may_actually_open(
+    alpha: Firm,
+    name: str,
+) -> None:
+    """A link the product draws and then refuses is worse than no link at all."""
+    session = alpha.as_owner()
+    links = _row_links_on(session.get(reverse(name)).content.decode(), where=name)
+
+    detail_urls = {
+        reverse(DETAIL_URL_NAME, args=[company.pk]) for company in alpha.clients
+    }
+    followed = sorted(href for href in links.values() if href in detail_urls)
+    assert followed, (
+        f"{name}: no row link points at a client workspace, so following one proves "
+        f"nothing about the queue's way out"
+    )
+
+    for href in followed:
+        assert session.get(href).status_code == HTTPStatus.OK, (
+            f"{name}: a queue row links to {href}, which this firm's owner is refused"
+        )

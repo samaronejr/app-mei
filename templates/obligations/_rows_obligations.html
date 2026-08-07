@@ -5,8 +5,14 @@
   Every cell names its column. Below the stacking breakpoint the header row is hidden
   and each cell regrows its own label out of that attribute, so a missing one is a
   value on a phone with nothing saying what it measures.
+
+  The client name is the way out of the queue and into the client's workspace, which
+  is where an accountant goes the moment a row raises a question this table leaves
+  unanswered. It is built from row.client_id -- the foreign key column already on the
+  obligation -- and not from row.client.pk, so the link costs nothing even on a row
+  whose client was never fetched.
 {% endcomment %}<tr>
-  <td data-label="{% translate 'Cliente' %}">{{ row.client.legal_name }}</td>
+  <td data-label="{% translate 'Cliente' %}"><a class="link" href="{% url 'client-detail' row.client_id %}">{{ row.client.legal_name }}</a></td>
   <td data-label="{% translate 'Obrigação' %}">{{ row.obligation_type.code }}</td>
   <td data-label="{% translate 'Competência' %}">{{ row.competence_month|competencia }}</td>
   <td data-label="{% translate 'Vencimento' %}"><time datetime="{{ row.resolved_due_date|date:'Y-m-d' }}">{{ row.resolved_due_date|data }}</time></td>
