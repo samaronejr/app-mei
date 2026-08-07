@@ -100,9 +100,32 @@
               The branch reads client.status, a column on the row already fetched. A
               relation followed from here would be a query per row and the render is
               budgeted at 30 for the whole page.
+
+              The razão social is the way out of the directory and into the client's
+              workspace, and it is the only way: this screen exists to be browsed, so a
+              row that names a client without reaching them is a dead end on the one
+              page whose entire purpose is finding somebody. The three queue rows --
+              obligations/_rows_obligations.html, _rows_onboarding.html and
+              _rows_threshold.html -- already spell the client name as exactly this
+              anchor, so the idiom is borrowed rather than invented and an accountant
+              meets one link, not four.
+
+              It is a link and stays a link. The registry is read-only by design (see
+              the note at the top of this block), and a navigation href is the one
+              control that adds no second write path for a CNPJ to arrive unnormalized
+              through.
+
+              client.pk is the primary key of the row already fetched, the same kind of
+              column client.status is on the line below, so the href follows no relation
+              and adds no query -- the page is measured at 30 with the link exactly as
+              it was measured at 30 without it. The {% templatetag openblock %} url
+              {% templatetag closeblock %} is written inline rather than resolved into a
+              variable first: the `as` form swallows a NoReverseMatch and leaves
+              href="" behind on a page that still answers 200, which is this very defect
+              wearing a green test.
             {% endcomment %}
             <tr>
-              <td data-label="{% translate 'Razão social' %}">{{ client.legal_name }}</td>
+              <td data-label="{% translate 'Razão social' %}"><a class="link" href="{% url 'client-detail' client.pk %}">{{ client.legal_name }}</a></td>
               <td data-label="{% translate 'CNPJ' %}">{{ client.cnpj|cnpj_mask }}</td>
               <td data-label="{% translate 'Situação' %}"><span class="badge {% if client.status == 'active' %}badge-ok{% elif client.status == 'onboarding' %}badge-warn{% elif client.status == 'suspended' %}badge-late{% else %}badge-neutral{% endif %}">{{ client.get_status_display }}</span></td>
               <td data-label="{% translate 'Município' %}">{{ client.municipality_ibge_code|default_if_none:'' }}</td>

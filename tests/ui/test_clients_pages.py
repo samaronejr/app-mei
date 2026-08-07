@@ -832,6 +832,157 @@ def test_the_registry_renders_a_whole_page(alpha: Firm) -> None:
     assert "<main" in body
 
 
+# ----------------------------------------------- from the registry into one client
+#
+# The bridge between the collection screen and the singleton below it, and the one
+# direction nothing above ever asserted. `templates/clients/detail.html:28-30` renders a
+# breadcrumb back to the registry, so a client's page has always been able to reach the
+# list; the list could not reach a client, because it spelled the razão social as plain
+# text and the only anchor on the whole page was the CSV export.
+#
+# That defect ships green past every other assertion in this file, which is why it
+# shipped. Each of them asks whether a name reached the document — `legal_name in body`
+# — and a name rendered as inert text satisfies every one of them. Not one asked whether
+# the name was *reachable*, so a directory that cannot be walked into passed as a
+# working directory, on the single screen whose entire purpose is finding somebody.
+#
+# The href is compared literally against `reverse(DETAIL_URL_NAME, args=[pk])` rather
+# than pattern-matched for "some link", because both ways this breaks leave the page
+# answering 200: the `{% url ... as var %}` form swallows a NoReverseMatch and leaves
+# `href=""` behind, and a row wired to the wrong primary key is a perfectly working link
+# to somebody else's client.
+
+# The msgid of the column the client's name lives in, and the `data-label` its cell
+# carries. Compared as the msgid because `locale/` holds no compiled catalogue — the
+# same property the two disclaimer literals above are asserted on.
+NAME_CELL_LABEL: Final = "Razão social"
+
+
+def _detail_href(company: ClientCompany) -> str:
+    """Return the exact href attribute the registry must carry for this client."""
+    return f'href="{reverse(DETAIL_URL_NAME, args=[company.pk])}"'
+
+
+def _name_cell(body: str, company: ClientCompany) -> str:
+    """Return the razão social cell naming this client, sliced from its label.
+
+    Sliced from the `data-label` rather than from the name, so that what is returned is
+    provably the *labelled* cell. Below the stacking breakpoint the header row is hidden
+    and each cell regrows its column heading out of that attribute — the treatment
+    `tests/ui/test_responsive_structure.py` guards — so a link introduced by moving the
+    name into a cell of its own, or by trading the label away to make room for the
+    anchor, leaves the razão social unlabelled on a phone. Both fail here rather than on
+    somebody's handset.
+
+    The count is asserted at exactly one, which is also this helper's non-vacuity gate:
+    zero means the row never rendered, and every caller's link assertion would otherwise
+    be reading an empty string that contains no href and no name either.
+    """
+    marker = f'data-label="{NAME_CELL_LABEL}"'
+    cells = [
+        cell.split("</td>")[0]
+        for cell in body.split(marker)[1:]
+        if company.legal_name in cell.split("</td>")[0]
+    ]
+    assert len(cells) == 1, (
+        f"{company.legal_name} appears inside {len(cells)} {marker} cells rather than "
+        f"exactly one, so the registry either never rendered the row, dropped the "
+        f"label the phone layout rebuilds the column heading from, or listed the "
+        f"client twice"
+    )
+    return cells[0]
+
+
+def test_every_listed_client_links_to_its_own_detail_screen(alpha: Firm) -> None:
+    """Every row reaches the client it names, and reaches that client specifically.
+
+    The registry is a directory, and the only thing an accountant does with a directory
+    is open something out of it. A row that names a client without linking to one is
+    therefore not a cosmetic omission — it is the screen failing at the single job it
+    exists for, while every status code, every scoping assertion and every query budget
+    in this file stays green.
+
+    Two non-vacuity gates, both required and neither implied by the other. The first
+    fails if the fixture seeded nobody, so the loop cannot pass by having no rows to
+    check. The second fails if the *document* carries fewer rows than the firm has
+    clients, so a registry that rendered an empty table — or quietly lost half of it —
+    cannot satisfy a loop that only ever visits the rows it can already see.
+    """
+    assert alpha.clients, (
+        "the fixture seeded no clients at all, so there is no row for the registry to "
+        "link and the loop below would quantify over nothing"
+    )
+
+    body = _body(alpha.as_owner())
+    listed = [company for company in alpha.clients if company.legal_name in body]
+    assert len(listed) == len(alpha.clients), (
+        f"the owner's registry rendered {len(listed)} of the firm's "
+        f"{len(alpha.clients)} clients; the loop below only visits rows that reached "
+        f"the document, so a short — or empty — row set would let it pass without "
+        f"ever looking at a single link"
+    )
+
+    for company in listed:
+        assert _detail_href(company) in _name_cell(body, company), (
+            f"{company.legal_name} is listed without {_detail_href(company)}, so the "
+            f"registry names a client it offers no way of opening — the screen an "
+            f"accountant browses to find somebody cannot reach them"
+        )
+
+
+def test_the_link_the_registry_renders_opens_the_client_it_names(alpha: Firm) -> None:
+    """Followed out of the document, rather than merely matched inside it.
+
+    The test above proves the registry emits the right string. This one proves the
+    string is a working route for this session and lands on this client: it reads the
+    href back off the rendered cell, requests exactly that, and checks who answered.
+
+    The empty-href assertion is the reason this is a separate test. An href that failed
+    to reverse is not an error anywhere — the tag resolved through an `as` variable
+    returns the empty string, the page still answers 200, the row still draws and reads
+    as a link, and clicking it silently reloads the registry. Nothing in this file could
+    see that before, because the string `href=""` is present in a document just as
+    surely as a real one is.
+
+    The closing loop is what separates "links somewhere" from "links here": a row wired
+    to a neighbouring primary key opens a real client, at a real URL, under a real 200.
+    """
+    session = alpha.as_owner()
+    body = _body(session)
+    company = alpha.clients[0]
+    cell = _name_cell(body, company)
+
+    opening = 'href="'
+    assert opening in cell, (
+        f"{company.legal_name}'s cell carries no href at all, so there is no link to "
+        f"follow and nothing below is being measured against a navigable row"
+    )
+    href = cell.split(opening)[1].split('"')[0]
+    assert href, (
+        f"{company.legal_name} is rendered as a link with an empty href — what the url "
+        f"tag leaves behind when it is resolved through an `as` variable that failed "
+        f"to reverse. The page answers 200, the row looks navigable, and following it "
+        f"reloads the registry"
+    )
+
+    followed = session.get(href)
+    assert followed.status_code == HTTPStatus.OK, (
+        f"the link the registry rendered for {company.legal_name} answered "
+        f"{followed.status_code}; the row is drawn as navigable and is not"
+    )
+    opened = followed.content.decode()
+    assert company.legal_name in opened, (
+        f"following {company.legal_name}'s own row reached a page that never names "
+        f"them, so the registry links its rows somewhere other than their own client"
+    )
+    for other in alpha.clients[1:]:
+        assert other.legal_name not in opened, (
+            f"following {company.legal_name}'s row opened a page naming "
+            f"{other.legal_name}; the rows carry one another's primary keys, which is "
+            f"a working link to the wrong client's file"
+        )
+
+
 # ----------------------------------------------------------------------- detail screen
 
 
