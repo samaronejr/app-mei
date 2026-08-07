@@ -21,10 +21,30 @@ names it can read in this file and a value assembled at render time has no rule.
 The label is always rendered and always visible, bound by `for` to the same id the
 control carries. A placeholder is not a label — it vanishes on the first keystroke,
 which is exactly when a person most needs to re-read it.
+
+THE DESCRIBED-BY CHAIN, restated here rather than borrowed.
+
+`partials/pure/field.html` builds one from a BoundField's help text and errors. This
+element cannot delegate to it — it has no BoundField — so the same chain is built from
+the slots and attributes it does have, in the same four shapes: help, error, both, or
+the attribute omitted entirely. Never emitted empty, because an empty value points at
+no element and reads to assistive technology as a broken reference. The ids are derived
+from the control's own id, so a caller that passes none simply gets no chain rather
+than a dangling one.
+
+Without it a help slot renders as text that happens to sit nearby: sighted users
+associate it by proximity, and a screen reader announces the control with no
+description at all. The TOTP screens are where that matters most, because what to type
+— six digits, from the app, regenerated every thirty seconds — is not deducible from a
+label reading "code".
+
+`inputmode` is passed through for the same population. It changes nothing on a desktop
+and swaps a phone's keyboard to the numeric pad, which is the difference between typing
+a rotating six-digit code in one attempt and typing it twice.
 {% endcomment %}<div class="field">
   {% if attrs.type == 'textarea' %}
   <label class="field-label" for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
-  <textarea class="field-input"{% if attrs.rows %} rows="{{ attrs.rows }}"{% endif %}{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}>{% slot value %}{% endslot %}</textarea>
+  <textarea class="field-input"{% if attrs.rows %} rows="{{ attrs.rows }}"{% endif %}{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}{% if attrs.id %}{% if slots.help_text and attrs.errors %} aria-describedby="{{ attrs.id }}_help {{ attrs.id }}_error"{% elif slots.help_text %} aria-describedby="{{ attrs.id }}_help"{% elif attrs.errors %} aria-describedby="{{ attrs.id }}_error"{% endif %}{% endif %}>{% slot value %}{% endslot %}</textarea>
   {% elif attrs.type == 'checkbox' or attrs.type == 'radio' %}
   <div class="flex items-center gap-2">
     <input class="h-4 w-4 shrink-0 rounded-control border border-ink-300" type="{{ attrs.type }}"{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.checked %} checked{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.value is not None %} value="{{ attrs.value }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}>
@@ -32,8 +52,8 @@ which is exactly when a person most needs to re-read it.
   </div>
   {% else %}
   <label class="field-label" for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
-  <input class="field-input" type="{{ attrs.type }}"{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.autocomplete %} autocomplete="{{ attrs.autocomplete }}"{% endif %}{% if attrs.value is not None %} value="{{ attrs.value }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}>
+  <input class="field-input" type="{{ attrs.type }}"{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.autocomplete %} autocomplete="{{ attrs.autocomplete }}"{% endif %}{% if attrs.inputmode %} inputmode="{{ attrs.inputmode }}"{% endif %}{% if attrs.value is not None %} value="{{ attrs.value }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}{% if attrs.id %}{% if slots.help_text and attrs.errors %} aria-describedby="{{ attrs.id }}_help {{ attrs.id }}_error"{% elif slots.help_text %} aria-describedby="{{ attrs.id }}_help"{% elif attrs.errors %} aria-describedby="{{ attrs.id }}_error"{% endif %}{% endif %}>
   {% endif %}
-  {% if slots.help_text %}<p class="field-help">{% slot help_text %}{% endslot %}</p>{% endif %}
-  {% if attrs.errors %}<p class="field-error">{% for error in attrs.errors %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</p>{% endif %}
+  {% if slots.help_text %}<p{% if attrs.id %} id="{{ attrs.id }}_help"{% endif %} class="field-help">{% slot help_text %}{% endslot %}</p>{% endif %}
+  {% if attrs.errors %}<p{% if attrs.id %} id="{{ attrs.id }}_error"{% endif %} class="field-error">{% for error in attrs.errors %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</p>{% endif %}
 </div>

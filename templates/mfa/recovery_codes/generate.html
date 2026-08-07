@@ -1,0 +1,64 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+Confirming a fresh set of recovery codes — and, when a set already exists, confirming
+the destruction of the old one.
+
+The screen exists because the action is irreversible and one-click. Generating replaces
+every unused code the account still holds: a reader who has the old list on paper is
+holding paper that stops working the moment this form is submitted, and nothing after
+the fact can bring it back. So the warning names that consequence in the branch where
+it applies, and the submit carries the danger ramp there rather than the affirmative
+one, which would make destroying the old set look like agreeing to something.
+
+`unused_code_count` is what distinguishes the two cases and comes from the view's
+context. First-time generation is not destructive and reads as an ordinary
+confirmation.
+
+Upstream renders the form body with `form.as_p`. That writes its markup from Django's
+widget templates in site-packages, which Tailwind's `@source` does not scan and
+`tests/ui/templates_scan.py` does not walk, so anything it emitted would ship with no
+compiled rule and no guard watching. The form is walked through the fields element
+instead, which routes each control through this project's own partial and carries the
+announced summary with it — the same reasoning `templates/allauth/elements/fields.html`
+records.
+
+Reachable on both hosts; both url names below are mounted by each tree.
+{% endcomment %}
+{% block head_title %}{% translate "Gerar códigos de recuperação" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Gerar códigos de recuperação" %}
+  {% endelement %}
+
+  {% if unused_code_count %}
+    <p class="text-sm text-ink-600">
+      {% translate "Você está prestes a gerar uma lista nova de códigos de recuperação." %}
+    </p>
+    {% include 'partials/pure/notice.html' with variant='warn' title='Os códigos atuais deixam de valer' message='Assim que a lista nova for gerada, nenhum código antigo funciona — inclusive os que você tenha anotado ou impresso. Guarde a lista nova antes de descartar a anterior.' only %}
+  {% else %}
+    <p class="text-sm text-ink-600">
+      {% translate "Os códigos de recuperação são a forma de entrar se você perder o celular com o aplicativo autenticador. Cada um vale uma única vez." %}
+    </p>
+  {% endif %}
+
+  <form method="post" action="{% url 'mfa_generate_recovery_codes' %}" class="grid gap-4">
+    {% csrf_token %}
+    {% element fields form=form %}
+    {% endelement %}
+    {% if unused_code_count %}
+      {% element button type="submit" tags="danger" %}
+        {% translate "Substituir os códigos" %}
+      {% endelement %}
+    {% else %}
+      {% element button type="submit" tags="prominent" %}
+        {% translate "Gerar códigos" %}
+      {% endelement %}
+    {% endif %}
+  </form>
+
+  {% url 'mfa_index' as mfa_url %}
+  <p class="text-sm text-ink-600">
+    {% blocktranslate %}Mudou de ideia? <a class="link" href="{{ mfa_url }}">Voltar para a verificação em duas etapas</a>.{% endblocktranslate %}
+  </p>
+{% endblock content %}

@@ -1,0 +1,100 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+TOTP enrolment — the first screen a new MEI owner reaches, and the only way past the
+gate.
+
+`MFAEnforcementMiddleware` diverts every account holding a Membership here until it
+carries an authenticator, so this page is reached before any other view on either host.
+`tests/ui/test_mfa_pages.py` walks that chain and ends on this document; the pin in
+`tests/portal/test_review_regressions.py` follows its first hop. Neither can be
+satisfied by a page that 500s, and this file is rendered under `app_portal` — no ORM,
+no capability, no url name absent from `apps/portal/urls.py`.
+
+Extends the ENTRANCE layout directly. Upstream climbs `mfa/totp/base.html` then
+`mfa/base_manage.html` then `allauth/layouts/manage.html`, and all three land on the one
+shell this project ships, so naming it once keeps the chain the extends walk in
+`tests/ui/test_auth_templates.py` follows down to a single hop.
+
+BOTH ENROLMENT ROUTES ARE OFFERED, WHICH IS THE POINT OF THE SCREEN.
+
+A QR code alone assumes a second device with a camera pointed at the first. Someone
+enrolling on a desktop with the authenticator on that same desktop — or on a phone
+reading this page — cannot photograph the screen they are reading, so the shared secret
+is rendered beside the image as text they can select and paste.
+
+It is READONLY and not disabled. Upstream disables it, and a disabled control is
+removed from the tab order and cannot be focused, which means the one route that exists
+for people without a camera is unreachable from the keyboard: you can see the secret and
+you cannot copy it. Readonly keeps it focusable and selectable while still refusing
+edits. It carries no name, so it is not posted back with the form.
+
+The code control is built from the bound field rather than named by hand — `html_name`,
+`auto_id`, `errors` — so a rename upstream cannot leave a control that looks right and
+posts nothing. It is the keyboard-critical input on the page: `one-time-code` lets a
+phone offer the code from its own clipboard or SMS, `inputmode` swaps the keyboard to
+the numeric pad, and the help slot is wired to the control through the described-by
+chain the field element builds, because "code" alone does not say six digits, from the
+app, changing every thirty seconds.
+
+The submitted code is deliberately NOT echoed back on a failed attempt. It has already
+expired by the time the page returns, so re-displaying it only invites the reader to
+press Enter again on a value that cannot work.
+{% endcomment %}
+{% block head_title %}{% translate "Ativar autenticador" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Ativar autenticador" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% translate "A conta guarda dados fiscais, então o acesso pede duas etapas: a senha e um código que muda sozinho. Instale um aplicativo autenticador no celular — Google Authenticator, Authy ou o gerenciador de senhas que você já usa." %}
+  </p>
+
+  {% include 'partials/pure/form_errors.html' with form=form only %}
+
+  <div class="grid gap-2">
+    <p class="text-sm font-medium text-ink-700">
+      {% translate "1. Leia o QR code com o aplicativo" %}
+    </p>
+    {% element img src=totp_svg_data_uri %}
+    {% endelement %}
+  </div>
+
+  <div class="grid gap-2">
+    <p class="text-sm font-medium text-ink-700">
+      {% translate "2. Sem câmera? Digite este código no aplicativo" %}
+    </p>
+    {% element field id="authenticator_secret" type="text" value=form.secret readonly=True %}
+      {% slot label %}
+        {% translate "Chave do autenticador" %}
+      {% endslot %}
+      {% slot help_text %}
+        {% translate "Selecione e copie. Serve para cadastrar a conta manualmente e para reinstalar o aplicativo depois." %}
+      {% endslot %}
+    {% endelement %}
+  </div>
+
+  <form method="post" action="{% url 'mfa_activate_totp' %}" class="grid gap-4">
+    {% csrf_token %}
+    <p class="text-sm font-medium text-ink-700">
+      {% translate "3. Confirme com o código que o aplicativo mostrar" %}
+    </p>
+    {% element field type="text" name=form.code.html_name id=form.code.auto_id required=form.code.field.required autocomplete="one-time-code" inputmode="numeric" errors=form.code.errors %}
+      {% slot label %}
+        {% translate "Código do autenticador" %}
+      {% endslot %}
+      {% slot help_text %}
+        {% translate "Seis dígitos, gerados pelo aplicativo. O código muda a cada 30 segundos — se ele virar enquanto você digita, use o próximo." %}
+      {% endslot %}
+    {% endelement %}
+    {% element button type="submit" tags="prominent" %}
+      {% translate "Ativar autenticador" %}
+    {% endelement %}
+  </form>
+
+  {% url 'account_logout' as logout_url %}
+  <p class="text-sm text-ink-600">
+    {% blocktranslate %}Prefere terminar depois? <a class="link" href="{{ logout_url }}">Saia da conta</a> — o cadastro recomeça no próximo acesso.{% endblocktranslate %}
+  </p>
+{% endblock content %}

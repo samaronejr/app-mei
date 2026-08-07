@@ -14,7 +14,18 @@ The tag list is checked for truth before it is searched. `attrs.tags` is absent 
 calls, and while Django's if-tag swallows the resulting TypeError and answers false, a
 guard that depends on an exception being caught is a guard nobody can read.
 
+`danger` is the third ramp, and it is a ramp rather than a decoration: the controls
+that carry it remove a second factor or invalidate a set of recovery codes, and the
+quiet ramp would make either look exactly like cancelling. The tag is checked AFTER
+`prominent` so a control that somehow arrived with both still reads as the affirmative
+action rather than a destructive one; nothing in the reachable tree passes both.
+
 Both branches spell their classes as literals. Tailwind compiles only the names it can
 see in this file, and `tests/ui/test_asset_pipeline.py` asserts every class token has a
 compiled rule — a name assembled at render time is invisible to both and ships bare.
-{% endcomment %}{% if attrs.href %}<a class="btn {% if attrs.tags and 'prominent' in attrs.tags %}btn-primary btn-lg w-full{% else %}btn-quiet{% endif %}" href="{{ attrs.href }}"{% if attrs.id %} id="{{ attrs.id }}"{% endif %}>{% slot %}{% endslot %}</a>{% else %}<button class="btn {% if attrs.tags and 'prominent' in attrs.tags %}btn-primary btn-lg w-full{% else %}btn-quiet{% endif %}"{% if attrs.type %} type="{{ attrs.type }}"{% endif %}{% if attrs.form %} form="{{ attrs.form }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.value %} value="{{ attrs.value }}"{% endif %}>{% slot %}{% endslot %}</button>{% endif %}
+
+Every string compared inside these attributes is SINGLE-quoted. `class_tokens()` reads
+attribute values with a regex before it strips template syntax, so a double quote in
+here would end the class attribute early and feed the comparison's own words to the
+stale-stylesheet guard as class names.
+{% endcomment %}{% if attrs.href %}<a class="btn {% if attrs.tags and 'prominent' in attrs.tags %}btn-primary btn-lg w-full{% elif attrs.tags and 'danger' in attrs.tags %}btn-danger btn-lg w-full{% else %}btn-quiet{% endif %}" href="{{ attrs.href }}"{% if attrs.id %} id="{{ attrs.id }}"{% endif %}>{% slot %}{% endslot %}</a>{% else %}<button class="btn {% if attrs.tags and 'prominent' in attrs.tags %}btn-primary btn-lg w-full{% elif attrs.tags and 'danger' in attrs.tags %}btn-danger btn-lg w-full{% else %}btn-quiet{% endif %}"{% if attrs.type %} type="{{ attrs.type }}"{% endif %}{% if attrs.form %} form="{{ attrs.form }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.value %} value="{{ attrs.value }}"{% endif %}>{% slot %}{% endslot %}</button>{% endif %}

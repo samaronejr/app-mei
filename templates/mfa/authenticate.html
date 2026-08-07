@@ -1,0 +1,69 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+The second step of signing in: the code, after the password was accepted.
+
+Reached on both hosts at the identical path, so nothing here resolves a capability,
+reads a firm-side table or reverses a name `apps/portal/urls.py` does not mount.
+
+Upstream branches twice on webauthn — an alternative-options block and a security-key
+button. `MFA_SUPPORTED_TYPES` lists totp and recovery codes only, so both branches are
+statically false here and neither is carried over; shipping them would mean markup no
+test can reach and Tailwind would still have to compile classes for.
+
+THE CODE FIELD ACCEPTS A RECOVERY CODE TOO.
+
+`BaseAuthenticateForm.clean_code` walks every authenticator on the account and asks
+each to validate what was typed, so one control accepts both a rotating six-digit code
+and a stored recovery code. Upstream's label says only "Code" and nothing on the screen
+mentions the second possibility — which is precisely the screen someone reads when they
+have lost the phone and are looking for a way in. The help text says it, and is wired to
+the control through the described-by chain rather than left as nearby prose.
+
+`inputmode` is numeric rather than absent because the overwhelmingly common case is the
+six digits; a recovery code can still be pasted or typed on the symbol keyboard.
+
+THE WAY OUT IS A POST, AND IT IS THE ONLY WAY OUT.
+
+Between password and code the session is a half-authenticated stage: the ordinary
+navigation does not exist yet and the browser's back button returns to a form that will
+not help. Upstream solves it with a second form posting to logout, and that is kept —
+GET-based sign-out would let any third-party image tag end the stage for the visitor.
+Both forms carry their own token, which `tests/ui/test_form_contract.py` requires of
+every POST form this project ships.
+{% endcomment %}
+{% block head_title %}{% translate "Código de verificação" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Código de verificação" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% translate "A senha foi aceita. Falta o código do aplicativo autenticador para concluir o acesso." %}
+  </p>
+
+  {% include 'partials/pure/form_errors.html' with form=form only %}
+
+  <form method="post" action="{% url 'mfa_authenticate' %}" class="grid gap-4">
+    {% csrf_token %}
+    {% element field type="text" name=form.code.html_name id=form.code.auto_id required=form.code.field.required autocomplete="one-time-code" inputmode="numeric" errors=form.code.errors %}
+      {% slot label %}
+        {% translate "Código do autenticador" %}
+      {% endslot %}
+      {% slot help_text %}
+        {% translate "Seis dígitos do aplicativo. Perdeu o celular? Um código de recuperação também vale aqui." %}
+      {% endslot %}
+    {% endelement %}
+    {% element button type="submit" tags="prominent" %}
+      {% translate "Entrar" %}
+    {% endelement %}
+  </form>
+
+  <form id="sair-da-verificacao" method="post" action="{% url 'account_logout' %}" class="grid gap-4">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{% url 'account_login' %}">
+    {% element button type="submit" %}
+      {% translate "Cancelar e voltar ao início" %}
+    {% endelement %}
+  </form>
+{% endblock content %}
