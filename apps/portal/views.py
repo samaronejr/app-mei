@@ -400,7 +400,35 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
 @require_http_methods(["GET"])
 @login_required
 def portal_account(request: HttpRequest) -> HttpResponse:
-    """Render the client's account page. Placeholder until the links land."""
+    """Render the three things a client can do to their own sign-in, and nothing else.
+
+    **Zero data reads, and no context, which is the finished shape rather than a page
+    still waiting to be filled in.** Every destination this screen offers is a static
+    address the URL tree already carries, and the one value it shows —
+    `request.user.email` — is materialised by the middleware BEFORE the transaction
+    opens and before the role switch, so the template reads it without issuing
+    anything. `tests/portal/test_portal_templates_render.py:102-106` allows exactly
+    three attributes through `request.user` for that reason, and this page is the one
+    the allowance was written for. There is consequently no queryset here to confine,
+    and the `.filter(client=…)` discussion that runs through the three views above
+    simply does not arise: a page that reads nothing cannot leak a row.
+
+    **Signed in is the whole gate, and it is a decision rather than an omission.** The
+    reasoning is `portal_payments`' reasoning arriving at the same place by a shorter
+    road. `core.E010` requires any capability a portal view NAMES to be FULL for both
+    client roles, and it reaches that check through `PORTAL_CAPABILITY_GATES`, which
+    only knows about gated callbacks — an ungated one is skipped
+    (`apps/core/checks.py:375-377`). So `require_can` here would not be a free
+    tightening. It would have to name a capability, every capability it could plausibly
+    name is below FULL for at least one of the two client roles, and the result would be
+    a MEI owner 403'd out of the page that holds her own password-change link. Nothing
+    is being protected by that trade, because there is no row to protect: the page reads
+    no table, and the three addresses it links are each guarded by the view behind them.
+
+    The links are named, not built. `account_logout` is reached by a POST form in the
+    template rather than an anchor, because a signing-out GET is a link any prefetch,
+    scanner or preloading browser can follow on the client's behalf.
+    """
     return render(request, "portal/account.html")
 
 
