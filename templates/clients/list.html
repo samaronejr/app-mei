@@ -1,6 +1,39 @@
 {% extends "base.html" %}{% load authz i18n ptbr %}
 {% block title %}{% translate "Clientes" %}{% endblock %}
 {% block heading %}{% translate "Clientes" %}{% endblock %}
+{% block actions %}
+  {% comment %}
+    A mirror of the navigation entry, not a relocation of it: both stay.
+
+    It sits in the layout's action slot beside the heading rather than in the body,
+    because it acts on the screen as a whole — the thing being exported is this
+    registry — and a control over the page belongs with the page's title. The slot is
+    right-aligned by the row, so the link needs no alignment utility of its own.
+
+    Asked here as well as on the server, and the duplication is the point. The view
+    behind this link is decorated with the matching require_can, so that decorator --
+    not this tag -- is the control; a request forged past a hidden link is still
+    refused. What the tag buys is honesty: the same capability decides whether the
+    button is drawn, so the interface never advertises an action the role would be
+    told 403 for. A dead button teaches an accountant that the product is broken.
+
+    The three queries this costs are real and are carried in the budget deliberately.
+    The flag is not obtainable free: portfolio_scope resolves the same capability
+    internally, but visible_clients encapsulates it and the view never holds the
+    answer, so re-deriving it there would cost more than asking again does. Moving the
+    ask from the body into this slot changes where it is rendered and not how often.
+
+    The glyph is decorative: it is aria-hidden inside the partial, and the label
+    beside it is what is announced and what is read.
+  {% endcomment %}
+  {% can user "clients.view_all" as pode_exportar %}
+  {% if pode_exportar %}
+    <a class="btn btn-quiet" href="{% url 'clients-export-csv' %}">
+      {% include "partials/pure/icons/download.html" %}
+      {% translate "Exportar clientes" %}
+    </a>
+  {% endif %}
+{% endblock %}
 {% block content %}
   {% comment %}
     A read-only directory. There is no create, no edit and no bulk action here on
@@ -11,55 +44,28 @@
     be bookmarked, linked and re-run from the address bar, and so it works with no
     script running at all.
   {% endcomment %}
-  <div class="my-6 flex flex-wrap items-end gap-4">
-    <form class="flex flex-wrap items-end gap-3" method="get">
-      {% comment %}
-        Written out rather than passed through partials/pure/field.html, for the same
-        reason templates/core/dashboard.html writes its client filter out: that partial
-        reads a Django BoundField -- auto_id, widget_type, errors -- and this is a bare
-        query parameter the view pulls off request.GET itself. Handed one, the partial
-        would fall through every branch to a bare text input and drop the search type.
-
-        It carries the same three classes the partial emits -- field, field-label and
-        field-input -- so the two render identically, and it owes neither aria-invalid
-        nor an aria-describedby chain because it has no error line and no help line.
-      {% endcomment %}
-      <div class="field min-w-64">
-        <label class="field-label" for="q">{% translate "Buscar por nome ou CNPJ" %}</label>
-        <input class="field-input"
-               type="search"
-               id="q"
-               name="q"
-               value="{{ term }}">
-      </div>
-      <button type="submit" class="btn btn-primary">{% translate "Buscar" %}</button>
-    </form>
+  <form class="my-6 flex flex-wrap items-end gap-3" method="get">
     {% comment %}
-      A mirror of the navigation entry, not a relocation of it: both stay.
+      Written out rather than passed through partials/pure/field.html, for the same
+      reason templates/core/dashboard.html writes its client filter out: that partial
+      reads a Django BoundField -- auto_id, widget_type, errors -- and this is a bare
+      query parameter the view pulls off request.GET itself. Handed one, the partial
+      would fall through every branch to a bare text input and drop the search type.
 
-      Asked here as well as on the server, and the duplication is the point. The view
-      behind this link is decorated with the matching require_can, so that decorator --
-      not this tag -- is the control; a request forged past a hidden link is still
-      refused. What the tag buys is honesty: the same capability decides whether the
-      button is drawn, so the interface never advertises an action the role would be
-      told 403 for. A dead button teaches an accountant that the product is broken.
-
-      The three queries this costs are real and are carried in the budget deliberately.
-      The flag is not obtainable free: portfolio_scope resolves the same capability
-      internally, but visible_clients encapsulates it and the view never holds the
-      answer, so re-deriving it there would cost more than asking again does.
-
-      The glyph is decorative: it is aria-hidden inside the partial, and the label
-      beside it is what is announced and what is read.
+      It carries the same three classes the partial emits -- field, field-label and
+      field-input -- so the two render identically, and it owes neither aria-invalid
+      nor an aria-describedby chain because it has no error line and no help line.
     {% endcomment %}
-    {% can user "clients.view_all" as pode_exportar %}
-    {% if pode_exportar %}
-      <a class="btn btn-quiet ml-auto" href="{% url 'clients-export-csv' %}">
-        {% include "partials/pure/icons/download.html" %}
-        {% translate "Exportar clientes" %}
-      </a>
-    {% endif %}
-  </div>
+    <div class="field min-w-64">
+      <label class="field-label" for="q">{% translate "Buscar por nome ou CNPJ" %}</label>
+      <input class="field-input"
+             type="search"
+             id="q"
+             name="q"
+             value="{{ term }}">
+    </div>
+    <button type="submit" class="btn btn-primary">{% translate "Buscar" %}</button>
+  </form>
 
   <div class="card overflow-hidden">
     <div class="table-wrap">

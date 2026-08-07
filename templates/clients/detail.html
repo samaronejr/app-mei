@@ -14,11 +14,20 @@
     between finding the calendar and scrolling through everything before it. The h1
     belongs to the layout, so the sections start at h2.
   {% endcomment %}
-  <nav class="crumbs my-4" aria-label="{% translate 'Trilha de navegação' %}">
-    <a href="{% url 'clients-list' %}">{% translate "Clientes" %}</a>
-    <span aria-hidden="true">/</span>
-    <span aria-current="page">{{ client.legal_name }}</span>
-  </nav>
+  {% comment %}
+    The trail's markup lives in partials/crumbs.html and is included rather than
+    written out, so that there is one place where "the current crumb is text, not a
+    link" is decided. It is included from here and from no other template on purpose:
+    the partial emits a nav landmark, and every public screen in this product is
+    contractually required to draw none.
+
+    Both values are resolved into named variables first because `only` is what keeps
+    the partial free of this page's context, and `only` also strips the tags that would
+    otherwise have resolved them inline.
+  {% endcomment %}
+  {% translate "Clientes" as rotulo_carteira %}
+  {% url 'clients-list' as url_carteira %}
+  {% include "partials/crumbs.html" with parent_url=url_carteira parent_label=rotulo_carteira current=client.legal_name only %}
 
   <section aria-labelledby="identificacao" class="mb-8">
     <h2 id="identificacao" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Identificação" %}</h2>

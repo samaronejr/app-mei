@@ -116,7 +116,26 @@
     remember. A guard test refuses a literal <h1> in any other template.
   {% endcomment %}
   <main id="conteudo" tabindex="-1" class="mx-auto max-w-7xl px-6 py-8">
-    <h1 class="mb-6 text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "app-mei" %}{% endblock %}</h1>
+    {% comment %}
+      The heading and whatever the page offers on itself share one row, so that a
+      control such as "Exportar clientes" sits beside the title it belongs to rather
+      than adrift in the body underneath it. The row is the only thing the layout
+      contributes: the slot emits no element of its own.
+
+      Empty by default, and that is load-bearing rather than tidy. A page which
+      declares nothing leaves the heading alone in the row, and nothing at all is
+      added to the document — no toolbar, no list, no landmark and no label for an
+      assistive technology to announce and then find empty.
+
+      Which is also why the slot is given no role and no aria-label here. This shell
+      is rendered for anonymous visitors too, and the contract those pages hold is
+      that they draw exactly three landmarks; a fourth one wrapped around an empty
+      slot would break it on every public screen at once.
+    {% endcomment %}
+    <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <h1 class="text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "app-mei" %}{% endblock %}</h1>
+      {% block actions %}{% endblock %}
+    </div>
 
     {% comment %}
       The recovery path for a request that never arrived, pre-rendered so that the
