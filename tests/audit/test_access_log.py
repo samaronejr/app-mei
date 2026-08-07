@@ -4,27 +4,66 @@ The ordering assertion is the one that matters. Registered inside the tenant
 transaction, this middleware would have its row rolled back whenever the request
 failed — which is to say, the access record would be missing for exactly the requests
 an intrusion investigation starts from, and present for all the boring ones.
+
+Bearer credentials are kept OUT of the recorded path. An invitation link carries its
+token in a path segment, and this table outlives the invitation by months: retaining
+live credentials for six months is not an access log, it is a second copy of the
+credential store with a longer half-life than the original. `AccessLogMiddleware`
+therefore replaces the segment after `/convites/aceitar/` with a marker before writing,
+which keeps the route legible — an investigation still sees that someone opened an
+acceptance link, from which address, when, and with what answer — while the credential
+itself is never persisted.
+
+SCOPE BOUNDARY, stated here so nobody later mistakes this for full-stack credential
+hygiene. The redaction asserted below covers THIS application's own `audit_accesslog`
+rows and claims nothing whatsoever about anything else. A fronting proxy, a load
+balancer, a CDN, a web-server access log or an observability agent that records request
+URLs still sees the raw token in transit, and so does the browser history of whoever
+opened the link. Closing those surfaces is infrastructure work, deliberately outside
+this change, and the tests below must not be read as evidence that it was done.
 """
 
 from datetime import timedelta
 from http import HTTPStatus
+from typing import Final
 
 import pytest
 from django.conf import settings
 from django.test import Client
+from django.urls import reverse
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
 from apps.audit.models import AccessLog
 from apps.audit.tasks import purge_access_logs
+from apps.clients.models import ClientCompany
 from apps.core.rls import is_exempt_from_tenant_policy
-from apps.tenants.models import Membership, Tenant, TenantRole
+from apps.core.tenancy import tenant_context
+from apps.tenants.models import Invite, Membership, Tenant, TenantRole
 from tests.support import enrol_totp
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 TENANT_HOST = "alpha.localhost"
+
+# The two hosts that answer an acceptance link, and they are genuinely different doors.
+# The firm-side route is mounted at the PLATFORM level (`apps/accounts/views.py` says
+# why a subdomain cannot serve it), while the portal route lives on the portal urlconf
+# and is reached through `HostDispatchMiddleware`. They share one path shape, which is
+# exactly why one prefix covers both.
+FIRM_ROUTE: Final = "firm"
+PORTAL_ROUTE: Final = "portal"
+FIRM_URLCONF: Final = "config.urls"
+PORTAL_URLCONF: Final = "apps.portal.urls"
+PLATFORM_HOST: Final = "testserver"
+PORTAL_HOST: Final = "alpha-portal.localhost"
+
+INVITE_PATH_PREFIX: Final = "/convites/aceitar/"
+REDACTED_INVITE_PATH: Final = f"{INVITE_PATH_PREFIX}<redacted>/"
+INVITED: Final = "convidada@alpha.example"
+PADARIA_CNPJ: Final = "11222333000181"
+QUERY_STRING: Final = "?origem=email"
 
 
 @pytest.fixture(autouse=True)
@@ -175,3 +214,140 @@ def test_the_purge_task_is_on_the_beat_schedule() -> None:
         for entry in schedule.values()
     )
     assert settings.ACCESS_LOG_RETENTION_DAYS == 180
+
+
+@pytest.fixture
+def _shipped_urls(_urls: None, settings: SettingsWrapper) -> None:
+    """Serve the real URL tree, because the redaction is about real routes.
+
+    Declared as a plain fixture rather than autouse so it composes with `_urls` above
+    instead of fighting it: the module's other tests need the stub urlconf, and the ones
+    below need `config.urls`, which is the only tree that carries `invite-accept`. The
+    portal route needs no such help — `HostDispatchMiddleware` points the request at
+    `apps.portal.urls` off the Host header alone, whatever `ROOT_URLCONF` says.
+    """
+    settings.ROOT_URLCONF = FIRM_URLCONF
+
+
+def _open_invitation_link(
+    tenant: Tenant,
+    route: str,
+    query: str = "",
+) -> tuple[AccessLog, str]:
+    """Mint a real invitation, open its link on the matching host, return the record.
+
+    Every non-vacuity gate lives HERE rather than in the callers, and that placement is
+    deliberate: each caller below asserts that something is ABSENT from the recorded
+    path, and an absence assertion is satisfied by an empty needle, by a request that
+    never reached the route, and — most quietly of all — by a middleware that simply
+    stopped writing rows. Gates in the callers could be deselected one at a time with
+    `pytest -k`; gates in the shared helper cannot be reached around at all.
+
+    So, in order: the token is a real non-empty string that is genuinely IN the URL and
+    is not what the database stored; the request actually rendered the acceptance page
+    rather than 404ing past the view; and exactly one access record exists, still
+    carrying the prefix that names the route.
+    """
+    if route == PORTAL_ROUTE:
+        with tenant_context(tenant.id):
+            # ALL_OBJECTS_OK: fixture seeding under an established tenant context.
+            company = ClientCompany.all_objects.create(
+                tenant=tenant,
+                legal_name="PADARIA ALPHA",
+                cnpj=PADARIA_CNPJ,
+                is_mei=True,
+            )
+        invite, raw_token = Invite.issue(
+            tenant=tenant,
+            email=INVITED,
+            role=TenantRole.CLIENT_OWNER,
+            client=company,
+        )
+        path = reverse("portal-invite-accept", args=[raw_token], urlconf=PORTAL_URLCONF)
+        host = PORTAL_HOST
+    else:
+        invite, raw_token = Invite.issue(
+            tenant=tenant,
+            email=INVITED,
+            role=TenantRole.STAFF_ACCOUNTANT,
+        )
+        path = reverse("invite-accept", args=[raw_token], urlconf=FIRM_URLCONF)
+        host = PLATFORM_HOST
+    path = f"{path}{query}"
+
+    # Gate one: there is a needle. An empty token, or one that turned out to be the
+    # stored digest, would make every "the token is absent" assertion below pass while
+    # scanning for nothing.
+    assert raw_token, "no raw token was minted, so the absence scan has no needle"
+    assert invite.token != raw_token, "the raw token was stored instead of its digest"
+    assert raw_token in path, "the token is not in the URL, so nothing could leak"
+
+    response = Client().get(path, headers={"host": host})
+
+    # Gate two: this was the acceptance page. A 404 from a route that never resolved
+    # would also carry no token by the end, for entirely the wrong reason.
+    assert response.status_code == HTTPStatus.OK, (
+        f"{host}{path} answered {response.status_code}; the redaction assertions below "
+        f"are only meaningful once the real acceptance view has served the link"
+    )
+
+    # Gate three: a row was WRITTEN, and it still names the route. Redaction is not
+    # exemption — the visit remains on record, which is the whole Marco Civil duty, and
+    # a middleware that quietly stopped recording would satisfy every other assertion
+    # in this file's redaction tests.
+    rows = list(AccessLog.objects.filter(path__startswith=INVITE_PATH_PREFIX))
+    assert len(rows) == 1, (
+        f"expected exactly one access record under {INVITE_PATH_PREFIX}, found "
+        f"{[row.path for row in rows]}; redaction must not stop the visit being logged"
+    )
+    return rows[0], raw_token
+
+
+@pytest.mark.parametrize("route", [FIRM_ROUTE, PORTAL_ROUTE])
+@pytest.mark.usefixtures("_shipped_urls")
+def test_an_invitation_token_never_reaches_the_access_record(
+    tenant: Tenant,
+    route: str,
+) -> None:
+    # Given a real invitation, opened at the door it belongs to
+    # When the link is followed
+    row, raw_token = _open_invitation_link(tenant, route)
+
+    # Then the route is still legible and the bearer credential is gone. Both hosts are
+    # exercised because they share one path shape and one prefix covers them: a
+    # redaction that only knew about one of the two would leak every seat handed out on
+    # the other, and nothing in either urlconf would say so.
+    assert row.path == REDACTED_INVITE_PATH
+    assert raw_token not in row.path
+
+
+@pytest.mark.parametrize("route", [FIRM_ROUTE, PORTAL_ROUTE])
+@pytest.mark.usefixtures("_shipped_urls")
+def test_a_query_string_survives_the_redaction_untouched(
+    tenant: Tenant,
+    route: str,
+) -> None:
+    # Given an acceptance link opened with a query string attached
+    # When the visit is recorded
+    row, raw_token = _open_invitation_link(tenant, route, query=QUERY_STRING)
+
+    # Then only the path segment holding the credential was rewritten. `get_full_path()`
+    # is path AND query, so a redaction written against the whole string would either
+    # swallow the query or miss the token depending on which end it cut from — and the
+    # query is the half that carries the campaign, the referrer and the diagnostics an
+    # access log is read for.
+    assert row.path == f"{REDACTED_INVITE_PATH}{QUERY_STRING}"
+    assert raw_token not in row.path
+
+
+@pytest.mark.parametrize("path", ["/", "/clientes/"])
+@pytest.mark.usefixtures("_shipped_urls")
+def test_a_path_carrying_no_credential_is_recorded_byte_for_byte(path: str) -> None:
+    # Given an ordinary request holding no credential in its path
+    Client().get(path, headers={"host": PLATFORM_HOST})
+
+    # Then it is recorded exactly as it was requested. The redaction is a prefix match
+    # over one tuple and nothing else: a rewrite that reached ordinary paths would
+    # damage the record for every route in the product to protect one, and the damage
+    # would be invisible until somebody read the log for an incident.
+    assert [row.path for row in AccessLog.objects.all()] == [path]
