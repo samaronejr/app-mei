@@ -10,6 +10,22 @@ The ramp classes are written as literals rather than interpolated into one dynam
 name. Tailwind v4 compiles only the utilities it can see by scanning this file, and
 `tests/ui/test_asset_pipeline.py` asserts every class token in a template has a
 compiled rule; an interpolated name is invisible to both and would ship unstyled.
+
+THE SLOT IS NAMED, AND THE NAME IS THE UPSTREAM ONE.
+
+The banner's one caller fills a slot called `message`, not the default one, and the
+element tag hands a template only the slots its caller actually wrote. Reading the
+default slot here therefore returned the whitespace between `{% element alert %}` and
+its close — so the banner rendered as an empty box with a live region attached to it,
+which is worse than not rendering: the ramp draws, the border draws, and the sentence
+that made it worth drawing is gone, silently, on a page nobody has a test for.
+
+The nested slot is the fallback and not a second reading of the same thing. When the
+named one is filled the inner nodelist is never rendered at all; when a caller writes
+its content with no slot name — the other half of the element convention, and how the
+rest of this project's element overrides are called — the inner one picks it up. Both
+calling conventions render, which is the only version of this file that cannot lose a
+sentence.
 {% endcomment %}<div class="notice notice-info" role="status">
-  <p>{% slot %}{% endslot %}</p>
+  <p>{% slot message %}{% slot %}{% endslot %}{% endslot %}</p>
 </div>

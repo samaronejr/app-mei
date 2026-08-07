@@ -1,0 +1,39 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+The sign-out confirmation.
+
+Upstream extends `account/base_manage.html`, which is a different two-line file that
+reaches the SAME `allauth/layouts/base.html` this project overrides. The entrance
+layout is named directly instead, because "manage" and "entrance" resolve to one shell
+here and going through the one this project actually documents keeps the inheritance
+chain readable to the extends walk in `tests/ui/test_auth_templates.py`.
+
+A POST, and only a POST. Signing out on a GET means any image tag, prefetch or link a
+third party can get in front of the user ends their session for them; the form and its
+token are what make the action deliberate.
+
+No cancel control. The only paths mounted by BOTH urlconfs are `account_*` and `mfa_*`
+— every firm destination is absent from `apps/portal/urls.py` and every portal one from
+`config.urls` — so a "voltar" here could only be a guessed literal path that lands on a
+dashboard the visitor may hold no capability for. Upstream offers none either, and the
+browser's own back button is the honest answer.
+{% endcomment %}
+{% block head_title %}{% translate "Sair" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Sair" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% translate "Sair encerra esta sessão neste navegador. Para voltar será preciso a senha e um novo código do aplicativo autenticador." %}
+  </p>
+
+  <form method="post" action="{% url 'account_logout' %}" class="grid gap-4">
+    {% csrf_token %}
+    {{ redirect_field }}
+    {% element button type="submit" tags="prominent" %}
+      {% translate "Sair agora" %}
+    {% endelement %}
+  </form>
+{% endblock content %}

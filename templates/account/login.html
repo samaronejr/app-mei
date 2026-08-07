@@ -1,0 +1,57 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+The sign-in screen, on both hosts.
+
+Extends the ENTRANCE layout and not the firm shell. `allauth/layouts/entrance.html`
+is allauth's own two-line file, and now that `templates/allauth/layouts/base.html`
+exists Django's loader resolves its parent to ours — so naming it here reaches this
+project's card without this file knowing anything about which host it landed on.
+`templates/base.html` would reverse `dsr-submit`, which `apps/portal/urls.py` does not
+mount, and this exact path is served on the portal subdomain too.
+
+No top-level heading tag. The layout owns the document's single one and fills it with
+the brand line, so the card's own title goes through the `h1` element — which this
+project overrides to render a paragraph for precisely that reason.
+
+Neither social nor passkey nor code-by-mail branches are carried over from upstream.
+`INSTALLED_APPS` holds `allauth.account` and `allauth.mfa` and no provider app, and
+`MFA_SUPPORTED_TYPES` lists totp and recovery codes only, so all three of upstream's
+conditionals are statically false here. Writing them anyway would mean shipping markup
+whose styling nothing renders and no test can reach.
+
+The field names are allauth's. `apps/security/ratelimit.py` keys the per-address bucket
+on the string `login`, so the control is rendered by walking the form rather than by
+naming anything — rename it and the credential-stuffing limit silently stops matching
+while every page here still looks right.
+{% endcomment %}
+{% block head_title %}{% translate "Entrar" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Entrar" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% translate "Use o e-mail que a contabilidade cadastrou. Depois da senha vem o código de seis dígitos do aplicativo autenticador — sem ele o acesso não se completa." %}
+  </p>
+
+  <form method="post" action="{% url 'account_login' %}" class="grid gap-4">
+    {% csrf_token %}
+    {% element fields form=form %}
+    {% endelement %}
+    {{ redirect_field }}
+    {% element button type="submit" tags="prominent" %}
+      {% translate "Entrar" %}
+    {% endelement %}
+  </form>
+
+  {% url 'account_reset_password' as reset_url %}
+  {% url 'account_signup' as signup_url %}
+  <p class="text-sm text-ink-600">
+    {% blocktranslate %}Cinco senhas erradas seguidas para o mesmo endereço travam novas tentativas por um minuto. Se não lembrar, <a class="link" href="{{ reset_url }}">redefina o acesso</a> em vez de tentar de novo.{% endblocktranslate %}
+  </p>
+
+  <p class="text-sm text-ink-600">
+    {% blocktranslate %}Ainda não tem conta? <a class="link" href="{{ signup_url }}">Crie uma agora</a>.{% endblocktranslate %}
+  </p>
+{% endblock content %}
