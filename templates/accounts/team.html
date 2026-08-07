@@ -59,7 +59,8 @@
       <h2 id="convidar" class="mb-4 text-sm font-semibold text-ink-700">{% translate "Convidar" %}</h2>
       <form method="post" action="{% url 'invite-issue' %}" class="space-y-4">
         {% csrf_token %}
-        {{ form.as_p }}
+        {% include "partials/pure/form_errors.html" %}
+        {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
         <button type="submit" class="btn btn-primary">{% translate "Enviar convite" %}</button>
       </form>
     </section>
