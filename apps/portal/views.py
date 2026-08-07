@@ -16,14 +16,17 @@ rather than `request.tenant`.
 """
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+from typing import Any, Final
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
-from django.db.models import Count, Q
+from django.core.paginator import EmptyPage, Page, Paginator
+from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -38,6 +41,11 @@ from apps.portal.middleware import PortalHttpRequest
 
 # FULL for both client roles, which core.E010 requires of every portal gate.
 VAULT_CAPABILITY = "documents.transfer"
+
+# Twelve months of DAS on one screen, which is the span a MEI owner thinks in.
+PAYMENTS_PAGE_SIZE: Final = 12
+# Spelled as the firm side spells it, so one product has one word for a page number.
+PAYMENTS_PAGE_PARAM: Final = "pagina"
 
 
 class PortalVaultRequest(PortalHttpRequest):
@@ -76,6 +84,26 @@ class NextAction:
     due_date: date
     days_until: int
     rolled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Payment:
+    """One row of the payments list, flattened to scalars for the same reason.
+
+    `NextAction` above explains it at length and every word applies here twelve times
+    over: a page holding model instances is a page one `{{ row.obligation_type.name }}`
+    away from joining onto a table the portal role cannot read.
+
+    `status` is the raw column. The pt-BR word beside it and the sentence explaining
+    what it costs are presentation, and the template owns both.
+    """
+
+    type_code: str
+    competence_month: date
+    nominal_due_date: date
+    due_date: date
+    rolled: bool
+    status: str
 
 
 def _situation(today: date) -> tuple[int, int]:
@@ -161,17 +189,95 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     )
 
 
+def _payments_page[Row](
+    rows: QuerySet[Obligation, Row],
+    request: HttpRequest,
+) -> Page[Row]:
+    """Return the requested slice of the client's book, first page for unusable input.
+
+    Generic in the row rather than pinned to `dict[str, Any]`, because django-stubs
+    types `.values("a", "b")` as a TypedDict of exactly those columns — an annotation
+    naming the dict would reject the one call this helper exists to serve.
+
+    An out-of-range or non-numeric page is a stale bookmark or a typed address, not an
+    error worth a 404 in the middle of a working session.
+
+    This is the ONLY querystring parameter the page reads, and it selects nothing: it
+    moves a window over rows the database has already confined. A narrowing parameter
+    would be a different thing entirely — a client who can filter a confined list can
+    interrogate it, because the shape of the answer reports on the rows the policy is
+    keeping out of reach.
+    """
+    paginator = Paginator(rows, PAYMENTS_PAGE_SIZE)
+    raw = request.GET.get(PAYMENTS_PAGE_PARAM, "1")
+    try:
+        return paginator.page(int(raw))
+    except (ValueError, EmptyPage):
+        return paginator.page(1)
+
+
+def _payment(row: Mapping[str, Any]) -> Payment:
+    """Flatten one `.values()` row into the scalars the card draws."""
+    nominal = row["nominal_due_date"]
+    due = row["resolved_due_date"]
+    return Payment(
+        # The local column, never the relation. It already carries the code, because
+        # the code IS `ObligationType`'s primary key.
+        type_code=row["obligation_type_id"],
+        competence_month=row["competence_month"],
+        nominal_due_date=nominal,
+        due_date=due,
+        rolled=nominal != due,
+        status=row["status"],
+    )
+
+
 @require_http_methods(["GET"])
 @login_required
 def portal_payments(request: HttpRequest) -> HttpResponse:
-    """Render the client's deadlines. Placeholder until the list lands.
+    """Render every obligation this client owes, newest competence month first.
 
-    The route exists now rather than with the page, because the shell's navigation
-    names it on every portal screen and `{% url %}` on an unregistered name raises
-    during rendering — so a bar pointing at a page that does not yet exist is not a
-    dead link, it is a 500 on the whole portal.
+    **Signed in is the whole gate, and that is a decision rather than an omission.**
+    `core.E010` requires any capability a portal view names to be FULL for *both*
+    client roles, and none of the payment-side capabilities is: `das.generate` is
+    VIEW_CONFIRM for `client_owner`, so an object-less `require_can` would 403 the MEI
+    owner on her own payment list. Row-level security is the control here — the
+    RESTRICTIVE policy comparing `app.client_id` confines every row below — exactly as
+    it is on `portal_home` above. Adding `require_can` to "tighten" this would not
+    tighten anything; it would lock both client roles out of a page the database was
+    already confining correctly.
+
+    No client filter is applied, on purpose. `.filter(client=client)` would make the
+    confinement test pass with the RESTRICTIVE policy dropped, hiding the very failure
+    that test exists to catch.
+
+    `.values()` rather than model instances, and the columns are all local to
+    `obligations_obligation`. A model instance handed to a portal template is a foreign
+    key waiting to be followed, and following `obligation_type` during rendering means a
+    join onto `obligations_obligationtype` — a table `app_portal` holds no SELECT on —
+    from inside the transaction and under the portal role. Passing values the view has
+    already read removes the possibility instead of documenting it.
+
+    `pk` breaks ties after the competence month, so a client with two obligations in one
+    month reads them in the same order on every request rather than alternating between
+    renders and between pages.
     """
-    return render(request, "portal/payments.html")
+    rows = Obligation.objects.order_by("-competence_month", "pk").values(
+        "obligation_type_id",
+        "competence_month",
+        "nominal_due_date",
+        "resolved_due_date",
+        "status",
+    )
+    page = _payments_page(rows, request)
+    return render(
+        request,
+        "portal/payments.html",
+        {
+            "page": page,
+            "payments": [_payment(row) for row in page.object_list],
+        },
+    )
 
 
 @require_http_methods(["GET"])
