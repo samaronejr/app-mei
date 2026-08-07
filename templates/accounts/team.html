@@ -61,6 +61,7 @@
             <th scope="col">{% translate "E-mail" %}</th>
             <th scope="col">{% translate "Papel" %}</th>
             <th scope="col">{% translate "Expira em" %}</th>
+            <th scope="col">{% translate "Ações" %}</th>
           </tr>
         </thead>
         <tbody>
@@ -69,9 +70,22 @@
               <td>{{ invite.email }}</td>
               <td>{{ invite.get_role_display }}</td>
               <td><time datetime="{{ invite.expires_at.isoformat }}">{{ invite.expires_at|data_hora }}</time></td>
+              <td>
+                {% comment %}
+                  A link, like Desativar next door, because it leads to a confirmation:
+                  the raw token exists only in the sent email, so revoking cannot be
+                  undone by the button that did it. The label names the address for the
+                  same reason the members table does — a screen reader reading the
+                  actions out of table context must not be offered N identical
+                  "Revogar" links.
+                {% endcomment %}
+                <a class="link" href="{% url 'invite-revoke' invite.pk %}">
+                  {% blocktranslate with email=invite.email %}Revogar convite de {{ email }}{% endblocktranslate %}
+                </a>
+              </td>
             </tr>
           {% empty %}
-            <tr><td colspan="3" class="empty-state">{% translate "Nenhum convite pendente." %}</td></tr>
+            <tr><td colspan="4" class="empty-state">{% translate "Nenhum convite pendente." %}</td></tr>
           {% endfor %}
         </tbody>
       </table>

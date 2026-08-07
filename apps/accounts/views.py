@@ -33,10 +33,13 @@ from apps.accounts.invites import (
     InviteExpiredError,
     InviteNotFoundError,
     InviteNotPermittedError,
+    InviteNotRevocableError,
+    InviteRevokedError,
     accept_invite,
     issue_invite,
     register_and_accept,
     resolve_invite,
+    revoke_invite,
 )
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
@@ -54,6 +57,7 @@ class AuthenticatedRequest(HttpRequest):
 REFUSAL_TEMPLATE = "accounts/invite_refused.html"
 ACCEPT_TEMPLATE = "accounts/invite_accept.html"
 MEMBER_CONFIRM_TEMPLATE = "accounts/member_confirm.html"
+INVITE_CONFIRM_TEMPLATE = "accounts/invite_confirm.html"
 
 
 class MemberLifecycleError(Exception):
@@ -70,6 +74,10 @@ _STATUS_BY_ERROR: dict[type[InviteError], HTTPStatus] = {
     InviteNotFoundError: HTTPStatus.NOT_FOUND,
     InviteExpiredError: HTTPStatus.GONE,
     InviteAlreadyAcceptedError: HTTPStatus.GONE,
+    # GONE, alongside its two siblings, because the three say the same thing to the
+    # person holding the link: this credential existed and no longer works. Which of
+    # the three it was is carried by the reason the page renders, not by the code.
+    InviteRevokedError: HTTPStatus.GONE,
     InviteEmailMismatchError: HTTPStatus.FORBIDDEN,
     InviteAccountExistsError: HTTPStatus.CONFLICT,
 }
@@ -234,9 +242,12 @@ def team_view(request: AuthenticatedRequest) -> HttpResponse:
         .select_related("user")
         .order_by("user__email")
     )
+    # revoked_at__isnull=True alongside accepted_at: a withdrawn invitation is not
+    # pending, and leaving it in this list would offer a Revogar link for something
+    # already stood down — and, worse, tell the firm a link is live when it is dead.
     pending = (
         Invite.objects.for_user(request.user)
-        .filter(tenant=tenant, accepted_at__isnull=True)
+        .filter(tenant=tenant, accepted_at__isnull=True, revoked_at__isnull=True)
         .order_by("email")
     )
     return render(
@@ -272,6 +283,35 @@ def _visible_membership(request: AuthenticatedRequest, pk: UUID) -> Membership:
     try:
         return scoped.select_related("user").get(pk=pk)
     except Membership.DoesNotExist as missing:
+        raise Http404 from missing
+
+
+def _visible_invite(request: AuthenticatedRequest, pk: UUID) -> Invite:
+    """Resolve one invitation the caller is actually entitled to see.
+
+    The twin of `_visible_membership`, and it answers 404 for the same reason: a 403
+    confirms the primary key names a real invitation somewhere on the platform, which
+    is the fact a tenant boundary exists to withhold.
+
+    This one carries more weight than its twin, because it is the ONLY thing scoping
+    these rows. `tenants_invite` is in `NON_TENANT_TABLES`, so the database enforces
+    nothing, and `tests/tenants/test_membership_scope_guard.py` scans for the
+    membership manager rather than this one — so an unscoped lookup here trips no
+    meta-test at all. It would simply let one firm withdraw another firm's
+    invitations, in silence. `tests/accounts/test_invite_revocation.py` is what
+    stands in for the guard that cannot see this.
+
+    No `client` filter, unlike the membership twin: this model has no such column. An
+    invitation always creates a firm-side membership, which the
+    `invite_role_is_firm_side` CHECK constraint enforces at the row level.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        raise Http404
+    scoped = Invite.objects.for_user(request.user).filter(tenant=tenant)
+    try:
+        return scoped.get(pk=pk)
+    except Invite.DoesNotExist as missing:
         raise Http404 from missing
 
 
@@ -407,5 +447,61 @@ def member_reactivate_view(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
     messages.success(
         request,
         _("O acesso de %(email)s foi reativado.") % {"email": membership.user.email},
+    )
+    return HttpResponseRedirect(reverse("team"))
+
+
+def _render_invite_confirm(
+    request: AuthenticatedRequest,
+    invite: Invite,
+    *,
+    reason: str = "",
+    status: HTTPStatus = HTTPStatus.OK,
+) -> HttpResponse:
+    return render(
+        request,
+        INVITE_CONFIRM_TEMPLATE,
+        {"invite": invite, "reason": reason},
+        status=status,
+    )
+
+
+@require_http_methods(["GET", "POST"])
+@login_required
+@require_can(INVITE_CAPABILITY)
+def invite_revoke_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
+    """Confirm, then perform, the withdrawal of an outstanding invitation.
+
+    Guarded exactly as `member_deactivate_view` is, and shaped the same way: one route
+    for both halves so the confirmation and the action cannot drift apart, and so a
+    refusal re-renders the page the reader is already on with its cancel link intact.
+
+    A confirmation step here and not on `member-reactivate`, because the two are not
+    equally reversible. Reactivation is the undo of something the same button did;
+    withdrawing an invitation destroys a credential that cannot be handed back — the
+    raw token was never stored — so the remedy is issuing a new one and asking the
+    invitee to use a different link.
+
+    The refusal is a 409 rather than a 403, matching its sibling: `require_can` has
+    already answered the authorization question, and what is left is the state of this
+    row. Reporting that as a permission failure sends an administrator looking for a
+    grant that is already there. The 410 in `_STATUS_BY_ERROR` is the other audience —
+    the invitee holding a dead link — and is a different flow.
+    """
+    invite = _visible_invite(request, pk)
+    if request.method == "GET":
+        return _render_invite_confirm(request, invite)
+    try:
+        revoke_invite(actor=request.user, invite=invite)
+    except InviteNotRevocableError as refused:
+        return _render_invite_confirm(
+            request,
+            invite,
+            reason=str(refused),
+            status=HTTPStatus.CONFLICT,
+        )
+    messages.success(
+        request,
+        _("O convite para %(email)s foi revogado.") % {"email": invite.email},
     )
     return HttpResponseRedirect(reverse("team"))

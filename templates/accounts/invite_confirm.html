@@ -1,0 +1,34 @@
+{% extends "base.html" %}{% load i18n ptbr %}
+{% block title %}{% translate "Revogar convite" %}{% endblock %}
+{% block heading %}{% translate "Revogar convite" %}{% endblock %}
+{% block content %}
+  <div class="max-w-2xl">
+    {% if reason %}
+      {% translate "Não foi possível revogar este convite." as refused %}
+      {% include 'partials/pure/notice.html' with title=refused message=reason variant='error' only %}
+    {% endif %}
+
+    <section class="card mt-6 p-6" aria-labelledby="confirmar">
+      <h2 id="confirmar" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Confirmar revogação" %}</h2>
+
+      <p class="text-sm text-ink-600">
+        {% blocktranslate with email=invite.email %}O link enviado para {{ email }} deixará de funcionar imediatamente.{% endblocktranslate %}
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% translate "Quem tiver o link verá um aviso de convite indisponível ao tentar usá-lo. O convite continua no histórico do escritório, com a data em que foi revogado, e a pessoa não passa a fazer parte da equipe." %}
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% blocktranslate with papel=invite.get_role_display %}Este convite oferecia o papel de {{ papel }} e valeria até {% endblocktranslate %}<time datetime="{{ invite.expires_at.isoformat }}">{{ invite.expires_at|data_hora }}</time>.
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% translate "Revogar não pode ser desfeito: o link só existia no e-mail enviado e não fica guardado aqui. Se mudar de ideia, envie um convite novo pela página da equipe — a pessoa receberá outro link." %}
+      </p>
+
+      <form method="post" action="{% url 'invite-revoke' invite.pk %}" class="mt-6 flex flex-wrap items-center gap-3">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">{% translate "Revogar convite" %}</button>
+        <a class="btn btn-quiet" href="{% url 'team' %}">{% translate "Cancelar" %}</a>
+      </form>
+    </section>
+  </div>
+{% endblock %}

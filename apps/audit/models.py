@@ -47,6 +47,12 @@ class AuditAction(models.TextChoices):
     PASSWORD_CHANGED = "password_changed", _("password changed")
     INVITE_ISSUED = "invite_issued", _("invite issued")
     INVITE_ACCEPTED = "invite_accepted", _("invite accepted")
+    # The third way an invitation's life ends, and distinct from the other two on
+    # purpose. An invitation is a bearer credential, so the question an investigation
+    # asks is "which links were live at the time, and who stood one down" — and
+    # answering it from INVITE_ISSUED means reading every issuance's metadata to find
+    # out which of them were later withdrawn.
+    INVITE_REVOKED = "invite_revoked", _("invite revoked")
     ROLE_CHANGED = "role_changed", _("role changed")
     # Distinct from ROLE_CHANGED on purpose. Both edit a Membership, but the question
     # an investigation asks is "who lost access, and when" — and answering it from a

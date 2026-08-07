@@ -191,6 +191,19 @@ class Invite(UUIDv7PrimaryKeyModel):
     token = models.CharField(_("token digest"), max_length=64, unique=True)
     expires_at = models.DateTimeField(_("expires at"))
     accepted_at = models.DateTimeField(_("accepted at"), null=True, blank=True)
+    # Withdrawal is recorded as a THIRD timestamp rather than by deleting the row or by
+    # backdating `expires_at`, and both alternatives lose something this column keeps.
+    #
+    # A DELETE removes the only record that this address was ever offered a seat, and
+    # it takes the token digest with it — so a link presented afterwards matches
+    # nothing and is refused as an UNKNOWN invitation rather than a withdrawn one. The
+    # holder is told the wrong thing, and the firm can no longer answer "did we invite
+    # them, and did we take it back?".
+    #
+    # Backdating `expires_at` keeps the row but destroys the distinction the trail
+    # exists for: "the firm changed its mind" and "nobody got round to it" become the
+    # same fact, in the one column that could have told them apart.
+    revoked_at = models.DateTimeField(_("revoked at"), null=True, blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
     objects = PlatformScopedManager["Invite"]()
