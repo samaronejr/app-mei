@@ -76,6 +76,7 @@ NAV_OPEN: Final = re.compile(
 CLOSE_NAV: Final = "</nav>"
 
 ANCHOR: Final = re.compile(r'<a\b[^>]*href="(?P<href>[^"]*)"[^>]*>', re.IGNORECASE)
+BUTTON: Final = re.compile(r"<button\b[^>]*>", re.IGNORECASE)
 CURRENT: Final = re.compile(r'aria-current="page"', re.IGNORECASE)
 
 # `{% url 'name' %}`, either quote style. Read off the partial's source rather than a
@@ -305,6 +306,159 @@ def test_the_bar_marks_the_page_being_viewed(portal_client: Client, name: str) -
         f"on {name} the bar marks {marked} as the current page rather than "
         f"[{_path(name)!r}]; the marker is what tells a screen reader which of four "
         f"identical destinations the reader has already arrived at"
+    )
+
+
+# ------------------------------------------------------ WCAG 2.2 AA target size (AA)
+#
+# 2.75rem is 44 CSS pixels, and 44 is the number a thumb hits reliably. Success
+# criterion 2.5.8 sets the floor at 24; this product holds itself to 44 because the
+# portal is a phone in the hand of somebody who is not an accountant, standing up, on
+# the day a payment is due — and the cost of missing is either a wrong destination or
+# a form submitted by accident.
+#
+# The size is carried by two component classes, both defined in `assets/css/app.css`
+# with `@apply min-h-11` and compiled into the sheet every portal page links. So the
+# promise has two halves that fail independently: the class can stop being written on
+# the control, and the rule behind the class can stop declaring a minimum. A template
+# scan sees only the first, and a stylesheet scan only the second, so both are read
+# here — the classes off a RENDERED page, and the minimum off the COMPILED sheet.
+#
+# No exact spelling is pinned. The declaration is read for the length it resolves to
+# and compared against the floor as a number, so retuning the scale or switching
+# Tailwind's calc form for a literal rem is not a failure. What may not change quietly
+# is that the control is at least 44px tall.
+
+TOUCH_TARGET_CLASSES: Final = ("bottom-nav-link", "btn-lg")
+MINIMUM_TARGET_PX: Final = 44
+CSS_PIXELS_PER_REM: Final = 16
+
+STYLESHEET_SOURCE: Final[Path] = (
+    Path(__file__).resolve().parents[2] / "static" / "css" / "app.css"
+)
+
+# `--spacing:.25rem`, the scale every `calc(var(--spacing) * N)` is measured against.
+SPACING_SCALE: Final = re.compile(r"--spacing:\s*([\d.]+)rem")
+
+# A `min-height` declaration in either shape the build can emit: Tailwind's spacing
+# calc, or a literal length once resolved.
+MIN_HEIGHT_CALC: Final = re.compile(
+    r"min-height:\s*calc\(\s*var\(--spacing\)\s*\*\s*([\d.]+)\s*\)",
+)
+MIN_HEIGHT_REM: Final = re.compile(r"min-height:\s*([\d.]+)rem")
+MIN_HEIGHT_PX: Final = re.compile(r"min-height:\s*([\d.]+)px")
+
+# The one portal control carrying `.btn-lg`: the sign-out button on the account page.
+LARGE_BUTTON_PAGE: Final = "portal-account"
+
+
+def _stylesheet() -> str:
+    """Return the compiled sheet, refusing one that is missing or empty."""
+    assert STYLESHEET_SOURCE.is_file(), (
+        f"the compiled stylesheet is not at {STYLESHEET_SOURCE.as_posix()}; every "
+        f"size read below would be read off nothing"
+    )
+    text = STYLESHEET_SOURCE.read_text(encoding="utf-8")
+    assert text.strip(), f"{STYLESHEET_SOURCE.as_posix()} is empty"
+    return text
+
+
+def _minimum_height_px(sheet: str, component: str) -> float:
+    """Return the smallest height one component class guarantees, in CSS pixels.
+
+    THE GATE IS THE LOOKUP ITSELF. A class whose rule is not in the sheet, or whose
+    rule declares no minimum height at all, is exactly what a control that has quietly
+    stopped being 44px looks like — and both would otherwise return a number this
+    function had invented rather than read.
+    """
+    opening = sheet.find(f".{component}{{")
+    assert opening != -1, (
+        f"the compiled sheet declares no rule for .{component}, so the class written "
+        f"on the control resolves to nothing and the target has whatever size its "
+        f"contents happen to give it"
+    )
+    close = sheet.find("}", opening)
+    assert close != -1, f".{component}'s rule is never closed in the compiled sheet"
+    body = sheet[opening:close]
+
+    scale = SPACING_SCALE.search(sheet)
+    assert scale is not None, (
+        "the compiled sheet declares no --spacing scale, so a calc written against it "
+        "cannot be resolved to a length and this check would be guessing"
+    )
+    step_px = float(scale.group(1)) * CSS_PIXELS_PER_REM
+
+    if (calc := MIN_HEIGHT_CALC.search(body)) is not None:
+        return float(calc.group(1)) * step_px
+    if (rem := MIN_HEIGHT_REM.search(body)) is not None:
+        return float(rem.group(1)) * CSS_PIXELS_PER_REM
+    if (px := MIN_HEIGHT_PX.search(body)) is not None:
+        return float(px.group(1))
+    pytest.fail(
+        f".{component} declares no min-height at all: {body}. The class is still "
+        f"written on the control, so nothing else in this suite notices that the "
+        f"target has stopped being guaranteed a size",
+    )
+
+
+@pytest.mark.parametrize("component", TOUCH_TARGET_CLASSES)
+def test_each_touch_target_class_guarantees_a_thumb_sized_control(
+    component: str,
+) -> None:
+    """The class means 44px, or the markup that carries it means nothing."""
+    height = _minimum_height_px(_stylesheet(), component)
+    assert height >= MINIMUM_TARGET_PX, (
+        f".{component} guarantees {height:g}px of height and the floor on this "
+        f"surface is {MINIMUM_TARGET_PX}px; a control below it is one a thumb misses, "
+        f"and the two ways to miss here are opening the wrong page and submitting a "
+        f"form nobody meant to submit"
+    )
+
+
+def test_every_bar_destination_is_drawn_as_a_touch_target(
+    portal_client: Client,
+) -> None:
+    """All four, on all four pages — the bar is the same control set everywhere.
+
+    Read off the rendered document rather than the partial, because the class only
+    means anything on a page that actually drew it: a shell that stopped including the
+    bar, or a page that rendered it through some other markup, both leave the partial
+    on disk perfectly intact.
+    """
+    for name in PORTAL_PAGES:
+        nav = _nav_of(_page(portal_client, name), where=name)
+        drawn = [
+            match.group(0)
+            for match in ANCHOR.finditer(nav)
+            if TOUCH_TARGET_CLASSES[0] in (match.group(0) or "")
+        ]
+        assert len(drawn) == NAV_SIZE, (
+            f"{name}: {len(drawn)} of the bar's {NAV_SIZE} destinations carry "
+            f".{TOUCH_TARGET_CLASSES[0]}, so the rest are as tall as the word inside "
+            f"them and fall under the {MINIMUM_TARGET_PX}px floor: {drawn}"
+        )
+
+
+def test_the_account_page_draws_its_sign_out_as_a_large_target(
+    portal_client: Client,
+) -> None:
+    """The one destructive control on this surface, and the one that must not be hit
+    by accident nor missed by someone trying to hit it.
+
+    Signing out is the only action on the portal a client cannot undo without their
+    password and their second factor, which is precisely why it is drawn at the large
+    size rather than the ordinary one.
+    """
+    body = _page(portal_client, LARGE_BUTTON_PAGE)
+    large = [
+        match.group(0)
+        for match in BUTTON.finditer(body)
+        if TOUCH_TARGET_CLASSES[1] in match.group(0)
+    ]
+    assert large, (
+        f"{LARGE_BUTTON_PAGE} draws no button carrying .{TOUCH_TARGET_CLASSES[1]}, so "
+        f"the sign-out control is rendered at the ordinary size and is no longer "
+        f"guaranteed the {MINIMUM_TARGET_PX}px this surface holds itself to"
     )
 
 

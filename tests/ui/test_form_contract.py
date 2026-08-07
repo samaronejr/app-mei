@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pytest
+from allauth.account.models import EmailAddress
 from django.conf import settings
 from django.test import Client
 from django.urls import reverse
@@ -77,6 +78,11 @@ TARGET_PAGES: Final[tuple[str, ...]] = (
 # which `templates/obligations/_queue.html` uses for pagination — a guard that fired
 # on that would be switched off rather than fixed.
 AS_P: Final = re.compile(r"form\.as_p")
+
+# Any reference to a form object at all, used only to gate the project-wide `as_p`
+# scan below: a tree in which this matches nothing is a tree the scan cannot speak
+# about, whatever it reports.
+FORM_VARIABLE: Final = re.compile(r"\bform\b")
 
 # The summary container. The tag name is captured rather than assumed to be a div, so
 # the guard still reads a summary an implementation chooses to render as a `<section>`.
@@ -223,6 +229,103 @@ CASES: Final[tuple[Rejection, ...]] = (
 CASE_IDS: Final[list[str]] = [case.page for case in CASES]
 
 
+# ------------------------------------------------- the entrance forms, same contract
+#
+# The three cases above are this project's own views, rendering this project's own
+# templates. Everything below is allauth's — its forms, its views, its field loop —
+# reaching the same two partials through the overrides todos 18-20 installed under
+# `templates/allauth/elements/`. That indirection is the whole risk, and it is why
+# these are pinned separately rather than assumed.
+#
+# `elements/fields.html` is two includes: the summary partial for the form, then the
+# shared field partial once per field. Nothing about that is guaranteed by allauth. In
+# the absence of the override, the loader resolves allauth 65.18.0's own copy, which
+# renders each field through `elements/field.html` and emits NO summary — no
+# `role="alert"`, no anchor to the control that failed — on a page that otherwise looks
+# entirely normal. That fallback is silent by construction: it is a template resolving,
+# not an error anybody sees. Only a rejected submission read end to end can tell.
+#
+# These are also the screens with the widest audience in the product. Every account
+# that exists passes through sign-in, and a MEI owner meets the entrance shell before
+# any other page — on the portal host, where this project ships no JavaScript at all,
+# so the server-rendered summary is the only thing that will ever announce a rejection.
+
+ACCOUNT_LOGIN: Final = "account_login"
+ACCOUNT_SIGNUP: Final = "account_signup"
+ACCOUNT_RESET: Final = "account_reset_password"
+ACCOUNT_CHANGE: Final = "account_change_password"
+SECOND_FACTOR: Final = "mfa_authenticate"
+
+BAD_TOTP: Final = "000000"
+
+
+def _signup_rejection() -> str:
+    """Open an account with an address that is not one and two passwords that differ."""
+    response = Client().post(
+        reverse(ACCOUNT_SIGNUP),
+        {"email": "nao-e-um-endereco", "password1": "a", "password2": "b"},
+    )
+    return _rendered(response, ACCOUNT_SIGNUP)
+
+
+def _password_reset_rejection() -> str:
+    """Ask for a reset link at an address that cannot be parsed."""
+    response = Client().post(reverse(ACCOUNT_RESET), {"email": "sem-arroba"})
+    return _rendered(response, ACCOUNT_RESET)
+
+
+def _password_change_rejection() -> str:
+    """Change a password while getting the current one wrong."""
+    user = User.objects.create_user(email="troca@contrato.example", password=PASSWORD)
+    enrol_totp(user)
+    client = Client()
+    client.force_login(user)
+    response = client.post(
+        reverse(ACCOUNT_CHANGE),
+        {"oldpassword": "nao-e-a-atual", "password1": "a", "password2": "b"},
+    )
+    return _rendered(response, ACCOUNT_CHANGE)
+
+
+def _second_factor_rejection() -> str:
+    """Answer the TOTP challenge with a code that is not the current one.
+
+    The literal above is never a live code by construction — a spent or wrong six
+    digits is exactly what this case needs — so nothing here depends on a time step,
+    which is the one source of flake this suite has.
+    """
+    user = User.objects.create_user(email="fator@contrato.example", password=PASSWORD)
+    # `ACCOUNT_EMAIL_VERIFICATION` is mandatory, so an unverified address is diverted
+    # to the verification screen and the second factor is never reached at all.
+    EmailAddress.objects.create(
+        user=user,
+        email=user.email,
+        verified=True,
+        primary=True,
+    )
+    enrol_totp(user)
+    client = Client()
+    signed_in = client.post(
+        reverse(ACCOUNT_LOGIN),
+        {"login": user.email, "password": PASSWORD},
+    )
+    assert signed_in.status_code in REDIRECTED, (
+        f"{SECOND_FACTOR}: the password step answered {signed_in.status_code} rather "
+        f"than redirecting to the challenge, so the rejection read below is not one"
+    )
+    response = client.post(reverse(SECOND_FACTOR), {"code": BAD_TOTP})
+    return _rendered(response, SECOND_FACTOR)
+
+
+ENTRANCE_CASES: Final[tuple[Rejection, ...]] = (
+    Rejection(ACCOUNT_SIGNUP, _signup_rejection, "email"),
+    Rejection(ACCOUNT_RESET, _password_reset_rejection, "email"),
+    Rejection(ACCOUNT_CHANGE, _password_change_rejection, "oldpassword"),
+    Rejection(SECOND_FACTOR, _second_factor_rejection, "code"),
+)
+ENTRANCE_IDS: Final[list[str]] = [case.page for case in ENTRANCE_CASES]
+
+
 # ------------------------------------------------------------------- markup readers
 
 
@@ -354,6 +457,127 @@ def test_the_field_that_failed_is_marked_invalid_and_names_its_error(
     )
 
 
+@DATABASE
+@pytest.mark.parametrize("case", ENTRANCE_CASES, ids=ENTRANCE_IDS)
+def test_an_entrance_form_comes_back_with_a_linked_error_summary(
+    case: Rejection,
+) -> None:
+    """The same summary the firm's own pages carry, reached through the overrides."""
+    html = case.submit()
+
+    found = _summary(html)
+    assert found is not None, (
+        f"{case.page}: no element carrying class `form-errors` came back for an "
+        f"invalid `{case.field}`; `templates/allauth/elements/fields.html` is no "
+        f"longer including the summary partial, so allauth's own field loop is "
+        f"rendering this screen and nothing announces the rejection"
+    )
+    opening, body = found
+    assert _attribute(opening, "role") == "alert", (
+        f'{case.page}: the summary is not `role="alert"`, so a rejected sign-in is '
+        f"never announced on a surface that ships no JavaScript to announce it any "
+        f"other way: {opening}"
+    )
+    assert f'href="#{case.auto_id}"' in body, (
+        f'{case.page}: the summary carries no `href="#{case.auto_id}"`, so its entry '
+        f"for `{case.field}` moves focus nowhere: {body.strip()}"
+    )
+
+
+@DATABASE
+@pytest.mark.parametrize("case", ENTRANCE_CASES, ids=ENTRANCE_IDS)
+def test_an_entrance_field_that_failed_is_marked_invalid_and_names_its_error(
+    case: Rejection,
+) -> None:
+    """`aria-invalid`, the class that draws it, and the `aria-describedby` chain.
+
+    Identical to the firm-side leg, and asserted separately for the reason given above
+    the entrance cases: these fields are rendered by allauth's loop through this
+    project's overrides, so the two legs share a promise and share no code path.
+
+    The class matters as much here as it does there. Django 5.2 writes
+    `aria-invalid="true"` and `aria-describedby` itself, so a fallback to allauth's own
+    field element would satisfy both ARIA halves while rendering a control that
+    `.field-input[aria-invalid="true"]` does not select — announced as wrong, and drawn
+    as though nothing had happened.
+    """
+    html = case.submit()
+
+    control = _control(html, case.auto_id)
+    assert control is not None, (
+        f"{case.page}: no `<input>`, `<select>` or `<textarea>` carrying "
+        f'`id="{case.auto_id}"` came back for the rejected `{case.field}`'
+    )
+    assert _attribute(control, "aria-invalid") == "true", (
+        f"{case.page}: the control for `{case.field}` does not carry "
+        f'`aria-invalid="true"`: {control}'
+    )
+    assert "field-input" in (_attribute(control, "class") or "").split(), (
+        f"{case.page}: the control for `{case.field}` carries no `field-input` class, "
+        f'so `.field-input[aria-invalid="true"]` matches nothing and the invalid mark '
+        f"is announced but never shown: {control}"
+    )
+    described = _attribute(control, "aria-describedby")
+    assert described is not None, (
+        f"{case.page}: the control for `{case.field}` carries no `aria-describedby`, "
+        f"so its error text is orphaned from it: {control}"
+    )
+    assert case.error_id in described.split(), (
+        f'{case.page}: `aria-describedby="{described}"` does not name `{case.error_id}`'
+    )
+    assert f'id="{case.error_id}"' in html, (
+        f"{case.page}: `{case.field}` is described by `{case.error_id}` and no element "
+        f"carries that id — a reference pointing at nothing, which reads to assistive "
+        f"technology as broken markup"
+    )
+
+
+@DATABASE
+def test_a_refused_sign_in_is_announced_even_with_no_field_to_blame() -> None:
+    """The other shape of a rejection: an error belonging to the form, not a field.
+
+    `ACCOUNT_PREVENT_ENUMERATION` is on, so a wrong address and a wrong password are
+    answered identically and neither is attributed to a control — there is no field to
+    mark invalid, by design, because saying which half was wrong is the enumeration
+    oracle the setting exists to close. The summary is therefore the ONLY channel this
+    page has, and the leg above cannot cover it: it looks for a marked control, and
+    here there is deliberately none.
+
+    Both halves are asserted together. The field marking is checked to be ABSENT, so
+    a future change that started blaming a control would redden here rather than
+    quietly reopening the oracle.
+    """
+    User.objects.create_user(email="existe@contrato.example", password=PASSWORD)
+    response = Client().post(
+        reverse(ACCOUNT_LOGIN),
+        {"login": "existe@contrato.example", "password": "nao-e-a-senha"},
+    )
+    html = _rendered(response, ACCOUNT_LOGIN)
+
+    found = _summary(html)
+    assert found is not None, (
+        "a refused sign-in comes back with no `form-errors` summary at all, so the "
+        "page silently redraws the empty form and nothing tells anyone it was refused"
+    )
+    opening, body = found
+    assert _attribute(opening, "role") == "alert", (
+        f'the refusal summary is not `role="alert"`: {opening}'
+    )
+    assert body.strip(), (
+        "the refusal summary is empty, so it is announced and says nothing"
+    )
+    marked = [
+        tag
+        for tag in CONTROL.findall(html)
+        if _attribute(tag, "aria-invalid") == "true"
+    ]
+    assert marked == [], (
+        f"a refused sign-in now blames a specific control — {marked} — which tells an "
+        f"attacker which half of the pair was right; ACCOUNT_PREVENT_ENUMERATION is "
+        f"set precisely so that it cannot"
+    )
+
+
 # ---------------------------------------------------------------- (c) no as_p left
 
 
@@ -394,6 +618,59 @@ def test_no_target_page_still_hands_the_whole_form_to_as_p(page: str) -> None:
     assert not offenders, (
         f"`form.as_p` still renders this form: {offenders}; the page cannot carry the "
         "summary or the styled control while the whole form is one opaque blob"
+    )
+
+
+def _templates_rendering_a_form() -> list[tuple[str, str]]:
+    """Return `(template name, source)` for every template that renders a form.
+
+    Both gates are here rather than in a case of their own. A walk that reached no
+    file, and a walk that found no form, each report "nothing hands a form to as_p"
+    in the same words a compliant tree does.
+    """
+    templates = list(loaded_templates())
+    assert templates, (
+        "no templates were discovered, so a scan for `as_p` would report no offenders "
+        "while examining nothing at all"
+    )
+    found: list[tuple[str, str]] = []
+    for path, raw in templates:
+        try:
+            name = path.relative_to(TEMPLATE_ROOT).as_posix()
+        except ValueError:
+            name = path.as_posix()
+        text = COMMENTED.sub(" ", raw)
+        if FORM_VARIABLE.search(text):
+            found.append((name, text))
+    assert found, (
+        "no template refers to a form at all, so this scan covers nothing and passes "
+        "for a project that renders every form through `as_p`"
+    )
+    return found
+
+
+def test_no_template_anywhere_hands_a_whole_form_to_as_p() -> None:
+    """The general form of the rule above, applied to every template this project ships.
+
+    The four named pages were the ones that had to be converted. This is what stops
+    the fifth from arriving unconverted: `as_p` renders a form with no summary to
+    announce, no anchor to jump to, and no class on the control for
+    `.field-input[aria-invalid="true"]` to select — so a page written that way is
+    rejected silently and looks, to anyone who can see it, completely fine.
+
+    Quantified over the whole tree rather than a tuple, for the same reason the CSRF
+    leg is: the next form nobody is looking at is the one that needs this.
+    """
+    offenders = [
+        f"{name}:{number}: {line.strip()}"
+        for name, text in _templates_rendering_a_form()
+        for number, line in enumerate(text.splitlines(), start=1)
+        if AS_P.search(line)
+    ]
+    assert not offenders, (
+        f"`form.as_p` renders these forms: {offenders}; compose them from "
+        f"`partials/pure/field.html` and `partials/pure/form_errors.html` instead, or "
+        f"the page carries neither the announced summary nor the styled control"
     )
 
 

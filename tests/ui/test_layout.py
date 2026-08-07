@@ -15,7 +15,8 @@ from apps.clients.models import ClientCompany
 from apps.core.templatetags.ptbr import BRT
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Invite, TenantRole
-from tests.ui.factories import Firm, add_member, assign, make_firm
+from tests.portal import test_portal_layout as portal_twin
+from tests.ui.factories import PASSWORD, Firm, add_member, assign, make_firm
 from tests.ui.templates_scan import loaded_templates
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -77,6 +78,16 @@ CURRENT_CRUMB: Final = re.compile(
     re.IGNORECASE,
 )
 
+# The entrance screens an anonymous visitor can reach, all rendered inside
+# `templates/allauth/layouts/base.html`. Walked on two hosts because that shell's
+# heading branches on which one resolved.
+ENTRANCE_PAGES: Final = (
+    "account_login",
+    "account_signup",
+    "account_reset_password",
+    "account_reset_password_done",
+)
+
 EXPORT_LABEL: Final = "Exportar clientes"
 EXPORT_URL_NAME: Final = "clients-export-csv"
 LIST_URL_NAME: Final = "clients-list"
@@ -98,18 +109,81 @@ def _public_page() -> str:
     return Client(SERVER_NAME="localhost").get(reverse("dsr-submit")).content.decode()
 
 
+def _second_factor_page(firm: Firm) -> str:
+    """Return the TOTP challenge, reached with the password step and nothing more.
+
+    Only the first half of `Firm.sign_in` is driven. The code itself is never
+    submitted, so this reaches the screen without depending on a TOTP time step —
+    which is the one thing in this suite known to flake on a boundary.
+    """
+    client = Client(SERVER_NAME=firm.host)
+    response = client.post(
+        reverse("account_login"),
+        {"login": firm.owner.email, "password": PASSWORD},
+    )
+    assert response.status_code == HTTPStatus.FOUND, (
+        f"the password step answered {response.status_code} rather than redirecting "
+        f"to the second factor, so the page counted below is not the challenge"
+    )
+    challenge = client.get(reverse("mfa_authenticate"))
+    assert challenge.status_code == HTTPStatus.OK, (
+        f"the second-factor challenge answered {challenge.status_code}"
+    )
+    return str(challenge.content.decode())
+
+
 def test_the_document_declares_brazilian_portuguese() -> None:
     assert '<html lang="pt-br">' in _public_page()
 
 
-def test_every_page_carries_exactly_one_h1(firm: Firm) -> None:
-    """Two <h1> elements make a screen reader's document outline ambiguous."""
+def test_every_page_carries_exactly_one_h1(carteira: Firm) -> None:
+    """Two <h1> elements make a screen reader's document outline ambiguous.
+
+    THREE SHELLS ARE WALKED HERE, not one. `templates/base.html` owns the heading for
+    every signed-in firm screen, and `templates/allauth/layouts/base.html` owns it for
+    every entrance screen — sign-in, sign-up, password reset, the whole TOTP tree. That
+    second shell is named `base.html` too, which is exactly why the structural scan
+    below (`test_no_template_but_the_layout_emits_an_h1`) exempts it by FILENAME and
+    therefore cannot tell the two apart. Only a rendered page can, so the entrance
+    pages are walked here.
+
+    The third is the portal's, and it is deliberately absent: it has its own twin, and
+    `test_the_portal_heading_rule_is_held_by_its_own_twin` below verifies that rather
+    than rendering those four pages a second time under a host this module does not
+    serve.
+
+    `clients-list` and `client-detail` are the two firm screens with the most
+    furniture — an action slot, a breadcrumb trail, card headings, table captions — and
+    so the two most likely to grow a second heading by accident.
+    """
+    company = carteira.clients[0]
     pages = [_public_page()]
-    signed_in = firm.as_owner()
-    for name in ("team", "invite-issued"):
-        response = signed_in.get(reverse(name))
-        assert response.status_code == HTTPStatus.OK, name
+
+    # One session for every firm-side page. `Firm.sign_in` drives the real second
+    # factor, and allauth refuses a TOTP code that has already been spent, so signing
+    # in a second time inside one test fails on the replay rather than on any heading.
+    signed_in = carteira.as_owner()
+    destinations = [
+        reverse(name)
+        for name in ("team", "invite-issued", LIST_URL_NAME, "account_change_password")
+    ]
+    destinations.append(reverse(DETAIL_URL_NAME, args=[company.pk]))
+    for destination in destinations:
+        response = signed_in.get(destination)
+        assert response.status_code == HTTPStatus.OK, destination
         pages.append(response.content.decode())
+
+    # The entrance shell, on both hosts it is served from. Its heading branches on
+    # which one resolved — a firm's name, or the product's — so a page carrying two
+    # would show up on one host and not the other.
+    for host in ("localhost", carteira.host):
+        anonymous = Client(SERVER_NAME=host)
+        for name in ENTRANCE_PAGES:
+            response = anonymous.get(reverse(name))
+            assert response.status_code == HTTPStatus.OK, f"{name} on {host}"
+            pages.append(response.content.decode())
+
+    pages.append(_second_factor_page(carteira))
 
     for body in pages:
         assert len(H1.findall(body)) == 1
@@ -123,6 +197,34 @@ def test_no_template_but_the_layout_emits_an_h1() -> None:
         if H1.search(text) and path.name != "base.html"
     ]
     assert offenders == []
+
+
+def test_the_portal_heading_rule_is_held_by_its_own_twin() -> None:
+    """The fourth shell is covered next door, and this verifies it rather than repeats.
+
+    `apps/portal/templates/portal/base.html` extends nothing and owns its own heading,
+    so the rule has to be pinned against the portal too — but rendering those pages
+    here would mean standing up a portal host, a client-role account and the portal
+    urlconf inside a module that serves neither, to assert something
+    `tests/portal/test_portal_layout.py` already asserts on every portal screen.
+
+    So the twin is checked for existence instead. What would otherwise happen quietly
+    is somebody deleting or renaming that case and leaving this comment behind: the
+    portal keeps its promise nowhere, and the only trace is a paragraph in this file
+    claiming it is kept somewhere else.
+    """
+    assert hasattr(portal_twin, "test_every_portal_page_carries_exactly_one_h1"), (
+        "the portal's heading case is gone from tests/portal/test_portal_layout.py; "
+        "the fourth shell in this product now holds the one-h1 rule nowhere at all"
+    )
+    assert portal_twin.PORTAL_PAGES, (
+        "the portal twin walks no pages, so its heading case quantifies over nothing "
+        "and this module's deferral to it is a deferral to an empty loop"
+    )
+    assert portal_twin.H1.pattern == H1.pattern, (
+        f"the twin counts headings with {portal_twin.H1.pattern!r} and this module "
+        f"uses {H1.pattern!r}; the two surfaces are no longer holding the same rule"
+    )
 
 
 def test_the_skip_link_is_the_first_focusable_element_and_has_a_target() -> None:
