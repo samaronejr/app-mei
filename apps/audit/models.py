@@ -48,6 +48,12 @@ class AuditAction(models.TextChoices):
     INVITE_ISSUED = "invite_issued", _("invite issued")
     INVITE_ACCEPTED = "invite_accepted", _("invite accepted")
     ROLE_CHANGED = "role_changed", _("role changed")
+    # Distinct from ROLE_CHANGED on purpose. Both edit a Membership, but the question
+    # an investigation asks is "who lost access, and when" — and answering it from a
+    # shared action means reading every role edit's metadata to find out which of them
+    # were revocations.
+    MEMBERSHIP_DEACTIVATED = "membership_deactivated", _("membership deactivated")
+    MEMBERSHIP_REACTIVATED = "membership_reactivated", _("membership reactivated")
     ASSIGNMENT_CHANGED = "assignment_changed", _("assignment changed")
     CONNECTOR_CONNECTED = "connector_connected", _("connector connected")
     CONNECTOR_DISCONNECTED = "connector_disconnected", _("connector disconnected")

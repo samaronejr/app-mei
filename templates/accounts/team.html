@@ -11,6 +11,7 @@
             <th scope="col">{% translate "Pessoa" %}</th>
             <th scope="col">{% translate "Papel" %}</th>
             <th scope="col">{% translate "Situação" %}</th>
+            <th scope="col">{% translate "Ações" %}</th>
           </tr>
         </thead>
         <tbody>
@@ -25,9 +26,30 @@
                   <span class="badge badge-neutral">{% translate "inativo" %}</span>
                 {% endif %}
               </td>
+              <td>
+                {% comment %}
+                  Deactivation is a link because it leads to a confirmation; reactivation
+                  is a one-click form because it is the undo, and asking somebody to
+                  confirm giving access back protects nothing. Each label names the
+                  person, so a screen reader reading the actions out of table context
+                  does not offer three identical "Desativar" links.
+                {% endcomment %}
+                {% if membership.is_active %}
+                  <a class="link" href="{% url 'member-deactivate' membership.pk %}">
+                    {% blocktranslate with email=membership.user.email %}Desativar {{ email }}{% endblocktranslate %}
+                  </a>
+                {% else %}
+                  <form method="post" action="{% url 'member-reactivate' membership.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-quiet">
+                      {% blocktranslate with email=membership.user.email %}Reativar {{ email }}{% endblocktranslate %}
+                    </button>
+                  </form>
+                {% endif %}
+              </td>
             </tr>
           {% empty %}
-            <tr><td colspan="3" class="empty-state">{% translate "Nenhum membro." %}</td></tr>
+            <tr><td colspan="4" class="empty-state">{% translate "Nenhum membro." %}</td></tr>
           {% endfor %}
         </tbody>
       </table>

@@ -1,0 +1,28 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Desativar acesso" %}{% endblock %}
+{% block heading %}{% translate "Desativar acesso" %}{% endblock %}
+{% block content %}
+  <div class="max-w-2xl">
+    {% if reason %}
+      {% translate "Não foi possível desativar este acesso." as refused %}
+      {% include 'partials/pure/notice.html' with title=refused message=reason variant='error' only %}
+    {% endif %}
+
+    <section class="card mt-6 p-6" aria-labelledby="confirmar">
+      <h2 id="confirmar" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Confirmar desativação" %}</h2>
+
+      <p class="text-sm text-ink-600">
+        {% blocktranslate with email=membership.user.email %}{{ email }} perderá o acesso a este escritório imediatamente.{% endblocktranslate %}
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% translate "A pessoa deixa de ver os clientes, as obrigações e os documentos do escritório, e deixa de aparecer nas listas de responsáveis. A conta e o histórico dela continuam existindo, e o acesso pode ser devolvido a qualquer momento pela página da equipe." %}
+      </p>
+
+      <form method="post" action="{% url 'member-deactivate' membership.pk %}" class="mt-6 flex flex-wrap items-center gap-3">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">{% translate "Desativar acesso" %}</button>
+        <a class="btn btn-quiet" href="{% url 'team' %}">{% translate "Cancelar" %}</a>
+      </form>
+    </section>
+  </div>
+{% endblock %}
