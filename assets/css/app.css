@@ -243,6 +243,61 @@
     @apply bg-accent-50 text-accent-700;
   }
 
+  /* Below `md` the bar is a disclosure the browser itself drives. `<details>` owns the
+   * open and closed states, so the navigation still opens with no JavaScript at all —
+   * which is the whole point, because the one thing a fallback may not depend on is
+   * the bundle it exists to survive.
+   *
+   * At `md` and up the same markup has to read as a plain inline row, and the only way
+   * to hold a `<details>` open from a stylesheet is `::details-content`. That is why
+   * the query below is wrapped in `@supports selector(...)` rather than written as a
+   * `md:hidden` utility on the summary: where the pseudo-element is unknown, nothing
+   * inside applies, the summary is never hidden, and the bar degrades to a disclosure
+   * on a wide screen instead of vanishing behind a control that was styled away. A
+   * utility class has no such escape hatch — it would hide the button unconditionally
+   * and leave the links unreachable. */
+  .nav-disclosure {
+    @apply text-sm;
+  }
+
+  /* A `display` other than `list-item` is what drops the disclosure triangle in
+   * standards browsers, and `list-none` says the same thing to Firefox; the rule under
+   * it repeats the request for older WebKit. The menu glyph beside the label is
+   * already the affordance, and two arrows on one control is one too many. */
+  .nav-summary {
+    @apply inline-flex cursor-pointer list-none items-center gap-2 rounded-control
+      px-3 py-2 font-medium text-ink-700 transition-colors;
+  }
+
+  .nav-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .nav-summary:hover {
+    @apply bg-ink-100 text-ink-900;
+  }
+
+  .nav-bar {
+    @apply flex flex-col gap-1 pt-2;
+  }
+
+  @supports selector(::details-content) {
+    @media (width >= theme(--breakpoint-md)) {
+      .nav-disclosure::details-content {
+        content-visibility: visible;
+        block-size: auto;
+      }
+
+      .nav-summary {
+        display: none;
+      }
+
+      .nav-bar {
+        @apply flex-row flex-wrap items-center pt-0;
+      }
+    }
+  }
+
   .data-table {
     @apply w-full border-collapse text-sm;
   }

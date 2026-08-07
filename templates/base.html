@@ -53,11 +53,32 @@
       {% if request.tenant and request.user.is_authenticated %}
         {% nav_items request.user as items %}
         {% if items %}
-          <nav aria-label="{% translate 'Navegação principal' %}" class="flex flex-wrap items-center gap-1">
-            {% for item in items %}
-              <a class="nav-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
-            {% endfor %}
-          </nav>
+          {% comment %}
+            Resolved once into `items` and walked once. A second walk for a separate
+            desktop copy would cost no extra query — the tag already ran — but it would
+            put two nav landmarks and two active markers on every page, and the people
+            who hear this interface rather than see it pay for both. One element,
+            restyled at the breakpoint, is the cheaper answer.
+
+            The disclosure is the browser's own: no attribute here comes from either
+            bundle. A menu driven by Alpine is not a fallback for the case where Alpine
+            never loaded, it is the same failure wearing a different hat — and the
+            summary is a real button to a keyboard before any script has run.
+
+            Inside the firm guard, with the bar it wraps. The platform host and every
+            anonymous visitor draw no landmark at all rather than an empty one.
+          {% endcomment %}
+          <details class="nav-disclosure">
+            <summary class="nav-summary">
+              {% include "partials/pure/icons/menu.html" %}
+              <span>{% translate "Menu" %}</span>
+            </summary>
+            <nav aria-label="{% translate 'Navegação principal' %}" class="nav-bar">
+              {% for item in items %}
+                <a class="nav-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
+              {% endfor %}
+            </nav>
+          </details>
         {% endif %}
         <div class="ml-auto flex items-center gap-3 text-sm text-ink-500">
           <span>{{ request.user.email }}</span>
