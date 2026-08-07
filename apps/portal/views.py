@@ -16,19 +16,24 @@ rather than `request.tenant`.
 """
 
 import hashlib
+from dataclasses import dataclass
+from datetime import date
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db.models import Count, Q
 from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.models import User
 from apps.authz.services import require_can
 from apps.clients.models import ClientCompany
 from apps.obligations.models import Document, Obligation
+from apps.obligations.queries import SETTLED
 from apps.portal.middleware import PortalHttpRequest
 
 # FULL for both client roles, which core.E010 requires of every portal gate.
@@ -47,19 +52,112 @@ class PortalVaultRequest(PortalHttpRequest):
     client: ClientCompany
 
 
+@dataclass(frozen=True, slots=True)
+class NextAction:
+    """The one obligation a client should deal with next, flattened to scalars.
+
+    Deliberately not the `Obligation` row. A model instance handed to a portal template
+    is a foreign key waiting to be followed, and following one during rendering means a
+    join onto `obligations_obligationtype` -- a table `app_portal` holds no SELECT on --
+    from inside the transaction and under the portal role. Passing values the view has
+    already read removes the possibility instead of documenting it.
+
+    `type_code` is the code itself and never a label. Naming these obligations is
+    presentation and belongs in the template: `tests/obligations/test_due_rules.py`
+    forbids the quoted code literal anywhere under `apps/`, so that the deadline engine
+    stays driven by its seeded `due_rule` rows rather than by a ladder of branches on
+    the code, and it cannot tell a display label apart from the branch it exists to
+    prevent.
+    """
+
+    type_code: str
+    competence_month: date
+    nominal_due_date: date
+    due_date: date
+    days_until: int
+    rolled: bool
+
+
+def _situation(today: date) -> tuple[int, int]:
+    """Return how many obligations this client has, and how many of them are late.
+
+    One statement for both figures. They are read off the same rows and this page is
+    opened on a phone, so two `.count()` calls would be two round trips for one answer.
+
+    Late is decided by the DATE, never by the status column, exactly as the firm-side
+    queues decide it. There is an `overdue` status and a nightly sweep that writes it,
+    and a page trusting that label tells a client they are in good standing on any
+    morning the scheduler did not run -- which is this product's worst failure mode
+    wearing a reassuring face.
+    """
+    totals = Obligation.objects.aggregate(
+        total=Count("pk"),
+        overdue=Count(
+            "pk",
+            filter=Q(resolved_due_date__lt=today) & ~Q(status__in=SETTLED),
+        ),
+    )
+    return int(totals["total"]), int(totals["overdue"])
+
+
+def _next_action(today: date) -> NextAction | None:
+    """Return the earliest unsettled obligation still ahead, or `None` if there is none.
+
+    `.values()` rather than a model instance, and `obligation_type_id` rather than the
+    relation: the code IS the primary key of `ObligationType`, so the local column
+    already carries everything the page needs and the query trims the join away. `pk`
+    breaks ties, so two obligations sharing a due date resolve to the same one on every
+    request instead of alternating between renders.
+    """
+    row = (
+        Obligation.objects.exclude(status__in=SETTLED)
+        .filter(resolved_due_date__gte=today)
+        .order_by("resolved_due_date", "pk")
+        .values(
+            "obligation_type_id",
+            "competence_month",
+            "nominal_due_date",
+            "resolved_due_date",
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    due = row["resolved_due_date"]
+    nominal = row["nominal_due_date"]
+    return NextAction(
+        type_code=row["obligation_type_id"],
+        competence_month=row["competence_month"],
+        nominal_due_date=nominal,
+        due_date=due,
+        # Computed here because the template cannot subtract two dates and the portal
+        # ships no JavaScript that could. A client reading "vence em 3 dias" is reading
+        # a number this process produced.
+        days_until=(due - today).days,
+        rolled=nominal != due,
+    )
+
+
 @login_required
 def portal_home(request: HttpRequest) -> HttpResponse:
-    """Render the signed-in client's own company and its obligation count."""
+    """Render the client's own company, where they stand, and what to do next."""
     client = getattr(request, "client", None)
-    # No client filter is applied on purpose. The RESTRICTIVE portal policy on
-    # obligations_obligation compares app.client_id, so this count is already confined
-    # to the one client — and writing `.filter(client=client)` here would make the test
-    # that drops the policy pass anyway, hiding the very failure it exists to catch.
-    obligation_count = Obligation.objects.count()
+    # No client filter is applied on purpose, here or in either helper below. The
+    # RESTRICTIVE portal policy on obligations_obligation compares app.client_id, so
+    # every figure and the row behind the card are already confined to the one client —
+    # and writing `.filter(client=client)` would make the test that drops the policy
+    # pass anyway, hiding the very failure it exists to catch.
+    today = timezone.localdate()
+    obligation_count, overdue_count = _situation(today)
     return render(
         request,
         "portal/home.html",
-        {"client": client, "obligation_count": obligation_count},
+        {
+            "client": client,
+            "obligation_count": obligation_count,
+            "overdue_count": overdue_count,
+            "next_action": _next_action(today),
+        },
     )
 
 
