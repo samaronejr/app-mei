@@ -1,0 +1,20 @@
+{% load allauth %}{% comment %}
+allauth's button element, in this project's control styling.
+
+Still an anchor when it is given a destination and a button otherwise, exactly as
+upstream: a control that navigates must be a link, or it is unreachable to anyone
+driving the page from the keyboard by role, and it loses open-in-new-tab.
+
+`tags` is how allauth says how loud a control should be — the sign-in and sign-up
+submits arrive tagged prominent. That maps onto the primary ramp at the large size,
+full width, because an entrance card has exactly one thing to do and the control that
+does it should look like it. Everything else is quiet.
+
+The tag list is checked for truth before it is searched. `attrs.tags` is absent on most
+calls, and while Django's if-tag swallows the resulting TypeError and answers false, a
+guard that depends on an exception being caught is a guard nobody can read.
+
+Both branches spell their classes as literals. Tailwind compiles only the names it can
+see in this file, and `tests/ui/test_asset_pipeline.py` asserts every class token has a
+compiled rule — a name assembled at render time is invisible to both and ships bare.
+{% endcomment %}{% if attrs.href %}<a class="btn {% if attrs.tags and 'prominent' in attrs.tags %}btn-primary btn-lg w-full{% else %}btn-quiet{% endif %}" href="{{ attrs.href }}"{% if attrs.id %} id="{{ attrs.id }}"{% endif %}>{% slot %}{% endslot %}</a>{% else %}<button class="btn {% if attrs.tags and 'prominent' in attrs.tags %}btn-primary btn-lg w-full{% else %}btn-quiet{% endif %}"{% if attrs.type %} type="{{ attrs.type }}"{% endif %}{% if attrs.form %} form="{{ attrs.form }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.value %} value="{{ attrs.value }}"{% endif %}>{% slot %}{% endslot %}</button>{% endif %}

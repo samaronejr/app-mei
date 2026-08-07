@@ -495,6 +495,28 @@
     @apply bg-accent-50 text-accent-700;
   }
 
+  /* The body of an allauth entrance card. allauth writes its own sentences — "if you
+   * have not created an account yet, please sign up first" — with a bare anchor inside
+   * the translated string, and Tailwind's preflight strips the user agent's colour AND
+   * its underline from every anchor. Those links would read as ordinary prose.
+   *
+   * A descendant rule rather than a class on each link, because the alternative is
+   * overriding roughly thirty of allauth's own page templates to add one attribute to
+   * a `blocktranslate` argument — a far larger surface to own and to keep in step with
+   * the next upstream release.
+   *
+   * `:not([class])` is the whole safety of it: the button element renders an anchor
+   * when it is given a destination, and that anchor already carries the control ramp.
+   * Matching every descendant anchor would underline the primary submit. */
+  .entrance-prose a:not([class]) {
+    @apply rounded-control font-medium text-accent-700 underline decoration-ink-300
+      underline-offset-2 transition-colors;
+  }
+
+  .entrance-prose a:not([class]):hover {
+    @apply text-accent-900 decoration-accent-600;
+  }
+
   .crumbs {
     @apply flex flex-wrap items-center gap-2 text-xs text-ink-500;
   }

@@ -1,0 +1,15 @@
+{% load allauth %}{% comment %}
+allauth's inline banner, in this project's notice styling.
+
+One caller in the reachable tree: the "you are already signed in" snippet. That is
+guidance rather than a failure, so the info ramp and role=status are correct — an
+error ramp would shout, and role=alert would interrupt whatever the screen reader was
+already saying to announce something nobody needs interrupting for.
+
+The ramp classes are written as literals rather than interpolated into one dynamic
+name. Tailwind v4 compiles only the utilities it can see by scanning this file, and
+`tests/ui/test_asset_pipeline.py` asserts every class token in a template has a
+compiled rule; an interpolated name is invisible to both and would ship unstyled.
+{% endcomment %}<div class="notice notice-info" role="status">
+  <p>{% slot %}{% endslot %}</p>
+</div>

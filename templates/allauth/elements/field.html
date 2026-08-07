@@ -1,0 +1,39 @@
+{% load allauth %}{% comment %}
+One allauth control, in this project's field styling.
+
+Reads `attrs`, never a BoundField, and that is forced rather than chosen. allauth calls
+this element with loose keyword arguments and frequently with no form behind it at all
+— the address-change screen renders the current address as a disabled text control, and
+the TOTP enrolment screen renders the shared secret the same way. So this file cannot
+delegate to `partials/pure/field.html`, which takes a BoundField; it mirrors the
+attribute set the upstream element reads, and only the markup changes.
+
+`fields.html` beside it takes the other road. It is handed a real form, so it delegates
+every control to the project partial and inherits the whole accessibility contract —
+the error summary, the anchored links, the described-by chain — rather than restating
+it here. Between them the two cover every screen allauth ships.
+
+Three shapes, chosen by type: a textarea, a checkbox or radio with its label after the
+control, and everything else with its label before. The branch picks the opening tag;
+each control then carries its own class literal, because Tailwind compiles only the
+names it can read in this file and a value assembled at render time has no rule.
+
+The label is always rendered and always visible, bound by `for` to the same id the
+control carries. A placeholder is not a label — it vanishes on the first keystroke,
+which is exactly when a person most needs to re-read it.
+{% endcomment %}<div class="field">
+  {% if attrs.type == 'textarea' %}
+  <label class="field-label" for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
+  <textarea class="field-input"{% if attrs.rows %} rows="{{ attrs.rows }}"{% endif %}{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}>{% slot value %}{% endslot %}</textarea>
+  {% elif attrs.type == 'checkbox' or attrs.type == 'radio' %}
+  <div class="flex items-center gap-2">
+    <input class="h-4 w-4 shrink-0 rounded-control border border-ink-300" type="{{ attrs.type }}"{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.checked %} checked{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.value is not None %} value="{{ attrs.value }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}>
+    <label class="field-label" for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
+  </div>
+  {% else %}
+  <label class="field-label" for="{{ attrs.id }}">{% slot label %}{% endslot %}</label>
+  <input class="field-input" type="{{ attrs.type }}"{% if attrs.required %} required{% endif %}{% if attrs.disabled %} disabled{% endif %}{% if attrs.readonly %} readonly{% endif %}{% if attrs.name %} name="{{ attrs.name }}"{% endif %}{% if attrs.id %} id="{{ attrs.id }}"{% endif %}{% if attrs.placeholder %} placeholder="{{ attrs.placeholder }}"{% endif %}{% if attrs.autocomplete %} autocomplete="{{ attrs.autocomplete }}"{% endif %}{% if attrs.value is not None %} value="{{ attrs.value }}"{% endif %}{% if attrs.errors %} aria-invalid="true"{% endif %}>
+  {% endif %}
+  {% if slots.help_text %}<p class="field-help">{% slot help_text %}{% endslot %}</p>{% endif %}
+  {% if attrs.errors %}<p class="field-error">{% for error in attrs.errors %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</p>{% endif %}
+</div>
