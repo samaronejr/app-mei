@@ -2,5 +2,37 @@
 {% block title %}{% translate "Convite indisponível" %}{% endblock %}
 {% block heading %}{% translate "Convite indisponível" %}{% endblock %}
 {% block content %}
-  <p class="notice-error max-w-2xl" role="alert">{{ reason }}</p>
+  {% comment %}
+    The refusal is rendered through the shared notice partial rather than hand-rolled,
+    and the error variant is what emits the interrupting role — so the announcement
+    this page had before survives the change instead of depending on one template
+    remembering to spell it.
+
+    A title is passed alongside the reason, and it is load-bearing: the partial renders
+    nothing at all when it is handed neither, and `_refuse` fills the reason from
+    `str(error)` (`apps/accounts/views.py:61-68`). An error whose string is empty would
+    otherwise take the whole alert with it and leave a page that says only that
+    something is unavailable, in the heading, with no announcement.
+
+    No link to the team page here, unlike the sibling confirmation. This template is
+    the failure surface of two different flows: an invitee redeeming a link on the
+    platform host, who holds no membership and would be refused by that page, and a
+    firm user whose issue form was rejected, who came from it. A destination correct
+    for one of them is a dead end for the other, so the guidance names the person to
+    ask rather than a URL neither may share.
+  {% endcomment %}
+  <div class="max-w-2xl">
+    {% translate "Este convite não pode ser usado." as refused %}
+    {% include 'partials/pure/notice.html' with title=refused message=reason variant='error' only %}
+
+    <section class="card mt-6 p-6" aria-labelledby="novo-convite">
+      <h2 id="novo-convite" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Pedir novo convite" %}</h2>
+      <p class="text-sm text-ink-600">
+        {% translate "Cada link vale para um único uso e tem prazo de validade, então um convite antigo não volta a funcionar." %}
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% translate "Peça um novo convite a quem administra a equipe no escritório. O convite é enviado para o endereço de e-mail informado, e é esse endereço que precisa abrir o link." %}
+      </p>
+    </section>
+  </div>
 {% endblock %}
