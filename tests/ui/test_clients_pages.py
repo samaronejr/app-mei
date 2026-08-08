@@ -214,10 +214,10 @@ DETAIL_URL_NAME: Final = "client-detail"
 # the number it actually saw, and why `test_the_detail_query_count_does_not_grow_with_
 # the_portfolio` pins the shape rather than the size.
 #
-# The list screen next door is measured at QUERY_BUDGET = 30 against 60 clients, and its
-# breakdown at lines 96-134 is the floor this budget is built on: the detail screen runs
+# The list screen next door is measured at QUERY_BUDGET = 27 against 60 clients, and its
+# breakdown at lines 101-118 is the floor for this budget; the detail screen runs
 # the same middleware, the same `require_can`, the same `visible_clients` and the same
-# navigation bar, so roughly 26 of those 30 are structural and unavoidable here too.
+# navigation bar, so roughly 23 of those 27 are structural and unavoidable here too.
 # What replaces the list's `Paginator COUNT(*)` and 50-row page is one scoped row read
 # plus one `select_related("capability")` municipality lookup. Sixty therefore leaves
 # about thirty queries of headroom for whatever the screen goes on to show — enough for
