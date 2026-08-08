@@ -18,7 +18,7 @@
         {% translate "Quem tiver o link verá um aviso de convite indisponível ao tentar usá-lo. O convite continua no histórico do escritório, com a data em que foi revogado, e a pessoa não passa a fazer parte da equipe." %}
       </p>
       <p class="mt-3 text-sm text-ink-600">
-        {% blocktranslate with papel=invite.get_role_display %}Este convite oferecia o papel de {{ papel }} e valeria até {% endblocktranslate %}<time datetime="{{ invite.expires_at.isoformat }}">{{ invite.expires_at|data_hora }}</time>.
+        {% blocktranslate with papel=invite.role|papel %}Este convite oferecia o papel de {{ papel }} e valeria até {% endblocktranslate %}<time datetime="{{ invite.expires_at.isoformat }}">{{ invite.expires_at|data_hora }}</time>.
       </p>
       <p class="mt-3 text-sm text-ink-600">
         {% translate "Revogar não pode ser desfeito: o link só existia no e-mail enviado e não fica guardado aqui. Se mudar de ideia, envie um convite novo pela página da equipe — a pessoa receberá outro link." %}

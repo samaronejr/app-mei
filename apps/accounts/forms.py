@@ -18,30 +18,67 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 
+from apps.core.templatetags.ptbr import TENANT_ROLE_LABELS
 from apps.tenants.models import TenantRole, client_role_choices, firm_role_choices
 
 if TYPE_CHECKING:  # stubs-only: the lazy proxy is a str everywhere but the type system
     from django_stubs_ext import StrOrPromise
 
 
-# What each portal seat is CALLED, decided here rather than on the model it names.
+def _role_labels(*roles: TenantRole) -> dict[str, "StrOrPromise"]:
+    """Return the pt-BR name of each role named, read out of the one map that holds it.
+
+    Sliced from `TENANT_ROLE_LABELS` rather than retyped. Two independently written
+    lists of these five words agree until one of them is edited, and from then on each
+    puts a different word in front of a different reader -- which is the whole defect
+    the filter family was introduced to remove, reintroduced one layer up.
+
+    Subscripting rather than `.get()`: a role the central map has not been told about
+    is a gap in the source of truth, and it should stop the import rather than be
+    papered over with the English label this exists to replace.
+    """
+    return {role.value: TENANT_ROLE_LABELS[role.value] for role in roles}
+
+
+# What each seat is CALLED, applied here rather than on the model that names it.
 #
-# `TenantRole.CLIENT_OWNER` and `CLIENT_COLLABORATOR` carry English labels, and both
-# `Membership.role` and `Invite.role` declare `choices=TenantRole.choices`. Editing a
-# label there rewrites serialized field metadata on two fields, and the autodetector
-# answers with an `AlterField` -- a migration that changes no column, for a word only a
-# human reads. The display name is therefore mapped at the form boundary, where the
-# choice list is consumed, and the model keeps the stored vocabulary it is checked
-# against. `firm_role_choices` is deliberately NOT mapped: firm-side role names reach
-# accountants through the team page and `get_role_display()`, which no form-boundary
-# map can reach, so translating half of them here would be the appearance of a fix.
+# `Membership.role` and `Invite.role` both declare `choices=TenantRole.choices`, so
+# editing a label on the enum rewrites serialized field metadata on two fields and the
+# autodetector answers with an `AlterField` -- a migration that changes no column, for
+# a word only a human reads. The display name is therefore mapped at the form boundary,
+# where the choice list is consumed, and the model keeps the stored vocabulary its
+# CHECK constraints are written against.
 #
-# Keyed off the enum rather than off string literals, so a renamed value fails at
-# import instead of silently falling through to the English it was written to replace.
-CLIENT_ROLE_LABELS: Final[dict[str, "StrOrPromise"]] = {
-    TenantRole.CLIENT_OWNER.value: _("Titular do MEI"),
-    TenantRole.CLIENT_COLLABORATOR.value: _("Colaborador do MEI"),
-}
+# This used to map the portal seats ONLY, on the reasoning that firm-side names also
+# reach accountants through `get_role_display()`, which no form-boundary map can reach,
+# so translating half of them here would be the appearance of a fix. That reasoning
+# held until the `|papel` filter gave those templates their own route to the same
+# words: `templates/accounts/team.html` and `templates/accounts/invite_confirm.html`
+# now read the role through the filter, and `apps/tenants/admin.py` renders it through
+# a display callable, so this map is no longer half a fix -- it is the form's share of
+# a whole one.
+CLIENT_ROLE_LABELS: Final[dict[str, "StrOrPromise"]] = _role_labels(
+    TenantRole.CLIENT_OWNER,
+    TenantRole.CLIENT_COLLABORATOR,
+)
+FIRM_ROLE_LABELS: Final[dict[str, "StrOrPromise"]] = _role_labels(
+    TenantRole.OWNER,
+    TenantRole.STAFF_ACCOUNTANT,
+    TenantRole.OPERATIONS_ADMIN,
+)
+
+
+def _named(
+    choices: list[tuple[str, str]],
+    labels: dict[str, "StrOrPromise"],
+) -> list[tuple[str, str]]:
+    """Rename an offered choice list without changing WHICH values it offers.
+
+    An unmapped value falls back to its incoming label rather than raising. A seat a
+    map has not been told about is a copy gap, and failing the whole invitation form
+    over one would take the feature down to avoid showing one English word.
+    """
+    return [(value, str(labels.get(value, label))) for value, label in choices]
 
 
 def portal_role_choices() -> list[tuple[str, str]]:
@@ -51,22 +88,26 @@ def portal_role_choices() -> list[tuple[str, str]]:
     on WHICH seats may be offered -- `test_the_portal_choices_agree_with_the_check_
     constraint` holds that list against the CHECK constraint, and a second list here
     would be a second answer to a question the database already decides.
-
-    An unmapped value falls back to its incoming label rather than raising. A seat this
-    map has not been told about is a copy gap, and failing the whole invitation form
-    over one would take the feature down to avoid showing one English word.
     """
-    return [
-        (value, str(CLIENT_ROLE_LABELS.get(value, label)))
-        for value, label in client_role_choices()
-    ]
+    return _named(client_role_choices(), CLIENT_ROLE_LABELS)
+
+
+def firm_role_display_choices() -> list[tuple[str, str]]:
+    """Return the firm-side seats an invitation may grant, named for the owner.
+
+    The twin of `portal_role_choices`, and deliberately built the same way: over
+    `firm_role_choices()` rather than in place of it, so the question of which roles a
+    firm-side invitation may carry keeps exactly one answer -- the one
+    `invite_role_is_firm_side` is written against.
+    """
+    return _named(firm_role_choices(), FIRM_ROLE_LABELS)
 
 
 class InviteIssueForm(forms.Form):
     """Who to invite, and as what."""
 
     email = forms.EmailField(label=_("email address"))
-    role = forms.ChoiceField(label=_("Papel"), choices=firm_role_choices)
+    role = forms.ChoiceField(label=_("Papel"), choices=firm_role_display_choices)
 
 
 class PortalInviteIssueForm(forms.Form):
