@@ -7,6 +7,9 @@ portfolio past its permission ceiling. Comparing the set against the seeded gran
 makes that impossible to introduce silently.
 """
 
+import itertools
+from typing import Final
+
 import pytest
 from django.contrib.auth.models import AnonymousUser
 
@@ -15,12 +18,15 @@ from apps.authz.models import Capability, GrantLevel, RoleGrant
 from apps.authz.portfolio import (
     FIRM_WIDE_ROLES,
     VIEW_ALL,
+    VIEW_ASSIGNED,
     PortfolioScope,
     portfolio_scope,
     visible_clients,
 )
+from apps.authz.services import Actor, resolve_level, role_of
+from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
-from apps.tenants.models import TenantRole
+from apps.tenants.models import CLIENT_ROLES, Membership, Tenant, TenantRole
 from tests.ui.factories import Firm, assign, make_firm
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -121,3 +127,160 @@ def test_another_firms_clients_are_never_visible(alpha: Firm) -> None:
     with tenant_context(alpha.tenant.id):
         visible = set(visible_clients(alpha.owner).values_list("pk", flat=True))
     assert visible.isdisjoint({client.pk for client in beta.clients})
+
+
+# ------------------------------------------------------------------- the truth table
+#
+# `portfolio_scope` resolves its two capabilities through `granted_levels`, in one
+# round trip, rather than by asking `can()` twice. That is a query optimisation and it
+# must never become a second opinion — the same claim `granted_levels` itself carries
+# one layer down, where `test_bulk_resolution_agrees_with_resolve_level` walks every
+# capability against every role to prove the bulk resolver cannot drift from the single
+# one. This is that argument at the scope layer, and it is needed here for a reason the
+# layer below does not have: the old code SHORT-CIRCUITED. It never asked about
+# `clients.view_all` unless `clients.view_assigned` had already answered yes, and the
+# batched form asks about both at once. So the two can only be proved equivalent by
+# enumerating the decision, not by reading it.
+#
+# The oracle below is deliberately the *old* shape — `resolve_level` once per
+# capability, in the same order, with the same short-circuit — so it is independent of
+# the resolver under test rather than a transcription of it.
+#
+# Seven grant levels matter rather than two, and that is the whole point of sweeping
+# them. `can()` with no object answers True only for `full`: `limited` and `own` need an
+# object and get `None` here, and the three channel levels are refusals by design. A
+# batched form that compared truthiness, or treated any non-`none` level as a yes, would
+# widen the portfolio for every role holding `view_all` at `limited` — and the shipped
+# matrix would never show it, because no role holds either of these two at those levels
+# today. Which is exactly why the sweep writes the levels rather than reading them.
+ALL_LEVELS: Final[list[str]] = [choice.value for choice in GrantLevel]
+
+# What the swept levels can produce for each role, exactly. A role outside
+# FIRM_WIDE_ROLES can never reach ALL however wide its grants are — that is the
+# narrowing this module exists to perform — and a client-side role can never reach
+# anything, because `role_of` filters on the request's client and a client-side
+# membership carries one while a firm-side context does not, so no membership matches
+# and every capability resolves to NONE before the grants are ever consulted.
+REACHABLE_SCOPES: Final[dict[str, set[PortfolioScope]]] = {
+    TenantRole.OWNER: {
+        PortfolioScope.NONE,
+        PortfolioScope.ASSIGNED,
+        PortfolioScope.ALL,
+    },
+    TenantRole.OPERATIONS_ADMIN: {
+        PortfolioScope.NONE,
+        PortfolioScope.ASSIGNED,
+        PortfolioScope.ALL,
+    },
+    TenantRole.STAFF_ACCOUNTANT: {PortfolioScope.NONE, PortfolioScope.ASSIGNED},
+    TenantRole.CLIENT_OWNER: {PortfolioScope.NONE},
+    TenantRole.CLIENT_COLLABORATOR: {PortfolioScope.NONE},
+}
+
+# The scope each role resolves to under the matrix as actually seeded, asserted as
+# literals. Without these the sweep could agree with an oracle that had drifted in the
+# same direction as the code; with them, the two halves have to be wrong identically.
+SHIPPED_SCOPES: Final[dict[str, PortfolioScope]] = {
+    TenantRole.OWNER: PortfolioScope.ALL,
+    TenantRole.OPERATIONS_ADMIN: PortfolioScope.ALL,
+    TenantRole.STAFF_ACCOUNTANT: PortfolioScope.ASSIGNED,
+    TenantRole.CLIENT_OWNER: PortfolioScope.NONE,
+    TenantRole.CLIENT_COLLABORATOR: PortfolioScope.NONE,
+}
+
+
+@pytest.fixture
+def bare() -> Tenant:
+    """A firm with no clients and no accounts, so each case builds only its own."""
+    return Tenant.objects.create(name="Tabela", slug="tabela-scope")
+
+
+def _member(tenant: Tenant, role: str) -> User:
+    """One account holding `role`, shaped the way the CHECK constraint demands.
+
+    Mirrors `tests/authz/test_granted_levels.py`: a client-side role names the client
+    it is held over and a firm-side role must not, so the parametrisation over every
+    TenantRole has to supply the right shape rather than defaulting one.
+    """
+    user = User.objects.create_user(
+        email=f"{role}@tabela-scope.example.com",
+        password="irrelevant-here",  # noqa: S106
+    )
+    client = None
+    if role in CLIENT_ROLES:
+        with tenant_context(tenant.id):
+            # ALL_OBJECTS_OK: fixture seeding for a portal membership, which by
+            # definition needs the client row to exist first.
+            client = ClientCompany.all_objects.create(
+                tenant=tenant,
+                legal_name=f"CLIENTE {role}",
+                cnpj=f"1122233300{len(role):04d}",
+                is_mei=True,
+            )
+    Membership.objects.create(user=user, tenant=tenant, role=role, client=client)
+    return user
+
+
+def _scope_one_capability_at_a_time(user: Actor) -> PortfolioScope:
+    """The scope, resolved the way this module resolved it before the batching.
+
+    `can(user, action)` with no object is exactly `resolve_level(...) == FULL` — the two
+    object-resolved levels answer False against a `None` object and the three channel
+    levels answer False outright — so this is the old decision, not a paraphrase of it.
+    """
+    if resolve_level(user, VIEW_ASSIGNED) != GrantLevel.FULL:
+        return PortfolioScope.NONE
+    if resolve_level(user, VIEW_ALL) != GrantLevel.FULL:
+        return PortfolioScope.ASSIGNED
+    role = role_of(user) if isinstance(user, User) else None
+    return PortfolioScope.ALL if role in FIRM_WIDE_ROLES else PortfolioScope.ASSIGNED
+
+
+def _set_level(role: str, slug: str, level: str) -> None:
+    RoleGrant.objects.update_or_create(
+        role=role,
+        capability=Capability.objects.get(slug=slug),
+        defaults={"level": level},
+    )
+
+
+@pytest.mark.parametrize("role", [choice.value for choice in TenantRole])
+def test_the_scope_under_the_seeded_matrix_is_the_documented_one(
+    bare: Tenant,
+    role: str,
+) -> None:
+    """Pin the shipped answer per role as a literal, before anything is swept."""
+    user = _member(bare, role)
+    with tenant_context(bare.id):
+        assert portfolio_scope(user) is SHIPPED_SCOPES[role]
+
+
+@pytest.mark.parametrize("role", [choice.value for choice in TenantRole])
+def test_the_batched_scope_agrees_for_every_level_pair(bare: Tenant, role: str) -> None:
+    """Every (view_assigned, view_all) level pair, against the one-at-a-time answer."""
+    user = _member(bare, role)
+    pairs = list(itertools.product(ALL_LEVELS, ALL_LEVELS))
+    assert len(pairs) == len(ALL_LEVELS) ** 2 == 49, (
+        "the sweep is not covering the whole level square, so 'every capability "
+        "combination' is a claim about a subset"
+    )
+
+    seen: set[PortfolioScope] = set()
+    with tenant_context(bare.id):
+        for assigned_level, all_level in pairs:
+            _set_level(role, VIEW_ASSIGNED, assigned_level)
+            _set_level(role, VIEW_ALL, all_level)
+            expected = _scope_one_capability_at_a_time(user)
+            actual = portfolio_scope(user)
+            assert actual is expected, (
+                f"{role} holding view_assigned={assigned_level!r} and "
+                f"view_all={all_level!r} is scoped {actual} in one round trip but "
+                f"{expected} when each capability is asked on its own"
+            )
+            seen.add(actual)
+
+    assert seen == REACHABLE_SCOPES[role], (
+        f"{role} reached {sorted(seen)} across the level square, not "
+        f"{sorted(REACHABLE_SCOPES[role])}; either the sweep stopped exercising the "
+        f"branches it is here to cover, or the narrowing rule changed"
+    )

@@ -29,7 +29,8 @@ from uuid import UUID
 from django.db.models import QuerySet
 
 from apps.accounts.models import User
-from apps.authz.services import Actor, can, role_of
+from apps.authz.models import GrantLevel
+from apps.authz.services import Actor, granted_levels, role_of
 from apps.clients.models import ClientCompany
 from apps.tenants.models import TenantRole
 
@@ -53,11 +54,35 @@ class PortfolioScope(StrEnum):
 
 
 def portfolio_scope(user: Actor, *, tenant_id: UUID | None = None) -> PortfolioScope:
-    """Report how wide this account's portfolio is in the firm it is working in."""
-    if not can(user, VIEW_ASSIGNED, tenant_id=tenant_id):
+    """Report how wide this account's portfolio is in the firm it is working in.
+
+    The two capabilities are resolved in ONE round trip rather than by asking `can()`
+    twice, which is worth three of the registry's queries and none of its freshness.
+    Nothing is cached and nothing is shared: `require_can` and the template's
+    `{% can %}` still ask the database on their own, exactly as
+    `tests/ui/test_clients_pages.py:127-135` requires — that comment records
+    memoising the answer ACROSS those three answerers as rejected, because this is a
+    screen where a stale authorization answer is a visible cross-tenant leak. Batching
+    two questions inside this one answer is a different act: the answer is still read
+    fresh, on this call, and it is still this function's own.
+
+    `granted_levels` is the same resolution `resolve_level` performs — same order, same
+    superuser short-circuit, same missing-grant default, pinned by
+    `test_bulk_resolution_agrees_with_resolve_level` — so this is not a second policy
+    source. `full` is compared explicitly because `can()` with no object accepts only
+    `full`: `limited` and `own` need an object they are not given here, and the three
+    channel levels are refusals. Treating any non-`none` level as a yes would widen a
+    portfolio past its ceiling, which is the one direction this module may never move.
+    """
+    levels = granted_levels(user, (VIEW_ASSIGNED, VIEW_ALL), tenant_id=tenant_id)
+    if levels[VIEW_ASSIGNED] != GrantLevel.FULL:
         return PortfolioScope.NONE
-    if not can(user, VIEW_ALL, tenant_id=tenant_id):
+    if levels[VIEW_ALL] != GrantLevel.FULL:
         return PortfolioScope.ASSIGNED
+    # Asked separately because the bulk resolver reports levels, not the role behind
+    # them. Reading it back out of `granted_levels` would mean changing a signature in
+    # `apps/authz/services.py`, and the role is only needed on the branch where both
+    # capabilities already said yes — so it stays one query on the widest path only.
     role = role_of(user, tenant_id) if isinstance(user, User) else None
     if role in FIRM_WIDE_ROLES:
         return PortfolioScope.ALL

@@ -100,31 +100,38 @@ BUDGET_CLIENTS: Final = 60
 
 # Measured at 60 clients, never guessed, and re-measured every time it moved. The first
 # draft of this file said 25, a number nobody had counted; it became 27 by measurement,
-# and 30 by measurement again when the export gate landed. All 30 are accounted for:
+# 30 by measurement again when the export gate landed, and 27 once more when
+# `portfolio_scope` stopped asking the same three tables twice. All 27 are accounted
+# for:
 #
 #    1-6   session, user, membership, MFA enrolment, tenant resolve, membership
 #    7-9   transaction open, set_config('app.tenant_id'), SAVEPOINT
 #   10-12  require_can       -> capability, membership, grant
-#   13-15  portfolio_scope   -> can(view_assigned): capability, membership, grant
-#   16-18  portfolio_scope   -> can(view_all):      capability, membership, grant
-#      19  portfolio_scope   -> role_of, the membership read that resolves the role
-#      20  Paginator COUNT(*)
-#   21-23  the navigation bar's granted_levels, pinned at NAV_QUERY_BUDGET below
-#   24-26  the export action's own `{% can %}` on clients.view_all, in the template:
+#   13-15  portfolio_scope   -> granted_levels(view_assigned, view_all): capability,
+#                              membership, grant — ONE set of three for BOTH questions
+#      16  portfolio_scope   -> role_of, the membership read that resolves the role
+#      17  Paginator COUNT(*)
+#   18-20  the navigation bar's granted_levels, pinned at NAV_QUERY_BUDGET below
+#   21-23  the export action's own `{% can %}` on clients.view_all, in the template:
 #          capability, membership, grant
-#      27  the page's 50 rows
-#   28-30  RELEASE SAVEPOINT x2, AccessLog INSERT
+#      24  the page's 50 rows
+#   25-27  RELEASE SAVEPOINT, COMMIT, AccessLog INSERT
 #
-# 24-26 are the newest three and they were bought on purpose. `export_clients_csv` is
+# The last three read "RELEASE SAVEPOINT x2" until this was re-measured statement by
+# statement; the second of them is the COMMIT. Corrected here rather than left alone,
+# because an itemisation that does not match the trace is how the total drifts from the
+# reasons for it.
+#
+# 21-23 are the newest three and they were bought on purpose. `export_clients_csv` is
 # decorated `@require_can("clients.view_all")`, so an ungated button offers every
 # account that cannot export a control which answers 403 — and a dead button teaches an
 # accountant that the product is broken, which is a worse defect than three queries on a
-# page already spending ten to answer authorization. The tag is also the cheapest way to
-# ask: the answer is not lying around, because `portfolio_scope` resolves that same
+# page already spending seven to answer authorization. The tag is also the cheapest way
+# to ask: the answer is not lying around, because `portfolio_scope` resolves that same
 # capability internally but `visible_clients` encapsulates it and the view never holds
-# the result, so re-deriving it through that path would cost about seven.
+# the result, so re-deriving it through that path would cost about four.
 #
-# Thirteen of the 30 are authorization, re-resolved because `require_can`,
+# Ten of the 27 are authorization, re-resolved because `require_can`,
 # `visible_clients` and the template each answer independently, and all three are
 # mandatory: the capability decides 200-or-403, the portfolio decides which rows exist,
 # and the template decides what is offered at all. The queryset contract forbids
@@ -134,10 +141,36 @@ BUDGET_CLIENTS: Final = 60
 # applies here: this is a screen where a stale authorization answer is a visible
 # cross-tenant leak.
 #
+# Three came off at 13-16, and they came off WITHOUT touching that rejection. What was
+# 13-19 was `portfolio_scope` asking `can()` twice — capability, membership, grant, then
+# the same three again for the second capability — plus `role_of`. It now asks
+# `granted_levels` for both capabilities at once, which is the same resolution
+# `resolve_level` performs (`test_bulk_resolution_agrees_with_resolve_level` walks every
+# capability against every role to keep the two from drifting), so seven became four:
+# one capability read, one membership read, one grant read, and `role_of` on the branch
+# where both answers were yes.
+#
+# The distinction that makes this legal is WHOSE answer is reused. Nothing is memoised
+# and nothing is shared: `require_can` at 10-12 and the template's `{% can %}` at 21-23
+# still go to the database on their own, and still would if this file demanded it. Only
+# the two questions inside `portfolio_scope`'s single answer were merged, and that
+# answer is still read fresh on every call. A stale answer is still impossible, which is
+# the property the rejection above exists to protect — not the query count.
+#
+# `apps/authz/portfolio.py` compares `full` explicitly rather than truthily, and
+# `tests/authz/test_portfolio.py` sweeps all forty-nine (view_assigned, view_all) level
+# pairs against every role to hold it there. That test earns its keep: with the
+# comparison loosened to "anything but none", an operations_admin holding `view_all` at
+# `limited` is scoped ALL instead of ASSIGNED — a portfolio widened past its matrix
+# ceiling — and every assertion made against the matrix AS SEEDED still passes, because
+# no role holds either of these two capabilities at that level today.
+#
 # So this number is a ratchet, not the claim that protects the product. The claim that
-# does is `test_the_query_count_does_not_grow_with_the_portfolio`: 30 is O(1) in
-# portfolio size, and an N+1 regression moves that test rather than this one.
-QUERY_BUDGET: Final = 30
+# does is `test_the_query_count_does_not_grow_with_the_portfolio`: 27 is O(1) in
+# portfolio size, and an N+1 regression moves that test rather than this one. That test
+# measures the small firm and compares the large one against what it measured, so it
+# never needed editing here — which is the point of it being the load-bearing one.
+QUERY_BUDGET: Final = 27
 
 # Additive only. `tests/ui/test_navigation.py` pins `OWNER_ONLY = "Equipe"` and
 # `SHARED = "Exportar clientes"` and neither is touched from here: the export link is
