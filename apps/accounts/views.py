@@ -281,11 +281,60 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
     return HttpResponseRedirect(reverse("invite-issued"))
 
 
+def assert_firm_invite(*, invite: Invite) -> None:
+    """Refuse an invitation that does not belong at the FIRM's acceptance door.
+
+    The mirror of `assert_portal_invite`'s scope arm, and the symmetry is the whole
+    content of it. That one turns a FIRM-side invitation away from `<slug>-portal`,
+    because redeeming it there mints the firm-wide row
+    `TenantMiddleware._grant_context` reads as proof of firm-side access, out of a flow
+    whose premise is that it grants one client. This one turns a CLIENT-scoped
+    invitation away from the platform host, because redeeming it here mints a portal
+    seat out of a link that never named which firm's portal the seat is in — on the one
+    host where there is no portal context to check it against.
+
+    `resolve_invite` cannot make this call for either route. It is shared by both and
+    finds an invitation by token digest alone, which is all an anonymous caller can be
+    asked for; which door the token was presented at is a fact only the door holds.
+
+    A named function rather than an `if` inside the view, so the refusal is reachable
+    below HTTP and can be proved there. It lives beside the route rather than in
+    `apps/accounts/invites.py`, and that is a boundary rather than a preference: the
+    lifecycle in that module is shared verbatim by both flows, and a rule keyed to ONE
+    host does not belong in it. The cost is worth naming where it is paid — a future
+    non-HTTP caller of `accept_invite` is not refused by this — and `_client_seat` is
+    what bounds it: acceptance routes off `invite.client_id`, so such a caller still
+    mints the client seat the invitation always promised, never a firm-wide one.
+
+    The sentence is `resolve_invite`'s own, character for character, and that is
+    deliberate. `_refuse` prints `str(error)`, so on this host a distinct sentence
+    would share the 404 and still disclose that the token names a real client-scoped
+    invitation somewhere — precisely the fact the shared status exists to withhold,
+    which is what `_STATUS_BY_ERROR`'s comment above is about. A wrong-scope link has
+    to read as no link at all in the page as well as in the code, and
+    `tests/accounts/test_invite_route_scope.py` compares the two rendered documents
+    whole rather than taking this paragraph's word for it.
+    """
+    if invite.client_id is not None:
+        msg = "No invitation matches that link."
+        raise InviteScopeMismatchError(msg)
+
+
 @require_http_methods(["GET", "POST"])
 def accept_invite_view(request: HttpRequest, token: str) -> HttpResponse:
-    """Redeem an invitation, binding it to the invited mailbox."""
+    """Redeem a FIRM-side invitation, binding it to the invited mailbox.
+
+    Two gates before either branch below, and their ORDER is what they are worth.
+    `resolve_invite` refuses an unknown, spent, withdrawn or lapsed token;
+    `assert_firm_invite` refuses one whose seat is inside a client. Both sit ahead of
+    the lock-and-accept, so a link turned away here is still redeemable at the door it
+    was actually addressed to. The same refusal written after `register_and_accept`
+    would answer 404 just as convincingly and spend the invitation on the way, leaving
+    the person it was mailed to holding a credential they never got to use.
+    """
     try:
         invite = resolve_invite(token)
+        assert_firm_invite(invite=invite)
     except InviteError as error:
         return _refuse(request, error)
 
@@ -440,12 +489,24 @@ def _visible_invite(request: AuthenticatedRequest, pk: UUID) -> Invite:
     invitations, in silence. `tests/accounts/test_invite_revocation.py` is what
     stands in for the guard that cannot see this.
 
-    No `client` filter, unlike the membership twin. W7 gave `Invite` a nullable
+    No `client` filter, unlike the membership twin — and this is the paragraph where
+    the premise that used to excuse that stopped being true. W7 gave `Invite` a nullable
     `client` and widened `invite_role_is_firm_side` to admit a client role when it is
-    set, so "an invitation is always firm-side" is no longer true of the SCHEMA — but
-    it is still true of every row this view can reach, because nothing issues a
-    client-scoped invitation. Tenant is the boundary the firm-side team screens turn
-    on. A view that lists or withdraws PORTAL invitations has to answer this again.
+    set; `7d71ff6` then shipped the flow that ISSUES one. So client-scoped rows exist,
+    `team_view`'s pending list filters on tenant and nothing else, and the Revogar link
+    beside such a row lands here.
+
+    Tenant is still the whole boundary, for a reason that is about the CAPABILITY rather
+    than about which rows exist. Issuing a portal invitation and withdrawing one are
+    gated identically — `portal_invite_issue_view` and `invite_revoke_view` both sit
+    behind `users.create`, and `revoke_invite` re-checks it against the invitation's own
+    tenant — so anybody who can reach a client-scoped row through this function could
+    have created it in the first place, and narrowing the lookup would withhold nothing
+    from them. What the client scope is owed here is a RECORD rather than a filter, and
+    it gets one: `_invite_metadata` puts `client_id` on all three legs of an
+    invitation's life, so the withdrawal names whose books the dead link would have
+    opened. A view that LISTS portal invitations on their own screen has to answer this
+    question again, because there a filter is what decides who reads what.
     """
     tenant = getattr(request, "tenant", None)
     if tenant is None:

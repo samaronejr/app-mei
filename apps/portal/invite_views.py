@@ -138,8 +138,9 @@ def _accept_as_new_account(request: HttpRequest, invite: Invite) -> HttpResponse
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")
     # Their own company, and from here `MFAEnforcementMiddleware` takes over: the seat
     # they just accepted is an active Membership, so the very next request diverts them
-    # to enrolment before any page renders. `tests/ui/test_portal_invite_walkthrough.py`
-    # follows that hand-off hop by hop to the day-one landing page.
+    # to enrolment before any page renders. `tests/ui/test_mfa_pages.py` follows that
+    # hand-off hop by hop from the mailed link to the day-one landing page, and
+    # `tests/ui/test_portal_invite_pages.py` pins the two screens it passes through.
     return HttpResponseRedirect(reverse("portal-home"))
 
 
