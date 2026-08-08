@@ -21,38 +21,51 @@ from apps.core.netaddr import client_ip
 UA_MAX_LENGTH = 1024
 PATH_MAX_LENGTH = 2048
 
-# Path prefixes whose NEXT segment is a bearer credential rather than an identifier.
-# Distinct from `ACCESS_LOG_EXEMPT_PREFIXES` and deliberately not merged with it:
-# exemption drops the record, which is the Marco Civil duty being abandoned, while this
-# keeps the visit and drops only the secret. An invitation token stays valid for seven
-# days and this table keeps rows for a hundred and eighty, so a path written verbatim
-# would outlive the credential by half a year in the one table nothing is allowed to
-# delete from — and every downstream copy of it.
-#
-# Both hosts are covered by this single entry because both acceptance routes are mounted
-# on the same path: firm-side at `apps/accounts/urls.py`, portal-side at
-# `apps/portal/urls.py`. A prefix per host would be two things to keep in step.
-REDACTED_PATH_PREFIXES: tuple[str, ...] = ("/convites/aceitar/",)
 REDACTION_MARKER = "<redacted>"
+RESET_FROM_KEY_URL_NAME = "account_reset_password_from_key"
+RESET_FORM_URL_KEY = "set-password"
+
+
+def _replace_path_segment(path: str, credential: str, replacement: str) -> str:
+    """Replace one exact path segment and leave every other byte untouched."""
+    segments = path.split("/")
+    try:
+        index = segments.index(credential)
+    except ValueError:
+        return path
+    segments[index] = replacement
+    return "/".join(segments)
 
 
 def _recorded_path(request: HttpRequest) -> str:
-    """Return the request's full path with any credential segment replaced.
+    """Return the full path with registered URL-path credentials replaced.
 
     The query string is split off FIRST and reattached untouched. `get_full_path()` is
-    path and query together, the credential is a path segment, and a rewrite applied to
-    the joined string would either swallow the query or stop at the wrong separator
-    depending on which end it cut from. Only the one segment immediately after a matched
-    prefix is replaced; everything deeper survives, so a longer path stays as legible as
-    a bare one.
+    path and query together, so rewriting the joined string could swallow the query.
+    Registry membership is the gate: adding a credential route and enabling its
+    redaction are one act, rather than two prefix lists that can drift apart.
     """
     full_path = request.get_full_path()
     path, separator, query = full_path.partition("?")
-    for prefix in REDACTED_PATH_PREFIXES:
-        if path.startswith(prefix):
-            _credential, slash, tail = path[len(prefix) :].partition("/")
-            path = f"{prefix}{REDACTION_MARKER}{slash}{tail}"
-            break
+    match = request.resolver_match
+    if match is None or match.url_name not in settings.CREDENTIAL_BEARING_URL_NAMES:
+        return full_path
+
+    parameters = {name: str(value) for name, value in match.kwargs.items()}
+    if match.url_name == RESET_FROM_KEY_URL_NAME:
+        uidb36 = parameters.get("uidb36")
+        key = parameters.get("key")
+        if key == RESET_FORM_URL_KEY:
+            return full_path
+        if uidb36 is not None and key is not None:
+            path = _replace_path_segment(
+                path,
+                f"{uidb36}-{key}",
+                f"{uidb36}-{REDACTION_MARKER}",
+            )
+    else:
+        for credential in parameters.values():
+            path = _replace_path_segment(path, credential, REDACTION_MARKER)
     return f"{path}{separator}{query}"
 
 

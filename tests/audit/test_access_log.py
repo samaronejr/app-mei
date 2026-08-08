@@ -5,14 +5,12 @@ transaction, this middleware would have its row rolled back whenever the request
 failed — which is to say, the access record would be missing for exactly the requests
 an intrusion investigation starts from, and present for all the boring ones.
 
-Bearer credentials are kept OUT of the recorded path. An invitation link carries its
-token in a path segment, and this table outlives the invitation by months: retaining
-live credentials for six months is not an access log, it is a second copy of the
-credential store with a longer half-life than the original. `AccessLogMiddleware`
-therefore replaces the segment after `/convites/aceitar/` with a marker before writing,
-which keeps the route legible — an investigation still sees that someone opened an
-acceptance link, from which address, when, and with what answer — while the credential
-itself is never persisted.
+Bearer credentials are kept OUT of the recorded path. Invitation, email-confirmation
+and password-reset links all outlive their usefulness long before this table's
+six-month retention ends. `AccessLogMiddleware` therefore derives credential-bearing
+requests from the shared route-name registry and replaces only the credential. The
+reset user's `uidb36` survives, as does allauth's non-secret `set-password` marker, so
+the keyed 302 and the password POST remain distinct forensic records.
 
 SCOPE BOUNDARY, stated here so nobody later mistakes this for full-stack credential
 hygiene. The redaction asserted below covers THIS application's own `audit_accesslog`
@@ -21,16 +19,22 @@ balancer, a CDN, a web-server access log or an observability agent that records 
 URLs still sees the raw token in transit, and so does the browser history of whoever
 opened the link. Closing those surfaces is infrastructure work, deliberately outside
 this change, and the tests below must not be read as evidence that it was done.
+
+For a valid reset, allauth stores the key in the session and redirects to the
+`set-password` URL before rendering the form. The reset exposure asserted here is the
+one initial keyed GET, not a same-origin Referer chain that allauth already prevents.
 """
 
+import re
 from datetime import timedelta
 from http import HTTPStatus
 from typing import Final
 
 import pytest
 from django.conf import settings
+from django.core import mail
 from django.test import Client
-from django.urls import reverse
+from django.urls import resolve, reverse
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
@@ -64,6 +68,9 @@ REDACTED_INVITE_PATH: Final = f"{INVITE_PATH_PREFIX}<redacted>/"
 INVITED: Final = "convidada@alpha.example"
 PADARIA_CNPJ: Final = "11222333000181"
 QUERY_STRING: Final = "?origem=email"
+CONFIRM_EMAIL_PATH_PREFIX: Final = "/accounts/confirm-email/"
+RESET_KEY_PATH_PREFIX: Final = "/accounts/password/reset/key/"
+RESET_LINK_PATH: Final = re.compile(r"/accounts/password/reset/key/[\w-]+/")
 
 
 @pytest.fixture(autouse=True)
@@ -313,10 +320,8 @@ def test_an_invitation_token_never_reaches_the_access_record(
     # When the link is followed
     row, raw_token = _open_invitation_link(tenant, route)
 
-    # Then the route is still legible and the bearer credential is gone. Both hosts are
-    # exercised because they share one path shape and one prefix covers them: a
-    # redaction that only knew about one of the two would leak every seat handed out on
-    # the other, and nothing in either urlconf would say so.
+    # Then the route is still legible and the bearer credential is gone. Both URL trees
+    # resolve the same registered route shape, so the route-name gate must cover both.
     assert row.path == REDACTED_INVITE_PATH
     assert raw_token not in row.path
 
@@ -346,8 +351,142 @@ def test_a_path_carrying_no_credential_is_recorded_byte_for_byte(path: str) -> N
     # Given an ordinary request holding no credential in its path
     Client().get(path, headers={"host": PLATFORM_HOST})
 
-    # Then it is recorded exactly as it was requested. The redaction is a prefix match
-    # over one tuple and nothing else: a rewrite that reached ordinary paths would
-    # damage the record for every route in the product to protect one, and the damage
-    # would be invisible until somebody read the log for an incident.
+    # Then it is recorded exactly as requested. The registry-backed route-name gate
+    # must not rewrite ordinary paths and silently damage the incident record.
     assert [row.path for row in AccessLog.objects.all()] == [path]
+
+
+@pytest.mark.parametrize(
+    "tree",
+    [(FIRM_URLCONF, PLATFORM_HOST), (PORTAL_URLCONF, PORTAL_HOST)],
+)
+@pytest.mark.parametrize(
+    "credential",
+    [
+        (
+            "account_confirm_email",
+            {"key": "confirmacao-viva-7c93f"},
+            CONFIRM_EMAIL_PATH_PREFIX,
+            "confirmacao-viva-7c93f",
+            f"{CONFIRM_EMAIL_PATH_PREFIX}<redacted>/",
+        ),
+        (
+            "account_reset_password_from_key",
+            {"uidb36": "2s", "key": "reset-vivo-7c93f"},
+            RESET_KEY_PATH_PREFIX,
+            "reset-vivo-7c93f",
+            f"{RESET_KEY_PATH_PREFIX}2s-<redacted>/",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("_shipped_urls")
+def test_allauth_credentials_never_reach_access_records(
+    tenant: Tenant,
+    tree: tuple[str, str],
+    credential: tuple[str, dict[str, str], str, str, str],
+) -> None:
+    urlconf, host = tree
+    url_name, kwargs, prefix, raw_key, expected_path = credential
+    assert tenant.slug == "alpha"
+    path = reverse(url_name, kwargs=kwargs, urlconf=urlconf)
+    assert path.startswith(prefix)
+
+    response = Client().get(path, headers={"host": host})
+    assert response.status_code != HTTPStatus.NOT_FOUND
+    rows = list(AccessLog.objects.filter(path__startswith=prefix))
+    assert len(rows) == 1
+    row = rows[0]
+    print(  # noqa: T201 - the red-state artifact must expose the stored leak
+        f"LEAKED audit_accesslog.path host={host} route={url_name} "
+        f"raw_key={raw_key} stored_path={row.path}",
+    )
+    assert row.path == expected_path
+    assert raw_key not in row.path
+
+
+@pytest.mark.parametrize(
+    "tree",
+    [(FIRM_URLCONF, PLATFORM_HOST), (PORTAL_URLCONF, PORTAL_HOST)],
+)
+@pytest.mark.parametrize(
+    "control",
+    [
+        ("account_email_verification_sent", CONFIRM_EMAIL_PATH_PREFIX),
+        (
+            "account_reset_password_from_key_done",
+            f"{RESET_KEY_PATH_PREFIX}done/",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("_shipped_urls")
+def test_non_secret_allauth_siblings_are_recorded_unchanged(
+    tenant: Tenant,
+    tree: tuple[str, str],
+    control: tuple[str, str],
+) -> None:
+    urlconf, host = tree
+    url_name, expected_path = control
+    assert tenant.slug == "alpha"
+    path = reverse(url_name, urlconf=urlconf)
+    assert path == expected_path
+
+    response = Client().get(path, headers={"host": host})
+    assert response.status_code != HTTPStatus.NOT_FOUND
+    row = AccessLog.objects.get()
+    assert row.path == path
+
+
+@pytest.mark.usefixtures("_shipped_urls")
+def test_a_live_reset_keeps_the_uid_and_distinguishes_get_from_post(
+    member: User,
+) -> None:
+    client = Client()
+    requested = client.post(
+        reverse("account_reset_password"),
+        {"email": member.email},
+        headers={"host": PLATFORM_HOST},
+    )
+    assert requested.status_code == HTTPStatus.FOUND
+    assert mail.outbox
+    found = RESET_LINK_PATH.search(str(mail.outbox[-1].body))
+    assert found is not None
+    raw_path = found.group(0)
+    assert raw_path.startswith(RESET_KEY_PATH_PREFIX)
+    match = resolve(raw_path, urlconf=FIRM_URLCONF)
+    assert match.url_name == "account_reset_password_from_key"
+    uidb36 = str(match.kwargs["uidb36"])
+    raw_key = str(match.kwargs["key"])
+    assert raw_key
+
+    clicked = client.get(raw_path, headers={"host": PLATFORM_HOST})
+    assert clicked.status_code == HTTPStatus.FOUND
+    set_password_path = str(clicked.headers["Location"])
+    assert set_password_path == reverse(
+        "account_reset_password_from_key",
+        kwargs={"uidb36": uidb36, "key": "set-password"},
+        urlconf=FIRM_URLCONF,
+    )
+    submitted = client.post(
+        set_password_path,
+        {
+            "password1": "Nova-senha-segura-7c93f",
+            "password2": "Nova-senha-segura-7c93f",
+        },
+        headers={"host": PLATFORM_HOST},
+    )
+    assert submitted.status_code == HTTPStatus.FOUND
+
+    rows = list(
+        AccessLog.objects.filter(path__startswith=RESET_KEY_PATH_PREFIX).order_by(
+            "created_at",
+        ),
+    )
+    assert len(rows) == 2
+    clicked_row, submitted_row = rows
+    assert clicked_row.method == "GET"
+    assert clicked_row.status_code == HTTPStatus.FOUND
+    assert clicked_row.path == f"{RESET_KEY_PATH_PREFIX}{uidb36}-<redacted>/"
+    assert raw_key not in clicked_row.path
+    assert submitted_row.method == "POST"
+    assert submitted_row.path == set_password_path
+    assert submitted_row.path != clicked_row.path
