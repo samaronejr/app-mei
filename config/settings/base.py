@@ -202,6 +202,52 @@ ACCOUNT_PREVENT_ENUMERATION = True
 ACCOUNT_SESSION_REMEMBER = False
 ACCOUNT_LOGOUT_ON_PASSWORD_CHANGE = True
 
+# URL names whose URL-PATH segments carry bearer credentials. This registry covers
+# URL-path credentials ONLY. It does not cover POST-body secrets such as passwords,
+# MFA codes or reset keys submitted in a form, and it does not cover signup.
+CREDENTIAL_BEARING_URL_NAMES = [
+    "invite-accept",
+    "portal-invite-accept",
+    "account_confirm_email",
+    "account_reset_password_from_key",
+]
+
+# Dynamic path parameters that are identifiers rather than credentials. Every entry
+# carries its decision here so the resolver guard cannot grow an invisible allow-list.
+CREDENTIAL_ROUTE_EXEMPTIONS = {
+    "member-deactivate": (
+        "The <uuid:pk> is a tenant-scoped membership object id, not a bearer "
+        "credential."
+    ),
+    "member-reactivate": (
+        "The <uuid:pk> is a tenant-scoped membership object id, not a bearer "
+        "credential."
+    ),
+    "invite-revoke": (
+        "The <uuid:pk> is a tenant-scoped invitation object id, not a bearer "
+        "credential."
+    ),
+    "portal-invite-issue": (
+        "The <uuid:pk> is a tenant-scoped client object id and does not authorize "
+        "invitation issuance."
+    ),
+    "client-detail": (
+        "The <uuid:pk> is a tenant-scoped client object id, not a bearer credential."
+    ),
+    "portal-document-download": (
+        "apps/obligations/models/documents.py:13 says storage_key carries no "
+        "authorization meaning; apps/portal/views.py:513 requires login, a capability "
+        "check and an RLS-authorized row lookup before storage is touched. It is an "
+        "opaque identifier, not a bearer credential."
+    ),
+    "admin:*": (
+        "Namespace policy: only Django admin routes whose dynamic parameters are "
+        "app_label, content_type_id, object_id or its catch-all URL are exempt. The "
+        "admin is staff-only, behind AdminTenantMiddleware, and those object ids are "
+        "not bearer credentials."
+    ),
+}
+
 # WebAuthn is out of scope for this phase. Recovery codes are on so that losing a
 # phone is a support conversation rather than an account loss.
 MFA_SUPPORTED_TYPES = ["totp", "recovery_codes"]
