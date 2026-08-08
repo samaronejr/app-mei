@@ -20,7 +20,7 @@ from django.urls import reverse
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
-from apps.tenants.models import Tenant
+from apps.tenants.models import Invite, Tenant, TenantRole
 from tests.support import pin_rate_limit_window
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -94,6 +94,31 @@ def test_the_sixth_attempt_for_one_email_within_a_minute_is_refused() -> None:
     # Then all five are served, and the sixth is not
     assert allowed == [HTTPStatus.OK] * LOGIN_ATTEMPTS_ALLOWED
     assert _attempt(EMAIL) == HTTPStatus.TOO_MANY_REQUESTS
+
+
+def test_the_sixth_firm_invitation_attempt_from_one_ip_is_refused(
+    settings: SettingsWrapper,
+) -> None:
+    settings.ROOT_URLCONF = "config.urls"
+    firm = Tenant.objects.get(slug="firma-a")
+    _invite, raw_token = Invite.issue(
+        tenant=firm,
+        email="convidada@alpha.example",
+        role=TenantRole.STAFF_ACCOUNTANT,
+    )
+    path = reverse("invite-accept", args=[raw_token], urlconf="config.urls")
+    client = Client()
+
+    responses = [
+        client.post(
+            path,
+            headers={"host": "testserver"},
+            REMOTE_ADDR="203.0.113.7",
+        )
+        for _ in range(LOGIN_ATTEMPTS_ALLOWED + 1)
+    ]
+
+    assert responses[-1].status_code == HTTPStatus.TOO_MANY_REQUESTS
 
 
 def test_the_login_limit_follows_the_email_across_subdomains() -> None:

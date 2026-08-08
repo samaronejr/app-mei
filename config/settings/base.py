@@ -287,6 +287,8 @@ RATELIMIT_PUBLIC_POST_URL_NAMES = [
     "account_reset_password_from_key",
     "mfa_authenticate",
     "dsr-submit",
+    # The firm route is anonymous and can create both an account and a membership.
+    "invite-accept",
     # Portal invitation acceptance. Anonymous by construction, and the POST it accepts
     # both creates an account and mints a membership -- so unlimited it is a way to
     # brute-force a token AND an unauthenticated account-creation endpoint.
