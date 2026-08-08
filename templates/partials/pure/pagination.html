@@ -1,0 +1,39 @@
+{% load i18n %}{% comment %}
+Pagination controls, from context alone.
+
+Context:
+  page          -- a paginator page. Absent, or a paginator holding a single page,
+                   renders nothing at all rather than an empty bar with one link.
+  filter_query  -- an already-encoded querystring prefix ending in `&`, carrying
+                   whatever narrowing is active. Empty when nothing is narrowed,
+                   which leaves an ordinary first parameter behind it.
+
+Every destination is a plain anchor. The page number belongs in an href, which the
+browser treats as a URL, and never in an hx-* attribute, which HTMX reads only after
+the browser has already decoded it -- one more place a decoded value lands. A caller
+wanting the swap rather than the navigation wraps this include in its own boosted
+element and leaves these anchors untouched. That wrapper is deliberately the caller's:
+it keeps every request vocabulary out of this file, so the portal -- which ships no
+JavaScript and renders under a role holding SELECT on seven tables -- reuses the same
+markup without inheriting a behaviour it has no bundle to run.
+
+String literals inside a tag that sits within an HTML attribute are single-quoted, as
+they are throughout this family: the stale-stylesheet guard reads attributes with a
+regex before it strips template syntax, so a double quote inside one ends the
+attribute early and feeds tag keywords to that guard as class names.
+{% endcomment %}{% if page.paginator.num_pages > 1 %}
+<nav class="flex items-center justify-between border-t border-ink-200 px-5 py-3 text-sm text-ink-600"
+     aria-label="{% translate 'Paginação' %}">
+  <span>
+    {% blocktranslate with current=page.number total=page.paginator.num_pages %}Página {{ current }} de {{ total }}{% endblocktranslate %}
+  </span>
+  <span class="flex gap-2">
+    {% if page.has_previous %}
+      <a class="btn btn-quiet" href="?{{ filter_query }}pagina={{ page.previous_page_number }}">{% translate "Anterior" %}</a>
+    {% endif %}
+    {% if page.has_next %}
+      <a class="btn btn-quiet" href="?{{ filter_query }}pagina={{ page.next_page_number }}">{% translate "Próxima" %}</a>
+    {% endif %}
+  </span>
+</nav>
+{% endif %}

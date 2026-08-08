@@ -1,0 +1,218 @@
+{% extends "base.html" %}{% load authz i18n ptbr %}
+{% block title %}{{ client.legal_name }}{% endblock %}
+{% block heading %}{{ client.legal_name }}{% endblock %}
+{% block content %}
+  {% comment %}
+    A read-only file ABOUT THE CLIENT. There is still no edit, no upload and no delete:
+    every field of the record is fed by onboarding and by the CSV import, and a second
+    write path here would be a second place a CNPJ can be entered unnormalized.
+
+    The one control that writes lives at the foot of the page and writes somewhere
+    else. It creates an invitation, never a column of the client being read, and §17-G
+    authorises it from here because this is where an accountant already is when they
+    decide a client should be able to watch their own obligations.
+
+    Every section is a landmark with a heading, and each heading is referenced by the
+    section that owns it. A screen reader then offers this page as a list of named
+    regions rather than one undifferentiated run of text, which is the difference
+    between finding the calendar and scrolling through everything before it. The h1
+    belongs to the layout, so the sections start at h2.
+  {% endcomment %}
+  {% comment %}
+    The trail's markup lives in partials/crumbs.html and is included rather than
+    written out, so that there is one place where "the current crumb is text, not a
+    link" is decided. It is included from here and from no other template on purpose:
+    the partial emits a nav landmark, and every public screen in this product is
+    contractually required to draw none.
+
+    Both values are resolved into named variables first because `only` is what keeps
+    the partial free of this page's context, and `only` also strips the tags that would
+    otherwise have resolved them inline.
+  {% endcomment %}
+  {% translate "Clientes" as rotulo_carteira %}
+  {% url 'clients-list' as url_carteira %}
+  {% include "partials/crumbs.html" with parent_url=url_carteira parent_label=rotulo_carteira current=client.legal_name only %}
+
+  <section aria-labelledby="identificacao" class="mb-8">
+    <h2 id="identificacao" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Identificação" %}</h2>
+    {% include "clients/_identity.html" %}
+  </section>
+
+  {% if banda %}
+    <section aria-labelledby="limite" class="mb-8">
+      <h2 id="limite" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Limite de faturamento" %}</h2>
+      {% comment %}
+        The same row partial the dashboard and the threshold queue render, under the
+        same five headers. Reused rather than rewritten so that a client's band, ceiling
+        and consumed percentage read identically wherever they appear -- three spellings
+        of one number is how a firm ends up arguing with its own screens.
+
+        Drawn only when the client is actually in an attention band. Absence says
+        nothing, which is correct: the queue's job is to raise clients that need acting
+        on, and inventing a reassurance for everyone else would be a claim this page did
+        not compute.
+      {% endcomment %}
+      <div class="card">
+        <div class="table-wrap">
+          <table class="data-table row-stack">
+            <caption class="visually-hidden">{% translate "Consumo do limite anual" %}</caption>
+            <thead>
+              <tr>
+                <th scope="col">{% translate "Cliente" %}</th>
+                <th scope="col">{% translate "Faturado" %}</th>
+                <th scope="col">{% translate "Teto" %}</th>
+                <th scope="col">{% translate "Consumido" %}</th>
+                <th scope="col">{% translate "Faixa" %}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% include "obligations/_rows_threshold.html" with row=banda %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
+  <section aria-labelledby="calendario" class="mb-8">
+    <h2 id="calendario" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Calendário do DAS — 12 meses" %}</h2>
+    {% comment %}
+      The dashboard's strip, not a copy of it. The markup lives in
+      obligations/_calendar_strip.html precisely so that a correction to how a rolled
+      deadline is drawn reaches both screens at once. There is no client filter here
+      because the client is the page.
+    {% endcomment %}
+    {% include "obligations/_calendar_strip.html" %}
+  </section>
+
+  <section aria-labelledby="obrigacoes" class="mb-8">
+    <h2 id="obrigacoes" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Obrigações" %}</h2>
+    <div class="card overflow-hidden">
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <caption class="visually-hidden">{% translate "Obrigações deste cliente" %}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Competência" %}</th>
+              <th scope="col">{% translate "Obrigação" %}</th>
+              <th scope="col">{% translate "Vencimento" %}</th>
+              <th scope="col">{% translate "Situação" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for obligation in page.object_list %}
+              {% comment %}
+                Every cell names its column. Below the stacking breakpoint the header
+                row is hidden and each cell regrows its label out of that attribute, so
+                a missing one is a value on a phone with nothing saying what it
+                measures.
+
+                The badge carries the word as well as the colour: colour alone is not a
+                status, it is a status only the sighted majority receives. Paid reads
+                ok, overdue is the one that needs somebody today so it reads late, due
+                is approaching so it reads warn, and scheduled and waived are quiet.
+
+                The date shown is the resolved one, because that is the day the client
+                must actually pay by. Both dates are stored and the strip above is
+                where a deferral is announced.
+              {% endcomment %}
+              <tr>
+                <td data-label="{% translate 'Competência' %}">{{ obligation.competence_month|competencia }}</td>
+                <td data-label="{% translate 'Obrigação' %}">{{ obligation.obligation_type.name }}</td>
+                <td data-label="{% translate 'Vencimento' %}">{{ obligation.resolved_due_date|data }}</td>
+                <td data-label="{% translate 'Situação' %}"><span class="badge {% if obligation.status == 'paid' %}badge-ok{% elif obligation.status == 'overdue' %}badge-late{% elif obligation.status == 'due' %}badge-warn{% else %}badge-neutral{% endif %}">{{ obligation.get_status_display }}</span></td>
+              </tr>
+            {% empty %}
+              <tr>
+                <td colspan="4" class="empty-state">{% translate "Nenhuma obrigação gerada para este cliente ainda." %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% include "partials/pure/pagination.html" %}
+    </div>
+  </section>
+
+  <section aria-labelledby="onboarding" class="mb-8">
+    <h2 id="onboarding" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Checklist de onboarding" %}</h2>
+    <div class="card p-5">
+      {% comment %}
+        The label is read off the item rather than off the template row it came from.
+        apps/clients/models/onboarding.py copies key and label onto the item on purpose:
+        a template row may later be retired or reworded, and a client's historical
+        checklist has to keep saying what was actually asked of them at the time.
+
+        A blocked item always shows its reason. The database refuses a blocked row with
+        an empty one, so the only way this renders nothing is if the item is not blocked
+        -- which means a client stuck with nobody able to say on what cannot exist here
+        or in the table underneath.
+      {% endcomment %}
+      <ul class="checklist">
+        {% for item in checklist %}
+          <li class="flex flex-wrap items-center gap-2">
+            <span class="badge {% if item.status == 'done' %}badge-ok{% elif item.status == 'blocked' %}badge-late{% elif item.status == 'pending' %}badge-warn{% else %}badge-neutral{% endif %}">{{ item.get_status_display }}</span>
+            <span {% if item.status == 'done' %}class="checklist-done"{% endif %}>{{ item.label }}</span>
+            {% if item.status == 'blocked' %}
+              <span class="text-xs text-ink-500">{{ item.blocked_reason }}</span>
+            {% endif %}
+          </li>
+        {% empty %}
+          <li class="empty-state">{% translate "Nenhum item de onboarding para este cliente." %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+
+  {% comment %}
+    The one control on this screen that writes, and the only one §17-G authorises here.
+
+    Asked of the capability matrix as well as of the server, and the duplication is the
+    point -- the same pairing the registry's export button uses next door. The endpoint
+    behind this form is decorated with the matching require_can, so THAT decorator is
+    the control and a request forged past a hidden form is still refused; what the tag
+    buys is honesty, because a control offered to a role that would be answered 403
+    teaches an accountant the product is broken. Three queries, carried deliberately in
+    a budget that was sized with headroom for exactly this kind of purchase.
+
+    The address goes in the body and the CLIENT does not: it comes from the URL and is
+    resolved through the firm's own portfolio lens on the far side. A hidden field here
+    would mean the one value deciding whose books are opened arrives from the same
+    place as everything the form distrusts.
+
+    No error summary, because this form is never re-rendered bound. A rejected
+    submission is answered by the shared refusal page and an accepted one redirects to
+    the shared confirmation, which are the same two destinations the firm-side invite
+    form already ends on -- so the two flows cannot start reporting the same outcome
+    differently.
+
+    The glyph is decorative and marked so inside the partial; the word beside it is
+    what is announced and what is read by anyone who does not recognise the mark.
+  {% endcomment %}
+  {% can user "users.create" as pode_convidar %}
+  {% if pode_convidar %}
+    <section aria-labelledby="portal">
+      <h2 id="portal" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/user-round.html" %}
+        <span>{% translate "Acesso ao portal" %}</span>
+      </h2>
+      <div class="card max-w-2xl p-5">
+        <p class="text-sm text-ink-600">
+          {% translate "O convite abre o portal desta empresa e de mais nenhuma. Quem aceitar passa a ver as obrigações, os pagamentos e os documentos deste CNPJ, e nada do restante da carteira." %}
+        </p>
+        <form method="post" action="{% url 'portal-invite-issue' client.pk %}" class="mt-5 space-y-4">
+          {% csrf_token %}
+          {% for field in portal_invite_form %}{% include "partials/pure/field.html" %}{% endfor %}
+          <button type="submit" class="btn btn-primary">
+            {% include "partials/pure/icons/users.html" %}
+            <span>{% translate "Convidar para o portal" %}</span>
+          </button>
+        </form>
+        <p class="mt-5 text-xs text-ink-500">
+          {% translate "O link vai por e-mail, vale para um único uso e tem prazo de validade. Quem recebe define a própria senha ao abrir. Até ser aceito, o convite fica em Convites pendentes, na página da equipe." %}
+        </p>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

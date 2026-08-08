@@ -1,21 +1,112 @@
-{% load i18n %}<!DOCTYPE html>
+{% load i18n static %}<!DOCTYPE html>
 <html lang="pt-br">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{% translate "Portal do cliente" %}{% endblock %}</title>
+  {% comment %}
+    The same compiled sheet the firm side ships, and the only asset this layout loads.
+    A stylesheet is a static file: no context processor, no model, no table, and so no
+    question about which database role is in effect while it resolves. A portal-only
+    sheet would double what the build has to keep in step for a design the firm side
+    already carries.
+
+    No script tag of any kind, here or in any page below. The portal is the one
+    boundary in this product that row-level security is enforcing, and a shared bundle
+    is a shared attack surface across it. A guard test refuses one on any portal page.
+  {% endcomment %}
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
 </head>
-<body>
-  {# Deliberately standalone rather than extending the firm's base.html: that layout #}
-  {# reaches for {{ perms.* }} and tenant data, and app_portal holds SELECT on        #}
-  {# neither auth_permission nor tenants_tenant, so every portal page would 500.      #}
-  {# request.user is materialised before the transaction opens and costs no query.    #}
-  <header>
-    <h1>{% translate "Portal do cliente" %}</h1>
-    <p>{{ request.user.email }}</p>
+<body class="min-h-screen pb-24 md:pb-0">
+  {% comment %}
+    Deliberately standalone rather than extending the firm's layout: that one resolves
+    the navigation from the capability matrix and reads tenant data, and the portal role
+    holds SELECT on neither of the tables behind those, so every portal page would 500.
+    The account address below is the one exception, and it is not an exception at all --
+    the middleware materialises the account before the transaction opens and before the
+    role switch, so reading its address costs no query. Nothing further through the same
+    object is safe, and a guard test allows exactly three attributes.
+
+    The first focusable element on every page, jumping past the header and the bar to
+    the start of the content: one keystroke instead of six, on every screen.
+  {% endcomment %}
+  <a class="skip-link" href="#conteudo">{% translate "Pular para o conteúdo" %}</a>
+
+  <header class="border-b border-ink-200 bg-surface">
+    <div class="mx-auto flex max-w-3xl items-center gap-3 px-5 py-3 text-sm">
+      <span class="font-semibold tracking-tight text-ink-900">{% translate "Portal do cliente" %}</span>
+      <span class="ml-auto truncate text-ink-500">{{ request.user.email }}</span>
+    </div>
   </header>
-  <main id="conteudo">
+
+  {% comment %}
+    Included unconditionally, and the only navigation landmark the portal draws. Every
+    page behind this layout is behind a sign-in, so there is no anonymous screen here
+    that would be handed an empty landmark to announce.
+  {% endcomment %}
+  {% include "portal/partials/nav.html" %}
+
+  {% comment %}
+    The negative tab index is what makes the skip link's target focusable. Without it
+    the browser scrolls but leaves focus in the header, so the next keystroke returns
+    the reader to the bar they just skipped.
+
+    The heading is emitted here rather than by each page, which makes "exactly one per
+    page" a property of the layout instead of a rule every future page has to remember.
+    A guard test refuses the tag in any other portal template, and the mirror suite
+    counts it on every rendered portal screen.
+  {% endcomment %}
+  <main id="conteudo" tabindex="-1" class="mx-auto max-w-3xl px-5 py-6">
+    <h1 class="mb-5 text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "Portal do cliente" %}{% endblock %}</h1>
+
+    {% comment %}
+      Rendered whether or not it holds anything, because it is the element the layout
+      promises to any later out-of-band replacement -- and an empty wrapper carrying no
+      spacing occupies no height. The padding belongs to the inner block, which exists
+      only when there is news.
+
+      Reading the queue costs no query on this host: the session was loaded before the
+      transaction opened, and the storage is written back in a response phase that runs
+      outside it, as the ordinary application role.
+
+      Django's warning tag and this partial's warn variant are spelled differently, so
+      the four levels are mapped one at a time. Passing the tag straight through looks
+      correct, renders the informational ramp for every warning, and is invisible until
+      someone wonders why a warning is teal.
+    {% endcomment %}
+    <div id="messages" role="status" aria-live="polite">
+      {% if messages %}
+        <div class="grid gap-3 pb-6">
+          {% for message in messages %}
+            {% if message.level_tag == 'success' %}
+              {% include 'partials/pure/notice.html' with message=message variant='success' only %}
+            {% elif message.level_tag == 'warning' %}
+              {% include 'partials/pure/notice.html' with message=message variant='warn' only %}
+            {% elif message.level_tag == 'error' %}
+              {% include 'partials/pure/notice.html' with message=message variant='error' only %}
+            {% else %}
+              {% include 'partials/pure/notice.html' with message=message variant='info' only %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
     {% block content %}{% endblock %}
   </main>
+
+  {% comment %}
+    The timezone note, and nothing else. The firm layout also links the data-subject
+    rights page, and that link is deliberately absent here: the portal URL tree mounts
+    no such route, so the tag cannot build the address; this project installs no
+    settings context processor, so a configured base address cannot be read either; and
+    a literal absolute address would name an external origin, which a pinned guard test
+    refuses across every template including these. Threading a variable through every
+    portal view for one footer link buys less than it costs. The page itself stays
+    reachable on the platform host, which is where it has always been published.
+  {% endcomment %}
+  <footer class="mx-auto max-w-3xl px-5 pb-8 text-xs text-ink-500">
+    <p>{% translate "Todos os horários desta página são de Brasília." %}</p>
+  </footer>
 </body>
 </html>

@@ -1,8 +1,35 @@
-{% load i18n ptbr %}
-<tr>
-  <td>{{ row.client.legal_name }}</td>
-  <td>{{ row.obligation_type.code }}</td>
-  <td>{{ row.competence_month|competencia }}</td>
-  <td><time datetime="{{ row.resolved_due_date|date:'Y-m-d' }}">{{ row.resolved_due_date|data }}</time></td>
-  <td>{{ row.get_status_display }}</td>
+{% load i18n ptbr %}{% comment %}
+  One <tr>, and nothing else: the queue includes this template by a name held on the
+  spec, so the row element is the whole contract between them.
+
+  Every cell names its column. Below the stacking breakpoint the header row is hidden
+  and each cell regrows its own label out of that attribute, so a missing one is a
+  value on a phone with nothing saying what it measures.
+
+  The client name is the way out of the queue and into the client's workspace, which
+  is where an accountant goes the moment a row raises a question this table leaves
+  unanswered. It is built from row.client_id -- the foreign key column already on the
+  obligation -- and not from row.client.pk, so the link costs nothing even on a row
+  whose client was never fetched.
+
+  The situação word is the SAME five this product's clients already read on the portal
+  payments page, and that is the requirement rather than a nicety: an accountant who
+  says "está paga" to somebody whose screen says something else is debugging the
+  product mid-call. They are pinned as a set in tests/portal/test_portal_payments.py
+  and asserted against this page in tests/ui/test_firm_copy.py.
+
+  It is a chain over row.status and not get_status_display, which returns the model's
+  own choice label -- and these five labels are the stored English words themselves.
+  Mapping them on the enum instead would alter serialized field metadata on every
+  field declaring choices= from it and emit an AlterField, which is a migration for a
+  display string. row.status is a column on the row already fetched, so the chain
+  follows no relation and the queue budget does not move. The last arm keeps the
+  stored code, so a status added to the enum and not to this chain renders the
+  database's own value rather than an empty cell.
+{% endcomment %}<tr>
+  <td data-label="{% translate 'Cliente' %}"><a class="link" href="{% url 'client-detail' row.client_id %}">{{ row.client.legal_name }}</a></td>
+  <td data-label="{% translate 'Obrigação' %}">{{ row.obligation_type.code }}</td>
+  <td data-label="{% translate 'Competência' %}">{{ row.competence_month|competencia }}</td>
+  <td data-label="{% translate 'Vencimento' %}"><time datetime="{{ row.resolved_due_date|date:'Y-m-d' }}">{{ row.resolved_due_date|data }}</time></td>
+  <td data-label="{% translate 'Situação' %}">{% if row.status == 'scheduled' %}{% translate "Programada" %}{% elif row.status == 'due' %}{% translate "A pagar" %}{% elif row.status == 'paid' %}{% translate "Paga" %}{% elif row.status == 'overdue' %}{% translate "Em atraso" %}{% elif row.status == 'waived' %}{% translate "Dispensada" %}{% else %}{{ row.status }}{% endif %}</td>
 </tr>

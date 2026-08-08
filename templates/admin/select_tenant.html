@@ -2,18 +2,65 @@
 {% block title %}{% translate "Selecionar empresa" %}{% endblock %}
 {% block heading %}{% translate "Selecione uma empresa" %}{% endblock %}
 {% block content %}
-  {% if error %}<p class="notice-error mb-4 max-w-2xl" role="alert">{{ error }}</p>{% endif %}
-  <form method="post" action="{% url 'admin-select-tenant' %}" class="card max-w-2xl space-y-4 p-6">
-    {% csrf_token %}
-    <label class="block text-sm font-medium text-ink-700" for="tenant">{% translate "Empresa" %}</label>
-    <select id="tenant" name="tenant" class="w-full rounded-control border border-ink-300 px-3 py-2">
-      {% for tenant in tenants %}<option value="{{ tenant.pk }}">{{ tenant.name }}</option>{% endfor %}
-    </select>
-    {% if may_break_glass %}
-      <label class="block text-sm font-medium text-ink-700" for="reason">{% translate "Motivo (obrigatório para acesso fora das suas empresas):" %}</label>
-      <input id="reason" type="text" name="reason" value="" class="w-full rounded-control border border-ink-300 px-3 py-2">
+  {% comment %}
+    Todo 9 gave this screen a real form and the shared field partials. What it did not
+    give it was a page: the controls sat alone in a card that said nothing about what
+    choosing does, on the one screen in this product where the honest answer is "you
+    are about to read another firm's CNPJs, CPFs and audit stream".
+
+    So the composition here is mostly copy, and every claim it makes is one the code
+    already enforces. `record_selection` writes a TENANT_SELECTED event on every
+    successful choice and a second, separate IMPERSONATION event carrying the stated
+    reason when the firm is outside the operator's memberships. `may_operate_as` is
+    re-run on every admin request rather than at selection time, which is what makes
+    "perder o vínculo encerra o acesso na hora" true rather than aspirational. And
+    `authorize` refuses a break-glass attempt with no reason outright.
+
+    The refusal is rendered through the shared notice partial instead of the bare
+    paragraph it used to be. Same ramp, but the partial is what emits the interrupting
+    role, and the title is load-bearing beside it: the reasons `authorize` raises are
+    written for an operator who already knows what they clicked — "This account has no
+    active membership for that firm" arriving alone above a dropdown reads as a
+    sentence about nothing.
+
+    Two glyphs, both wayfinding rather than ornament. An operator is usually thrown to
+    this screen mid-task by the middleware, and the first question is always which of
+    the two things went wrong — the company or the account. The building marks the
+    section that answers the first; the document marks the one that answers the second.
+    Neither carries meaning on its own: the refusal is a colour, a role and a sentence.
+  {% endcomment %}
+  <div class="max-w-2xl space-y-6">
+    {% if error %}
+      {% translate "Empresa recusada." as refused %}
+      {% include 'partials/pure/notice.html' with title=refused message=error variant='error' only %}
     {% endif %}
-    <input type="hidden" name="next" value="{{ request.GET.next|default:'/admin/' }}">
-    <button type="submit" class="btn btn-primary">{% translate "Selecionar" %}</button>
-  </form>
+
+    <section class="card p-6" aria-labelledby="empresa-do-atendimento">
+      <h2 id="empresa-do-atendimento" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/building-2.html" %}
+        <span>{% translate "Empresa deste atendimento" %}</span>
+      </h2>
+      <p class="mb-4 text-sm text-ink-600">
+        {% translate "A lista traz as empresas em que esta conta tem vínculo ativo. A escolha vale para esta sessão do admin e pode ser trocada nesta mesma tela quando precisar." %}
+      </p>
+      <form method="post" action="{% url 'admin-select-tenant' %}" class="space-y-4">
+        {% csrf_token %}
+        {% include "partials/pure/form_errors.html" %}
+        {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        <button type="submit" class="btn btn-primary">{% translate "Selecionar" %}</button>
+      </form>
+    </section>
+
+    <section class="card p-6" aria-labelledby="registro-da-escolha">
+      <h2 id="registro-da-escolha" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/file-text.html" %}
+        <span>{% translate "O que fica registrado" %}</span>
+      </h2>
+      <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+        <li>{% translate "Cada seleção entra na trilha de auditoria da empresa escolhida, com a conta que selecionou e o horário." %}</li>
+        <li>{% translate "O vínculo é conferido de novo a cada tela do admin, e não só aqui: perder o vínculo encerra o acesso na hora." %}</li>
+        <li>{% translate "Abrir uma empresa fora dos seus vínculos exige motivo escrito e fica registrado à parte, como acesso excepcional." %}</li>
+      </ul>
+    </section>
+  </div>
 {% endblock %}

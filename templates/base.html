@@ -20,6 +20,16 @@
   {% endcomment %}
   <script src="{% static 'js/htmx.min.js' %}" defer></script>
   <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>
+  {% comment %}
+    First-party, and last of the three: deferred scripts run in document order, so
+    this one is guaranteed both bundles above it have already been evaluated.
+
+    Loaded here and nowhere else. The MEI client portal renders from its own
+    standalone layout under a database role holding SELECT on seven tables, and it
+    ships no JavaScript at all — a shared script is a shared attack surface across
+    the one boundary in this product that RLS is enforcing.
+  {% endcomment %}
+  <script src="{% static 'js/app.js' %}" defer></script>
   {% block head %}{% endblock %}
 </head>
 <body class="min-h-screen">
@@ -43,11 +53,32 @@
       {% if request.tenant and request.user.is_authenticated %}
         {% nav_items request.user as items %}
         {% if items %}
-          <nav aria-label="{% translate 'Navegação principal' %}" class="flex flex-wrap items-center gap-1">
-            {% for item in items %}
-              <a class="nav-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
-            {% endfor %}
-          </nav>
+          {% comment %}
+            Resolved once into `items` and walked once. A second walk for a separate
+            desktop copy would cost no extra query — the tag already ran — but it would
+            put two nav landmarks and two active markers on every page, and the people
+            who hear this interface rather than see it pay for both. One element,
+            restyled at the breakpoint, is the cheaper answer.
+
+            The disclosure is the browser's own: no attribute here comes from either
+            bundle. A menu driven by Alpine is not a fallback for the case where Alpine
+            never loaded, it is the same failure wearing a different hat — and the
+            summary is a real button to a keyboard before any script has run.
+
+            Inside the firm guard, with the bar it wraps. The platform host and every
+            anonymous visitor draw no landmark at all rather than an empty one.
+          {% endcomment %}
+          <details class="nav-disclosure">
+            <summary class="nav-summary">
+              {% include "partials/pure/icons/menu.html" %}
+              <span>{% translate "Menu" %}</span>
+            </summary>
+            <nav aria-label="{% translate 'Navegação principal' %}" class="nav-bar">
+              {% for item in items %}
+                <a class="nav-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
+              {% endfor %}
+            </nav>
+          </details>
         {% endif %}
         <div class="ml-auto flex items-center gap-3 text-sm text-ink-500">
           <span>{{ request.user.email }}</span>
@@ -61,6 +92,21 @@
   </header>
 
   {% comment %}
+    The one place static/js/app.js writes swap announcements. Deliberately outside
+    <main>: everything HTMX replaces lives inside it, and a live region destroyed by
+    the swap it was meant to describe announces nothing.
+
+    Assertive rather than polite because it carries two kinds of news a user cannot
+    afford to wait for — that the region they are standing in has just been replaced,
+    and that a request failed. Exactly one such region exists on the page; a second
+    would interrupt the first and leave whichever lost the race unread.
+
+    Empty at load. A live region announces changes made after it exists, so seeding
+    it with text would say that text once and then never be heard from again.
+  {% endcomment %}
+  <div id="htmx-announce" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
+
+  {% comment %}
     tabindex="-1" makes the skip link's target focusable. Without it the browser moves
     the viewport but leaves focus in the header, so the next Tab returns the user to
     the navigation they just skipped.
@@ -70,7 +116,76 @@
     remember. A guard test refuses a literal <h1> in any other template.
   {% endcomment %}
   <main id="conteudo" tabindex="-1" class="mx-auto max-w-7xl px-6 py-8">
-    <h1 class="mb-6 text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "app-mei" %}{% endblock %}</h1>
+    {% comment %}
+      The heading and whatever the page offers on itself share one row, so that a
+      control such as "Exportar clientes" sits beside the title it belongs to rather
+      than adrift in the body underneath it. The row is the only thing the layout
+      contributes: the slot emits no element of its own.
+
+      Empty by default, and that is load-bearing rather than tidy. A page which
+      declares nothing leaves the heading alone in the row, and nothing at all is
+      added to the document — no toolbar, no list, no landmark and no label for an
+      assistive technology to announce and then find empty.
+
+      Which is also why the slot is given no role and no aria-label here. This shell
+      is rendered for anonymous visitors too, and the contract those pages hold is
+      that they draw exactly three landmarks; a fourth one wrapped around an empty
+      slot would break it on every public screen at once.
+    {% endcomment %}
+    <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <h1 class="text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "app-mei" %}{% endblock %}</h1>
+      {% block actions %}{% endblock %}
+    </div>
+
+    {% comment %}
+      The recovery path for a request that never arrived, pre-rendered so that the
+      failure handler has only to unhide it. Building this element in JavaScript
+      would put the markup for "the network is broken" behind the network.
+
+      The link is a plain GET at the current address: no HTMX attribute, so it
+      survives whatever went wrong with the last one, and it still works if the
+      script never ran. Rendering with no request leaves it empty, which the browser
+      resolves to the current document — the same reload, by a different route.
+
+      No role and no live region of its own. The announcement is already made by
+      #htmx-announce above; a second assertive element here would say it twice.
+    {% endcomment %}
+    <div id="htmx-error-fallback" class="notice notice-error mb-6" hidden>
+      <p>
+        {% translate "Não foi possível carregar esta parte da página." %}
+        <a class="underline" href="{{ request.get_full_path }}">{% translate "Tentar novamente" %}</a>
+      </p>
+    </div>
+
+    {% comment %}
+      Rendered on every page whether or not it holds anything, because it is the
+      element a later out-of-band swap has to find in order to replace it — and an
+      empty wrapper carrying no spacing utilities occupies no height. The padding
+      belongs to the inner block, which exists only when there is news.
+
+      Django's warning tag is `warning` and this partial's variant is `warn`, so the
+      four levels are mapped one at a time rather than passed straight through. A
+      pass-through looks correct, renders the info ramp for every warning, and is
+      invisible until someone wonders why a warning is blue.
+    {% endcomment %}
+    <div id="messages" role="status" aria-live="polite">
+      {% if messages %}
+        <div class="grid gap-3 pb-6">
+          {% for message in messages %}
+            {% if message.level_tag == 'success' %}
+              {% include 'partials/pure/notice.html' with message=message variant='success' only %}
+            {% elif message.level_tag == 'warning' %}
+              {% include 'partials/pure/notice.html' with message=message variant='warn' only %}
+            {% elif message.level_tag == 'error' %}
+              {% include 'partials/pure/notice.html' with message=message variant='error' only %}
+            {% else %}
+              {% include 'partials/pure/notice.html' with message=message variant='info' only %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
     {% block content %}{% endblock %}
   </main>
 

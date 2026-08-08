@@ -1,0 +1,84 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+The stored recovery codes: what is left, and how to keep them useful.
+
+THE THREE SCRIPTS UPSTREAM LOADS ARE NOT CARRIED OVER.
+
+Upstream's version of this screen redeclares `extra_body` to pull in two static bundles
+plus an inline scripting element that drives a "I have saved my codes" checkbox. The CSP
+in `apps/security/csp.py` is `script-src 'self'` with no inline allowance, so that
+element would never execute — it would fail silently in the console and leave the
+checkbox inert. `MFA_RECOVERY_CODES_SHOW_ONCE` is False here besides, which is the
+setting that makes that checkbox appear at all, so the whole apparatus is unreachable
+twice over. This file therefore declares no `extra_body` and the codes are simply shown.
+
+The tag itself is not spelled anywhere in this comment. `tests/ui/templates_scan.py`
+reads template source with regexes that do not know a comment from markup, and prose
+that spells a tag or an attribute value registers as the real thing — the same reason
+`partials/pure/notice.html` describes its class attribute rather than writing it.
+
+WHAT THE COPY HAS TO SAY, AND WHY.
+
+These codes are the last way in when the phone is gone — the account has no other
+factor, `MFA_SUPPORTED_TYPES` lists totp and recovery codes only. Two facts decide
+whether they work when that day comes, and neither is deducible from a list of strings:
+
+  * each code works ONCE and is then spent, so a reader who has used three still has a
+    finite number left, which is what the count above the list is for;
+  * storing them in the password manager that already holds the password defeats them
+    entirely. One compromised vault then yields both factors, and the whole reason for
+    the second factor was that the first one might leak.
+
+The list is a readonly textarea rather than prose so it can be selected and copied in
+one gesture, and it carries no name — it is not posted anywhere.
+
+Reachable on both hosts, so no ORM, no capability, and every url name below is mounted
+by `config.urls` and `apps/portal/urls.py` alike. The three `can_*` flags come from the
+view's context, not from this project's authorization matrix.
+{% endcomment %}
+{% block head_title %}{% translate "Códigos de recuperação" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Códigos de recuperação" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% blocktranslate count unused_count=unused_codes|length %}Resta {{ unused_count }} código de recuperação, de um total de {{ total_count }}.{% plural %}Restam {{ unused_count }} códigos de recuperação, de um total de {{ total_count }}.{% endblocktranslate %}
+  </p>
+
+  {% include 'partials/pure/notice.html' with variant='warn' title='Guarde fora do gerenciador de senhas' message='Cada código serve uma única vez. Se ficarem no mesmo cofre que a senha, um vazamento entrega as duas etapas de uma vez — prefira papel em local seguro ou outro dispositivo.' only %}
+
+  {% if can_view_codes %}
+    {% element field id="recovery_codes" type="textarea" rows=unused_codes|length readonly=True %}
+      {% slot label %}
+        {% translate "Códigos ainda não usados" %}
+      {% endslot %}
+      {% slot help_text %}
+        {% translate "Selecione e copie a lista inteira. Cada linha é um código, e cada código vale uma entrada." %}
+      {% endslot %}
+      {% slot value %}{% for code in unused_codes %}{% if forloop.counter0 %}
+{% endif %}{{ code }}{% endfor %}{% endslot %}
+    {% endelement %}
+  {% endif %}
+
+  <div class="grid gap-3">
+    {% if can_download_codes %}
+      {% url 'mfa_download_recovery_codes' as download_url %}
+      {% element button href=download_url tags="prominent" %}
+        {% translate "Baixar em arquivo" %}
+      {% endelement %}
+    {% endif %}
+    {% if can_generate_codes %}
+      {% url 'mfa_generate_recovery_codes' as generate_url %}
+      {% element button href=generate_url %}
+        {% translate "Gerar novos códigos" %}
+      {% endelement %}
+    {% endif %}
+  </div>
+
+  {% url 'mfa_index' as mfa_url %}
+  <p class="text-sm text-ink-600">
+    {% blocktranslate %}<a class="link" href="{{ mfa_url }}">Voltar para a verificação em duas etapas</a>.{% endblocktranslate %}
+  </p>
+{% endblock content %}

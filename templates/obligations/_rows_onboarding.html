@@ -1,7 +1,36 @@
-{% load i18n %}
-<tr>
-  <td>{{ row.client.legal_name }}</td>
-  <td>{{ row.label }}</td>
-  <td>{{ row.blocked_reason|default:"—" }}</td>
-  <td><span class="badge badge-over">{{ row.get_status_display }}</span></td>
+{% load i18n %}{% comment %}
+  One <tr>, and nothing else: the queue includes this template by a name held on the
+  spec, so the row element is the whole contract between them.
+
+  Every cell names its column. Below the stacking breakpoint the header row is hidden
+  and each cell regrows its own label out of that attribute, so a missing one is a
+  value on a phone with nothing saying what it measures.
+
+  A blocked item is the one queue row that always needs the client's own workspace to
+  resolve, so the name is the link out. row.client_id is the foreign key column on the
+  item itself, so the href follows no relation and adds no query per row.
+
+  The situação word maps OnboardingStatus and not the client's own status, and the
+  distinction is the whole content of this cell: the row is a checklist item, so
+  row.status holds pending, blocked, done or not_applicable -- never onboarding,
+  active, suspended or closed. A client-status chain placed here would match no branch
+  at all and fall straight through to the English word it was meant to replace, which
+  is a fix that changes the template and not the screen.
+
+  Travado is chosen to agree with the queue's own name, Onboarding travado, so the
+  menu, the heading and the cell say one thing rather than three. The chain replaced
+  get_status_display, which returns the model's own choice label -- and these four
+  labels are the stored English words themselves. The last arm keeps the stored code,
+  so a status added to the enum and not to this chain renders the database's own value
+  rather than an empty badge.
+
+  Only the blocked branch is reachable from this queue, which fetches exactly that
+  status (apps/obligations/queries.py, onboarding_blocked). The other three are
+  written anyway: the same row template is what a wider onboarding view would reuse,
+  and a branch missing on the day that lands is a raw code on screen.
+{% endcomment %}<tr>
+  <td data-label="{% translate 'Cliente' %}"><a class="link" href="{% url 'client-detail' row.client_id %}">{{ row.client.legal_name }}</a></td>
+  <td data-label="{% translate 'Item' %}">{{ row.label }}</td>
+  <td data-label="{% translate 'Motivo' %}">{{ row.blocked_reason|default:"—" }}</td>
+  <td data-label="{% translate 'Situação' %}"><span class="badge badge-over">{% if row.status == 'pending' %}{% translate "Pendente" %}{% elif row.status == 'blocked' %}{% translate "Travado" %}{% elif row.status == 'done' %}{% translate "Concluído" %}{% elif row.status == 'not_applicable' %}{% translate "Não se aplica" %}{% else %}{{ row.status }}{% endif %}</span></td>
 </tr>

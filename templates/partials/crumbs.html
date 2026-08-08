@@ -1,0 +1,33 @@
+{% load i18n %}{% comment %}
+  A breadcrumb trail, built from three plain values and nothing else. It is included
+  with `only`, so it holds no model instance, no queryset and no request: a trail that
+  followed a relation would cost a query on every screen that ever grows one, and the
+  screens that grow trails are exactly the ones already spending their budget on
+  authorization.
+
+  An ordered list, because the order *is* the meaning. "Clientes" is the parent of the
+  page you are standing on rather than a sibling of it, and a list is what lets an
+  assistive technology announce the position and the length — which is the difference
+  between a navigable trail and two words with a slash between them.
+
+  The last crumb is text and never a link. It names the page the reader is already on,
+  so a link there is a control that does nothing when it is followed, and
+  aria-current="page" is what states that in the accessibility tree rather than merely
+  in the styling.
+
+  The separator is hidden from assistive technology. It is punctuation between two
+  names, and read out it turns "Clientes, ACME LTDA" into "Clientes slash ACME LTDA".
+
+  This partial emits a nav landmark, so it belongs only on screens that sit behind a
+  sign-in. An anonymous page draws no nav at all, and including this one from a public
+  template would be the way that stops being true.
+{% endcomment %}
+<nav aria-label="{% translate 'Trilha' %}">
+  <ol class="crumbs my-4">
+    <li><a href="{{ parent_url }}">{{ parent_label }}</a></li>
+    <li class="flex items-center gap-2">
+      <span aria-hidden="true">/</span>
+      <span aria-current="page">{{ current }}</span>
+    </li>
+  </ol>
+</nav>

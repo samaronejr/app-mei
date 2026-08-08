@@ -1,0 +1,49 @@
+{% extends "allauth/layouts/entrance.html" %}{% load i18n %}
+{% block head_title %}{% translate "Convite indisponível" %}{% endblock head_title %}
+{% block heading %}{% translate "Convite indisponível" %}{% endblock heading %}
+{% block content %}
+  {% comment %}
+    Every way a portal invitation can fail ends here, and until now every one of them
+    ended on a plain-text body carrying an English sentence from the domain.
+
+    THE SENTENCE IS CHOSEN BY THE VIEW, NOT PRINTED FROM THE EXCEPTION.
+
+    apps/portal/invite_views.py maps the error TYPE onto the pt-BR line below. The
+    exception's own string stays exactly as the domain writes it, because it is what
+    the firm-side flow renders and what the invitation suite asserts on -- but it is
+    written for a maintainer reading a traceback, in English, and the reader of this
+    page is a MEI owner on a phone who did nothing wrong except open a link a day too
+    late.
+
+    The status code is untouched and is where the meaning still lives: not-found for a
+    link that names nothing at this firm's door, gone for one that existed and no
+    longer works, forbidden for a session that is not the invitee's.
+
+    The refusal goes through the shared notice partial rather than being hand-rolled,
+    so the interrupting role that announces it comes from the same place it does on
+    every other error in this product. A title is passed alongside the reason and is
+    load-bearing: the partial renders nothing at all when handed neither, so an empty
+    reason would otherwise take the whole announcement with it and leave a page that
+    says only "indisponível", in the heading, with no explanation.
+
+    NO LINK ONWARD, AND THAT IS DELIBERATE.
+
+    The firm-side twin says the same thing for a different reason. Here the reader is
+    anonymous on a host whose every other page is behind a sign-in they cannot pass:
+    there is no destination on this origin that would help them, and offering one
+    would be a door that answers with another refusal. The way forward is a person at
+    the accounting firm, so the guidance names that person instead of an address.
+  {% endcomment %}
+  {% translate "Este convite não pode ser usado." as recusado %}
+  {% include 'partials/pure/notice.html' with title=recusado message=reason variant='error' only %}
+
+  <div>
+    <p class="text-sm font-medium text-ink-700">{% translate "Pedir um novo convite" %}</p>
+    <p class="text-sm text-ink-600">
+      {% translate "Cada link vale para um único uso e tem prazo de validade, então um convite antigo não volta a funcionar." %}
+    </p>
+    <p class="mt-4 text-sm text-ink-600">
+      {% translate "Fale com o seu escritório de contabilidade e peça um novo convite. Ele é enviado para um endereço de e-mail, e é desse endereço que o link precisa ser aberto." %}
+    </p>
+  </div>
+{% endblock content %}

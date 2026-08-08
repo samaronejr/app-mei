@@ -1,0 +1,52 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+Turning the authenticator app off.
+
+Extends the ENTRANCE layout directly, as every file in this tree does. Upstream reaches
+`mfa/totp/base.html` then `mfa/base_manage.html` then `allauth/layouts/manage.html`, and
+all three resolve to the one shell this project ships — so naming that shell once keeps
+the chain the extends walk in `tests/ui/test_auth_templates.py` follows down to a single
+hop, and keeps this screen off the firm shell, which reverses a name the portal tree
+does not mount.
+
+Reachable on BOTH hosts, like everything under `/accounts/`. A MEI owner who replaces
+their phone lands here through the portal, so nothing on this page may resolve a
+capability or read a firm-side table.
+
+The form allauth builds for this screen carries no visible field — `DeactivateTOTPForm`
+declares none, and only validates that the adapter permits the removal. It is still
+walked through the fields element rather than skipped, because a refusal
+(`cannot_delete_authenticator`, raised when this is the account's last factor) arrives
+as a NON-field error and the summary is the only place it would be stated at all.
+
+The submit is the danger ramp. This is a destructive, one-click action, and the button
+element maps an untagged control to the quiet ramp — which would make removing the
+second factor look exactly like cancelling.
+{% endcomment %}
+{% block head_title %}{% translate "Desativar autenticador" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Desativar autenticador" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% translate "Ao desativar, o acesso volta a depender só da senha. Faça isso apenas se for cadastrar outro aplicativo autenticador em seguida." %}
+  </p>
+
+  {% include 'partials/pure/notice.html' with variant='warn' message='Se você ainda tem códigos de recuperação, eles continuam valendo. Guarde-os antes de continuar.' only %}
+
+  <form method="post" action="{% url 'mfa_deactivate_totp' %}" class="grid gap-4">
+    {% csrf_token %}
+    {% element fields form=form %}
+    {% endelement %}
+    {% element button type="submit" tags="danger" %}
+      {% translate "Desativar autenticador" %}
+    {% endelement %}
+  </form>
+
+  {% url 'mfa_index' as mfa_url %}
+  <p class="text-sm text-ink-600">
+    {% blocktranslate %}Mudou de ideia? <a class="link" href="{{ mfa_url }}">Voltar para a verificação em duas etapas</a>.{% endblocktranslate %}
+  </p>
+{% endblock content %}

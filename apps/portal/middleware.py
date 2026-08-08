@@ -86,6 +86,31 @@ PORTAL_URLCONF = "apps.portal.urls"
 # already exempts the same prefix for the same underlying reason.
 ACCOUNTS_PREFIX = "/accounts/"
 
+# Invitation acceptance, withheld from the portal role for the same reason and with the
+# same consequence — and then for a second reason the accounts tree does not have.
+#
+# The flow reads tenants_invite and writes tenants_membership, accounts_user and
+# account_emailaddress. Not one of those is among the tables app_portal may read, and
+# the role holds INSERT on exactly one table anywhere, so under it every acceptance is a
+# `permission denied` 500 rather than a refusal anybody chose.
+#
+# The second reason is earlier and would bite first. `_grant_context` REFUSES an
+# authenticated account holding no client membership in this firm, and that is the state
+# of every already-signed-in invitee: an accountant taking a portal seat in a client
+# they keep books for, or a MEI owner adding a second company. Confining this path 403s
+# exactly the people the link was sent to, one hop before the view can accept or refuse
+# anything.
+#
+# Withholding the context costs nothing here, as it costs nothing under /accounts/: the
+# view reads no client-scoped row. `apps/accounts/invites.py::_client_seat` writes the
+# membership by `client_id` for precisely that reason — with app.tenant_id empty, a lazy
+# fetch of ClientCompany would find no row at all.
+INVITE_PREFIX = "/convites/"
+
+# Both, as one tuple, because `str.startswith` takes one and because the next path that
+# needs this treatment should be added to a list rather than to a boolean expression.
+UNCONFINED_PREFIXES: tuple[str, ...] = (ACCOUNTS_PREFIX, INVITE_PREFIX)
+
 
 class PortalHttpRequest(HttpRequest):
     """An `HttpRequest` after this middleware has attached the tenant and client."""
@@ -158,7 +183,7 @@ class PortalMiddleware:
         tenant = self._resolve_tenant(slug)
         membership = (
             None
-            if request.path_info.startswith(ACCOUNTS_PREFIX)
+            if request.path_info.startswith(UNCONFINED_PREFIXES)
             else self._grant_context(request, tenant)
         )
         # Resolving the tenant from the host is ROUTING; granting context is

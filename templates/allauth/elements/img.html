@@ -1,0 +1,28 @@
+{% load allauth %}{% comment %}
+allauth's image element. One caller in the reachable tree: the TOTP enrolment QR code.
+
+TWO REASONS THIS FILE EXISTS, AND NEITHER IS STYLING.
+
+First, the alt text. Upstream emits the attribute only when a caller passes one —
+`{% if attrs.alt %}` — so an image with nothing to say ships with NO alt attribute at
+all, which is not the same thing as an empty one. A screen reader given no alt falls
+back to announcing the source, and the source here is a base64 payload thousands of
+characters long. An explicit empty alt marks the image decorative and is skipped
+silently. So the attribute is written unconditionally, defaulting to empty.
+
+That default is the correct one for the only caller. Upstream passes the shared TOTP
+secret as the QR's alt text, which reads the enrolment secret aloud to anyone using a
+screen reader and puts it in the accessibility tree of a page that may be shared. The
+override screen passes no alt and presents the same secret as selectable text beside
+the image instead, where it is a labelled control rather than a description.
+
+Second, the sizing. A QR arrives at its own intrinsic dimensions and would otherwise
+overflow the card on a narrow phone. The classes are literals so Tailwind compiles them
+and `tests/ui/test_asset_pipeline.py` can see them.
+
+The source is whatever the view put in the context and is never a literal here. That
+keeps this file free of an inline payload while still rendering the image exactly the
+way allauth does — the guards in `tests/ui/test_csp.py` read template SOURCE, and a
+payload written into a template is a second asset smuggled past every check that reads
+paths.
+{% endcomment %}<img class="mx-auto block h-auto max-w-full" src="{{ attrs.src }}" alt="{{ attrs.alt|default:'' }}">

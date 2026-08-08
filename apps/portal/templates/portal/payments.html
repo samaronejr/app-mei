@@ -1,0 +1,103 @@
+{% extends "portal/base.html" %}
+{% load i18n ptbr %}{% comment %}
+Cards rather than a table. A MEI owner opens this on a phone, and a five-column table on
+a 375px screen is either a horizontal scroll or four truncated columns; a card stacks.
+
+The obligation is named HERE rather than by the view, and that is a rule rather than a
+preference. A test greps every source file under apps/ for the quoted obligation code,
+so that the deadline engine stays driven by its seeded rule rows instead of a ladder of
+branches on the code -- and it cannot tell a display label apart from the branch it
+exists to prevent. The view hands down the raw code and this page decides what to call
+it, with the code itself as the fallback, so a type nobody has labelled yet renders as
+the string a Receita document already uses rather than as nothing.
+
+Nothing here reaches through a relation. Every value on a card is a scalar the view
+already read, because rendering happens inside the portal transaction and under
+app_portal -- a role holding SELECT on seven tables, and the type reference is not one
+of them. A page that followed the relation would not be slower; it would be permission
+denied on a screen a client had open.
+
+Standing is never carried by colour alone, and never by a word alone either. Each row
+states where it sits AND what that costs: "Em atraso" tells an owner the row is late,
+and only the sentence after it says the amount grows while they read. Every branch also
+ends on something the reader can DO -- ask for the guia, pay it, wait -- because a
+consequence with no next step leaves a person alarmed and stuck.
+
+The five words below are the only thing standing between this page and the raw column.
+`status` arrives as the stored value, and the client is never shown it: each branch maps
+one value onto a pt-BR word AND the sentence that says what it costs. A branch that fell
+through to the value itself would put an English enum on a MEI owner's phone, so there
+is no such fallback -- the last arm is the scheduled case by name in its copy, not a
+default that prints whatever arrived.
+
+Both dates are shown when they differ, and the note says WHY they differ rather than
+merely that they do. DAS-MEI rolls FORWARD off a non-business day, so without the
+explanation the resolved date looks like the rule's own and a client checking this
+screen against a Receita document sees two different days and nothing that tells her
+which one she has to pay by.
+
+DASN-SIMEI does NOT roll. It falls on 31 May and stays there even when that is a
+Saturday (Resolução CGSN nº 140/2018 art. 109, recorded in docs/regulatory-watch.md).
+That is why the roll note is reached through an `elif` behind the annual type rather
+than written beside it: a DASN row can never be handed the sentence saying its deadline
+moved, however the stored dates came to disagree. The annual row states its fixed date
+instead, which is the fact a client most often gets wrong.
+{% endcomment %}
+
+{% block heading %}{% translate "Pagamentos" %}{% endblock %}
+
+{% block content %}
+  {% if payments %}
+    <ul class="space-y-4">
+      {% for row in payments %}
+        <li class="card space-y-3 px-5 py-4">
+          <p class="text-lg font-semibold text-ink-900">{% if row.type_code == 'DAS' %}{% translate "Guia mensal (DAS)" %}{% elif row.type_code == 'DASN' %}{% translate "Declaração anual (DASN)" %}{% else %}{{ row.type_code }}{% endif %}</p>
+
+          <dl class="grid grid-cols-2 gap-y-3 text-sm tabular-nums">
+            <dt class="text-ink-500">{% translate "Competência" %}</dt>
+            <dd>{{ row.competence_month|competencia }}</dd>
+            <dt class="text-ink-500">{% translate "Vencimento" %}</dt>
+            <dd><time datetime="{{ row.due_date.isoformat }}">{{ row.due_date|data }}</time></dd>
+          </dl>
+
+          {% if row.type_code == 'DASN' %}
+            <p class="text-xs text-ink-500">{% translate "A declaração anual vence em 31 de maio e essa data não muda: ela não é adiada nem quando cai em fim de semana ou feriado." %}</p>
+          {% elif row.rolled %}
+            <p class="text-xs text-ink-500">{% blocktranslate with origem=row.nominal_due_date|data %}A data original caiu em fim de semana ou feriado: adiada de {{ origem }} para o vencimento acima, que é a data que vale.{% endblocktranslate %}</p>
+          {% endif %}
+
+          {% if row.status == 'paid' %}
+            <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+              <span class="badge badge-ok">{% translate "Paga" %}</span>
+              {% translate "Nada a fazer. O pagamento já foi registrado pela sua contadora." %}
+            </p>
+          {% elif row.status == 'overdue' %}
+            <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+              <span class="badge badge-late">{% translate "Em atraso" %}</span>
+              {% translate "O prazo já passou. Pague o quanto antes: o valor aumenta a cada dia." %} {% translate "Peça à sua contadora a guia atualizada, já com os juros e a multa." %}
+            </p>
+          {% elif row.status == 'due' %}
+            <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+              <span class="badge badge-warn">{% translate "A pagar" %}</span>
+              {% translate "Pague até a data de vencimento para não pagar juros e multa." %} {% translate "Se você ainda não recebeu a guia, peça à sua contadora." %}
+            </p>
+          {% elif row.status == 'waived' %}
+            <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+              <span class="badge badge-neutral">{% translate "Dispensada" %}</span>
+              {% translate "Sua contadora dispensou esta obrigação. Você não precisa pagar." %}
+            </p>
+          {% else %}
+            <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+              <span class="badge badge-neutral">{% translate "Programada" %}</span>
+              {% translate "Ainda não é preciso fazer nada. Avisaremos quando abrir o pagamento." %}
+            </p>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+
+    {% include 'partials/pure/pagination.html' with page=page filter_query='' only %}
+  {% else %}
+    <p class="card empty-state">{% translate "Nenhuma obrigação registrada ainda. Sua contadora mantém esta lista." %}</p>
+  {% endif %}
+{% endblock %}

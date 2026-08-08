@@ -1,0 +1,117 @@
+{% load i18n static %}{% comment %}
+The shell every allauth screen renders inside — sign-in, sign-up, password reset, the
+mandatory address verification, and the whole TOTP enrolment tree.
+
+STANDALONE. It extends nothing, and specifically not `templates/base.html`.
+
+That is not a style preference, it is the one thing keeping the client portal alive.
+`/accounts/` is mounted at the identical path on BOTH hosts, so this file is rendered
+on `<slug>-portal.<domain>` as well. The firm shell's footer reverses `dsr-submit`, a
+name `apps/portal/urls.py` deliberately does not mount, and its header calls the
+nav_items tag — which reads three tables `app_portal` holds no SELECT on. Either one
+turns the portal login page into a 500, on the first screen a MEI owner ever sees, on
+the only host nobody develops against. `tests/ui/test_auth_templates.py` refuses both
+statically.
+
+THE BLOCK NAMES ARE A CONTRACT, NOT A CHOICE.
+
+allauth 65.18.0 ships `allauth/layouts/entrance.html` as exactly two lines: it extends
+`allauth/layouts/base.html` and declares a block named content. Now that this file
+exists, Django's loader resolves that parent to THIS one. Rename the slot and every
+entrance page this project does not override — the address-verification page among
+them — renders as a blank document: no exception, no 500, no log line. `head_title`,
+`content`, `extra_head` and `extra_body` are therefore spelled exactly as allauth
+spells them.
+
+`body` is deliberately NOT redeclared. Only allauth's own base defines it and nothing
+under `account/` or `mfa/` overrides it, so offering the block here would only create
+a way for a future page to replace the skip link and the landmark along with the card.
+
+ZERO ORM, ZERO CAPABILITY RESOLUTION. The brand line below branches on two attribute
+reads. `request.urlconf` is set by `HostDispatchMiddleware` and `request.tenant` is an
+already-loaded instance, so reading its name issues no query. Anything that resolved a
+capability here would be denied on the portal host, where this page is anonymous and
+runs as `app_runtime` with both GUCs empty.
+{% endcomment %}<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block head_title %}{% translate "app-mei" %}{% endblock %}</title>
+  {% comment %}
+    The compiled stylesheet, same origin, and the only asset this shell loads. No
+    script bundle: an entrance page needs neither HTMX nor Alpine, and the one allauth
+    feature that would — passkey sign-in — is off, because MFA_SUPPORTED_TYPES lists
+    totp and recovery codes only.
+  {% endcomment %}
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="min-h-screen">
+  <a class="skip-link" href="#conteudo">{% translate "Pular para o conteúdo" %}</a>
+
+  {% comment %}
+    One landmark, and the skip link's target. tabindex="-1" is what makes the target
+    focusable: without it the browser scrolls but leaves focus where it was, so the
+    next Tab walks back through everything the link just skipped.
+  {% endcomment %}
+  <main id="conteudo" tabindex="-1" class="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center gap-6 px-6 py-12">
+    {% comment %}
+      The page's single h1, owned by the layout so that "exactly one per page" is a
+      structural property rather than a rule every screen has to remember. This file is
+      named base.html, which is why `tests/ui/test_layout.py` exempts it from the scan
+      that refuses the tag everywhere else — and why the h1 element override renders a
+      paragraph instead.
+
+      Three cases, in the order that matters. The portal host first: it is the only one
+      where naming the firm would be wrong, because a MEI owner signs in to their own
+      area and not to their accountant's. Then a resolved firm. Then the platform host,
+      which has no firm at all.
+    {% endcomment %}
+    <h1 class="text-center text-xl font-semibold tracking-tight text-ink-900">
+      {% block heading %}{% if request.urlconf == 'apps.portal.urls' %}{% translate "Portal do cliente" %}{% elif request.tenant %}{{ request.tenant.name }}{% else %}{% translate "app-mei" %}{% endif %}{% endblock %}
+    </h1>
+
+    <div class="card px-6 py-8">
+      {% comment %}
+        Rendered whether or not there is news, because a later out-of-band swap has to
+        find the element in order to replace it, and an empty wrapper carrying no
+        spacing utilities occupies no height. Django's warning tag is `warning` and the
+        partial's variant is `warn`, so the four levels are mapped one at a time; a
+        pass-through renders the info ramp for every warning and is invisible until
+        somebody wonders why a warning is blue.
+      {% endcomment %}
+      <div id="messages" role="status" aria-live="polite">
+        {% if messages %}
+          <div class="grid gap-3 pb-6">
+            {% for message in messages %}
+              {% if message.level_tag == 'success' %}
+                {% include 'partials/pure/notice.html' with message=message variant='success' only %}
+              {% elif message.level_tag == 'warning' %}
+                {% include 'partials/pure/notice.html' with message=message variant='warn' only %}
+              {% elif message.level_tag == 'error' %}
+                {% include 'partials/pure/notice.html' with message=message variant='error' only %}
+              {% else %}
+                {% include 'partials/pure/notice.html' with message=message variant='info' only %}
+              {% endif %}
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+
+      {% comment %}
+        allauth writes its own sentences — "if you have not created an account yet,
+        please sign up first" — with a bare anchor inside the translated string.
+        Tailwind's preflight strips the user agent's colour AND its underline from every
+        anchor, so those links would be indistinguishable from the prose around them.
+        The wrapper carries a descendant rule for unclassed anchors only, which restyles
+        every allauth screen at once without overriding a single one of their templates.
+      {% endcomment %}
+      <div class="entrance-prose space-y-4">
+        {% block content %}{% endblock %}
+      </div>
+    </div>
+  </main>
+  {% block extra_body %}{% endblock %}
+</body>
+</html>

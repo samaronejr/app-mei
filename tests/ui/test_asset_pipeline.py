@@ -130,7 +130,12 @@ def test_collectstatic_produces_hashed_css_and_js(tmp_path: Path) -> None:
             (tmp_path / "staticfiles.json").read_text(encoding="utf-8"),
         )["paths"]
 
-    for logical in ("css/app.css", "js/htmx.min.js", "js/alpine-csp.min.js"):
+    for logical in (
+        "css/app.css",
+        "js/htmx.min.js",
+        "js/alpine-csp.min.js",
+        "js/app.js",
+    ):
         hashed = manifest[logical]
         assert hashed != logical, f"{logical} was not hashed"
         assert re.search(r"\.[0-9a-f]{12}\.", hashed), hashed

@@ -1,10 +1,24 @@
-{% load i18n ptbr %}
-<tr>
-  <td>{{ row.client.legal_name }}</td>
-  <td>{{ row.status.accumulated|brl }}</td>
-  <td>{{ row.status.ceiling|brl }}</td>
-  <td>{{ row.status.percentage_consumed|percentual }}</td>
-  <td>
+{% load i18n ptbr %}{% comment %}
+  One <tr>, and nothing else: the queue includes this template by a name held on the
+  spec, so the row element is the whole contract between them. The dashboard includes
+  it too, under a header row carrying these same five columns.
+
+  Every cell names its column. Below the stacking breakpoint the header row is hidden
+  and each cell regrows its own label out of that attribute, so a missing one is a
+  value on a phone with nothing saying what it measures.
+
+  A client near the ceiling is the row an accountant acts on soonest, so the name is
+  the link into their workspace. ThresholdRow is a frozen dataclass holding a
+  materialised ClientCompany rather than a queryset row, so it carries no foreign key
+  column to read: the primary key comes off the object, which threshold_warning had
+  already built before this template ran. No relation is followed and no query is
+  added, on the dashboard or on the queue.
+{% endcomment %}<tr>
+  <td data-label="{% translate 'Cliente' %}"><a class="link" href="{% url 'client-detail' row.client.pk %}">{{ row.client.legal_name }}</a></td>
+  <td data-label="{% translate 'Faturado' %}">{{ row.status.accumulated|brl }}</td>
+  <td data-label="{% translate 'Teto' %}">{{ row.status.ceiling|brl }}</td>
+  <td data-label="{% translate 'Consumido' %}">{{ row.status.percentage_consumed|percentual }}</td>
+  <td data-label="{% translate 'Faixa' %}">
     <span class="badge {% if row.status.band == 'warning' %}badge-warn{% else %}badge-over{% endif %}">
       {{ row.status.band|banda_limite }}
     </span>

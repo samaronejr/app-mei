@@ -1,0 +1,56 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+Confirming a code again before a sensitive action, inside a session that is already
+signed in.
+
+allauth guards its own management views this way: `ActivateTOTPView` and the recovery
+code screens are decorated with `reauthentication_required`, which suspends the request
+and sends the visitor here whenever the last authentication is older than
+`ACCOUNT_REAUTHENTICATION_TIMEOUT`. `{{ redirect_field }}` carries the suspended
+destination, so dropping it would strand every visitor on this page with nothing to
+return to — it is rendered inside the form, exactly where allauth puts it.
+
+Upstream extends `account/base_reauthenticate.html`, which contributes the title and the
+first paragraph and leaves a block for the rest. That indirection is not carried over:
+the entrance layout is named directly, as everywhere else in this tree, so that the whole
+screen is legible in one file and the extends walk in `tests/ui/test_auth_templates.py`
+follows a single hop. The sentences that file would have supplied are written here in
+this project's voice instead.
+
+The distinction this page has to make, and upstream does not: the visitor is ALREADY
+signed in. "Confirm access" reads like a failure to someone who is looking at their own
+account, so the copy says why it is being asked — the action ahead changes how the
+account is protected.
+
+Same control as the sign-in step, built from the bound field rather than named by hand,
+and accepting a recovery code for the same reason.
+{% endcomment %}
+{% block head_title %}{% translate "Confirmar identidade" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Confirmar identidade" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% translate "A próxima ação muda a proteção da conta, então pedimos o código de novo — mesmo com você já conectado. É o que impede que alguém em um computador destravado altere o acesso." %}
+  </p>
+
+  {% include 'partials/pure/form_errors.html' with form=form only %}
+
+  <form method="post" action="{% url 'mfa_reauthenticate' %}" class="grid gap-4">
+    {% csrf_token %}
+    {{ redirect_field }}
+    {% element field type="text" name=form.code.html_name id=form.code.auto_id required=form.code.field.required autocomplete="one-time-code" inputmode="numeric" errors=form.code.errors %}
+      {% slot label %}
+        {% translate "Código do autenticador" %}
+      {% endslot %}
+      {% slot help_text %}
+        {% translate "Seis dígitos do aplicativo. Um código de recuperação também é aceito." %}
+      {% endslot %}
+    {% endelement %}
+    {% element button type="submit" tags="prominent" %}
+      {% translate "Confirmar" %}
+    {% endelement %}
+  </form>
+{% endblock content %}

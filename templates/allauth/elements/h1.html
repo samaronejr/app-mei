@@ -1,0 +1,15 @@
+{% load allauth %}{% comment %}
+allauth's page-title element, rendered as a PARAGRAPH rather than a heading.
+
+Not a downgrade — a division of labour. `allauth/layouts/base.html` owns the document's
+one and only top-level heading and fills it with the brand line, so that "exactly one
+per page" is a property of the layout instead of a rule each of allauth's thirty-odd
+screens would have to keep. Every entrance page then calls this element for its own
+title, and a real heading tag here would give every one of them two.
+
+`tests/ui/test_layout.py` enforces exactly that: the top-level heading tag is refused in
+every template whose filename is not base.html, and it counts them on rendered pages.
+
+Styled as the card's title all the same, so nothing is lost visually. What a screen
+reader loses is a second h1 competing with the first, which is what it should lose.
+{% endcomment %}<p class="text-lg font-semibold tracking-tight text-ink-900">{% slot %}{% endslot %}</p>

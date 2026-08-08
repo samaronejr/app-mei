@@ -50,6 +50,63 @@ CAPABILITY_AT_RENDER: Final = re.compile(
 # extends it inherits a query the portal role is denied.
 FIRM_LAYOUT: Final = re.compile(r'\{%\s*extends\s+["\'](?!portal/)')
 
+# ------------------------------------------------------- the relation-traversal ban
+#
+# Everything above asks whether a template resolves a *capability* while rendering. The
+# cases at the foot of this module ask the wider question: whether it follows a
+# *relation* while rendering. Both run in the same place — inside the transaction, under
+# the portal role — and both fail the same way, as a 500 on a page that used to work.
+#
+# The difference is that a relation is easy to write by accident. `{{ document.x }}` and
+# `{{ obligation.y }}` read like attribute access and compile to a second query against
+# a table `app_portal` holds no SELECT on. A view that hands the template a scalar it
+# already fetched cannot make that mistake; a template reaching through the object can.
+
+# Every template the shell and its four pages are made of, relative to the portal
+# template root. Enumerated rather than counted so that a file renamed or deleted reds
+# here, instead of silently shrinking the set every scan in this module quantifies over.
+EXPECTED_TEMPLATES: Final = frozenset(
+    {
+        "base.html",
+        "home.html",
+        "payments.html",
+        "documents.html",
+        "account.html",
+        "partials/nav.html",
+    },
+)
+
+# Relations a portal template must never follow, and the tables they reach:
+#
+#   uploaded_by       obligations_document -> accounts_user
+#   obligation_type.  obligations_obligation -> obligations_obligationtype, which is
+#                     NOT in the allow-list. Its primary key IS the code, so a view can
+#                     hand down a scalar with no join at all; a template following the
+#                     relation issues one. A view-provided scalar such as `type_label`
+#                     is fine, which is why the dot is part of the literal.
+#   nav_items         authz_capability, tenants_membership, authz_rolegrant
+#   {% can            the same three, through resolve_level
+FORBIDDEN_TRAVERSALS: Final = ("uploaded_by", "obligation_type.", "nav_items", "{% can")
+
+# A dotted path through `.user.`, e.g. `request.user.email` in an interpolation. The
+# whole path is captured so it can be compared against the allow-list below rather than
+# merely detected.
+USER_TRAVERSAL: Final = re.compile(r"\w+(?:\.\w+)*\.user(?:\.\w+)+")
+
+# The three attributes the middleware has already materialised by the time a portal
+# template renders. `request.user` is resolved before the transaction opens and before
+# the role switch, so these three cost no query; anything further through the same
+# object — a membership, a permission set, an email address row — costs one, against a
+# table the portal role cannot read. `apps/portal/templates/portal/base.html` documents
+# the same fact at the point of use.
+ALLOWED_USER_PATHS: Final = frozenset(
+    {
+        "request.user.email",
+        "request.user.pk",
+        "request.user.is_authenticated",
+    },
+)
+
 
 @pytest.fixture(autouse=True)
 def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,3 +194,63 @@ def test_the_portal_pages_render_under_the_portal_role(portal_user: User) -> Non
     # test client swallows, so this fails loudly rather than silently.
     assert response.status_code == HTTPStatus.OK
     assert b"CLIENTE ACME" in response.content
+
+
+def _relative_names() -> set[str]:
+    return {path.relative_to(PORTAL_TEMPLATES).as_posix() for path in _templates()}
+
+
+def test_the_scan_reaches_the_shell_and_all_four_pages() -> None:
+    # Given the shipped portal template tree
+    found = _relative_names()
+
+    # Then every file the shell is assembled from is in it. The scans below quantify
+    # over this set, so a page that never joined it is a page nothing checks.
+    assert found >= EXPECTED_TEMPLATES, sorted(EXPECTED_TEMPLATES - found)
+
+
+def test_no_portal_template_follows_a_relation_while_rendering() -> None:
+    # Given every portal template, read line by line
+    offenders = [
+        f"{path.relative_to(PORTAL_TEMPLATES).as_posix()}:{number}: {line.strip()}"
+        for path in _templates()
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        for literal in FORBIDDEN_TRAVERSALS
+        if literal in line
+    ]
+
+    # Then none of them reaches through a foreign key. Each of these compiles to a JOIN
+    # or a second query issued during rendering -- inside the transaction, under the
+    # portal role -- against a table app_portal holds no SELECT on, so the page 500s.
+    # The fix is always the same shape: have the view pass down the scalar it already
+    # has, and let the template render a value rather than fetch one.
+    assert not offenders, offenders
+
+
+def test_no_portal_template_reaches_past_the_materialised_user() -> None:
+    # Given every dotted path through `.user.` any portal template writes
+    written = [
+        (f"{path.relative_to(PORTAL_TEMPLATES).as_posix()}:{number}", match.group(0))
+        for path in _templates()
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        for match in USER_TRAVERSAL.finditer(line)
+    ]
+
+    # Then the shell writes at least one, or the allow-list below is a statement about
+    # nothing and a template that lost the account line entirely would pass.
+    assert written, (
+        "no portal template reads request.user at all, so the allow-listed attributes "
+        "below are unexercised and this case cannot fail"
+    )
+
+    # And every one of them is an attribute the middleware materialised before the
+    # transaction opened. Anything further -- a membership, a permission, an email
+    # address row -- is a query under a role that cannot read the table it lands on.
+    offenders = [
+        f"{where}: {path}" for where, path in written if path not in ALLOWED_USER_PATHS
+    ]
+    assert not offenders, offenders

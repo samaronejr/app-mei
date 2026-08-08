@@ -21,6 +21,40 @@ from apps.core.netaddr import client_ip
 UA_MAX_LENGTH = 1024
 PATH_MAX_LENGTH = 2048
 
+# Path prefixes whose NEXT segment is a bearer credential rather than an identifier.
+# Distinct from `ACCESS_LOG_EXEMPT_PREFIXES` and deliberately not merged with it:
+# exemption drops the record, which is the Marco Civil duty being abandoned, while this
+# keeps the visit and drops only the secret. An invitation token stays valid for seven
+# days and this table keeps rows for a hundred and eighty, so a path written verbatim
+# would outlive the credential by half a year in the one table nothing is allowed to
+# delete from — and every downstream copy of it.
+#
+# Both hosts are covered by this single entry because both acceptance routes are mounted
+# on the same path: firm-side at `apps/accounts/urls.py`, portal-side at
+# `apps/portal/urls.py`. A prefix per host would be two things to keep in step.
+REDACTED_PATH_PREFIXES: tuple[str, ...] = ("/convites/aceitar/",)
+REDACTION_MARKER = "<redacted>"
+
+
+def _recorded_path(request: HttpRequest) -> str:
+    """Return the request's full path with any credential segment replaced.
+
+    The query string is split off FIRST and reattached untouched. `get_full_path()` is
+    path and query together, the credential is a path segment, and a rewrite applied to
+    the joined string would either swallow the query or stop at the wrong separator
+    depending on which end it cut from. Only the one segment immediately after a matched
+    prefix is replaced; everything deeper survives, so a longer path stays as legible as
+    a bare one.
+    """
+    full_path = request.get_full_path()
+    path, separator, query = full_path.partition("?")
+    for prefix in REDACTED_PATH_PREFIXES:
+        if path.startswith(prefix):
+            _credential, slash, tail = path[len(prefix) :].partition("/")
+            path = f"{prefix}{REDACTION_MARKER}{slash}{tail}"
+            break
+    return f"{path}{separator}{query}"
+
 
 class PlatformEventMiddleware:
     """Collect platform events during a request and write them after it."""
@@ -91,6 +125,6 @@ class AccessLogMiddleware:
             ip=client_ip(request),
             user_agent=request.META.get("HTTP_USER_AGENT", "")[:UA_MAX_LENGTH],
             method=request.method or "",
-            path=request.get_full_path()[:PATH_MAX_LENGTH],
+            path=_recorded_path(request)[:PATH_MAX_LENGTH],
             status_code=status_code,
         )

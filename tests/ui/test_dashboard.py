@@ -11,9 +11,12 @@ human sees, so it is the first place the isolation model is visible, and a leak 
 is a churn event rather than a bug report.
 """
 
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
+from html.parser import HTMLParser
 from http import HTTPStatus
+from typing import Final
 
 import pytest
 from django.db.models import F
@@ -286,6 +289,190 @@ def test_a_threshold_client_is_listed_with_its_band(alpha: Firm) -> None:
     assert "perto do limite" in body
 
 
+# ----------------------------------------------------- the way into a workspace
+
+DETAIL_URL_NAME: Final[str] = "client-detail"
+CALENDAR_STRIP_ID: Final[str] = "calendario-strip"
+CALENDAR_STRIP_TEMPLATE: Final[str] = "obligations/_calendar_strip.html"
+
+
+class _AnchorScanner(HTMLParser):
+    """Collect every anchor with the text it labels, optionally inside one <div> id.
+
+    The scoping matters for the calendar: this page carries a navigation bar, a skip
+    link and a portfolio of tiles, all of which are anchors. Unscoped, a link drawn
+    anywhere in the layout would answer for the one the strip is supposed to draw.
+    """
+
+    def __init__(self, within: str | None = None) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str]] = []
+        self.entered = within is None
+        self._within = within
+        self._depth = 0 if within is not None else 1
+        self._href: str | None = None
+        self._label: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Enter the scoping element, or open an anchor inside it."""
+        attributes = {key: (value or "") for key, value in attrs}
+        if tag == "div" and self._within is not None:
+            if self._depth:
+                self._depth += 1
+            elif attributes.get("id") == self._within:
+                self._depth = 1
+                self.entered = True
+            return
+        if self._depth and tag == "a":
+            self._href = attributes.get("href", "")
+            self._label = []
+
+    def handle_data(self, data: str) -> None:
+        """Accumulate the text of the anchor currently open, if any."""
+        if self._href is not None:
+            self._label.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        """Close an anchor, or leave the scoping element."""
+        if tag == "div" and self._within is not None and self._depth:
+            self._depth -= 1
+        elif tag == "a" and self._href is not None:
+            self.links.append(("".join(self._label).strip(), self._href))
+            self._href = None
+            self._label = []
+
+
+def _anchors_on(html: str, *, within: str | None = None, where: str) -> dict[str, str]:
+    """Return `{anchor text: href}` for the links in `html`, or in one element of it.
+
+    Both non-vacuity gates live in here rather than beside each caller, because both
+    are ways for a caller to quantify over nothing and pass: markup that never
+    rendered the element being scoped to, and an element that rendered no link at
+    all, each yield an empty mapping — and an empty mapping satisfies every statement
+    made about its entries.
+    """
+    scanner = _AnchorScanner(within)
+    scanner.feed(html)
+    scanner.close()
+
+    assert scanner.entered, (
+        f"{where}: nothing with id {within!r} rendered, so the scan never reached the "
+        f"element it was scoped to and is reporting on some other markup"
+    )
+    assert scanner.links, (
+        f"{where}: not one <a> rendered in the scanned markup, so there is no link "
+        f"for the assertions below to be about"
+    )
+    return dict(scanner.links)
+
+
+def test_the_threshold_row_links_the_client_to_their_workspace(alpha: Firm) -> None:
+    """A client near the ceiling is the row acted on soonest; it has to lead there.
+
+    The dashboard renders `obligations/_rows_threshold.html`, the same partial the
+    threshold queue renders, so this covers the include as well as the partial — the
+    queue passing is no evidence the dashboard's header row is wired to the same
+    template.
+    """
+    company = alpha.clients[2]
+    with tenant_context(alpha.tenant.id):
+        MonthlyRevenue.objects.create(
+            tenant=alpha.tenant,
+            client=company,
+            competence_month=date(TODAY.year, 1, 1),
+            gross_amount=Decimal("78000.00"),
+        )
+    body = alpha.as_owner().get(reverse("dashboard")).content.decode()
+
+    # The section has to have listed this client at all, or "it is not linked" and
+    # "it is not there" are the same observation and this proves the wrong one.
+    assert "perto do limite" in body
+    assert company.legal_name in body, (
+        "the threshold section did not list the client, so there is no row whose "
+        "client could be linked"
+    )
+
+    links = _anchors_on(body, where="the dashboard")
+    assert company.legal_name in links, (
+        f"the dashboard names {company.legal_name!r} in its threshold table, but no "
+        f"link carries that name — the ones it does carry are {sorted(links)}"
+    )
+    assert links[company.legal_name] == reverse(DETAIL_URL_NAME, args=[company.pk])
+
+
+def test_the_calendar_names_its_client_as_a_way_into_the_workspace(
+    alpha: Firm,
+) -> None:
+    """The strip's caption says whose calendar this is; it has to lead to them too."""
+    body = alpha.as_owner().get(reverse("dashboard")).content.decode()
+    links = _anchors_on(
+        body,
+        within=CALENDAR_STRIP_ID,
+        where="the dashboard calendar strip",
+    )
+
+    expected = {
+        company.legal_name: reverse(DETAIL_URL_NAME, args=[company.pk])
+        for company in alpha.clients
+    }
+    named = {text: href for text, href in links.items() if text in expected}
+    assert named, (
+        f"the calendar strip carries {len(links)} link(s) — {sorted(links)} — but "
+        f"none of them is labelled with a client's legal name, so the caption is not "
+        f"what leads anywhere"
+    )
+
+    for legal_name, href in sorted(named.items()):
+        assert href == expected[legal_name], (
+            f"the calendar caption for {legal_name!r} links to {href!r}, but that "
+            f"client's workspace is at {expected[legal_name]!r}"
+        )
+
+
+def test_the_calendar_caption_is_plain_text_unless_the_caller_asks_for_a_link(
+    alpha: Firm,
+) -> None:
+    """The client detail screen includes this same strip, about the client it is on.
+
+    A link there points at the page the reader is already standing on. The partial
+    therefore draws a bare name by default and the dashboard opts in, so the flag
+    must genuinely be off when nobody passes it — a partial that linked regardless
+    would satisfy the test above and quietly put a self-link on the detail screen,
+    which nothing on that screen's side asserts about.
+    """
+    from django.template.loader import render_to_string  # noqa: PLC0415
+
+    company = alpha.clients[0]
+    context = {"calendar_client": company, "calendar": []}
+
+    with tenant_context(alpha.tenant.id):
+        plain = render_to_string(CALENDAR_STRIP_TEMPLATE, context)
+        linked = render_to_string(
+            CALENDAR_STRIP_TEMPLATE,
+            context
+            | {
+                "calendar_client_linked": True,
+            },
+        )
+
+    href = reverse(DETAIL_URL_NAME, args=[company.pk])
+
+    # Both halves, or this says nothing: without the second, a partial that never
+    # links at all passes, which is the opposite failure and just as wrong.
+    assert company.legal_name in plain, (
+        "the unflagged render dropped the caption entirely, so its lack of a link "
+        "says nothing about the flag"
+    )
+    assert href in linked, (
+        f"the flagged render carries no link to {href}, so the flag does nothing and "
+        f"the assertion below passes for the wrong reason"
+    )
+    assert href not in plain, (
+        "the strip links its caption with no caller asking it to, which puts a link "
+        "to the current page on the client detail screen"
+    )
+
+
 # --------------------------------------------------------------------------- shape
 
 
@@ -344,3 +531,164 @@ def test_the_platform_host_has_no_dashboard(alpha: Firm) -> None:
     response = session.get(reverse("dashboard"))
     assert response.status_code in {HTTPStatus.NOT_FOUND, HTTPStatus.FORBIDDEN}
     assert Client(SERVER_NAME="localhost") is not None
+
+
+# ------------------------------------------------- progressive enhancement (no JS)
+
+DASHBOARD_TEMPLATE: Final[str] = "templates/core/dashboard.html"
+
+# The tags a filter form is built from. `option` is tracked as well, because a filter
+# with a single option cannot be switched at all, and asking whether such a form can
+# be submitted without JavaScript would be a question about nothing.
+CONTROL_TAGS: Final[frozenset[str]] = frozenset(
+    {"button", "input", "option", "select", "textarea"},
+)
+MIN_FILTER_OPTIONS: Final[int] = 2
+
+# The shape `templates/obligations/queue.html:33` already ships, held here as a
+# literal rather than read from that file: the scanner has to be calibrated against a
+# document this test owns, so that a red result on the dashboard is the dashboard's
+# fault and not a parser that quietly swallows everything inside <noscript>.
+KNOWN_GOOD_FILTER: Final[str] = (
+    '<form method="get" hx-trigger="change">'
+    '<select id="cliente" name="cliente">'
+    '<option value="1">Um</option><option value="2">Dois</option>'
+    "</select>"
+    '<noscript><button type="submit">Filtrar</button></noscript>'
+    "</form>"
+)
+
+
+@dataclass
+class _Form:
+    attrs: dict[str, str]
+    controls: list[tuple[str, dict[str, str]]] = field(default_factory=list)
+
+
+class _FormScanner(HTMLParser):
+    """Collect each `<form>` in a rendered document together with its controls.
+
+    `<noscript>` is deliberately not opaque here: Python's parser hides the content of
+    `script` and `style` only, so a submit button written inside `<noscript>` — the
+    no-JavaScript fallback the queue page already uses — arrives as a real element and
+    is counted like any other. Controls outside every form are kept separately, so a
+    button associated by `form="..."` can still be credited to the form it submits.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.forms: list[_Form] = []
+        self.detached: list[tuple[str, dict[str, str]]] = []
+        self._open: list[_Form] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        pairs = {name.lower(): value or "" for name, value in attrs}
+        if tag == "form":
+            form = _Form(attrs=pairs)
+            self.forms.append(form)
+            self._open.append(form)
+        elif tag in CONTROL_TAGS:
+            if self._open:
+                self._open[-1].controls.append((tag, pairs))
+            else:
+                self.detached.append((tag, pairs))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "form" and self._open:
+            self._open.pop()
+
+
+def _submits(tag: str, attrs: dict[str, str]) -> bool:
+    kind = attrs.get("type", "").strip().lower()
+    if tag == "button":
+        # A <button> with no type attribute defaults to submit, per HTML.
+        return kind in {"", "submit"}
+    if tag == "input":
+        return kind in {"submit", "image"}
+    return False
+
+
+def _describe(tag: str, attrs: dict[str, str]) -> str:
+    return f"{tag}[type={attrs.get('type', '')}]"
+
+
+def _filter_form_submits(html: str, *, source: str) -> list[str]:
+    """Return the submit controls of the form owning `<select name="cliente">`.
+
+    Both gates live in this function rather than in tests of their own on purpose.
+    `pytest -k` deselects a sentinel test, and an assertion leaning on one would then
+    quantify over an empty document and pass while proving nothing at all.
+    """
+    scanner = _FormScanner()
+    scanner.feed(html)
+    scanner.close()
+
+    owning = [
+        form
+        for form in scanner.forms
+        if any(
+            tag == "select" and attrs.get("name") == "cliente"
+            for tag, attrs in form.controls
+        )
+    ]
+    assert len(owning) == 1, (
+        f'{source}: expected exactly one <form> around <select name="cliente">, '
+        f"found {len(owning)} — with no filter form to inspect, the submit-control "
+        f"scan below would quantify over nothing and pass"
+    )
+    form = owning[0]
+
+    options = [tag for tag, _ in form.controls if tag == "option"]
+    assert len(options) >= MIN_FILTER_OPTIONS, (
+        f"{source}: the client filter offers {len(options)} option(s), so there is "
+        f"nothing to switch between and whether it can be submitted is moot"
+    )
+
+    identifier = form.attrs.get("id", "")
+    associated = [
+        (tag, attrs)
+        for tag, attrs in scanner.detached
+        if identifier and attrs.get("form") == identifier
+    ]
+    return [
+        _describe(tag, attrs)
+        for tag, attrs in [*form.controls, *associated]
+        if _submits(tag, attrs)
+    ]
+
+
+def _calendar_filter_submits(html: str) -> list[str]:
+    """Scan a dashboard document, after proving the scanner can see the target shape."""
+    calibration = _filter_form_submits(
+        KNOWN_GOOD_FILTER,
+        source="KNOWN_GOOD_FILTER (the queue.html shape)",
+    )
+    assert calibration == ["button[type=submit]"], (
+        f'the scanner cannot see a <noscript><button type="submit"> placed directly '
+        f"in front of it (found {calibration!r}), so an empty result on the dashboard "
+        f"would say nothing about the dashboard"
+    )
+    return _filter_form_submits(html, source=DASHBOARD_TEMPLATE)
+
+
+def test_the_calendar_filter_can_be_submitted_without_javascript(alpha: Firm) -> None:
+    """The calendar's client filter has to work with JavaScript switched off.
+
+    `hx-trigger="change"` is the entire submit path today, and HTMX is JavaScript: with
+    scripting unavailable — a corporate lock-down, a failed CDN fetch, a slow line where
+    the document paints before the bundle arrives — the `<select>` is decoration and the
+    accountant cannot look at any client but the default one. The queue page already
+    ships the fix a line above its own `</form>`.
+    """
+    body = alpha.as_owner().get(reverse("dashboard")).content.decode()
+
+    assert _calendar_filter_submits(body), (
+        f"{DASHBOARD_TEMPLATE}: the calendar filter form around "
+        f'<select name="cliente"> has no submit control — no <button type="submit">, '
+        f'no <input type="submit">, '
+        f"neither visible nor inside <noscript>. Without JavaScript nothing fires "
+        f'hx-trigger="change", so the filter can never be applied. '
+        f"templates/obligations/queue.html:33 already carries the shape this file is "
+        f'missing: <noscript><button type="submit">Filtrar</button></noscript> as the '
+        f"last child of the form."
+    )

@@ -4,12 +4,24 @@
 {% block content %}
   {% include "obligations/_counts.html" %}
 
+  {% comment %}
+    hx-sync drops an in-flight request the moment a newer one starts. Two selects and
+    an impatient hand produce overlapping GETs whose responses arrive in whatever
+    order the network settles on, and the last one to land wins the table -- so the
+    queue would show the filter the accountant had already moved off.
+
+    The indicator is named by selector rather than nested inside the swapped region:
+    #fila is replaced outerHTML, so an element living in there is destroyed by the
+    very swap it exists to report on.
+  {% endcomment %}
   <form class="my-6 flex flex-wrap items-end gap-4"
         method="get"
         hx-get="{% url queue_url_name %}"
         hx-target="#fila"
         hx-swap="outerHTML"
-        hx-trigger="change">
+        hx-trigger="change"
+        hx-sync="this:replace"
+        hx-indicator="#fila-indicator">
     <div>
       <label class="mb-1 block text-xs font-medium text-ink-600" for="responsavel">{% translate "Responsável" %}</label>
       <select id="responsavel" name="responsavel" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
@@ -20,17 +32,44 @@
       </select>
     </div>
     {% if spec.accepts_status %}
+      {% comment %}
+        The option VALUE stays the stored code and must: it is the parameter the view
+        matches against ObligationStatus.values before it will honour the filter at
+        all, so a translated value would silently narrow nothing. Only the option's
+        TEXT is mapped, and it is mapped to the same five words this product's clients
+        already read on the portal payments page -- an accountant and her client have
+        to call the same row by the same name.
+
+        The chain is here rather than in the view because the view hands down
+        ObligationStatus.choices, whose labels ARE the stored English words; and
+        editing the labels on the enum would alter serialized field metadata on every
+        field declaring choices= from it and emit an AlterField, which is a migration
+        for a display string. The last arm keeps the incoming label, so a status added
+        to the enum and not to this chain renders the word the database has for it
+        rather than an empty option nobody can pick.
+      {% endcomment %}
       <div>
         <label class="mb-1 block text-xs font-medium text-ink-600" for="situacao">{% translate "Situação" %}</label>
         <select id="situacao" name="situacao" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
           <option value="">{% translate "Todas" %}</option>
           {% for value, label in statuses %}
-            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{% if value == 'scheduled' %}{% translate "Programada" %}{% elif value == 'due' %}{% translate "A pagar" %}{% elif value == 'paid' %}{% translate "Paga" %}{% elif value == 'overdue' %}{% translate "Em atraso" %}{% elif value == 'waived' %}{% translate "Dispensada" %}{% else %}{{ label }}{% endif %}</option>
           {% endfor %}
         </select>
       </div>
     {% endif %}
     <noscript><button type="submit" class="btn btn-primary">{% translate "Filtrar" %}</button></noscript>
+    {% comment %}
+      Visual only, and deliberately so. static/js/app.js already announces the swap
+      through the one live region this layout owns; a second region here would say
+      the same news twice and race the first for the screen reader's attention.
+    {% endcomment %}
+    <span id="fila-indicator"
+          class="htmx-indicator inline-flex items-center gap-2 text-sm text-ink-500"
+          aria-hidden="true">
+      {% include "partials/pure/icons/calendar-clock.html" %}
+      {% translate "Atualizando…" %}
+    </span>
   </form>
 
   {% include "obligations/_queue.html" %}

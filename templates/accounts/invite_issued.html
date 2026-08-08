@@ -1,3 +1,44 @@
 {% extends "base.html" %}{% load i18n %}
 {% block title %}{% translate "Convite enviado" %}{% endblock %}
 {% block heading %}{% translate "Convite enviado" %}{% endblock %}
+{% block content %}
+  {% comment %}
+    This page overrode no content block at all until now, so the layout rendered a
+    heading over an empty main: the one screen in the invitation flow that exists only
+    to say something said nothing.
+
+    The copy is generic on purpose. `invite_issued_view` renders with an empty context
+    (`apps/accounts/views.py:186-188`) because it is the target of a redirect — the
+    address that was invited is a POST field on the request before it, and it does not
+    survive the hop. Naming a recipient here would mean either changing the view to
+    carry one, which this todo does not authorise, or printing a plausible sentence
+    that is sometimes about somebody else. A confirmation that may be wrong is worse
+    than one that says less.
+
+    So the address is confirmed where the product actually knows it: the team page
+    lists the invitation under pending invites, with the date it expires. That is what
+    the destination below is for, and it is the reason this page links onward instead
+    of being a dead end with a back button.
+
+    Every claim under "o que acontece agora" is one the code makes true —
+    `register_and_accept` sets the password, `InviteAlreadyAcceptedError` is what makes
+    the link single-use, and `InviteExpiredError` is the deadline.
+  {% endcomment %}
+  <div class="max-w-2xl">
+    {% translate "O convite foi enviado por e-mail, com o link para criar o acesso." as sent %}
+    {% include 'partials/pure/notice.html' with message=sent variant='success' only %}
+
+    <section class="card mt-6 p-6" aria-labelledby="proximos-passos">
+      <h2 id="proximos-passos" class="mb-3 text-sm font-semibold text-ink-700">{% translate "O que acontece agora" %}</h2>
+      <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+        <li>{% translate "Quem recebeu o convite abre o link e define a própria senha." %}</li>
+        <li>{% translate "O link vale para um único uso e tem prazo de validade." %}</li>
+        <li>{% translate "Até ser aceito, o convite fica em Convites pendentes, com a data em que expira." %}</li>
+      </ul>
+      <a class="btn btn-primary mt-5" href="{% url 'team' %}">
+        {% include "partials/pure/icons/users.html" %}
+        <span>{% translate "Ver a equipe e os convites pendentes" %}</span>
+      </a>
+    </section>
+  </div>
+{% endblock %}

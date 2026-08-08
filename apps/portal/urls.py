@@ -27,16 +27,51 @@ because `AdminTenantMiddleware` is inert on this host.
 from django.urls import include, path
 
 from apps.core.views import healthz
-from apps.portal.views import document_download, document_upload, portal_home
+from apps.portal.invite_views import portal_invite_accept
+from apps.portal.views import (
+    document_download,
+    document_upload,
+    portal_account,
+    portal_documents,
+    portal_home,
+    portal_payments,
+)
 
+# The four top-level destinations the portal's navigation bar names, and they are
+# registered together as one set on purpose. The bar is included by the shell, so it is
+# drawn on every portal screen, and `{% url %}` raises `NoReverseMatch` at render time
+# for a name this tree does not carry -- which makes a missing route a 500 on the whole
+# portal rather than one broken link on one page.
+#
+# Three of them answer with a placeholder today. Later waves replace the view body and
+# the page template IN PLACE and must NOT register these names a second time: a
+# duplicate `path()` does not error, it shadows, and `reverse()` then answers with
+# whichever pattern happens to come first.
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
     path("accounts/", include("allauth.urls")),
+    path("pagamentos/", portal_payments, name="portal-payments"),
+    path("documentos/", portal_documents, name="portal-documents"),
     path("documentos/enviar", document_upload, name="portal-document-upload"),
+    # Last of the three `documentos` routes, because it is the only one that matches a
+    # pattern. `<str:...>` takes one or more non-slash characters, so `documentos/`
+    # itself can never reach it -- but `documentos/enviar` can, and the upload endpoint
+    # is a POST while this is a GET, so shadowing it would surface as a 405.
     path(
         "documentos/<str:storage_key>",
         document_download,
         name="portal-document-download",
+    ),
+    path("conta/", portal_account, name="portal-account"),
+    # Not a navigation destination and deliberately absent from the bar: it is reachable
+    # only by holding a token, and an invitee is anonymous when they arrive. The prefix
+    # is `convites/` because `PortalMiddleware.INVITE_PREFIX` matches on exactly that
+    # string -- move the path and the route keeps resolving while the role and the
+    # membership gate silently come back, which is a 500 for every acceptance.
+    path(
+        "convites/aceitar/<str:token>/",
+        portal_invite_accept,
+        name="portal-invite-accept",
     ),
     path("", portal_home, name="portal-home"),
 ]

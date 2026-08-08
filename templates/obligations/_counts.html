@@ -3,12 +3,20 @@
   Refreshed in place by HTMX. Every attribute below is a literal — no tenant value is
   ever interpolated into an hx-* attribute, because the browser decodes an attribute
   before HTMX reads it and Django's escaping does not survive that.
+
+  A poll needs hx-sync as much as a filter form does, and for a reason the interval
+  hides: 60s is the gap between requests *starting*, not between them finishing. One
+  slow count over a large portfolio is still open when the next timer fires, and the
+  two answers then land in whatever order the network settles on — leaving the older
+  count on screen, where it stays until a refresh that happens to be quick. `this`
+  resolves to this element, which is both the requester and the swap target.
 {% endcomment %}
 <div id="contagens"
      class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
      hx-get="{% url 'queue-counts' %}"
      hx-trigger="every 60s"
-     hx-swap="outerHTML">
+     hx-swap="outerHTML"
+     hx-sync="this:replace">
   {% for entry in counts %}
     <a class="metric" href="{% url entry.url_name %}" data-count-{{ entry.spec.slug }}="{{ entry.count }}">
       <span class="metric-value">{{ entry.count }}</span>

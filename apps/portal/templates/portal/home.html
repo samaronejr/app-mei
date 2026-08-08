@@ -1,16 +1,110 @@
 {% extends "portal/base.html" %}
-{% load i18n %}
+{% load i18n ptbr %}{% comment %}
+The company's own name fills the layout's heading rather than being written as a second
+heading underneath it. One heading per page is the shell's contract, and a page whose
+subject is a single company has nothing to call itself that is truer than its name.
+
+The value elements carry no attributes and must keep none: the isolation suite asserts
+the obligation count by its exact rendered element, and that assertion is the only
+falsifiable half of the test proving the database confined the count rather than the
+view filtering it. Figures line up column-wise because the list sets fixed-width
+numerals, which is an inherited property and therefore reaches them from the parent.
+
+The obligation type is named HERE rather than by the view, and that is a rule rather
+than a preference. A test greps every source file under apps/ for the quoted obligation
+code, so that the deadline engine stays driven by its seeded rule rows instead of a
+ladder of branches on the code -- and it cannot tell a display label apart from the
+branch it exists to prevent. The view hands down the raw code and this page decides
+what to call it, with the code itself as the fallback, so a type nobody has labelled
+yet renders as the string a Receita document already uses rather than as nothing.
+
+Every address is written with the direct form of the url tag. Captured into a variable
+it fails SILENTLY on a name the portal tree does not carry, emitting an empty href on a
+page that still answers 200; written straight into the anchor it raises during
+rendering, which is a failure somebody sees.
+
+Standing is never carried by colour alone. Each badge holds the word as well, because a
+green pill means nothing to a reader who cannot see it and little to one who has not
+learned this product's palette.
+
+The reassurance is deliberately bounded. "Em dia com as obrigações que acompanhamos" is
+a claim about this firm's book and nothing wider, and the qualifier is the honest part
+rather than the hedge: a MEI owner may hold a debt her accountant has never been told
+about, and a portal that answered "você está em dia" flat would be telling her something
+this product cannot know. The late branch is bounded the other way -- it names the count
+AND says the figure grows while it goes unpaid, because a number with no consequence
+reads as a filing detail rather than a bill.
+
+The CNPJ is punctuated by the `cnpj_mask` filter and never by a model property, so that
+one filter is the single place this product decides what a CNPJ looks like. The column
+is local to `clients_clientcompany`, which the portal role holds SELECT on and the
+middleware has already read, so the filter costs nothing the property did not.
+
+DAS-MEI rolls FORWARD off a non-business day; DASN-SIMEI does NOT roll at all and stays
+on 31 May even when that is a Saturday (Resolução CGSN nº 140/2018 art. 109, recorded in
+docs/regulatory-watch.md). The roll note is therefore reached through an `elif` sitting
+behind the annual type rather than beside it: an annual row can never be handed the
+sentence saying its deadline moved, whatever the two stored dates happen to say.
+{% endcomment %}
+
+{% block heading %}{% if client %}{{ client.legal_name }}{% else %}{% translate "Portal do cliente" %}{% endif %}{% endblock %}
 
 {% block content %}
   {% if client %}
-    <h2>{{ client.legal_name }}</h2>
-    <dl>
-      <dt>{% translate "CNPJ" %}</dt>
-      <dd>{{ client.masked_cnpj }}</dd>
-      <dt>{% translate "Obrigações" %}</dt>
-      <dd>{{ obligation_count }}</dd>
-    </dl>
+    <div class="space-y-4">
+      <p class="card flex items-center gap-3 px-5 py-4 text-sm text-ink-700">
+        {% if overdue_count %}
+          <span class="badge badge-late">{% translate "Em atraso" %}</span>
+          {% blocktranslate count pendencias=overdue_count %}Você tem {{ pendencias }} pendência vencida. Enquanto ela não for paga, o valor cresce com juros e multa.{% plural %}Você tem {{ pendencias }} pendências vencidas. Enquanto não forem pagas, o valor cresce com juros e multa.{% endblocktranslate %}
+        {% else %}
+          <span class="badge badge-ok">{% translate "Em dia" %}</span>
+          {% translate "Sua empresa está em dia com as obrigações que acompanhamos." %}
+        {% endif %}
+      </p>
+
+      <section class="card space-y-4 px-5 py-4" aria-labelledby="proxima-acao">
+        <h2 id="proxima-acao" class="text-sm font-semibold text-ink-700">{% translate "Próxima ação" %}</h2>
+        {% if next_action %}
+          <p class="text-lg font-semibold text-ink-900">{% if next_action.type_code == 'DAS' %}{% translate "Guia mensal (DAS)" %}{% elif next_action.type_code == 'DASN' %}{% translate "Declaração anual (DASN)" %}{% else %}{{ next_action.type_code }}{% endif %}</p>
+
+          <dl class="grid grid-cols-2 gap-y-3 text-sm tabular-nums">
+            <dt class="text-ink-500">{% translate "Competência" %}</dt>
+            <dd>{{ next_action.competence_month|competencia }}</dd>
+            <dt class="text-ink-500">{% translate "Vencimento" %}</dt>
+            <dd><time datetime="{{ next_action.due_date.isoformat }}">{{ next_action.due_date|data }}</time></dd>
+          </dl>
+
+          <p class="text-sm font-medium text-ink-700">{% if next_action.days_until == 0 %}{% translate "vence hoje" %}{% else %}{% blocktranslate count dias=next_action.days_until %}vence em {{ dias }} dia{% plural %}vence em {{ dias }} dias{% endblocktranslate %}{% endif %}</p>
+
+          {% if next_action.type_code == 'DASN' %}
+            <p class="text-sm text-ink-700">{% translate "Entregue a declaração até essa data. Depois dela há multa, mesmo quando não há imposto a pagar." %}</p>
+          {% else %}
+            <p class="text-sm text-ink-700">{% translate "Pague até essa data. Depois dela há juros e multa." %}</p>
+          {% endif %}
+
+          {% if next_action.type_code == 'DASN' %}
+            <p class="text-xs text-ink-500">{% translate "A declaração anual vence em 31 de maio e essa data não muda: ela não é adiada nem quando cai em fim de semana ou feriado." %}</p>
+          {% elif next_action.rolled %}
+            <p class="text-xs text-ink-500">{% blocktranslate with origem=next_action.nominal_due_date|data %}A data original caiu em fim de semana ou feriado: adiada de {{ origem }} para o vencimento acima, que é a data que vale.{% endblocktranslate %}</p>
+          {% endif %}
+
+          <div class="flex flex-wrap gap-2">
+            <a class="btn btn-primary" href="{% url 'portal-payments' %}">{% translate "Ver pagamentos" %}</a>
+            <a class="btn btn-quiet" href="{% url 'portal-documents' %}">{% translate "Enviar documento" %}</a>
+          </div>
+        {% else %}
+          <p class="empty-state">{% translate "Nenhuma obrigação em aberto por enquanto. Avisaremos por aqui assim que a próxima abrir." %}</p>
+        {% endif %}
+      </section>
+
+      <dl class="card grid grid-cols-2 gap-y-3 px-5 py-4 text-sm tabular-nums">
+        <dt class="text-ink-500">{% translate "CNPJ" %}</dt>
+        <dd>{{ client.cnpj|cnpj_mask }}</dd>
+        <dt class="text-ink-500">{% translate "Obrigações" %}</dt>
+        <dd>{{ obligation_count }}</dd>
+      </dl>
+    </div>
   {% else %}
-    <p>{% translate "Nenhuma empresa vinculada a esta conta." %}</p>
+    <p class="card empty-state">{% translate "Nenhuma empresa vinculada a esta conta. Fale com a sua contadora para liberar o seu acesso." %}</p>
   {% endif %}
 {% endblock %}

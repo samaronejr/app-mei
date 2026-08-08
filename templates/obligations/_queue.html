@@ -6,43 +6,50 @@
   Pagination is ordinary anchors inside an hx-boost container: the page number belongs
   in href, which the browser treats as a URL, and never in an hx-* attribute, which
   HTMX would treat as one more place a decoded value lands.
-{% endcomment %}
-<div id="fila" class="card overflow-hidden">
-  <table class="data-table">
-    <caption class="visually-hidden">{{ spec.label }}</caption>
-    <thead>
-      <tr>
-        {% for heading in spec.headings %}<th scope="col">{{ heading }}</th>{% endfor %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in page.object_list %}
-        {% include spec.row_template %}
-      {% empty %}
-        <tr>
-          <td colspan="6" class="empty-state">{% translate "Nenhum item nesta fila." %}</td>
-        </tr>
-      {% endfor %}
-    </tbody>
-  </table>
 
-  {% if page.paginator.num_pages > 1 %}
-    <nav aria-label="{% translate 'Paginação' %}"
-         class="flex items-center justify-between border-t border-ink-200 px-5 py-3 text-sm text-ink-600"
-         hx-boost="true"
-         hx-target="#fila"
-         hx-swap="outerHTML">
-      <span>
-        {% blocktranslate with current=page.number total=page.paginator.num_pages %}Página {{ current }} de {{ total }}{% endblocktranslate %}
-      </span>
-      <span class="flex gap-2">
-        {% if page.has_previous %}
-          <a class="btn btn-quiet" href="?{{ filter_query }}pagina={{ page.previous_page_number }}">{% translate "Anterior" %}</a>
-        {% endif %}
-        {% if page.has_next %}
-          <a class="btn btn-quiet" href="?{{ filter_query }}pagina={{ page.next_page_number }}">{% translate "Próxima" %}</a>
-        {% endif %}
-      </span>
-    </nav>
-  {% endif %}
+  Those anchors moved to a pure partial the client portal shares; the boosted container
+  stayed behind. The wrapper is the caller's precisely so the partial stays free of any
+  request vocabulary and costs no query, which is what lets a product shipping no
+  JavaScript reuse it unchanged.
+
+  hx-sync on that wrapper, and not on the anchors, because it is the wrapper the
+  anchors inherit it from: HTMX resolves `this` to the nearest ancestor carrying the
+  attribute, so one queue is shared by every page link instead of one queue each. It
+  earns its place for the same reason the filter form above has one -- both write
+  #fila, and a hand clicking Próxima twice, or filtering while a page is still in
+  flight, otherwise leaves whichever response the network delivers last on screen.
+
+  The empty cell spans spec.headings, the same source the header row is built from.
+  Four queues render through this one template and their header counts differ, so a
+  literal here is wrong for at least three of them -- and a table whose empty row is
+  wider than its own header is what a screen reader reports as a malformed grid.
+
+  #fila is the swap target, so it carries the name static/js/app.js announces after a
+  swap. Without one the announcement degrades to a generic sentence, and an accountant
+  who filtered four queues in a row hears the same words every time.
+{% endcomment %}
+<div id="fila" class="card overflow-hidden" role="region" aria-label="{{ spec.label }}">
+  <div class="table-wrap">
+    <table class="data-table row-stack">
+      <caption class="visually-hidden">{{ spec.label }}</caption>
+      <thead>
+        <tr>
+          {% for heading in spec.headings %}<th scope="col">{{ heading }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in page.object_list %}
+          {% include spec.row_template %}
+        {% empty %}
+          <tr>
+            <td colspan="{{ spec.headings|length }}" class="empty-state">{% translate "Nenhum item nesta fila." %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div hx-boost="true" hx-target="#fila" hx-swap="outerHTML" hx-sync="this:replace">
+    {% include "partials/pure/pagination.html" %}
+  </div>
 </div>

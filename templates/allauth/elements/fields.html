@@ -1,0 +1,25 @@
+{% comment %}
+Every control of one allauth form, composed from this project's own field partial.
+
+The upstream element is a single line — it hands the whole form to `as_p`. That writes
+its markup from Django's widget templates in site-packages, which Tailwind's `@source`
+does not scan and `tests/ui/templates_scan.py` does not walk, so every control on every
+allauth screen would ship with no compiled rule and no guard watching. It also cannot
+produce the accessibility contract `tests/ui/test_form_contract.py` asserts: there is no
+summary to announce, and nothing for a keyboard to jump to.
+
+So the form is walked here and each field goes through `partials/pure/field.html`, the
+same partial the firm-side screens use. That is where the described-by chain, the
+invalid marking, the hidden-field case and the visible label all live; restating any of
+it here is how the two copies drift.
+
+`form_errors.html` above the fields is the announced summary, with one anchor per
+erroring field pointing at the id the partial puts on the control.
+
+`only` on both includes. The element context carries allauth's `attrs` and `slots`, and
+leaking those into a partial that reads neither is how an include starts depending on
+who called it.
+{% endcomment %}{% include 'partials/pure/form_errors.html' with form=attrs.form only %}
+<div class="grid gap-4 pb-2">
+  {% for field in attrs.form %}{% include 'partials/pure/field.html' with field=field only %}{% endfor %}
+</div>

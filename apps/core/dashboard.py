@@ -112,8 +112,14 @@ def _selected_client(
     return first
 
 
-def _calendar(client: ClientCompany | None) -> list[CalendarCell]:
-    """Read the next twelve DAS deadlines this client already has rows for."""
+def das_calendar(client: ClientCompany | None) -> list[CalendarCell]:
+    """Read the next twelve DAS deadlines this client already has rows for.
+
+    Public because the client detail screen draws the same twelve months from the same
+    rows. Two readers would be two chances to disagree about which deadlines exist, and
+    a calendar that disagrees with itself is worse than no calendar — this is the one
+    artefact an accountant plans a payment run from.
+    """
     if client is None:
         return []
     upcoming = (
@@ -149,7 +155,7 @@ def dashboard_view(request: AuthenticatedRequest) -> HttpResponse:
             "portfolio": _portfolio_counts(clients),
             "portfolio_total": clients.count(),
             "counts": queue_counts(request),
-            "calendar": _calendar(selected),
+            "calendar": das_calendar(selected),
             "calendar_client": selected,
             "clients": clients.order_by("legal_name", "pk"),
             "threshold_rows": threshold_warning(request.user, tenant_id=tenant_id),
@@ -159,4 +165,4 @@ def dashboard_view(request: AuthenticatedRequest) -> HttpResponse:
     )
 
 
-__all__ = ["CALENDAR_MONTHS", "CalendarCell", "dashboard_view"]
+__all__ = ["CALENDAR_MONTHS", "CalendarCell", "das_calendar", "dashboard_view"]

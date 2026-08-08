@@ -5,61 +5,130 @@
   <div class="grid gap-6 lg:grid-cols-3">
     <section class="card lg:col-span-2" aria-labelledby="membros">
       <h2 id="membros" class="card-heading">{% translate "Membros" %}</h2>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th scope="col">{% translate "Pessoa" %}</th>
-            <th scope="col">{% translate "Papel" %}</th>
-            <th scope="col">{% translate "Situação" %}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for membership in memberships %}
+      {% comment %}
+        Both tables on this screen are wrapped and stacked, for the same reason the
+        client registry is: four columns, one of which holds a control with a long
+        label, does not fit a phone. The wrapper keeps a wide table scrollable instead
+        of letting it push the page sideways, and the stacking rule turns each row into
+        a labelled block below the breakpoint.
+
+        That second half is what makes every cell below carry its column name. The
+        header row is hidden visually at that width and each cell regrows its label out
+        of the attribute, so a cell that omits one becomes a bare value on a phone with
+        nothing saying what it measures. The only cells exempt are the empty-state ones,
+        which span all four columns and so have no single column to name.
+      {% endcomment %}
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <thead>
             <tr>
-              <td>{{ membership.user.email }}</td>
-              <td>{{ membership.get_role_display }}</td>
-              <td>
-                {% if membership.is_active %}
-                  <span class="badge badge-ok">{% translate "ativo" %}</span>
-                {% else %}
-                  <span class="badge badge-neutral">{% translate "inativo" %}</span>
-                {% endif %}
-              </td>
+              <th scope="col">{% translate "Pessoa" %}</th>
+              <th scope="col">{% translate "Papel" %}</th>
+              <th scope="col">{% translate "Situação" %}</th>
+              <th scope="col">{% translate "Ações" %}</th>
             </tr>
-          {% empty %}
-            <tr><td colspan="3" class="empty-state">{% translate "Nenhum membro." %}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for membership in memberships %}
+              <tr>
+                <td data-label="{% translate 'Pessoa' %}">{{ membership.user.email }}</td>
+                <td data-label="{% translate 'Papel' %}">{{ membership.get_role_display }}</td>
+                <td data-label="{% translate 'Situação' %}">
+                  {% if membership.is_active %}
+                    <span class="badge badge-ok">{% translate "ativo" %}</span>
+                  {% else %}
+                    <span class="badge badge-neutral">{% translate "inativo" %}</span>
+                  {% endif %}
+                </td>
+                <td data-label="{% translate 'Ações' %}">
+                  {% comment %}
+                    Deactivation is a link because it leads to a confirmation; reactivation
+                    is a one-click form because it is the undo, and asking somebody to
+                    confirm giving access back protects nothing. Each label names the
+                    person, so a screen reader reading the actions out of table context
+                    does not offer three identical "Desativar" links.
+                  {% endcomment %}
+                  {% if membership.is_active %}
+                    <a class="link" href="{% url 'member-deactivate' membership.pk %}">
+                      {% blocktranslate with email=membership.user.email %}Desativar {{ email }}{% endblocktranslate %}
+                    </a>
+                  {% else %}
+                    <form method="post" action="{% url 'member-reactivate' membership.pk %}">
+                      {% csrf_token %}
+                      <button type="submit" class="btn btn-quiet">
+                        {% blocktranslate with email=membership.user.email %}Reativar {{ email }}{% endblocktranslate %}
+                      </button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="empty-state">{% translate "Nenhum membro." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
 
       <h2 id="convites" class="card-heading border-t">{% translate "Convites pendentes" %}</h2>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th scope="col">{% translate "E-mail" %}</th>
-            <th scope="col">{% translate "Papel" %}</th>
-            <th scope="col">{% translate "Expira em" %}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for invite in pending_invites %}
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <thead>
             <tr>
-              <td>{{ invite.email }}</td>
-              <td>{{ invite.get_role_display }}</td>
-              <td><time datetime="{{ invite.expires_at.isoformat }}">{{ invite.expires_at|data_hora }}</time></td>
+              <th scope="col">{% translate "E-mail" %}</th>
+              <th scope="col">{% translate "Papel" %}</th>
+              <th scope="col">{% translate "Expira em" %}</th>
+              <th scope="col">{% translate "Ações" %}</th>
             </tr>
-          {% empty %}
-            <tr><td colspan="3" class="empty-state">{% translate "Nenhum convite pendente." %}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for invite in pending_invites %}
+              <tr>
+                <td data-label="{% translate 'E-mail' %}">{{ invite.email }}</td>
+                <td data-label="{% translate 'Papel' %}">{{ invite.get_role_display }}</td>
+                <td data-label="{% translate 'Expira em' %}">
+                  {% comment %}
+                    The absolute Brasília timestamp is the value, and the countdown under
+                    it is a reading aid — never a replacement. An invite is chased by
+                    telephone against a wall clock, so "22/04/2026 14:30" is the thing an
+                    owner can act on; "expira em 6 dias" only says how urgent that is.
+                    Dropping the absolute one would leave the page with no time on it
+                    that anybody can compare against a calendar.
+                  {% endcomment %}
+                  <div class="text-right sm:text-left">
+                    <time datetime="{{ invite.expires_at.isoformat }}">{{ invite.expires_at|data_hora }}</time>
+                    <div class="text-xs text-ink-500">
+                      {% blocktranslate with prazo=invite.expires_at|timeuntil %}expira em {{ prazo }}{% endblocktranslate %}
+                    </div>
+                  </div>
+                </td>
+                <td data-label="{% translate 'Ações' %}">
+                  {% comment %}
+                    A link, like Desativar next door, because it leads to a confirmation:
+                    the raw token exists only in the sent email, so revoking cannot be
+                    undone by the button that did it. The label names the address for the
+                    same reason the members table does — a screen reader reading the
+                    actions out of table context must not be offered N identical
+                    "Revogar" links.
+                  {% endcomment %}
+                  <a class="link" href="{% url 'invite-revoke' invite.pk %}">
+                    {% blocktranslate with email=invite.email %}Revogar convite de {{ email }}{% endblocktranslate %}
+                  </a>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="empty-state">{% translate "Nenhum convite pendente." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <section class="card h-fit p-6" aria-labelledby="convidar">
       <h2 id="convidar" class="mb-4 text-sm font-semibold text-ink-700">{% translate "Convidar" %}</h2>
       <form method="post" action="{% url 'invite-issue' %}" class="space-y-4">
         {% csrf_token %}
-        {{ form.as_p }}
+        {% include "partials/pure/form_errors.html" %}
+        {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
         <button type="submit" class="btn btn-primary">{% translate "Enviar convite" %}</button>
       </form>
     </section>

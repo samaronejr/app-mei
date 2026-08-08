@@ -9,13 +9,36 @@ from django.urls import path
 from apps.accounts.views import (
     accept_invite_view,
     invite_issued_view,
+    invite_revoke_view,
     issue_invite_view,
+    member_deactivate_view,
+    member_reactivate_view,
+    portal_invite_issue_view,
     team_view,
 )
 
 urlpatterns = [
     path("equipe/", team_view, name="team"),
+    path(
+        "equipe/<uuid:pk>/desativar/",
+        member_deactivate_view,
+        name="member-deactivate",
+    ),
+    path(
+        "equipe/<uuid:pk>/reativar/",
+        member_reactivate_view,
+        name="member-reactivate",
+    ),
     path("convites/", issue_invite_view, name="invite-issue"),
     path("convites/enviado/", invite_issued_view, name="invite-issued"),
+    path("convites/<uuid:pk>/revogar/", invite_revoke_view, name="invite-revoke"),
     path("convites/aceitar/<str:token>/", accept_invite_view, name="invite-accept"),
+    # Issuance only. Its acceptance route is NOT here and cannot be: it lives on the
+    # portal urlconf, because the portal host is the one place an invitee with no
+    # membership yet can be served before signing in.
+    path(
+        "clientes/<uuid:pk>/convites/",
+        portal_invite_issue_view,
+        name="portal-invite-issue",
+    ),
 ]

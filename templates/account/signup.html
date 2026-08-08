@@ -1,0 +1,45 @@
+{% extends "allauth/layouts/entrance.html" %}
+{% load allauth i18n %}{% comment %}
+Account creation, and the one screen whose copy has to set an expectation it keeps.
+
+`ACCOUNT_EMAIL_VERIFICATION` is "mandatory". Submitting this form does not produce an
+account anyone can sign in with: it produces a pending address and a confirmation link,
+and the very next screen is the one that says so. A page that promised "conta criada"
+here would be lying about the state of the system by one whole step, which is exactly
+the kind of lie a person only discovers when they come back tomorrow and cannot get in.
+
+`ACCOUNT_SIGNUP_FIELDS` is `email*`, `password1*`, `password2*`, and all three are
+rendered by walking the form. The address field is called `email`, the same string
+`apps/security/ratelimit.py` reads when it buckets a credential submission by address;
+naming it here to reorder or relabel it would be the one edit that unhooks the limiter.
+
+That this form is reachable without an invitation is a recorded owner decision, not an
+oversight of this page. Nothing here widens or narrows it — the screen is styled, the
+policy lives in `config/settings/base.py`.
+{% endcomment %}
+{% block head_title %}{% translate "Criar conta" %}{% endblock head_title %}
+
+{% block content %}
+  {% element h1 %}
+    {% translate "Criar conta" %}
+  {% endelement %}
+
+  <p class="text-sm text-ink-600">
+    {% translate "Enviamos um link de confirmação para o endereço informado. Enquanto ele não for aberto, a conta fica parada nesta etapa e a senha escolhida ainda não abre nada." %}
+  </p>
+
+  <form method="post" action="{% url 'account_signup' %}" class="grid gap-4">
+    {% csrf_token %}
+    {% element fields form=form %}
+    {% endelement %}
+    {{ redirect_field }}
+    {% element button type="submit" tags="prominent" %}
+      {% translate "Criar conta" %}
+    {% endelement %}
+  </form>
+
+  {% url 'account_login' as login_url %}
+  <p class="text-sm text-ink-600">
+    {% blocktranslate %}Já tem conta? <a class="link" href="{{ login_url }}">Entre por aqui</a>.{% endblocktranslate %}
+  </p>
+{% endblock content %}

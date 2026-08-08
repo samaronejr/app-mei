@@ -45,6 +45,7 @@ class ResolvedNavItem:
 
 NAV: Final[tuple[NavItem, ...]] = (
     NavItem(_("Painel"), "dashboard", "clients.view_assigned"),
+    NavItem(_("Clientes"), "clients-list", "clients.view_assigned"),
     NavItem(_("Vencendo"), "queue-due-soon", "das.generate"),
     NavItem(_("Atrasadas"), "queue-overdue", "das.generate"),
     NavItem(_("Onboarding"), "queue-onboarding", "clients.view_assigned"),

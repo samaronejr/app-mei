@@ -1,0 +1,163 @@
+{% extends "base.html" %}{% load authz i18n ptbr %}
+{% block title %}{% translate "Clientes" %}{% endblock %}
+{% block heading %}{% translate "Clientes" %}{% endblock %}
+{% block actions %}
+  {% comment %}
+    A mirror of the navigation entry, not a relocation of it: both stay.
+
+    It sits in the layout's action slot beside the heading rather than in the body,
+    because it acts on the screen as a whole — the thing being exported is this
+    registry — and a control over the page belongs with the page's title. The slot is
+    right-aligned by the row, so the link needs no alignment utility of its own.
+
+    Asked here as well as on the server, and the duplication is the point. The view
+    behind this link is decorated with the matching require_can, so that decorator --
+    not this tag -- is the control; a request forged past a hidden link is still
+    refused. What the tag buys is honesty: the same capability decides whether the
+    button is drawn, so the interface never advertises an action the role would be
+    told 403 for. A dead button teaches an accountant that the product is broken.
+
+    The three queries this costs are real and are carried in the budget deliberately.
+    The flag is not obtainable free: portfolio_scope resolves the same capability
+    internally, but visible_clients encapsulates it and the view never holds the
+    answer, so re-deriving it there would cost more than asking again does. Moving the
+    ask from the body into this slot changes where it is rendered and not how often.
+
+    The glyph is decorative: it is aria-hidden inside the partial, and the label
+    beside it is what is announced and what is read.
+  {% endcomment %}
+  {% can user "clients.view_all" as pode_exportar %}
+  {% if pode_exportar %}
+    <a class="btn btn-quiet" href="{% url 'clients-export-csv' %}">
+      {% include "partials/pure/icons/download.html" %}
+      {% translate "Exportar clientes" %}
+    </a>
+  {% endif %}
+{% endblock %}
+{% block content %}
+  {% comment %}
+    A read-only directory. There is no create, no edit and no bulk action here on
+    purpose: the registry is fed by onboarding and by the CSV import, and a second
+    write path would be a second place a CNPJ can be entered unnormalized.
+
+    The search form is a plain GET with a real submit, so the result is a URL that can
+    be bookmarked, linked and re-run from the address bar, and so it works with no
+    script running at all.
+  {% endcomment %}
+  <form class="my-6 flex flex-wrap items-end gap-3" method="get">
+    {% comment %}
+      Written out rather than passed through partials/pure/field.html, for the same
+      reason templates/core/dashboard.html writes its client filter out: that partial
+      reads a Django BoundField -- auto_id, widget_type, errors -- and this is a bare
+      query parameter the view pulls off request.GET itself. Handed one, the partial
+      would fall through every branch to a bare text input and drop the search type.
+
+      It carries the same three classes the partial emits -- field, field-label and
+      field-input -- so the two render identically, and it owes neither aria-invalid
+      nor an aria-describedby chain because it has no error line and no help line.
+    {% endcomment %}
+    <div class="field min-w-64">
+      <label class="field-label" for="q">{% translate "Buscar por nome ou CNPJ" %}</label>
+      <input class="field-input"
+             type="search"
+             id="q"
+             name="q"
+             value="{{ term }}">
+    </div>
+    <button type="submit" class="btn btn-primary">{% translate "Buscar" %}</button>
+  </form>
+
+  <div class="card overflow-hidden">
+    <div class="table-wrap">
+      <table class="data-table row-stack">
+        <caption class="visually-hidden">{% translate "Clientes da carteira" %}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{% translate "Razão social" %}</th>
+            <th scope="col">{% translate "CNPJ" %}</th>
+            <th scope="col">{% translate "Situação" %}</th>
+            <th scope="col">{% translate "Município" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for client in page.object_list %}
+            {% comment %}
+              Every cell names its column. Below the stacking breakpoint the header row
+              is hidden and each cell regrows its label out of that attribute, so a
+              missing one is a value on a phone with nothing saying what it measures.
+
+              The situação cell is a badge, and the badge always carries the word as
+              well as the colour -- colour alone is not a status, it is a status only
+              the sighted majority receives. The four states map onto the domain ramp:
+              active reads ok, onboarding is unfinished rather than wrong so it reads
+              warn, suspended is the one that needs somebody today so it reads late,
+              and closed is archival and reads neutral so it stops competing.
+
+              The WORD is now a second chain over the same column, and it replaced
+              get_status_display for the reason the client portal already documents:
+              that helper returns the model's own choice label, which for these four
+              is the stored English value on three of them and ativo on the fourth,
+              because Django's bundled catalogue translates that one msgid and no
+              other. Editing the labels on the enum instead would alter serialized
+              field metadata on every field declaring choices= from it and emit an
+              AlterField -- a migration for a display string.
+
+              Two chains rather than one over a shared value, because they answer
+              different questions and only one of them is constrained by the note
+              below. Merging them would put a word and a compiled name in the same
+              branch and make a copy change a styling change, on the screen an
+              accountant browses most. The word chain ends on the stored code, so a
+              status added to the enum and not to this chain renders the database's
+              own value rather than an empty badge -- a legible failure instead of a
+              silent one, and the standing scan in tests/ui/test_firm_copy.py reds on
+              it the moment a fixture reaches it.
+
+              Both sides of every branch are spelled out as literals. Tailwind compiles
+              only the names it can see in the source, so a name assembled from a
+              variable would ship with no rule behind it.
+
+              The branch reads client.status, a column on the row already fetched. A
+              relation followed from here would be a query per row and the render is
+              budgeted at 30 for the whole page.
+
+              The razão social is the way out of the directory and into the client's
+              workspace, and it is the only way: this screen exists to be browsed, so a
+              row that names a client without reaching them is a dead end on the one
+              page whose entire purpose is finding somebody. The three queue rows --
+              obligations/_rows_obligations.html, _rows_onboarding.html and
+              _rows_threshold.html -- already spell the client name as exactly this
+              anchor, so the idiom is borrowed rather than invented and an accountant
+              meets one link, not four.
+
+              It is a link and stays a link. The registry is read-only by design (see
+              the note at the top of this block), and a navigation href is the one
+              control that adds no second write path for a CNPJ to arrive unnormalized
+              through.
+
+              client.pk is the primary key of the row already fetched, the same kind of
+              column client.status is on the line below, so the href follows no relation
+              and adds no query -- the page is measured at 30 with the link exactly as
+              it was measured at 30 without it. The {% templatetag openblock %} url
+              {% templatetag closeblock %} is written inline rather than resolved into a
+              variable first: the `as` form swallows a NoReverseMatch and leaves
+              href="" behind on a page that still answers 200, which is this very defect
+              wearing a green test.
+            {% endcomment %}
+            <tr>
+              <td data-label="{% translate 'Razão social' %}"><a class="link" href="{% url 'client-detail' client.pk %}">{{ client.legal_name }}</a></td>
+              <td data-label="{% translate 'CNPJ' %}">{{ client.cnpj|cnpj_mask }}</td>
+              <td data-label="{% translate 'Situação' %}"><span class="badge {% if client.status == 'active' %}badge-ok{% elif client.status == 'onboarding' %}badge-warn{% elif client.status == 'suspended' %}badge-late{% else %}badge-neutral{% endif %}">{% if client.status == 'onboarding' %}{% translate "Em onboarding" %}{% elif client.status == 'active' %}{% translate "Ativo" %}{% elif client.status == 'suspended' %}{% translate "Suspenso" %}{% elif client.status == 'closed' %}{% translate "Encerrado" %}{% else %}{{ client.status }}{% endif %}</span></td>
+              <td data-label="{% translate 'Município' %}">{{ client.municipality_ibge_code|default_if_none:'' }}</td>
+            </tr>
+          {% empty %}
+            <tr>
+              <td colspan="4" class="empty-state">{% translate "Nenhum cliente encontrado." %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% include "partials/pure/pagination.html" %}
+  </div>
+{% endblock %}

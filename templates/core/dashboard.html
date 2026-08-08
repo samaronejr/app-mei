@@ -12,11 +12,35 @@
     <h2 id="carteira" class="mb-3 text-sm font-semibold text-ink-700">
       {% blocktranslate with total=portfolio_total %}Carteira ({{ total }} clientes){% endblocktranslate %}
     </h2>
+    {% comment %}
+      The tile is named HERE rather than by the view, which is the same rule the client
+      portal's payments page already follows: entry.label is the model's own choice
+      label, and the model declares these four in English. Three of them arrive on
+      screen unchanged; the fourth reads ativo, because Django's BUNDLED catalogue
+      happens to translate that one msgid and no other. A Carteira that says
+      "onboarding / ativo / suspended / closed" is not a translation, it is three
+      leaks and a coincidence.
+
+      Mapping it in the model instead is not available. Membership.role and
+      ClientCompany.status both declare choices= from these enums, so editing a label
+      changes serialized field metadata and the autodetector emits an AlterField --
+      a migration for a display string.
+
+      entry.status is the stored value the view already read, so the chain follows no
+      relation and the dashboard budget does not move. The last arm keeps entry.label
+      as the fallback: a status added to the enum and not to this chain then renders
+      the word the database has for it rather than an empty tile, which is a legible
+      failure instead of a silent one.
+
+      The data attribute above deliberately keeps the RAW code. It is how the tests
+      and any future automation find a tile, and it is an attribute rather than text,
+      so no reader ever sees it.
+    {% endcomment %}
     <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       {% for entry in portfolio %}
         <div class="metric" data-portfolio-{{ entry.status }}="{{ entry.count }}">
           <span class="metric-value">{{ entry.count }}</span>
-          <span class="metric-label">{{ entry.label }}</span>
+          <span class="metric-label">{% if entry.status == 'onboarding' %}{% translate "Em onboarding" %}{% elif entry.status == 'active' %}{% translate "Ativo" %}{% elif entry.status == 'suspended' %}{% translate "Suspenso" %}{% elif entry.status == 'closed' %}{% translate "Encerrado" %}{% else %}{{ entry.label }}{% endif %}</span>
         </div>
       {% endfor %}
     </div>
@@ -25,69 +49,103 @@
   <section aria-labelledby="calendario" class="mb-8">
     <h2 id="calendario" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Calendário do DAS — 12 meses" %}</h2>
 
+    {% comment %}
+      hx-sync drops an in-flight request the moment a newer one starts. A hand moving
+      down the client list faster than the network answers produces overlapping GETs
+      whose responses land in whatever order the wire settles on, and the last to
+      arrive wins the strip -- so the calendar would end up showing a client the
+      accountant had already moved off.
+
+      The indicator is named by selector and lives in the form, not in the strip:
+      #calendario-strip is replaced outerHTML, so an element inside it is destroyed by
+      the very swap it exists to report on. It is visual only -- static/js/app.js
+      already announces the swap through the one live region this layout owns, and a
+      second region here would say the same news twice.
+
+      The select is written out rather than passed through partials/pure/field.html:
+      that partial reads a Django BoundField, and this filter is a bare query
+      parameter the view resolves itself. It carries the three classes the partial
+      emits, so the two render identically, and it owes neither aria-invalid nor an
+      aria-describedby chain because it has no error and no help line.
+
+      The noscript submit is the whole point of the form element. hx-trigger is
+      JavaScript; without it nothing sends the selection, and the accountant is stuck
+      on whichever client the view picked.
+    {% endcomment %}
     <form method="get" class="mb-4 flex flex-wrap items-end gap-3"
           hx-get="{% url 'dashboard' %}"
           hx-target="#calendario-strip"
           hx-select="#calendario-strip"
           hx-swap="outerHTML"
-          hx-trigger="change">
-      <div>
-        <label class="mb-1 block text-xs font-medium text-ink-600" for="cliente">{% translate "Cliente" %}</label>
-        <select id="cliente" name="cliente" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
+          hx-trigger="change"
+          hx-sync="this:replace"
+          hx-indicator="#calendario-indicator">
+      <div class="field">
+        <label class="field-label" for="cliente">{% translate "Cliente" %}</label>
+        <select id="cliente" name="cliente" class="field-input">
           {% for company in clients %}
             <option value="{{ company.pk }}" {% if calendar_client.pk == company.pk %}selected{% endif %}>{{ company.legal_name }}</option>
           {% endfor %}
         </select>
       </div>
+      <noscript><button type="submit" class="btn btn-primary">{% translate "Aplicar" %}</button></noscript>
+      <span id="calendario-indicator"
+            class="htmx-indicator inline-flex items-center gap-2 text-sm text-ink-500"
+            aria-hidden="true">
+        {% include "partials/pure/icons/calendar-clock.html" %}
+        {% translate "Atualizando…" %}
+      </span>
     </form>
 
-    <div id="calendario-strip" class="card p-5">
-      {% if calendar_client %}
-        <p class="mb-4 text-sm text-ink-600">
-          {{ calendar_client.legal_name }} — {{ calendar_client.cnpj|cnpj_mask }}
-        </p>
-      {% endif %}
-      {% if calendar %}
-        <ol class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          {% for cell in calendar %}
-            <li class="calendar-cell {% if cell.was_rolled %}border-warn-line bg-warn-soft{% else %}border-ink-200{% endif %}">
-              <span class="calendar-month {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-500{% endif %}">{{ cell.competence|competencia }}</span>
-              <time class="calendar-due {% if cell.was_rolled %}text-warn-ink{% else %}text-ink-900{% endif %}"
-                    datetime="{{ cell.resolved|date:'Y-m-d' }}"
-                    data-competence="{{ cell.competence|date:'Y-m' }}">{{ cell.resolved|data }}</time>
-              {% if cell.was_rolled %}
-                <span class="calendar-rolled text-warn-ink">{% blocktranslate with nominal=cell.nominal|data %}adiado de {{ nominal }}{% endblocktranslate %}</span>
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ol>
-      {% else %}
-        <p class="empty-state">{% translate "Nenhum vencimento gerado para este cliente ainda." %}</p>
-      {% endif %}
-    </div>
+    {% comment %}
+      The strip itself lives in obligations/_calendar_strip.html because the client
+      detail page draws the same twelve months. Two copies would drift -- and the one
+      that drifted would be a calendar, which is the artefact this product exists to
+      make trustworthy.
+
+      The element the filter above swaps is inside that partial, id and all, so the
+      htmx contract survives the extraction: this include renders the same element the
+      selector has always named.
+
+      The flag turns the caption's client name into a link into that client's
+      workspace. It is passed here rather than defaulted inside the partial because the
+      client detail screen includes the same strip, and there the caption names the
+      client whose page the reader is already on -- a link to itself. The primary key
+      is on calendar_client, which the view already resolved, so the href follows no
+      relation and the dashboard budget does not move.
+    {% endcomment %}
+    {% include "obligations/_calendar_strip.html" with calendar_client_linked=True %}
   </section>
 
   <section aria-labelledby="limite">
     <h2 id="limite" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Clientes perto do limite" %}</h2>
-    <div class="card overflow-hidden">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th scope="col">{% translate "Cliente" %}</th>
-            <th scope="col">{% translate "Faturado" %}</th>
-            <th scope="col">{% translate "Teto" %}</th>
-            <th scope="col">{% translate "Consumido" %}</th>
-            <th scope="col">{% translate "Faixa" %}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in threshold_rows %}
-            {% include "obligations/_rows_threshold.html" %}
-          {% empty %}
-            <tr><td colspan="5" class="empty-state">{% translate "Nenhum cliente perto do limite." %}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    {% comment %}
+      The card clipped its own overflow before, which on a phone did not shrink this
+      five-column table -- it hid the columns past the viewport with no way to reach
+      them. The scroll container goes inside the card instead, so the money columns
+      stay reachable and the card keeps owning the border and the radius.
+    {% endcomment %}
+    <div class="card">
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Cliente" %}</th>
+              <th scope="col">{% translate "Faturado" %}</th>
+              <th scope="col">{% translate "Teto" %}</th>
+              <th scope="col">{% translate "Consumido" %}</th>
+              <th scope="col">{% translate "Faixa" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in threshold_rows %}
+              {% include "obligations/_rows_threshold.html" %}
+            {% empty %}
+              <tr><td colspan="5" class="empty-state">{% translate "Nenhum cliente perto do limite." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </section>
 {% endblock %}

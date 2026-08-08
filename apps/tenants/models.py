@@ -11,7 +11,7 @@ protected at the application layer by filtering on `request.user`.
 import hashlib
 import secrets
 from datetime import datetime, timedelta
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from django.conf import settings
 from django.db import models
@@ -21,6 +21,9 @@ from django.utils.translation import gettext_lazy as _
 from apps.core.access import PlatformScopedManager, TenantRootManager
 from apps.core.models import UUIDv7PrimaryKeyModel
 from apps.tenants.validators import validate_tenant_slug
+
+if TYPE_CHECKING:
+    from apps.clients.models import ClientCompany
 
 INVITE_TOKEN_BYTES = 32
 INVITE_VALIDITY = timedelta(days=7)
@@ -60,14 +63,54 @@ CLIENT_ROLES: frozenset[str] = frozenset(
 
 
 def firm_role_choices() -> list[tuple[str, str]]:
-    """Return only the roles an invitation may grant.
+    """Return only the roles a FIRM-SIDE invitation may grant.
 
-    An invite creates a membership with no client, so offering a client role would
-    produce a row the `membership_role_matches_client_scope` CHECK rejects — an
-    IntegrityError at accept time rather than a validation error at issue time.
-    Portal memberships are created against a specific client, never by invitation.
+    An invitation naming no client creates a membership with no client, so offering a
+    client role here would produce a row the `membership_role_matches_client_scope`
+    CHECK rejects — an IntegrityError at accept time rather than a validation error at
+    issue time.
+
+    This docstring used to close by saying portal memberships are created against a
+    specific client and never by invitation. That has been false since `7d71ff6`: an
+    invitation may now name a client and grant a portal seat, which is what
+    `client_role_choices` below offers. The two lists are disjoint for exactly the
+    reason this one is filtered at all — each names the arm of the CHECK its own
+    invitations are able to satisfy.
     """
     return [(role.value, str(role.label)) for role in TenantRole if role in FIRM_ROLES]
+
+
+# The two roles a PORTAL invitation may grant, stated as a pair rather than filtered out
+# of `TenantRole` the way `firm_role_choices` above filters its own.
+#
+# Two reasons, and the second is the load-bearing one. The order here is the order a
+# chooser offers, and it is chosen — `client_owner` first, because that is the seat a
+# MEI owner takes and the collaborator is the exception. Filtering `TenantRole` would
+# inherit declaration order by accident instead.
+#
+# And `tests/authz/test_role_check_guard.py` pins this module to FIVE role references,
+# character for character, as the price of its data-shape exemption. `if role in
+# CLIENT_ROLES` would be a sixth, and the guard is explicit that a sixth has to be
+# argued for rather than inherited. Nothing here needs to compare a role: the pair IS
+# the answer. `CLIENT_ROLES` remains the authority the CHECK constraints below evaluate
+# against, and `test_the_portal_choices_agree_with_the_check_constraint` holds the two
+# together so this tuple cannot drift out of it.
+PORTAL_INVITE_ROLES: Final[tuple["TenantRole", ...]] = (
+    TenantRole.CLIENT_OWNER,
+    TenantRole.CLIENT_COLLABORATOR,
+)
+
+
+def client_role_choices() -> list[tuple[str, str]]:
+    """Return only the roles a PORTAL invitation may grant.
+
+    The twin of `firm_role_choices`, and it exists for the mirror-image reason. A portal
+    invitation creates a membership against one client, so offering a FIRM role would
+    produce a row `membership_role_matches_client_scope` rejects — an IntegrityError at
+    accept time, for the invitee, rather than a validation error at issue time, for the
+    firm, which is the one moment anybody can still fix it.
+    """
+    return [(member.value, str(member.label)) for member in PORTAL_INVITE_ROLES]
 
 
 class TenantPlan(models.TextChoices):
@@ -186,11 +229,38 @@ class Invite(UUIDv7PrimaryKeyModel):
         related_name="invites",
         verbose_name=_("tenant"),
     )
+    # An invitation is a promise of a membership, so it carries the same optional
+    # client the membership will. NULL means firm-side: the seat is in the firm. A
+    # value means portal-side: the seat is inside that one client. Which of the two an
+    # invitation is gets decided when it is issued, never when it is redeemed — the
+    # token is already in the invitee's hands by then, and a seat that could be
+    # re-scoped at accept time would be a bearer credential for an unbounded grant.
+    client = models.ForeignKey(
+        "clients.ClientCompany",
+        on_delete=models.CASCADE,
+        related_name="portal_invites",
+        verbose_name=_("client"),
+        null=True,
+        blank=True,
+    )
     email = models.EmailField(_("email address"))
     role = models.CharField(_("role"), max_length=32, choices=TenantRole.choices)
     token = models.CharField(_("token digest"), max_length=64, unique=True)
     expires_at = models.DateTimeField(_("expires at"))
     accepted_at = models.DateTimeField(_("accepted at"), null=True, blank=True)
+    # Withdrawal is recorded as a THIRD timestamp rather than by deleting the row or by
+    # backdating `expires_at`, and both alternatives lose something this column keeps.
+    #
+    # A DELETE removes the only record that this address was ever offered a seat, and
+    # it takes the token digest with it — so a link presented afterwards matches
+    # nothing and is refused as an UNKNOWN invitation rather than a withdrawn one. The
+    # holder is told the wrong thing, and the firm can no longer answer "did we invite
+    # them, and did we take it back?".
+    #
+    # Backdating `expires_at` keeps the row but destroys the distinction the trail
+    # exists for: "the firm changed its mind" and "nobody got round to it" become the
+    # same fact, in the one column that could have told them apart.
+    revoked_at = models.DateTimeField(_("revoked at"), null=True, blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
     objects = PlatformScopedManager["Invite"]()
@@ -202,13 +272,23 @@ class Invite(UUIDv7PrimaryKeyModel):
         verbose_name_plural = _("invites")
         ordering: ClassVar[list[str]] = ["-created_at"]
         constraints: ClassVar[list[models.BaseConstraint]] = [
-            # Accepting an invite creates a membership with no client, so a client
-            # role here would violate membership_role_matches_client_scope at accept
-            # time — an IntegrityError for the invitee rather than a validation error
-            # for the firm. The form offers firm roles only; this is the layer that
-            # holds when something writes an Invite without going through the form.
+            # Accepting an invite writes Membership(client=invite.client), so this is
+            # membership_role_matches_client_scope evaluated one step earlier, against
+            # the same two arms. An invitation the membership constraint would reject
+            # is an IntegrityError for the INVITEE at accept time — they arrive with a
+            # valid token and cannot get in — rather than a refusal for the firm at
+            # issue time, which is the one moment anyone can still fix it.
+            #
+            # The name predates the portal invitation and is kept deliberately:
+            # renaming a CHECK is a drop-and-recreate that changes no behaviour, and
+            # the arm it names is still the one that carries the most weight — a
+            # client role on a client-less invite is how a portal seat escapes a
+            # client and becomes firm-wide.
             models.CheckConstraint(
-                condition=models.Q(role__in=FIRM_ROLES),
+                condition=(
+                    models.Q(role__in=FIRM_ROLES, client__isnull=True)
+                    | models.Q(role__in=CLIENT_ROLES, client__isnull=False)
+                ),
                 name="invite_role_is_firm_side",
             ),
         ]
@@ -229,18 +309,26 @@ class Invite(UUIDv7PrimaryKeyModel):
         tenant: Tenant,
         email: str,
         role: str,
+        client: "ClientCompany | None" = None,
         expires_at: datetime | None = None,
     ) -> tuple["Invite", str]:
         """Create an invite and return it with the one-time raw token.
 
         The raw token is returned rather than stored so the caller can mail it. It is
         unrecoverable afterwards, which is the point.
+
+        `client` defaults to None, which is what makes every existing firm-side caller
+        keep issuing firm-side invitations unchanged. A value makes this a portal
+        invitation, and the pairing with `role` is checked by `invite_role_is_firm_side`
+        in the database rather than here — one arm of that CHECK is the whole reason the
+        column is on this row at all.
         """
         raw_token = secrets.token_urlsafe(INVITE_TOKEN_BYTES)
         invite = cls.objects.create(
             tenant=tenant,
             email=email,
             role=role,
+            client=client,
             token=cls.hash_token(raw_token),
             expires_at=expires_at or timezone.now() + INVITE_VALIDITY,
         )

@@ -2,5 +2,55 @@
 {% block title %}{% translate "Solicitação recebida" %}{% endblock %}
 {% block heading %}{% translate "Solicitação recebida" %}{% endblock %}
 {% block content %}
-  <p class="text-sm text-ink-600">{% translate "Sua solicitação foi registrada e encaminhada ao encarregado." %}</p>
+  {% comment %}
+    `request_received_view` promises this page states the statutory response deadline,
+    and it renders with an empty context, so whatever it states has to be a literal
+    here. That makes the choice of literal the whole decision.
+
+    No number is printed. `docs/lgpd.md` documents exactly one figure — two business
+    days, in the incident runbook of section 4 — and that clock belongs to notifying
+    the ANPD after a breach, not to answering a data subject. Reusing it here would
+    read as a promise, be wrong, and be wrong in the direction the person reading it
+    would act on. The deadline is therefore named by its source, art. 19, which is the
+    same citation `apps/audit/models.py:261` gives for why this request carries a reply
+    address at all. When the encarregado's own service window is written down, this is
+    the line that gets the figure.
+
+    No protocol number either. The view passes none, the identifier lives on the
+    request row and on the platform event raised beside it, and inventing a reference
+    the support channel would not recognise is worse than admitting the page has none.
+
+    The two paragraphs after the deadline are not filler: they are the routing rule of
+    section 1 and the retention carve-out of section 5, which are the two things a
+    requester is most likely to be surprised by later. Someone told now that fiscal
+    documents survive an erasure request reads the eventual answer as the law working;
+    someone told for the first time in that answer reads it as a refusal.
+
+    The glyph on the heading is the calendar-with-clock, and it is there because this
+    section is about WHEN. That is the one question this page cannot answer with a
+    figure — no service window is written down anywhere in this repo, so the deadline
+    is named by its article instead — and a reader scanning for a date needs to land on
+    this section rather than hunt the prose for one. It reinforces the subject; it is
+    not the subject. The deadline is still stated in words, in the paragraph below.
+  {% endcomment %}
+  <div class="max-w-2xl">
+    {% translate "Sua solicitação foi registrada e encaminhada ao encarregado." as received %}
+    {% include 'partials/pure/notice.html' with message=received variant='success' only %}
+
+    <section class="card mt-6 p-6" aria-labelledby="prazo-de-resposta">
+      <h2 id="prazo-de-resposta" class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink-700">
+        {% include "partials/pure/icons/calendar-clock.html" %}
+        <span>{% translate "O que acontece agora" %}</span>
+      </h2>
+      <p class="text-sm text-ink-600">
+        {% translate "O encarregado analisa o pedido e responde para o e-mail informado no formulário, dentro do prazo legal previsto no art. 19 da LGPD." %}
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% translate "Pedidos sobre os dados que um escritório de contabilidade mantém dos seus clientes são respondidos pelo próprio escritório, com o nosso apoio. Pedidos sobre a conta de acesso e a segurança da plataforma são respondidos por nós." %}
+      </p>
+      <p class="mt-3 text-sm text-ink-600">
+        {% translate "Parte dos dados tem guarda obrigatória por lei — documentos e apurações fiscais, registros de acesso e a trilha de auditoria. Quando o pedido alcançar esses dados, a resposta explica o que foi mantido e por quê." %}
+      </p>
+    </section>
+  </div>
 {% endblock %}
