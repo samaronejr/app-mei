@@ -291,12 +291,40 @@ RATELIMIT_PUBLIC_POST_URL_NAMES = [
     # both creates an account and mints a membership -- so unlimited it is a way to
     # brute-force a token AND an unauthenticated account-creation endpoint.
     #
-    # The email bucket collapses to `email:unknown` here, exactly as it already does for
-    # `mfa_authenticate` and `account_reset_password_from_key`: the credential is the
-    # token in the URL, so the form carries no address to key on. That is the correct
-    # trade rather than a gap. Adding an email field would let a caller mint a fresh
-    # bucket per address they invent, which is a limit with a bypass built in; the IP
-    # bucket is what actually binds a flood, and it still does.
+    # The bucket it lands in is SHARED, platform-wide, and that is accepted rather than
+    # overlooked. `_email_key` reads `login` or `email` off the POST; this form carries
+    # neither, because the credential is the token in the URL. So the address normalizes
+    # to `unknown` and every request counts against the single key `email:unknown` in
+    # group `login-email` at `RATELIMIT_LOGIN_EMAIL` -- five a minute for the whole
+    # platform, not five per invitee. `mfa_authenticate` (`code`) and
+    # `account_reset_password_from_key` (`password1`/`password2`) carry no address
+    # either, so all three endpoints share that one counter.
+    #
+    # Measured, not reasoned: five requests from five different IPs across the other
+    # two endpoints exhaust it, and the sixth caller -- a real invitee, on a firm's
+    # portal, from an IP nobody has seen -- is answered 429 with her own IP bucket
+    # untouched. One attacker sustaining five a minute holds the fuse open and every
+    # anonymous credential caller on the platform is refused alongside her. It fails
+    # CLOSED, which is the right direction to fail, but the collateral IS the trade:
+    # the limit protects the token by denying the invitation.
+    #
+    # It is the email bucket doing that denying, not the IP one, despite what this note
+    # used to say -- 5/m global is tighter than `RATELIMIT_LOGIN_IP`'s 20/m per caller,
+    # so the IP bucket never fires here. `credential_limits`
+    # (`apps/security/ratelimit.py:67-72`) binds where an address exists to spread
+    # attempts across, which is login, reset-request and `dsr-submit`, and
+    # `tests/security/test_rate_limit.py:140-148` is where that is pinned. On this
+    # endpoint it is slack, not the binding constraint.
+    #
+    # A per-address bucket was REJECTED and would not have helped: the address would
+    # come from a form field the caller fills in, so every invented address mints its
+    # own five attempts -- a limit with the bypass built into its key. `dsr-submit`
+    # already shows the shape, its `email` being the caller's to type. Normalizing
+    # casing and whitespace stops `A@x` and `a@x ` splitting a bucket; nothing can
+    # make `whatever@x` cost anything. What makes guessing hopeless is the token
+    # itself, `secrets.token_urlsafe(32)` stored as a SHA-256 digest -- these buckets
+    # are depth behind it, which is why paying for them with a shared counter is
+    # tolerable and a keyspace the caller controls would not be.
     "portal-invite-accept",
 ]
 
