@@ -12,10 +12,18 @@ wrote, where `Decimal(1234.5)` would keep the binary approximation of them.
 
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING, Final
 from zoneinfo import ZoneInfo
 
 from django import template
 from django.utils.translation import gettext_lazy as _
+
+from apps.clients.models import ClientStatus, OnboardingStatus
+from apps.obligations.models import ObligationStatus
+from apps.tenants.models import TenantRole
+
+if TYPE_CHECKING:
+    from django_stubs_ext import StrOrPromise
 
 register = template.Library()
 
@@ -39,6 +47,37 @@ MONTH_ABBREVIATIONS = (
 )
 
 EMPTY = "—"
+UNKNOWN_LABEL: Final["StrOrPromise"] = _("Desconhecido")
+
+TENANT_ROLE_LABELS: Final[dict[str, "StrOrPromise"]] = {
+    TenantRole.OWNER.value: _("Proprietário"),
+    TenantRole.STAFF_ACCOUNTANT.value: _("Contador"),
+    TenantRole.OPERATIONS_ADMIN.value: _("Administrador de operações"),
+    TenantRole.CLIENT_OWNER.value: _("Titular do MEI"),
+    TenantRole.CLIENT_COLLABORATOR.value: _("Colaborador do MEI"),
+}
+
+CLIENT_STATUS_LABELS: Final[dict[str, "StrOrPromise"]] = {
+    ClientStatus.ONBOARDING.value: _("Em onboarding"),
+    ClientStatus.ACTIVE.value: _("Ativo"),
+    ClientStatus.SUSPENDED.value: _("Suspenso"),
+    ClientStatus.CLOSED.value: _("Encerrado"),
+}
+
+OBLIGATION_STATUS_LABELS: Final[dict[str, "StrOrPromise"]] = {
+    ObligationStatus.SCHEDULED.value: _("Programada"),
+    ObligationStatus.DUE.value: _("A pagar"),
+    ObligationStatus.PAID.value: _("Paga"),
+    ObligationStatus.OVERDUE.value: _("Em atraso"),
+    ObligationStatus.WAIVED.value: _("Dispensada"),
+}
+
+ONBOARDING_STATUS_LABELS: Final[dict[str, "StrOrPromise"]] = {
+    OnboardingStatus.PENDING.value: _("Pendente"),
+    OnboardingStatus.BLOCKED.value: _("Travado"),
+    OnboardingStatus.DONE.value: _("Concluído"),
+    OnboardingStatus.NOT_APPLICABLE.value: _("Não se aplica"),
+}
 
 
 def _as_decimal(value: object) -> Decimal | None:
@@ -132,3 +171,27 @@ STATUS_LABELS = {
 def banda_limite(value: str) -> str:
     """Name a revenue threshold band in the words an accountant uses."""
     return str(STATUS_LABELS.get(value, value))
+
+
+@register.filter(name="papel")
+def papel(value: str) -> str:
+    """Name a tenant role in pt-BR."""
+    return str(TENANT_ROLE_LABELS.get(value, UNKNOWN_LABEL))
+
+
+@register.filter(name="situacao_cliente")
+def situacao_cliente(value: str) -> str:
+    """Name a client status in pt-BR."""
+    return str(CLIENT_STATUS_LABELS.get(value, UNKNOWN_LABEL))
+
+
+@register.filter(name="situacao_obrigacao")
+def situacao_obrigacao(value: str) -> str:
+    """Name an obligation status in pt-BR."""
+    return str(OBLIGATION_STATUS_LABELS.get(value, UNKNOWN_LABEL))
+
+
+@register.filter(name="situacao_onboarding")
+def situacao_onboarding(value: str) -> str:
+    """Name an onboarding status in pt-BR."""
+    return str(ONBOARDING_STATUS_LABELS.get(value, UNKNOWN_LABEL))
