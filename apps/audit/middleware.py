@@ -12,6 +12,7 @@ from collections.abc import Callable
 from django.conf import settings
 from django.http import HttpRequest
 from django.http.response import HttpResponseBase
+from django.urls import Resolver404, resolve
 
 from apps.accounts.models import User
 from apps.audit.models import AccessLog
@@ -47,8 +48,14 @@ def _recorded_path(request: HttpRequest) -> str:
     """
     full_path = request.get_full_path()
     path, separator, query = full_path.partition("?")
-    match = request.resolver_match
-    if match is None or match.url_name not in settings.CREDENTIAL_BEARING_URL_NAMES:
+    try:
+        match = resolve(
+            request.path_info,
+            urlconf=getattr(request, "urlconf", None),
+        )
+    except Resolver404:
+        return full_path
+    if match.url_name not in settings.CREDENTIAL_BEARING_URL_NAMES:
         return full_path
 
     parameters = {name: str(value) for name, value in match.kwargs.items()}

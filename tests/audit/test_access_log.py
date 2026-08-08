@@ -45,7 +45,8 @@ from apps.clients.models import ClientCompany
 from apps.core.rls import is_exempt_from_tenant_policy
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Invite, Membership, Tenant, TenantRole
-from tests.support import enrol_totp
+from tests.support import enrol_totp, pin_rate_limit_window
+from tests.ui.factories import make_firm
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -54,8 +55,8 @@ TENANT_HOST = "alpha.localhost"
 # The two hosts that answer an acceptance link, and they are genuinely different doors.
 # The firm-side route is mounted at the PLATFORM level (`apps/accounts/views.py` says
 # why a subdomain cannot serve it), while the portal route lives on the portal urlconf
-# and is reached through `HostDispatchMiddleware`. They share one path shape, which is
-# exactly why one prefix covers both.
+# and is reached through `HostDispatchMiddleware`. They resolve to registered names in
+# their respective URL trees, so one registry decision covers both.
 FIRM_ROUTE: Final = "firm"
 PORTAL_ROUTE: Final = "portal"
 FIRM_URLCONF: Final = "config.urls"
@@ -71,6 +72,7 @@ QUERY_STRING: Final = "?origem=email"
 CONFIRM_EMAIL_PATH_PREFIX: Final = "/accounts/confirm-email/"
 RESET_KEY_PATH_PREFIX: Final = "/accounts/password/reset/key/"
 RESET_LINK_PATH: Final = re.compile(r"/accounts/password/reset/key/[\w-]+/")
+INVITATION_ATTEMPTS_ALLOWED: Final = 5
 
 
 @pytest.fixture(autouse=True)
@@ -324,6 +326,111 @@ def test_an_invitation_token_never_reaches_the_access_record(
     # resolve the same registered route shape, so the route-name gate must cover both.
     assert row.path == REDACTED_INVITE_PATH
     assert raw_token not in row.path
+
+
+@pytest.mark.parametrize("route", [FIRM_ROUTE, PORTAL_ROUTE])
+@pytest.mark.usefixtures("_shipped_urls")
+def test_a_rate_limited_invitation_never_records_its_raw_token(
+    route: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pin_rate_limit_window(monkeypatch)
+    firm = make_firm("acme", client_count=1)
+    if route == PORTAL_ROUTE:
+        invite, raw_token = Invite.issue(
+            tenant=firm.tenant,
+            email=INVITED,
+            role=TenantRole.CLIENT_OWNER,
+            client=firm.clients[0],
+        )
+        path = reverse(
+            "portal-invite-accept",
+            args=[raw_token],
+            urlconf=PORTAL_URLCONF,
+        )
+        host = "acme-portal.localhost"
+    else:
+        invite, raw_token = Invite.issue(
+            tenant=firm.tenant,
+            email=INVITED,
+            role=TenantRole.STAFF_ACCOUNTANT,
+        )
+        path = reverse("invite-accept", args=[raw_token], urlconf=FIRM_URLCONF)
+        host = PLATFORM_HOST
+    assert invite.token != raw_token
+    assert raw_token in path
+
+    client = Client()
+    responses = [
+        client.post(
+            path,
+            {"full_name": "X", "password1": "nope", "password2": "nope"},
+            headers={"host": host},
+            REMOTE_ADDR="198.51.100.9",
+        )
+        for _ in range(INVITATION_ATTEMPTS_ALLOWED + 1)
+    ]
+    assert all(
+        response.status_code != HTTPStatus.TOO_MANY_REQUESTS
+        for response in responses[:-1]
+    )
+    assert responses[-1].status_code == HTTPStatus.TOO_MANY_REQUESTS
+
+    rows = list(
+        AccessLog.objects.filter(path__startswith=INVITE_PATH_PREFIX)
+        .order_by("created_at")
+        .values_list("path", "status_code"),
+    )
+    print(f"RATE_LIMIT_ROWS route={route} rows={rows}")  # noqa: T201
+    assert len(rows) == INVITATION_ATTEMPTS_ALLOWED + 1
+    assert rows[-1] == (REDACTED_INVITE_PATH, HTTPStatus.TOO_MANY_REQUESTS)
+    assert not AccessLog.objects.filter(path__contains=raw_token).exists()
+
+
+@pytest.mark.usefixtures("_shipped_urls")
+def test_a_forged_credential_route_that_returns_404_is_redacted() -> None:
+    needle = "forged-invitation-credential"
+    path = reverse("invite-accept", args=[needle], urlconf=FIRM_URLCONF)
+
+    response = Client().get(path, headers={"host": PLATFORM_HOST})
+    assert response.status_code == HTTPStatus.NOT_FOUND
+    rows = list(AccessLog.objects.values_list("path", "status_code"))
+    print(f"RESOLVED_404_ROWS rows={rows}")  # noqa: T201
+    assert rows == [(REDACTED_INVITE_PATH, HTTPStatus.NOT_FOUND)]
+    assert not AccessLog.objects.filter(path__contains=needle).exists()
+
+
+@pytest.mark.usefixtures("_shipped_urls")
+def test_an_unresolved_credential_shaped_404_is_recorded_unchanged() -> None:
+    path = "/convites/aceitar/not-a-route/extra/"
+
+    response = Client().get(path, headers={"host": PLATFORM_HOST})
+    assert response.status_code == HTTPStatus.NOT_FOUND
+    rows = list(AccessLog.objects.values_list("path", "status_code"))
+    print(f"UNRESOLVED_404_ROWS rows={rows}")  # noqa: T201
+    assert rows == [(path, HTTPStatus.NOT_FOUND)]
+
+
+@pytest.mark.usefixtures("_shipped_urls")
+def test_a_csrf_refusal_still_redacts_the_invitation_token() -> None:
+    firm = make_firm("acme")
+    _invite, raw_token = Invite.issue(
+        tenant=firm.tenant,
+        email=INVITED,
+        role=TenantRole.STAFF_ACCOUNTANT,
+    )
+    path = reverse("invite-accept", args=[raw_token], urlconf=FIRM_URLCONF)
+
+    response = Client(enforce_csrf_checks=True).post(
+        path,
+        {"full_name": "X", "password1": "nope", "password2": "nope"},
+        headers={"host": PLATFORM_HOST},
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    rows = list(AccessLog.objects.values_list("path", "status_code"))
+    print(f"CSRF_REFUSAL_ROWS rows={rows}")  # noqa: T201
+    assert rows == [(REDACTED_INVITE_PATH, HTTPStatus.FORBIDDEN)]
+    assert not AccessLog.objects.filter(path__contains=raw_token).exists()
 
 
 @pytest.mark.parametrize("route", [FIRM_ROUTE, PORTAL_ROUTE])
