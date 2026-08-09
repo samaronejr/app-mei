@@ -1,11 +1,135 @@
 """Production settings: TLS-terminated, host-only cookies, Sentry on."""
 
+from typing import Any, Final, cast
+from urllib.parse import urlsplit, urlunsplit
+
 import sentry_sdk
 from botocore.config import Config as BotocoreConfig
+from django.conf import settings
+from django.urls import Resolver404, resolve
 from sentry_sdk.integrations.django import DjangoIntegration
+from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
+from sentry_sdk.types import Event, Hint
 
 from config.settings.base import *  # noqa: F403
 from config.settings.base import env
+
+type SentryValue = (
+    str | int | float | bool | dict[str, SentryValue] | list[SentryValue] | None
+)
+
+SENTRY_REDACTION_MARKER: Final = "[Filtered]"
+SENTRY_CREDENTIAL_FIELDS: Final = frozenset(
+    {
+        "code",
+        "confirmation_code",
+        "key",
+        "login_code",
+        "oldpassword",
+        "password1",
+        "password2",
+        "recovery-code",
+        "recovery_code",
+    }
+)
+_RESET_FROM_KEY_URL_NAME: Final = "account_reset_password_from_key"
+_RESET_FORM_URL_KEY: Final = "set-password"
+
+
+def _replace_path_segment(path: str, credential: str, replacement: str) -> str:
+    segments = path.split("/")
+    try:
+        index = segments.index(credential)
+    except ValueError:
+        return path
+    segments[index] = replacement
+    return "/".join(segments)
+
+
+def _redact_credential_url(value: str) -> tuple[str, set[str]]:
+    parsed = urlsplit(value)
+    if not parsed.path.startswith("/"):
+        return value, set()
+    try:
+        match = resolve(parsed.path, urlconf=settings.ROOT_URLCONF)
+    except Resolver404:
+        return value, set()
+    if match.url_name not in settings.CREDENTIAL_BEARING_URL_NAMES:
+        return value, set()
+
+    path = parsed.path
+    credentials: set[str] = set()
+    parameters = {name: str(item) for name, item in match.kwargs.items()}
+    if match.url_name == _RESET_FROM_KEY_URL_NAME:
+        uidb36 = parameters.get("uidb36")
+        key = parameters.get("key")
+        if key == _RESET_FORM_URL_KEY:
+            return value, set()
+        if uidb36 is not None and key is not None:
+            combined = f"{uidb36}-{key}"
+            credentials.update({key, combined})
+            path = _replace_path_segment(
+                path,
+                combined,
+                f"{uidb36}-{SENTRY_REDACTION_MARKER}",
+            )
+    else:
+        credentials.update(parameters.values())
+        for credential in credentials:
+            path = _replace_path_segment(
+                path,
+                credential,
+                SENTRY_REDACTION_MARKER,
+            )
+
+    redacted = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    return redacted, credentials
+
+
+def _scrub_sentry_urls(value: SentryValue, credentials: set[str]) -> SentryValue:
+    if isinstance(value, dict):
+        scrubbed: dict[str, SentryValue] = {}
+        for key, item in value.items():
+            if key.lower() in SENTRY_CREDENTIAL_FIELDS:
+                scrubbed[key] = SENTRY_REDACTION_MARKER
+            else:
+                scrubbed[key] = _scrub_sentry_urls(item, credentials)
+        return scrubbed
+    if isinstance(value, list):
+        return [_scrub_sentry_urls(item, credentials) for item in value]
+    if isinstance(value, str):
+        redacted, found = _redact_credential_url(value)
+        credentials.update(found)
+        return redacted
+    return value
+
+
+def _replace_sentry_credentials(
+    value: SentryValue,
+    credentials: set[str],
+) -> SentryValue:
+    if isinstance(value, dict):
+        return {
+            key: _replace_sentry_credentials(item, credentials)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_sentry_credentials(item, credentials) for item in value]
+    if isinstance(value, str):
+        for credential in credentials:
+            value = value.replace(credential, SENTRY_REDACTION_MARKER)
+    return value
+
+
+def scrub_sentry_event(event: Event, _hint: Hint) -> Event:
+    credentials: set[str] = set()
+    scrubbed = _scrub_sentry_urls(cast("SentryValue", event), credentials)
+    return cast("Event", _replace_sentry_credentials(scrubbed, credentials))
+
+
+def scrub_sentry_transaction(event: Event, hint: Hint) -> Event:
+    return scrub_sentry_event(event, hint)
+
 
 DEBUG = False
 
@@ -15,7 +139,6 @@ SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=31536000)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
-SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
 
 SESSION_COOKIE_SECURE = True
@@ -75,11 +198,18 @@ STORAGES = {
 }
 
 _sentry_dsn = env.str("SENTRY_DSN", default="")
-if _sentry_dsn:
-    sentry_sdk.init(
-        dsn=_sentry_dsn,
-        integrations=[DjangoIntegration()],
-        environment=env.str("SENTRY_ENVIRONMENT", default="production"),
-        traces_sample_rate=env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.0),
+SENTRY_OPTIONS: dict[str, Any] = {
+    "integrations": [DjangoIntegration()],
+    "environment": env.str("SENTRY_ENVIRONMENT", default="production"),
+    "traces_sample_rate": env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.0),
+    "send_default_pii": False,
+    "event_scrubber": EventScrubber(
+        denylist=[*DEFAULT_DENYLIST, *sorted(SENTRY_CREDENTIAL_FIELDS)],
+        recursive=True,
         send_default_pii=False,
-    )
+    ),
+    "before_send": scrub_sentry_event,
+    "before_send_transaction": scrub_sentry_transaction,
+}
+if _sentry_dsn:
+    sentry_sdk.init(dsn=_sentry_dsn, **SENTRY_OPTIONS)

@@ -304,7 +304,7 @@ CSRF_COOKIE_PATH = "/"
 
 X_FRAME_OPTIONS = "DENY"
 SECURE_CONTENT_TYPE_NOSNIFF = True
-SECURE_REFERRER_POLICY = "same-origin"
+SECURE_REFERRER_POLICY = "strict-origin"
 
 REDIS_URL = env.str("REDIS_URL", default="redis://localhost:6379/0")
 

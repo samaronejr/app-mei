@@ -217,6 +217,40 @@ be wrong in.
 All four are settings (`RATELIMIT_*`), so a deployment tightens them without a code
 change. Buckets live in the Redis cache.
 
+## Credential log hygiene
+
+Credential-bearing URLs cross several independently configured boundaries. A clean
+application audit row does not prove that the proxy, process server, error reporter or
+host log driver is also clean. The current disposition of every known sink is:
+
+| Sink | Repository control | Status and boundary |
+| --- | --- | --- |
+| `audit_accesslog.path` | yes | **REDACTED.** Registered credential path segments are replaced before the 180-day access row is written. The visit remains recorded. |
+| Django application logs | yes | **NO EXPLICIT PATH ON NORMAL HANDLED PATHS.** Application code does not log request URLs on successful or handled refusal paths. This is not a substitute for the four-path container-log trace required by RESIDUAL-008. |
+| Gunicorn access log | yes | **SANITIZED.** The explicit production format retains remote address, timestamp, method, status, bytes, duration and user-agent. It omits the request line, path, query string and Referer. No request/correlation header exists in the repository, so none was invented for this change. |
+| Caddy access/error log | yes | **PROVISIONAL MEASURED-ACCEPT.** With the shipped `level WARN`, a local Caddy 2 measurement produced a 200 with zero ordinary-request canary hits. A reverse-proxy refusal produced a 502 and two URI-bearing error/access entries. This is not settled: RESIDUAL-008 must find the canary absent across success, refusal, rate-limit and safe-error paths in Caddy and container logs. If any path records it, that field must be redacted or disabled before RESIDUAL-008 completes. |
+| Docker/container log retention | partial | **OPERATOR GATE.** Neither `docker-compose.yml` nor `docker-compose.prod.yml` contains a `logging:` block. The default driver and retention are host-level state; there is no in-repository retention setting to change. The operator must configure and verify host rotation. |
+| Sentry events and transactions | yes | **SANITIZED.** The SDK denylist is extended recursively for the live password and code fields. Both send hooks scrub request and Referer URLs, request data, transaction names, breadcrumb URLs, span URLs and repeated credentials in stack-frame locals. |
+| CDN or load balancer | no deployed repository component | **NOT APPLICABLE.** Caddy is the only proxy represented in Git. Reclassify this row if another edge is introduced. |
+| Browser history | no | **RESIDUAL RISK.** The credential remains in the address bar and history by design; the rejected token-exchange redesign is not reopened here. |
+| Referer propagation | yes | **CLOSED GLOBALLY.** `SECURE_REFERRER_POLICY` is `strict-origin`, so same-scheme subrequests carry only the origin and HTTPS-to-HTTP downgrades carry no Referer. |
+| Email scanners and link previews | no | **RESIDUAL RISK.** A mailed bearer link can be visited by recipient-side security tooling outside this repository's control. |
+
+### Referrer-Policy supersession
+
+The operator explicitly superseded RESIDUAL-005's instruction to keep the global
+`SECURE_REFERRER_POLICY = "same-origin"` and stamp `origin` only on credential routes.
+The approved policy is `strict-origin` globally in `config/settings/base.py`; production
+inherits it. This strips paths on every route and also suppresses the Referer on an
+HTTPS-to-HTTP downgrade. The global setting makes a per-route stamp in
+`apps/security/csp.py` redundant, so no route-resolution machinery was added.
+
+This remains compatible with Django's HTTPS CSRF enforcement. Requests carrying an
+`Origin` are checked through that branch first. When `Origin` is absent, the strict
+Referer fallback compares the HTTPS scheme and host, not the path; `strict-origin`
+still supplies that origin on a same-scheme request. A policy that removed the Referer
+entirely would break that fallback and is deliberately not used.
+
 ## Backups
 
 `ops/backup.sh` takes a physical base backup, a logical dump, and prunes the WAL
