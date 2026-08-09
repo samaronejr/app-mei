@@ -20,21 +20,24 @@ Both layers, following the five-refusal discipline next door: the scope guard is
 directly with HTTP taken out of the picture, and the route is driven through the real
 middleware chain on the real host.
 
-**The refusal sentence is deliberately identical to the one an unknown token gets.** A
-wrong-scope link has to read as no link at all on this host, which is what
-`_STATUS_BY_ERROR`'s own comment is about (`apps/accounts/views.py:86-89`). A distinct
-sentence would answer 404 and still tell whoever holds the token that it names a real
+**For a redeemable token, the refusal sentence is deliberately identical to the one an
+unknown token gets.** A live wrong-scope link has to read as no link at all, which is
+what `_STATUS_BY_ERROR`'s own comment is about
+(`apps/accounts/views.py:86-89`). A distinct sentence would answer 404 and still tell
+whoever holds the token that it names a real
 client-scoped invitation somewhere — the fact the shared status exists to withhold. The
 last case pins that indistinguishability against the two responses themselves.
 """
 
 from collections.abc import Callable
+from datetime import timedelta
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 from django.test import Client
 from django.urls import reverse
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
@@ -373,7 +376,7 @@ def test_a_firm_side_invitation_still_renders_its_acceptance_page(firm: Tenant) 
     assert FIRM_INVITED in response.content.decode()
 
 
-def test_the_refusal_is_indistinguishable_from_a_token_that_names_nothing(
+def test_the_live_refusal_is_indistinguishable_from_a_token_that_names_nothing(
     firm: Tenant,
     padaria: ClientCompany,
 ) -> None:
@@ -405,3 +408,47 @@ def test_the_refusal_is_indistinguishable_from_a_token_that_names_nothing(
     # responses agreeing with each other
     assert REFUSAL_SENTINEL in unknown.content.decode()
     assert NOT_FOUND_SENTENCE in unknown.content.decode()
+
+
+@pytest.mark.parametrize(
+    ("lifecycle", "reason"),
+    [
+        pytest.param(
+            "accepted",
+            "That invitation has already been used.",
+            id="accepted",
+        ),
+        pytest.param(
+            "revoked",
+            "That invitation was withdrawn.",
+            id="revoked",
+        ),
+        pytest.param(
+            "expired",
+            "That invitation has expired.",
+            id="expired",
+        ),
+    ],
+)
+def test_a_dead_wrong_scope_token_keeps_its_lifecycle_specific_gone_response(
+    firm: Tenant,
+    padaria: ClientCompany,
+    lifecycle: str,
+    reason: str,
+) -> None:
+    invite, raw_token = _client_invitation(firm, padaria)
+    if lifecycle == "accepted":
+        assert _redeem_at_portal_route(raw_token).status_code == HTTPStatus.FOUND
+    elif lifecycle == "revoked":
+        invite.revoked_at = timezone.now()
+        invite.save(update_fields=["revoked_at"])
+    else:
+        invite.expires_at = timezone.now() - timedelta(seconds=1)
+        invite.save(update_fields=["expires_at"])
+
+    dead_wrong_scope = _open_at_firm_route(raw_token, "GET")
+    unknown = _open_at_firm_route(UNKNOWN_TOKEN, "GET")
+
+    assert dead_wrong_scope.status_code == HTTPStatus.GONE
+    assert reason in dead_wrong_scope.content.decode()
+    assert unknown.status_code == HTTPStatus.NOT_FOUND

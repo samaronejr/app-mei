@@ -21,6 +21,7 @@ from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.invites import (
     InviteEmailMismatchError,
+    InviteScope,
     accept_invite,
     resolve_invite,
 )
@@ -328,6 +329,10 @@ def test_the_domain_layer_refuses_a_mismatched_user_directly(tenant: Tenant) -> 
     # Then the binding is enforced in the domain, not only in the view — so a future
     # caller that forgets the view's check cannot bypass it
     with pytest.raises(InviteEmailMismatchError):
-        accept_invite(invite=invite, user=intruder)
+        accept_invite(
+            invite=invite,
+            user=intruder,
+            expected_scope=InviteScope.FIRM,
+        )
     assert Membership.objects.count() == 0
     assert Invite.objects.get().accepted_at is None

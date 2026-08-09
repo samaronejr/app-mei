@@ -51,6 +51,7 @@ from apps.accounts.invites import (
     InviteHostMismatchError,
     InviteNotFoundError,
     InviteRevokedError,
+    InviteScope,
     InviteScopeMismatchError,
     accept_invite,
     assert_portal_invite,
@@ -74,8 +75,9 @@ def portal_invite_accept(request: HttpRequest, token: str) -> HttpResponse:
     `resolve_invite` refuses an unknown, spent, withdrawn or lapsed token;
     `assert_portal_invite` refuses one belonging to another firm or to the firm side;
     and `accept_invite` refuses a session that has not proved control of the invited
-    address. The last of the three lives in the domain rather than here, so a management
-    command or a future API cannot reach acceptance without it.
+    address. The host guard remains here because only this door knows `firm_slug` and a
+    GET renders before acceptance. `InviteScope.CLIENT` repeats the scope half inside
+    the locked transaction for future non-HTTP callers and check-to-use resistance.
     """
     try:
         invite = resolve_invite(token)
@@ -110,7 +112,11 @@ def _accept_as_signed_in(
     if request.method == "GET":
         return _accept_page(request, invite, form=None)
     try:
-        accept_invite(invite=invite, user=user)
+        accept_invite(
+            invite=invite,
+            user=user,
+            expected_scope=InviteScope.CLIENT,
+        )
     except InviteError as error:
         return _refused(request, error)
     return HttpResponseRedirect(reverse("portal-home"))
@@ -131,6 +137,7 @@ def _accept_as_new_account(request: HttpRequest, invite: Invite) -> HttpResponse
         user, _membership = register_and_accept(
             invite=invite,
             password=form.cleaned_data["password2"],
+            expected_scope=InviteScope.CLIENT,
             full_name=form.cleaned_data["full_name"],
         )
     except InviteError as error:
