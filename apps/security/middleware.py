@@ -110,9 +110,11 @@ class RateLimitMiddleware:
     @staticmethod
     def _is_limited(request: HttpRequest) -> bool:
         if is_public_post_endpoint(request):
-            # Both buckets are counted, not short-circuited: an attacker spreading
-            # attempts across many addresses must still exhaust the per-IP bucket.
-            overflowed = [exceeds(request, limit) for limit in credential_limits()]
+            # Both applicable buckets are counted, not short-circuited: an attacker
+            # spreading attempts must still exhaust the aggregate per-IP umbrella.
+            overflowed = [
+                exceeds(request, limit) for limit in credential_limits(request)
+            ]
             return any(overflowed)
         user = getattr(request, "user", None)
         if user is None or not user.is_authenticated:
