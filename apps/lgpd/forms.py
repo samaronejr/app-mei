@@ -14,11 +14,11 @@ class DataSubjectRequestForm(forms.ModelForm[DataSubjectRequest]):
     """Collect an LGPD art. 18 rights request from someone who may have no account."""
 
     relationship = forms.ChoiceField(
-        label=_("relationship"),
+        label=_("Relacionamento"),
         choices=DataSubjectRelationship.choices,
     )
     request_type = forms.ChoiceField(
-        label=_("request type"),
+        label=_("Tipo de solicitação"),
         choices=DataSubjectRequestType.choices,
     )
 
