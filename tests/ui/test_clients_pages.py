@@ -222,6 +222,14 @@ DETAIL_URL_NAME: Final = "client-detail"
 # plus one `select_related("capability")` municipality lookup. Sixty therefore leaves
 # about thirty queries of headroom for whatever the screen goes on to show — enough for
 # assignments, obligations and documents, and nowhere near enough to hide an N+1.
+#
+# Some of that headroom is now spent, and the number is recorded rather than left to be
+# rediscovered. The screen measured 37 before the pending portal-invitation list landed
+# and 38 after it: ONE query, because the list renders `email`, `role` and `expires_at`
+# — all local columns, so it needs no `select_related` — and because it is drawn inside
+# the `users.create` tag the invitation form already sits behind, so it buys no second
+# capability triple. Twenty-two queries of headroom remain and the ceiling did not move.
+# It must not: a list that cannot fit inside sixty is to be made cheaper, never louder.
 DETAIL_QUERY_BUDGET: Final = 60
 
 # Two real municipalities, neither of them a state capital, so neither is seeded by

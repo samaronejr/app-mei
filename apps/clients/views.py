@@ -42,7 +42,7 @@ from apps.core.tenancy import current_tenant_id
 from apps.fiscal.capabilities import capability_for
 from apps.obligations.models import Obligation
 from apps.obligations.queries import ThresholdRow, threshold_warning
-from apps.tenants.models import Tenant
+from apps.tenants.models import Invite, Tenant
 
 EXPORT_FILENAME = "clientes.csv"
 
@@ -312,6 +312,33 @@ def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse
             # the field ids, the label binding and the described-by chain identical to
             # every other form in this product.
             "portal_invite_form": PortalInviteIssueForm(),
+            # The other half of the control above, and since `cd4de7e` the only place
+            # a portal invitation is legible at all: Equipe filters
+            # `client__isnull=True`, so a client-scoped row appears on no firm-side
+            # screen. Issuing without listing would leave a live credential nobody can
+            # see and nobody can stand down.
+            #
+            # Scoped THREE ways, and the redundancy is deliberate. `for_user` is the
+            # application-layer control this table has instead of a row-level policy
+            # (`apps/core/access.py:1-15` — `tenants_invite` is in `NON_TENANT_TABLES`,
+            # so the database enforces nothing). `tenant_id` narrows that to the firm
+            # THIS request resolved, which `for_user` alone does not do for an account
+            # holding memberships in two firms. `client_id` narrows it to these books:
+            # the client's UUID already implies its tenant, so this filter is belt and
+            # braces on a page whose whole failure mode is naming somebody else's
+            # invitee.
+            #
+            # No `select_related`: the row renders `email`, `role` and `expires_at`,
+            # all local columns, so the list costs exactly one query and the detail
+            # budget at `tests/ui/test_clients_pages.py:225` does not move.
+            "pending_portal_invites": Invite.objects.for_user(request.user)
+            .filter(
+                tenant_id=tenant_id,
+                client_id=client.pk,
+                accepted_at__isnull=True,
+                revoked_at__isnull=True,
+            )
+            .order_by("email"),
             "page_title": client.legal_name,
         },
         status=HTTPStatus.OK,
