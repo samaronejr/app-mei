@@ -1,5 +1,6 @@
 """Production settings: TLS-terminated, host-only cookies, Sentry on."""
 
+import logging
 from typing import Any, Final, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -12,10 +13,20 @@ from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
 from sentry_sdk.types import Event, Hint
 
 from config.settings.base import *  # noqa: F403
-from config.settings.base import env
+from config.settings.base import LOGGING, env
 
 type SentryValue = (
     str | int | float | bool | dict[str, SentryValue] | list[SentryValue] | None
+)
+type LogValue = (
+    str
+    | int
+    | float
+    | bool
+    | dict[str, LogValue]
+    | tuple[LogValue, ...]
+    | list[LogValue]
+    | None
 )
 
 SENTRY_REDACTION_MARKER: Final = "[Filtered]"
@@ -131,6 +142,78 @@ def scrub_sentry_transaction(event: Event, hint: Hint) -> Event:
     return scrub_sentry_event(event, hint)
 
 
+def _request_credentials(record: logging.LogRecord) -> set[str]:
+    request = getattr(record, "request", None)
+    if request is None:
+        return set()
+    try:
+        match = resolve(
+            request.path_info,
+            urlconf=getattr(request, "urlconf", settings.ROOT_URLCONF),
+        )
+    except Resolver404:
+        return set()
+    if match.url_name not in settings.CREDENTIAL_BEARING_URL_NAMES:
+        return set()
+    parameters = {name: str(item) for name, item in match.kwargs.items()}
+    if match.url_name == _RESET_FROM_KEY_URL_NAME:
+        key = parameters.get("key")
+        if key in {None, _RESET_FORM_URL_KEY}:
+            return set()
+        uidb36 = parameters.get("uidb36")
+        return {key, f"{uidb36}-{key}" if uidb36 is not None else key}
+    return set(parameters.values())
+
+
+def _replace_log_credentials(value: LogValue, credentials: set[str]) -> LogValue:
+    if isinstance(value, dict):
+        return {
+            key: _replace_log_credentials(item, credentials)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_replace_log_credentials(item, credentials) for item in value)
+    if isinstance(value, list):
+        return [_replace_log_credentials(item, credentials) for item in value]
+    if isinstance(value, str):
+        for credential in credentials:
+            value = value.replace(credential, SENTRY_REDACTION_MARKER)
+    return value
+
+
+class CredentialURLLogFilter(logging.Filter):
+    """Remove registered URL credentials before console record serialization."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        credentials = _request_credentials(record)
+        if not credentials:
+            return True
+        record.msg = _replace_log_credentials(
+            cast("LogValue", record.msg),
+            credentials,
+        )
+        record.args = cast(
+            "tuple[Any, ...] | dict[str, Any]",
+            _replace_log_credentials(cast("LogValue", record.args), credentials),
+        )
+        if record.exc_text is not None:
+            record.exc_text = cast(
+                "str",
+                _replace_log_credentials(record.exc_text, credentials),
+            )
+        if record.exc_info is not None:
+            exception = record.exc_info[1]
+            if exception is not None:
+                exception.args = cast(
+                    "tuple[Any, ...]",
+                    _replace_log_credentials(
+                        cast("LogValue", exception.args),
+                        credentials,
+                    ),
+                )
+        return True
+
+
 DEBUG = False
 
 SECURE_SSL_REDIRECT = True
@@ -211,5 +294,9 @@ SENTRY_OPTIONS: dict[str, Any] = {
     "before_send": scrub_sentry_event,
     "before_send_transaction": scrub_sentry_transaction,
 }
+LOGGING.setdefault("filters", {})["credential_urls"] = {
+    "()": CredentialURLLogFilter,
+}
+LOGGING["handlers"]["console"]["filters"] = ["credential_urls"]
 if _sentry_dsn:
     sentry_sdk.init(dsn=_sentry_dsn, **SENTRY_OPTIONS)

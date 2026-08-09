@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from http import HTTPStatus
 from http import client as http_client
@@ -12,7 +13,7 @@ import pytest
 import sentry_sdk
 from django.http import HttpRequest, HttpResponse
 from django.middleware.csrf import get_token
-from django.test import Client, override_settings
+from django.test import Client, RequestFactory, override_settings
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from sentry_sdk.scrubber import EventScrubber
@@ -28,6 +29,7 @@ from config.settings import prod as prod_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROD_COMPOSE = PROJECT_ROOT / "docker-compose.prod.yml"
+CADDYFILE = PROJECT_ROOT / "ops" / "Caddyfile"
 
 REQUIRED_GUNICORN_ATOMS = frozenset(
     {
@@ -55,6 +57,7 @@ SENTRY_RECOVERY_PATH_CANARY = "CANARY_RECOVERY_PATH_294d0"
 SENTRY_RECOVERY_CODE_CANARY = "CANARY_RECOVERY_CODE_3a5e1"
 SENTRY_TEST_DSN = "http://public@example.invalid/1"
 REFERRER_CANARY = "CANARY_REFERRER_PATH_7c93f"
+LOG_CANARY = "CANARY_DO_NOT_STORE_7c93f"
 SECURITY_TEST_MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -219,6 +222,42 @@ def test_gunicorn_access_log_retains_forensics_without_credential_urls() -> None
     assert set(re.findall(r"%\([^)]*\)s", access_format)) >= REQUIRED_GUNICORN_ATOMS
     assert FORBIDDEN_GUNICORN_ATOMS.isdisjoint(access_format)
     assert "referer" not in access_format.lower()
+
+
+def test_both_caddy_logger_families_remove_credential_url_fields() -> None:
+    caddyfile = CADDYFILE.read_text()
+
+    assert caddyfile.count("request>uri delete") == 2
+    assert caddyfile.count("request>headers>Referer delete") == 2
+    assert caddyfile.count("log default {") == 1
+    assert caddyfile.count("wrap json") == 1
+    assert caddyfile.count("wrap console") == 1
+
+
+def test_production_console_filter_redacts_credential_request_records() -> None:
+    path = f"/convites/aceitar/{LOG_CANARY}/"
+    request = RequestFactory().get(path)
+    exception = RuntimeError(f"request failed at {path}")
+    record = logging.makeLogRecord(
+        {
+            "name": "django.request",
+            "levelno": logging.WARNING,
+            "pathname": __file__,
+            "lineno": 1,
+            "msg": "Bad Request: %s",
+            "args": (path,),
+            "exc_info": (RuntimeError, exception, None),
+            "request": request,
+        },
+    )
+
+    assert prod_settings.CredentialURLLogFilter().filter(record) is True
+    rendered = f"{record.getMessage()} {exception}"
+    assert LOG_CANARY not in rendered
+    assert rendered.count(prod_settings.SENTRY_REDACTION_MARKER) == 2
+    assert prod_settings.LOGGING["handlers"]["console"]["filters"] == [
+        "credential_urls",
+    ]
 
 
 def test_sentry_before_send_scrubs_a_constructed_credential_url() -> None:
