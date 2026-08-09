@@ -300,11 +300,33 @@ escape hatch that went unused is worth as much to a later reader as one that was
 | Quoted-status-literal guard | A WONTFIX if it produced unavoidable false positives, in which case the "keyed off enum members" constraint would have had to be deleted from the plan | **NOT taken.** It shipped clean in `tests/scope/test_status_literals.py`, so that constraint is enforceable rather than aspirational. |
 | Caddy access/error log | A measured, explicitly accepted residual — the only sink permitted one | **Overtaken by measurement and became a redaction.** See §2.1. |
 
-One consequence worth stating plainly: because the quoted-status-literal guard shipped,
-the label and status-render policies in `tests/ui/test_label_policy.py` and
-`tests/ui/test_status_render_policy.py` are policy guards rather than blocklists, and a
-future enum member or render site is caught rather than silently unguarded. That is a
-claim about those three guards and about nothing else.
+One consequence of the quoted-status-literal guard shipping is that the plan's "keyed
+off enum members" rule is enforceable. The two presentation guards it sits beside are
+policy-shaped rather than blocklist-shaped — but their reach is not uniform, and the two
+halves have to be separated because only one of them is strong.
+
+A future enum **member** genuinely is caught. The exhaustive key-set guards assert that
+each map's key set EQUALS `{m.value for m in <Enum>}`, so adding a member without
+mapping it reds the suite rather than falling through to a fallback word.
+
+A future render **site** is caught only if it renders through one of the registered
+policy filters or names a known `get_*_display` helper. That is what the guard was asked
+to do — RESIDUAL-015 scoped it to a registry of status-render sites with `get_*_display`
+banned at those sites — and it is what it does. The limitation is the other side of the
+same mechanism: `tests/ui/test_status_render_policy.py` discovers a site by matching a
+known filter or a known forbidden helper in its markup, so a brand-new template
+rendering a bare raw status expression matches neither, is never discovered, and is
+never checked. Reviewer F4 demonstrated this by running the guard's own detector against
+the current template set plus a synthetic template containing a raw status expression:
+the detector returned no offenders.
+
+So: the guard proves that every **registered** render site renders through the filter
+family, and that every enum member is mapped. It does not prove that every status
+reaching a reader on a firm screen passes through a registered site. Extending it to a
+generic raw-attribute scan was deliberately not done here — it would false-positive on
+the `data-portfolio-<status>` tiles that legitimately carry stored values and on the
+portal templates this plan holds out of scope — so the gap is recorded rather than
+papered over. This is a claim about those three guards and about nothing else.
 
 ---
 
