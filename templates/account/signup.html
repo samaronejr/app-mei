@@ -1,21 +1,13 @@
 {% extends "allauth/layouts/entrance.html" %}
 {% load allauth i18n %}{% comment %}
-Account creation, and the one screen whose copy has to set an expectation it keeps.
+Standalone account creation is closed. `config/settings/base.py` wires the allauth
+adapter in `apps/accounts/adapter.py`, whose policy makes the signup view select
+`account/signup_closed.html` before this template can render, for either method and on
+either host.
 
-`ACCOUNT_EMAIL_VERIFICATION` is "mandatory". Submitting this form does not produce an
-account anyone can sign in with: it produces a pending address and a confirmation link,
-and the very next screen is the one that says so. A page that promised "conta criada"
-here would be lying about the state of the system by one whole step, which is exactly
-the kind of lie a person only discovers when they come back tomorrow and cannot get in.
-
-`ACCOUNT_SIGNUP_FIELDS` is `email*`, `password1*`, `password2*`, and all three are
-rendered by walking the form. The address field is called `email`, the same string
-`apps/security/ratelimit.py` reads when it buckets a credential submission by address;
-naming it here to reorder or relabel it would be the one edit that unhooks the limiter.
-
-That this form is reachable without an invitation is a recorded owner decision, not an
-oversight of this page. Nothing here widens or narrows it — the screen is styled, the
-policy lives in `config/settings/base.py`.
+This file remains only as allauth's dormant fallback if that product policy is changed
+explicitly. Legitimate new accounts use the firm or portal invitation-acceptance form;
+those views call `register_and_accept` directly and never render or submit this form.
 {% endcomment %}
 {% block head_title %}{% translate "Criar conta" %}{% endblock head_title %}
 

@@ -190,6 +190,7 @@ LOGOUT_REDIRECT_URL = "/"
 # login method would authenticate against a field that does not exist.
 ACCOUNT_LOGIN_METHODS = {"email"}
 ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*"]
+ACCOUNT_ADAPTER = "apps.accounts.adapter.InvitationOnlyAccountAdapter"
 # Left at allauth's "username" default, this raises AttributeError the first time any
 # allauth template renders a user's display name.
 ACCOUNT_USER_MODEL_USERNAME_FIELD = None

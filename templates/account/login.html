@@ -46,12 +46,7 @@ while every page here still looks right.
   </form>
 
   {% url 'account_reset_password' as reset_url %}
-  {% url 'account_signup' as signup_url %}
   <p class="text-sm text-ink-600">
     {% blocktranslate %}Cinco senhas erradas seguidas para o mesmo endereço travam novas tentativas por um minuto. Se não lembrar, <a class="link" href="{{ reset_url }}">redefina o acesso</a> em vez de tentar de novo.{% endblocktranslate %}
-  </p>
-
-  <p class="text-sm text-ink-600">
-    {% blocktranslate %}Ainda não tem conta? <a class="link" href="{{ signup_url }}">Crie uma agora</a>.{% endblocktranslate %}
   </p>
 {% endblock content %}

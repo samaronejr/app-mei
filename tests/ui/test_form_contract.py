@@ -251,7 +251,6 @@ CASE_IDS: Final[list[str]] = [case.page for case in CASES]
 # so the server-rendered summary is the only thing that will ever announce a rejection.
 
 ACCOUNT_LOGIN: Final = "account_login"
-ACCOUNT_SIGNUP: Final = "account_signup"
 ACCOUNT_RESET: Final = "account_reset_password"
 ACCOUNT_CHANGE: Final = "account_change_password"
 SECOND_FACTOR: Final = "mfa_authenticate"
@@ -259,13 +258,12 @@ SECOND_FACTOR: Final = "mfa_authenticate"
 BAD_TOTP: Final = "000000"
 
 
-def _signup_rejection() -> str:
-    """Open an account with an address that is not one and two passwords that differ."""
+def _login_rejection() -> str:
     response = Client().post(
-        reverse(ACCOUNT_SIGNUP),
-        {"email": "nao-e-um-endereco", "password1": "a", "password2": "b"},
+        reverse(ACCOUNT_LOGIN),
+        {"login": "nao-e-um-endereco", "password": "a"},
     )
-    return _rendered(response, ACCOUNT_SIGNUP)
+    return _rendered(response, ACCOUNT_LOGIN)
 
 
 def _password_reset_rejection() -> str:
@@ -318,7 +316,7 @@ def _second_factor_rejection() -> str:
 
 
 ENTRANCE_CASES: Final[tuple[Rejection, ...]] = (
-    Rejection(ACCOUNT_SIGNUP, _signup_rejection, "email"),
+    Rejection(ACCOUNT_LOGIN, _login_rejection, "login"),
     Rejection(ACCOUNT_RESET, _password_reset_rejection, "email"),
     Rejection(ACCOUNT_CHANGE, _password_change_rejection, "oldpassword"),
     Rejection(SECOND_FACTOR, _second_factor_rejection, "code"),

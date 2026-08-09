@@ -1,7 +1,7 @@
-"""The eight allauth account screens this project overrides — and the six it will not.
+"""The seven allauth account screens this project overrides — and the closed signup.
 
 `tests/ui/test_auth_templates.py` already refuses the firm shell and proves the login
-page survives the portal host. It says nothing about the other seven screens, and
+page survives the portal host. It says nothing about the other screens, and
 nothing at all about whether a page this project overrode actually *reached* a
 document: a template that raises inside a `{% block %}` and one that was never written
 both leave allauth's own file rendering, and allauth ships a compiled pt-BR catalogue,
@@ -58,6 +58,7 @@ H1: Final = re.compile(r"<h1[\s>]", re.IGNORECASE)
 # The compiled stylesheet. Stock allauth links no stylesheet at all, so this byte
 # string is present only when one of THIS project's layouts rendered the page.
 STYLE_MARKER: Final = "css/app.css"
+CLOSED_SIGNUP_TEMPLATE: Final = "account/signup_closed.html"
 
 # The announced error summary `templates/partials/pure/form_errors.html` emits. The
 # container's tag is captured rather than assumed, so a summary rendered as a
@@ -116,7 +117,7 @@ def _login(firm: Firm) -> "_MonkeyPatchedWSGIResponse":
     return _anonymous(firm).get(reverse("account_login"))
 
 
-def _signup(firm: Firm) -> "_MonkeyPatchedWSGIResponse":
+def _closed_signup(firm: Firm) -> "_MonkeyPatchedWSGIResponse":
     return _anonymous(firm).get(reverse("account_signup"))
 
 
@@ -190,12 +191,11 @@ class Screen:
     reach: Callable[[Firm], "_MonkeyPatchedWSGIResponse"]
 
 
-# The eight overrides, each paired with the title its own `head_title` block writes.
+# The seven overrides, each paired with the title its own `head_title` block writes.
 # `password_reset_from_key.html` appears twice because one file renders two screens and
 # a suite that only ever saw the happy one would not notice the other going blank.
 SCREENS: Final[tuple[Screen, ...]] = (
     Screen("account/login.html", "Entrar", _login),
-    Screen("account/signup.html", "Criar conta", _signup),
     Screen("account/logout.html", "Sair", _logout),
     Screen("account/password_reset.html", "Redefinir senha", _password_reset),
     Screen(
@@ -343,37 +343,22 @@ def test_a_rejected_sign_in_comes_back_with_an_announced_summary(firm: Firm) -> 
     )
 
 
-def test_a_rejected_signup_links_the_summary_to_the_field_that_failed(
+def test_the_closed_signup_uses_upstream_refusal_inside_the_project_layout(
     firm: Firm,
 ) -> None:
-    """The other half of the contract: one anchor per erroring field, by id.
+    response = _closed_signup(firm)
 
-    Sign-in cannot exercise this — its failure belongs to no single control — so the
-    anchored link is proven on the one overridden page that produces a field error.
-    """
-    # Given a signup whose two passwords disagree
-    response = _anonymous(firm).post(
-        reverse("account_signup"),
-        {
-            "email": f"nova@{FIRM_SLUG}.example.com",
-            "password1": "senha-longa-o-bastante-1",
-            "password2": "senha-longa-o-bastante-2",
-        },
-    )
-
-    assert response.status_code == HTTPStatus.OK, (
-        f"the rejected signup answered {response.status_code} instead of re-rendering"
-    )
+    assert response.status_code == HTTPStatus.OK
     body = response.content.decode()
-
-    assert SUMMARY.search(body) is not None, "the rejected signup rendered no summary"
-    assert 'href="#id_password2"' in body, (
-        "the summary names no anchor for the field that failed, so following it moves "
-        "focus nowhere and the reader is left to find the control themselves"
+    rendered = [str(template.name) for template in response.templates]
+    assert CLOSED_SIGNUP_TEMPLATE in rendered, (
+        f"the signup route did not render {CLOSED_SIGNUP_TEMPLATE}: {rendered}"
     )
-    assert 'aria-invalid="true"' in body, (
-        "the control that failed is not marked invalid, so nothing but colour says so"
+    assert "account/signup.html" not in rendered, (
+        "the signup route rendered the dormant public form instead of the refusal"
     )
+    assert STYLE_MARKER in body
+    assert "<form" not in body.lower()
 
 
 # ------------------------------------------- (iii) the six this project does not write
