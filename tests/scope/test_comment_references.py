@@ -1,59 +1,75 @@
-"""Every `tests/…py` path named under `apps/**` must be a file that exists.
+"""Require cited test modules under the selected source roots to resolve.
 
 A comment citing a test module is a claim about where a rule is proved, and it is
 exactly the kind of claim that rots in silence. Renaming or deleting a test leaves the
 sentence pointing at nothing, and the next reader either trusts a guarantee nobody is
-holding or spends an afternoon looking for the file. `apps/portal/invite_views.py`
-cited `tests/ui/test_portal_invite_walkthrough.py` from the day the portal shipped;
-that module has never existed. Nothing went red, because nothing was watching. This is
-what watches.
+holding or spends an afternoon looking for the file. A portal-invite comment once cited
+a walkthrough test module that had never existed. Nothing went red, because nothing was
+watching. This is what watches.
 
-Scoped to `apps/**` because that is where the rules being cited live. Two exclusions:
+The required roots are `apps`, `config`, `templates`, and `tests`. Documentation is
+included separately because every path-shaped citation measured under `docs` resolves.
+The scan reads Python, HTML, and Markdown sources. Two directory exclusions remain:
 
-* `migrations`, because a migration is a frozen historical artefact. A citation that
-  went stale inside one cannot be repaired without editing a file that has already run
-  against real data, so a red here would be a permanent red demanding a forbidden fix.
-  Every citation currently inside a migration resolves anyway.
-* `__pycache__`, following every scan in `tests/scope/test_scope_fidelity.py`. It is
-  DEFENSIVE rather than load-bearing here and the difference is worth stating: that
-  directory holds `.pyc` files, which a `*.py` walk never reaches, so the filter removes
-  nothing today. It is kept so that widening the suffix set later cannot quietly start
+* `migrations` is load-bearing. A migration is a frozen historical artefact, so a stale
+  citation inside one cannot be repaired without editing a file that has already run
+  against real data. The subtraction test proves migrations are really removed.
+* `__pycache__` is defensive. Its `.pyc` files are already outside the selected
+  suffixes, but naming the exclusion prevents a future suffix widening from silently
   pinning machine-specific bytecode paths.
 
-Raw lines rather than parsed comment tokens, following the scope suite's own `_grep`
-convention. That is the stricter reading, not the lazier one: every path named in a
-comment or a docstring is caught, and so is one written into a string literal — which is
-a claim about a file just as much, and just as able to rot.
+Path-shaped citations are read from raw source lines. That catches paths in comments,
+docstrings, and string literals. Dotted test-module names are checked separately and
+only in prose: Python comments and docstrings, plus HTML and Markdown source. Executable
+Python imports are deliberately outside that check because the interpreter already
+validates them. Dotted names resolve deterministically to a module file or package.
+
+This guard proves only that a cited test module exists and resolves. It cannot prove
+that the cited test still proves what the surrounding comment claims: repointing a
+comment at a real but wrong file passes. Semantic drift is outside this check.
 """
 
+import ast
+import io
 import re
+import tokenize
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Final
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-SCANNED_ROOTS: Final[tuple[str, ...]] = ("apps",)
+SCANNED_ROOTS: Final[tuple[str, ...]] = ("apps", "config", "templates", "tests")
+DOCUMENTATION_ROOTS: Final[tuple[str, ...]] = ("docs",)
+SCANNED_SUFFIXES: Final[frozenset[str]] = frozenset({".html", ".md", ".py"})
 EXCLUDED_PARTS: Final[frozenset[str]] = frozenset({"__pycache__", "migrations"})
 
 # Anchored on the `tests/` root and stopped at `.py`, so a citation carrying a line
 # range (`tests/ui/test_clients_pages.py:127-135` is the shipped shape) yields the path
 # alone.
 TEST_PATH: Final = re.compile(r"tests/[A-Za-z0-9_./-]*\.py")
+DOTTED_TEST_MODULE: Final = re.compile(
+    r"(?<![A-Za-z0-9_.])tests(?:\.[A-Za-z_][A-Za-z0-9_]*){2,}"
+    r"(?![A-Za-z0-9_])"
+)
 
 # The planted positive's two operands. The real one is this module, so the control
 # cannot start passing because the tree stopped having test files in it.
 REAL_PATH: Final = "tests/scope/test_comment_references.py"
-INVENTED_PATH: Final = "tests/scope/test_nao_existe_este_modulo.py"
+INVENTED_PATH: Final = (
+    Path("tests") / "scope" / "test_nao_existe_este_modulo.py"
+).as_posix()
 
 
 def _sources(excluded: frozenset[str] = EXCLUDED_PARTS) -> list[Path]:
-    """Return the Python sources under the scanned roots, minus the excluded parts."""
+    """Return text sources under the scanned roots, minus the excluded parts."""
     return sorted(
         path
-        for root in SCANNED_ROOTS
-        for path in (PROJECT_ROOT / root).rglob("*.py")
-        if path.is_file() and not (excluded & set(path.parts))
+        for root in SCANNED_ROOTS + DOCUMENTATION_ROOTS
+        for path in (PROJECT_ROOT / root).rglob("*")
+        if path.is_file()
+        and path.suffix in SCANNED_SUFFIXES
+        and not (excluded & set(path.parts))
     )
 
 
@@ -70,6 +86,59 @@ def _references(sources: Sequence[Path]) -> list[tuple[str, str]]:
     return found
 
 
+def _prose_lines(path: Path) -> list[tuple[int, str]]:
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if path.suffix != ".py":
+        return list(enumerate(lines, 1))
+
+    found = [
+        (token.start[0], token.string)
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+        if token.type == tokenize.COMMENT
+    ]
+    owners = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for owner in ast.walk(ast.parse(text)):
+        if not isinstance(owner, owners) or not owner.body:
+            continue
+        statement = owner.body[0]
+        if not isinstance(statement, ast.Expr):
+            continue
+        value = statement.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        end_line = value.end_lineno or value.lineno
+        found.extend(
+            (number, lines[number - 1]) for number in range(value.lineno, end_line + 1)
+        )
+    return sorted(set(found))
+
+
+def _dotted_references(sources: Sequence[Path]) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for path in sources:
+        location = path.relative_to(PROJECT_ROOT)
+        for number, line in _prose_lines(path):
+            found.extend(
+                (f"{location}:{number}", match.group(0))
+                for match in DOTTED_TEST_MODULE.finditer(line)
+            )
+    return found
+
+
+def _dotted_module_exists(cited: str) -> bool:
+    target = PROJECT_ROOT.joinpath(*cited.split("."))
+    return target.with_suffix(".py").is_file() or (target / "__init__.py").is_file()
+
+
+def _dangling_dotted(references: Iterable[tuple[str, str]]) -> list[str]:
+    return sorted(
+        f"{location}: {cited}"
+        for location, cited in references
+        if not _dotted_module_exists(cited)
+    )
+
+
 def _dangling(references: Iterable[tuple[str, str]]) -> list[str]:
     """Return `location: cited path` for every citation that names no file on disk."""
     return sorted(
@@ -84,18 +153,26 @@ def _report(label: str, hits: Sequence[str]) -> str:
     return f"{label} — {len(hits)} offending citation(s):\n" + "\n".join(hits)
 
 
-def test_every_test_path_named_under_apps_exists() -> None:
-    # Given every application source, migrations and bytecode aside
+def test_the_required_roots_are_scanned() -> None:
+    assert SCANNED_ROOTS == ("apps", "config", "templates", "tests")
+
+
+def test_every_test_path_named_under_the_scanned_roots_exists() -> None:
+    # Given every selected source, migrations and bytecode aside
     sources = _sources()
     assert len(sources) > 100, "the scan found nothing and would pass vacuously"
 
     # When each `tests/…py` path they name is collected
     references = _references(sources)
     assert references, (
-        "no tests/… path was found under apps/**, so this guard has nothing to check "
+        "no tests/… path was found under the selected roots, so this guard has nothing "
+        "to check "
         "and would pass just as happily against a tree where every citation had been "
         "deleted"
     )
+    for root in SCANNED_ROOTS[1:] + DOCUMENTATION_ROOTS:
+        root_hits = sum(location.startswith(f"{root}/") for location, _ in references)
+        assert root_hits >= 1, f"no tests/… path found under newly scanned root {root}/"
 
     # Then each one names a file that is really there. A citation is a promise about
     # where a rule is proved; a dangling one is a promise with no proof behind it.
@@ -123,16 +200,15 @@ def test_the_scan_reports_a_citation_that_names_nothing() -> None:
 def test_the_regex_reads_a_citation_out_of_the_prose_around_it() -> None:
     # Given the three shapes citations are actually written in this tree: bare, wrapped
     # in backticks, and carrying a line range
-    line = (
-        "    membership manager rather than this one — see `tests/a/test_b.py` and "
-        "tests/c/test_d.py:127-135 for the pair."
-    )
+    first = (Path("tests") / "a" / "test_b.py").as_posix()
+    second = (Path("tests") / "c" / "test_d.py").as_posix()
+    line = f"membership manager — see `{first}` and {second}:127-135 for the pair."
 
     # When the pattern is run over it
     # Then both paths come out without the punctuation or the range attached. A pattern
     # that swallowed the backtick or the `:127-135` would report every citation as
     # dangling and the guard above would be unfixable rather than green.
-    assert TEST_PATH.findall(line) == ["tests/a/test_b.py", "tests/c/test_d.py"]
+    assert TEST_PATH.findall(line) == [first, second]
 
 
 def test_the_scan_excludes_only_what_its_docstring_claims() -> None:
@@ -154,3 +230,15 @@ def test_the_scan_excludes_only_what_its_docstring_claims() -> None:
         if "migrations" not in path.parts
     )
     assert not any(EXCLUDED_PARTS & set(path.parts) for path in scanned)
+
+
+def test_every_dotted_test_module_named_in_prose_resolves() -> None:
+    import_only_source = PROJECT_ROOT / "tests/authz/test_portfolio.py"
+    assert DOTTED_TEST_MODULE.search(import_only_source.read_text(encoding="utf-8"))
+    assert _dotted_references([import_only_source]) == []
+
+    references = _dotted_references(_sources())
+    assert references, "the prose-only dotted-module scan found nothing"
+
+    strays = _dangling_dotted(references)
+    assert strays == [], _report("dotted citation does not resolve", strays)
