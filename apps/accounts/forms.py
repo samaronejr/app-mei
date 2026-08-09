@@ -9,6 +9,20 @@ catalogue covering a few of them by coincidence -- `password` arrives as `senha`
 The msgids are therefore written in pt-BR, which is the convention this project holds
 across its templates. `tests/ui/test_invitation_labels.py` scans both invitation
 screens' rendered text and refuses the English ones by name.
+
+The two msgids that coincidence DID cover are written in pt-BR here as well, and that
+is a deliberate trade rather than a slip. Both arrived lower-case beside sentence-case
+siblings -- `senha` next to `Confirmação da senha` on the same form, `endereço de
+email` next to `Papel` -- so the screen an invitee meets before she has an account
+disagreed with itself about how a label is written. Writing them here gives up the
+bundled translation of those two msgids, and with `locale/` empty there is no project
+catalogue to put one back; one casing convention on a first-run screen is worth more
+than a translation of two words this file can simply say in Portuguese itself.
+
+`E-mail` is not invented for the occasion: `templates/accounts/team.html` already
+writes that word above this address, in the column heading over the pending-invite
+table, for exactly the concept this field collects -- the same reason `Papel` was
+chosen over anything else for the seat chooser beside it.
 """
 
 from typing import TYPE_CHECKING, Final
@@ -106,7 +120,7 @@ def firm_role_display_choices() -> list[tuple[str, str]]:
 class InviteIssueForm(forms.Form):
     """Who to invite, and as what."""
 
-    email = forms.EmailField(label=_("email address"))
+    email = forms.EmailField(label=_("E-mail"))
     role = forms.ChoiceField(label=_("Papel"), choices=firm_role_display_choices)
 
 
@@ -124,7 +138,7 @@ class PortalInviteIssueForm(forms.Form):
     else the form distrusts.
     """
 
-    email = forms.EmailField(label=_("email address"))
+    email = forms.EmailField(label=_("E-mail"))
     role = forms.ChoiceField(label=_("Papel"), choices=portal_role_choices)
 
 
@@ -136,7 +150,7 @@ class InviteAcceptForm(forms.Form):
         max_length=255,
         required=False,
     )
-    password1 = forms.CharField(label=_("password"), widget=forms.PasswordInput)
+    password1 = forms.CharField(label=_("Senha"), widget=forms.PasswordInput)
     password2 = forms.CharField(
         label=_("Confirmação da senha"),
         widget=forms.PasswordInput,
