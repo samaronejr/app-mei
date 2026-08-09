@@ -112,6 +112,27 @@
                 ok, overdue is the one that needs somebody today so it reads late, due
                 is approaching so it reads warn, and scheduled and waived are quiet.
 
+                The COLOUR is a chain and the WORD is not. The chain stays written out
+                because Tailwind compiles only the class names it can find in the
+                source; the word comes from apps/core/templatetags/ptbr.py, which is
+                where this product names an ObligationStatus once for the queues, the
+                portal and this table alike -- an accountant who says "está paga" to
+                somebody whose screen says something else is debugging the product
+                mid-call.
+
+                It replaced get_status_display, which returns the model's own choice
+                label -- and these five labels are the stored English words themselves.
+                Editing them on the enum would alter serialized field metadata on every
+                field declaring choices= from it and emit an AlterField, which is a
+                migration for a display string. obligation.status is a column on the
+                row already fetched, so the filter follows no relation and this screen's
+                budget does not move.
+
+                This table is the ONLY surface in the product where all five words reach
+                a reader as rows: both queues build on _unsettled, which excludes paid
+                and waived outright (apps/obligations/queries.py), while this one filters
+                on the client alone.
+
                 The date shown is the resolved one, because that is the day the client
                 must actually pay by. Both dates are stored and the strip above is
                 where a deferral is announced.
@@ -120,7 +141,7 @@
                 <td data-label="{% translate 'Competência' %}">{{ obligation.competence_month|competencia }}</td>
                 <td data-label="{% translate 'Obrigação' %}">{{ obligation.obligation_type.name }}</td>
                 <td data-label="{% translate 'Vencimento' %}">{{ obligation.resolved_due_date|data }}</td>
-                <td data-label="{% translate 'Situação' %}"><span class="badge {% if obligation.status == 'paid' %}badge-ok{% elif obligation.status == 'overdue' %}badge-late{% elif obligation.status == 'due' %}badge-warn{% else %}badge-neutral{% endif %}">{{ obligation.get_status_display }}</span></td>
+                <td data-label="{% translate 'Situação' %}"><span class="badge {% if obligation.status == 'paid' %}badge-ok{% elif obligation.status == 'overdue' %}badge-late{% elif obligation.status == 'due' %}badge-warn{% else %}badge-neutral{% endif %}">{{ obligation.status|situacao_obrigacao }}</span></td>
               </tr>
             {% empty %}
               <tr>
@@ -148,11 +169,27 @@
         an empty one, so the only way this renders nothing is if the item is not blocked
         -- which means a client stuck with nobody able to say on what cannot exist here
         or in the table underneath.
+
+        The badge's word maps OnboardingStatus and not the client's own status, and the
+        distinction is the whole content of that cell: item.status holds pending,
+        blocked, done or not_applicable -- never onboarding, active, suspended or closed.
+        A client-status filter placed here would name nothing and fall through to
+        Desconhecido, which is a fix that changes the template and not the screen.
+
+        It replaced get_status_display for the reason the obligation table above did:
+        that helper returns the model's own choice label, and these four labels are the
+        stored English words themselves. Travado agrees with the queue's own name,
+        Onboarding travado, so the menu, the heading and this badge say one thing rather
+        than three -- which they do because both read the same map in
+        apps/core/templatetags/ptbr.py.
+
+        The COLOUR chain stays written out beside it: Tailwind compiles only the class
+        names it can find in the source.
       {% endcomment %}
       <ul class="checklist">
         {% for item in checklist %}
           <li class="flex flex-wrap items-center gap-2">
-            <span class="badge {% if item.status == 'done' %}badge-ok{% elif item.status == 'blocked' %}badge-late{% elif item.status == 'pending' %}badge-warn{% else %}badge-neutral{% endif %}">{{ item.get_status_display }}</span>
+            <span class="badge {% if item.status == 'done' %}badge-ok{% elif item.status == 'blocked' %}badge-late{% elif item.status == 'pending' %}badge-warn{% else %}badge-neutral{% endif %}">{{ item.status|situacao_onboarding }}</span>
             <span {% if item.status == 'done' %}class="checklist-done"{% endif %}>{{ item.label }}</span>
             {% if item.status == 'blocked' %}
               <span class="text-xs text-ink-500">{{ item.blocked_reason }}</span>

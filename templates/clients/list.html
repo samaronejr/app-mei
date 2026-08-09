@@ -93,7 +93,7 @@
               warn, suspended is the one that needs somebody today so it reads late,
               and closed is archival and reads neutral so it stops competing.
 
-              The WORD is now a second chain over the same column, and it replaced
+              The WORD is a FILTER over the same column, and it replaced
               get_status_display for the reason the client portal already documents:
               that helper returns the model's own choice label, which for these four
               is the stored English value on three of them and ativo on the fourth,
@@ -102,23 +102,28 @@
               field metadata on every field declaring choices= from it and emit an
               AlterField -- a migration for a display string.
 
-              Two chains rather than one over a shared value, because they answer
-              different questions and only one of them is constrained by the note
-              below. Merging them would put a word and a compiled name in the same
-              branch and make a copy change a styling change, on the screen an
-              accountant browses most. The word chain ends on the stored code, so a
-              status added to the enum and not to this chain renders the database's
-              own value rather than an empty badge -- a legible failure instead of a
-              silent one, and the standing scan in tests/ui/test_firm_copy.py reds on
-              it the moment a fixture reaches it.
+              A filter and not a second chain, because the words were written out here,
+              on the dashboard's Carteira tiles and on the client workspace's identity
+              card -- three copies of one vocabulary, two of which stay right only until
+              somebody edits the third. They now come from
+              apps/core/templatetags/ptbr.py, which is the single place this product
+              names a ClientStatus. The COLOUR stays a chain beside it: the two answer
+              different questions, and only the colour is constrained by the note below.
+              Merging them would put a word and a compiled name in the same branch and
+              make a copy change a styling change, on the screen an accountant browses
+              most. A status added to the enum and not to the map renders Desconhecido
+              rather than an empty badge -- a legible failure instead of a silent one,
+              and the standing scan in tests/ui/test_firm_copy.py reds on it the moment
+              a fixture reaches it.
 
-              Both sides of every branch are spelled out as literals. Tailwind compiles
-              only the names it can see in the source, so a name assembled from a
-              variable would ship with no rule behind it.
+              Both sides of every COLOUR branch are spelled out as literals. Tailwind
+              compiles only the names it can see in the source, so a name assembled from
+              a variable would ship with no rule behind it.
 
-              The branch reads client.status, a column on the row already fetched. A
-              relation followed from here would be a query per row and the render is
-              budgeted at 30 for the whole page.
+              Both read client.status, a column on the row already fetched. A relation
+              followed from here would be a query per row and the render is budgeted at
+              30 for the whole page; the filter is pure, so it touches neither the
+              database nor the request.
 
               The razão social is the way out of the directory and into the client's
               workspace, and it is the only way: this screen exists to be browsed, so a
@@ -146,7 +151,7 @@
             <tr>
               <td data-label="{% translate 'Razão social' %}"><a class="link" href="{% url 'client-detail' client.pk %}">{{ client.legal_name }}</a></td>
               <td data-label="{% translate 'CNPJ' %}">{{ client.cnpj|cnpj_mask }}</td>
-              <td data-label="{% translate 'Situação' %}"><span class="badge {% if client.status == 'active' %}badge-ok{% elif client.status == 'onboarding' %}badge-warn{% elif client.status == 'suspended' %}badge-late{% else %}badge-neutral{% endif %}">{% if client.status == 'onboarding' %}{% translate "Em onboarding" %}{% elif client.status == 'active' %}{% translate "Ativo" %}{% elif client.status == 'suspended' %}{% translate "Suspenso" %}{% elif client.status == 'closed' %}{% translate "Encerrado" %}{% else %}{{ client.status }}{% endif %}</span></td>
+              <td data-label="{% translate 'Situação' %}"><span class="badge {% if client.status == 'active' %}badge-ok{% elif client.status == 'onboarding' %}badge-warn{% elif client.status == 'suspended' %}badge-late{% else %}badge-neutral{% endif %}">{{ client.status|situacao_cliente }}</span></td>
               <td data-label="{% translate 'Município' %}">{{ client.municipality_ibge_code|default_if_none:'' }}</td>
             </tr>
           {% empty %}

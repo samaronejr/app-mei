@@ -1,4 +1,4 @@
-{% load i18n %}{% comment %}
+{% load i18n ptbr %}{% comment %}
   One <tr>, and nothing else: the queue includes this template by a name held on the
   spec, so the row element is the whole contract between them.
 
@@ -13,24 +13,25 @@
   The situação word maps OnboardingStatus and not the client's own status, and the
   distinction is the whole content of this cell: the row is a checklist item, so
   row.status holds pending, blocked, done or not_applicable -- never onboarding,
-  active, suspended or closed. A client-status chain placed here would match no branch
-  at all and fall straight through to the English word it was meant to replace, which
-  is a fix that changes the template and not the screen.
+  active, suspended or closed. A client-status filter placed here would name nothing
+  and fall straight through to Desconhecido, which is a fix that changes the template
+  and not the screen.
 
   Travado is chosen to agree with the queue's own name, Onboarding travado, so the
-  menu, the heading and the cell say one thing rather than three. The chain replaced
+  menu, the heading and the cell say one thing rather than three. The filter replaced
   get_status_display, which returns the model's own choice label -- and these four
-  labels are the stored English words themselves. The last arm keeps the stored code,
-  so a status added to the enum and not to this chain renders the database's own value
-  rather than an empty badge.
+  labels are the stored English words themselves.
 
   Only the blocked branch is reachable from this queue, which fetches exactly that
-  status (apps/obligations/queries.py, onboarding_blocked). The other three are
-  written anyway: the same row template is what a wider onboarding view would reuse,
-  and a branch missing on the day that lands is a raw code on screen.
+  status (apps/obligations/queries.py, onboarding_blocked). The other three used to be
+  written out here anyway, against the day a wider onboarding view reuses this row.
+  They no longer need to be: apps/core/templatetags/ptbr.py holds every arm, the same
+  map the client workspace's checklist reads, and tests/ui/test_ptbr_presentation.py
+  keeps it exhaustive over the enum -- so a status added and not named reds there
+  rather than reaching a screen as a raw code.
 {% endcomment %}<tr>
   <td data-label="{% translate 'Cliente' %}"><a class="link" href="{% url 'client-detail' row.client_id %}">{{ row.client.legal_name }}</a></td>
   <td data-label="{% translate 'Item' %}">{{ row.label }}</td>
   <td data-label="{% translate 'Motivo' %}">{{ row.blocked_reason|default:"—" }}</td>
-  <td data-label="{% translate 'Situação' %}"><span class="badge badge-over">{% if row.status == 'pending' %}{% translate "Pendente" %}{% elif row.status == 'blocked' %}{% translate "Travado" %}{% elif row.status == 'done' %}{% translate "Concluído" %}{% elif row.status == 'not_applicable' %}{% translate "Não se aplica" %}{% else %}{{ row.status }}{% endif %}</span></td>
+  <td data-label="{% translate 'Situação' %}"><span class="badge badge-over">{{ row.status|situacao_onboarding }}</span></td>
 </tr>

@@ -11,7 +11,7 @@ from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts import forms as accounts_forms
 from apps.accounts.models import User
-from apps.clients.models import ClientStatus, OnboardingStatus
+from apps.clients.models import ClientStatus, GovBrTrustLevel, OnboardingStatus
 from apps.core.templatetags import ptbr
 from apps.obligations.models import ObligationStatus
 from apps.tenants.models import Invite, TenantRole
@@ -56,6 +56,10 @@ FILTER_CASES: Final[tuple[tuple[str, str, str], ...]] = (
         OnboardingStatus.NOT_APPLICABLE.value,
         "Não se aplica",
     ),
+    ("nivel_govbr", GovBrTrustLevel.UNKNOWN.value, "Não informado"),
+    ("nivel_govbr", GovBrTrustLevel.BRONZE.value, "Bronze"),
+    ("nivel_govbr", GovBrTrustLevel.PRATA.value, "Prata"),
+    ("nivel_govbr", GovBrTrustLevel.OURO.value, "Ouro"),
 )
 
 
@@ -121,6 +125,40 @@ def test_situacao_onboarding_map_covers_every_onboarding_status() -> None:
     )
 
 
+def test_nivel_govbr_map_covers_every_gov_br_trust_level() -> None:
+    labels = getattr(ptbr, "GOVBR_TRUST_LEVEL_LABELS", {})
+    assert "nivel_govbr" in ptbr.register.filters, (
+        "the nivel_govbr filter does not exist"
+    )
+    missing = [
+        f"GovBrTrustLevel.{member.name}"
+        for member in GovBrTrustLevel
+        if member.value not in labels
+    ]
+    unexpected = sorted(set(labels) - {member.value for member in GovBrTrustLevel})
+    assert set(labels) == {member.value for member in GovBrTrustLevel}, (
+        f"GOVBR_TRUST_LEVEL_LABELS is missing {missing} and has unexpected {unexpected}"
+    )
+
+
+def test_the_recorded_tier_never_reads_as_the_word_for_an_unmapped_value() -> None:
+    """`Não informado` and `Desconhecido` must stay two different sentences.
+
+    UNKNOWN is a real, default, extremely common state -- `GovBrTrustLevel`'s docstring
+    calls it "nobody has asked". `Desconhecido` is what every filter in this family
+    renders for a value NO map knows, which is a defect. Collapsing the two would hide
+    the second inside the first on the one card where both could appear.
+    """
+    recorded = ptbr.register.filters["nivel_govbr"](GovBrTrustLevel.UNKNOWN.value)
+    unmapped = ptbr.register.filters["nivel_govbr"]("tier_that_does_not_exist")
+
+    assert recorded != unmapped, (
+        f"a recorded-but-unasked gov.br tier and a value no map knows both render "
+        f"{recorded!r}, so an unmapped member is indistinguishable from the default"
+    )
+    assert unmapped == "Desconhecido", unmapped
+
+
 @pytest.mark.parametrize(("filter_name", "value", "expected"), FILTER_CASES)
 def test_each_filter_renders_the_approved_word(
     filter_name: str,
@@ -137,6 +175,7 @@ def test_each_filter_renders_the_approved_word(
         "situacao_cliente",
         "situacao_obrigacao",
         "situacao_onboarding",
+        "nivel_govbr",
     ],
 )
 def test_unmapped_values_render_desconhecido_without_disclosing_the_raw_value(

@@ -1,21 +1,30 @@
 """The firm's own screens never show an accountant the database's words either.
 
 `tests/portal/test_portal_copy.py` refuses the five stored `ObligationStatus` values on
-the four pages a MEI owner reads. This module is the same refusal, aimed at the six
+the four pages a MEI owner reads. This module is the same refusal, aimed at the seven
 pages her ACCOUNTANT reads -- and the reason it is a separate guard rather than a
 widened one is that the two sides leak through different holes. The portal was written
 against `{{ row.status }}`; the firm side reaches for `{{ row.get_status_display }}`,
 which reads like a courtesy, returns the model's own label, and for these choices the
 label IS the stored English word.
 
-Three enums reach a firm screen and all three are refused here:
+Four enums reach a firm screen and all four are refused here:
 
 * `ClientStatus` -- `onboarding`, `active`, `suspended`, `closed` -- on the dashboard's
-  Carteira tiles and in the registry's SITUAÇÃO badge;
+  Carteira tiles, in the registry's SITUAÇÃO badge and on the client workspace's
+  identity card;
 * `ObligationStatus` -- `scheduled`, `due`, `paid`, `overdue`, `waived` -- in the two
-  obligation queues' rows and in their status filter;
+  obligation queues' rows, in their status filter, and in the workspace's obligation
+  table -- which is the only surface in the product where all five are reachable on
+  ROWS, because the queues exclude the settled two outright;
 * `OnboardingStatus` -- `pending`, `blocked`, `done`, `not_applicable` -- in the
-  onboarding queue's SITUAÇÃO cell.
+  onboarding queue's SITUAÇÃO cell and in the workspace's checklist badges;
+* `GovBrTrustLevel` -- but only `unknown`, and the exclusion of the other three is
+  DERIVED rather than listed. `bronze`, `prata` and `ouro` are stored values that are
+  already the Portuguese word a reader expects, so refusing them would red on the copy
+  this product ships; `unknown` is the one tier whose stored value is English, and it
+  is refused for exactly that reason. `GOVBR_ENGLISH_TOKENS` computes the split from
+  the approved words, so a fifth tier named in English is refused the day it lands.
 
 The third is here because the surface is here. `templates/obligations/_rows_onboarding
 .html` renders an `OnboardingItem`, not a client, so a `ClientStatus` map placed on it
@@ -55,7 +64,7 @@ exclusion against a page that renders no client status at all.
 import datetime as dt
 import html
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from http import HTTPStatus
 from pathlib import Path
@@ -68,6 +77,7 @@ from pytest_django.fixtures import SettingsWrapper
 from apps.clients.models import (
     ClientCompany,
     ClientStatus,
+    GovBrTrustLevel,
     OnboardingItem,
     OnboardingStatus,
 )
@@ -115,6 +125,18 @@ ONBOARDING_STATUS_WORDS: Final[dict[str, str]] = {
     OnboardingStatus.NOT_APPLICABLE: "Não se aplica",
 }
 
+# The gov.br tier, which is on the workspace's identity card beside the client status.
+# `Não informado` rather than `Desconhecido`: the latter is what
+# `apps/core/templatetags/ptbr.py` renders for a value no map knows, so reusing it here
+# would make "nobody ever asked this client" and "the enum grew a member nobody mapped"
+# read identically -- and the second is a defect the first would then hide.
+GOVBR_TRUST_WORDS: Final[dict[str, str]] = {
+    GovBrTrustLevel.UNKNOWN: "Não informado",
+    GovBrTrustLevel.BRONZE: "Bronze",
+    GovBrTrustLevel.PRATA: "Prata",
+    GovBrTrustLevel.OURO: "Ouro",
+}
+
 # Only three of the five obligation words can appear on a QUEUE row: `due_soon` and
 # `overdue` both build on `_unsettled`, which excludes PAID and WAIVED outright
 # (`apps/obligations/queries.py:53,104`). The other two are reachable through the
@@ -159,20 +181,40 @@ RUN_OF_SPACE: Final[re.Pattern[str]] = re.compile(r"\s+")
 # instead of asserting it in prose.
 EXCLUDED_TOKEN: Final[str] = str(ClientStatus.ONBOARDING.value)
 
-STORED_STATUS_TOKENS: Final[frozenset[str]] = frozenset(
-    {str(member.value) for member in ClientStatus}
-    | {str(member.value) for member in ObligationStatus}
-    | {str(member.value) for member in OnboardingStatus},
-) - {EXCLUDED_TOKEN}
+# A gov.br tier whose stored value already IS its Portuguese word is not a leak, and
+# refusing it would red on copy the product is required to render. The split is DERIVED
+# from the approved words rather than listed, which is what makes it self-maintaining:
+# a tier added in English is refused on the day it lands, and one added in Portuguese is
+# excluded without anybody editing this file. `.get(member, "")` is the conservative
+# arm -- a member nobody has written a word for can never equal its own value, so it is
+# refused rather than quietly admitted, and
+# `test_the_gov_br_words_cover_every_tier_the_column_can_hold` is what names it.
+GOVBR_ENGLISH_TOKENS: Final[frozenset[str]] = frozenset(
+    str(member.value)
+    for member in GovBrTrustLevel
+    if str(member.value).casefold() != GOVBR_TRUST_WORDS.get(member, "").casefold()
+)
 
-# The templates that compose the six pages scanned here, named rather than discovered.
-# `templates/clients/detail.html` and `templates/clients/_identity.html` also reach for
-# the helper and are NOT in this set: they render the client workspace, which is a
-# different screen, owned by neither this scan nor this change. The omission is recorded
-# rather than silent -- see the note beside `SCANNED_TEMPLATES` in the structural case.
+STORED_STATUS_TOKENS: Final[frozenset[str]] = (
+    frozenset(
+        {str(member.value) for member in ClientStatus}
+        | {str(member.value) for member in ObligationStatus}
+        | {str(member.value) for member in OnboardingStatus},
+    )
+    - {EXCLUDED_TOKEN}
+) | GOVBR_ENGLISH_TOKENS
+
+# The templates that compose the seven pages scanned here, named rather than discovered.
+# `templates/clients/detail.html` and `templates/clients/_identity.html` were once
+# recorded here as a deliberate omission -- the client workspace was a screen owned by
+# neither this scan nor the change that wrote it. **That omission is now CLOSED**: both
+# templates are in this set, the workspace is a scanned surface below, and no firm-side
+# template calls the display helper anywhere in the product.
 SCANNED_TEMPLATES: Final[tuple[str, ...]] = (
     "core/dashboard.html",
     "clients/list.html",
+    "clients/detail.html",
+    "clients/_identity.html",
     "obligations/queue.html",
     "obligations/_queue.html",
     "obligations/_counts.html",
@@ -205,6 +247,11 @@ class Surface:
     leaves, `row_client` names a client whose row has to be on the page, and
     `raw_markers` are checked against the UNSTRIPPED document -- they are attributes, so
     stripping is exactly what would throw them away.
+
+    `targets_row_client` makes `row_client` do double duty on the one surface that is
+    not a collection: the client workspace is reversed WITH that client's primary key,
+    so the row the page must carry and the record the URL names are the same client by
+    construction rather than by two constants agreeing.
     """
 
     url_name: str
@@ -212,6 +259,7 @@ class Surface:
     empty_state: str
     row_client: str
     raw_markers: tuple[str, ...] = ()
+    targets_row_client: bool = False
 
 
 # Every tile is rendered whatever the tally, so all four are demanded: a Carteira
@@ -226,6 +274,13 @@ PORTFOLIO_TILES: Final[tuple[str, ...]] = tuple(
 STATUS_FILTER_MARKER: Final[str] = 'id="situacao"'
 
 QUEUE_EMPTY_STATE: Final[str] = "Nenhum item nesta fila."
+
+WORKSPACE: Final[str] = "client-detail"
+
+# The onboarding checklist's own container, checked against the raw document because
+# the workspace's second table has an empty state of its own that `Surface.empty_state`
+# has no room for -- one gate per surface, and the obligation table already holds it.
+CHECKLIST_MARKER: Final[str] = 'class="checklist"'
 
 SURFACES: Final[tuple[Surface, ...]] = (
     Surface(
@@ -270,6 +325,14 @@ SURFACES: Final[tuple[Surface, ...]] = (
         empty_state=QUEUE_EMPTY_STATE,
         row_client="active",
     ),
+    Surface(
+        WORKSPACE,
+        sentinel="Identificação",
+        empty_state="Nenhuma obrigação gerada para este cliente ainda.",
+        row_client="active",
+        raw_markers=(CHECKLIST_MARKER,),
+        targets_row_client=True,
+    ),
 )
 
 SURFACE_BY_NAME: Final[dict[str, Surface]] = {
@@ -300,6 +363,33 @@ NEAR_CEILING: Final[Decimal] = Decimal("75000.00")
 
 BLOCKED_REASON: Final[str] = "aguardando procuração"
 
+# Which tier each seeded client's gov.br column holds. Four clients, four tiers, one
+# each: the workspace renders exactly one tier per page, so covering the enum means
+# spreading it across the four clients rather than fetching one page four times.
+# `test_the_gov_br_words_cover_every_tier_the_column_can_hold` refuses a mapping that
+# stopped being a bijection.
+GOVBR_TIER_BY_CLIENT: Final[dict[str, str]] = {
+    ClientStatus.ONBOARDING: GovBrTrustLevel.UNKNOWN,
+    ClientStatus.ACTIVE: GovBrTrustLevel.OURO,
+    ClientStatus.SUSPENDED: GovBrTrustLevel.BRONZE,
+    ClientStatus.CLOSED: GovBrTrustLevel.PRATA,
+}
+
+# Far enough out to sit outside the 7-day horizon and nowhere near overdue, so the row
+# each non-active client needs to keep its workspace off the empty state cannot also
+# appear in a queue and change what the other six surfaces are scanning.
+QUIET_DUE_DAYS: Final[int] = 90
+
+# The checklist statuses the workspace must show, assigned to the first items of the
+# seeded list by position. The blocked one stays first because `_stock` reads
+# `.first()` for the onboarding queue's own row.
+CHECKLIST_COVERAGE: Final[tuple[str, ...]] = (
+    OnboardingStatus.BLOCKED,
+    OnboardingStatus.DONE,
+    OnboardingStatus.NOT_APPLICABLE,
+    OnboardingStatus.PENDING,
+)
+
 
 @dataclass(frozen=True)
 class Portfolio:
@@ -315,6 +405,11 @@ class Portfolio:
         """Return the legal name of the client a surface demands a row for."""
         company: ClientCompany = getattr(self, key)
         return str(company.legal_name)
+
+    def pk_of(self, key: str) -> str:
+        """Return the primary key the workspace URL for that client is built from."""
+        company: ClientCompany = getattr(self, key)
+        return str(company.pk)
 
 
 @pytest.fixture(autouse=True)
@@ -332,9 +427,16 @@ def _competence(months_back: int) -> dt.date:
 def _stock(portfolio: Portfolio) -> None:
     """Give the active client work in every queue this module scans.
 
-    All of it hangs off ONE client on purpose: each queue's row gate then names the same
-    company, so a scoping regression that emptied a queue reds as a missing row rather
-    than as a page that merely happened to have nothing on it.
+    Nearly all of it hangs off ONE client on purpose: each queue's row gate then names
+    the same company, so a scoping regression that emptied a queue reds as a missing row
+    rather than as a page that merely happened to have nothing on it.
+
+    The settled pair is the exception, and it is the whole reason the workspace is
+    scanned. `due_soon` and `overdue` both build on `_unsettled`, which excludes PAID
+    and WAIVED outright (`apps/obligations/queries.py:53,104`), so no queue ROW can ever
+    carry either word. The workspace's obligation table applies no such exclusion, which
+    makes it the one page in the product where all five reach a reader as ROWS rather
+    than as filter options.
     """
     firm = portfolio.firm
     das = ObligationType.objects.get(code=DAS_CODE)
@@ -344,6 +446,8 @@ def _stock(portfolio: Portfolio) -> None:
         (DUE_SOON_SECOND_DAYS, ObligationStatus.DUE, 1),
         (OVERDUE_DAYS, ObligationStatus.OVERDUE, 2),
         (OVERDUE_SECOND_DAYS, ObligationStatus.SCHEDULED, 3),
+        (QUIET_DUE_DAYS, ObligationStatus.PAID, 4),
+        (QUIET_DUE_DAYS, ObligationStatus.WAIVED, 5),
     )
     with tenant_context(firm.tenant.id):
         for offset, status, index in seeded:
@@ -356,19 +460,45 @@ def _stock(portfolio: Portfolio) -> None:
                 resolved_due_date=today + dt.timedelta(days=offset),
                 status=status,
             )
+        for company in (portfolio.onboarding, portfolio.suspended, portfolio.closed):
+            Obligation.objects.create(
+                tenant=firm.tenant,
+                client=company,
+                obligation_type=das,
+                competence_month=_competence(0),
+                nominal_due_date=today + dt.timedelta(days=QUIET_DUE_DAYS),
+                resolved_due_date=today + dt.timedelta(days=QUIET_DUE_DAYS),
+                status=ObligationStatus.SCHEDULED,
+            )
         MonthlyRevenue.objects.create(
             tenant=firm.tenant,
             client=portfolio.active,
             competence_month=dt.date(today.year, 1, 1),
             gross_amount=NEAR_CEILING,
         )
-        item = OnboardingItem.objects.filter(client=portfolio.active).first()
-        assert item is not None, (
-            "no onboarding checklist was seeded for the active client, so the "
-            "onboarding queue would be empty and its scan would prove nothing"
+        _mark_checklist(portfolio.active)
+
+
+def _mark_checklist(company: ClientCompany) -> None:
+    """Put a different `OnboardingStatus` on each of the first four checklist items.
+
+    One badge renders one status, so a checklist left at its seeded default reaches one
+    arm of a four-arm chain -- and an absence over the other three is an absence from a
+    branch nobody rendered.
+    """
+    items = list(
+        OnboardingItem.objects.filter(client=company).order_by("position", "key", "pk"),
+    )
+    assert len(items) >= len(CHECKLIST_COVERAGE), (
+        f"{company.legal_name} has {len(items)} checklist items and this module needs "
+        f"{len(CHECKLIST_COVERAGE)} to reach every OnboardingStatus badge, so the "
+        f"workspace scan would quantify over arms nothing rendered"
+    )
+    for item, status in zip(items, CHECKLIST_COVERAGE, strict=False):
+        item.status = status
+        item.blocked_reason = (
+            BLOCKED_REASON if status == OnboardingStatus.BLOCKED else ""
         )
-        item.status = OnboardingStatus.BLOCKED
-        item.blocked_reason = BLOCKED_REASON
         item.save(update_fields=["status", "blocked_reason"])
 
 
@@ -392,6 +522,10 @@ def portfolio() -> Portfolio:
             ),
         )
     ]
+    with tenant_context(firm.tenant.id):
+        for company in companies:
+            company.govbr_trust_level = GOVBR_TIER_BY_CLIENT[company.status]
+            company.save(update_fields=["govbr_trust_level"])
     built = Portfolio(firm, *companies)
     _stock(built)
     return built
@@ -404,9 +538,16 @@ def _fetch(portfolio: Portfolio, surface: Surface) -> str:
     """GET one firm page as the owner, refusing anything that is not a rendered page.
 
     The status gate is the first non-vacuity control: a redirect, a 403 or a 404 returns
-    a body that satisfies every "…is absent" assertion below it perfectly.
+    a body that satisfies every "…is absent" assertion below it perfectly. It matters
+    twice as much on the workspace, whose view answers 404 for a client outside the
+    reader's portfolio rather than 403 -- so a scoping regression there would otherwise
+    read as a page with no English on it.
     """
-    target = str(reverse(surface.url_name))
+    target = (
+        str(reverse(surface.url_name, args=[portfolio.pk_of(surface.row_client)]))
+        if surface.targets_row_client
+        else str(reverse(surface.url_name))
+    )
     response = portfolio.firm.as_owner().get(target)
     assert response.status_code == HTTPStatus.OK, (
         f"{surface.url_name} answered {response.status_code}, so nothing asserted "
@@ -486,11 +627,25 @@ def _markup_only(source: str) -> str:
     return COMMENT_BLOCK.sub(lambda block: "\n" * block.group(0).count("\n"), source)
 
 
-def _scan(portfolio: Portfolio, url_name: str) -> tuple[str, list[str]]:
+def _scan_surface(portfolio: Portfolio, surface: Surface) -> tuple[str, list[str]]:
     """Fetch one surface and return its readable text beside whatever leaked."""
-    surface = SURFACE_BY_NAME[url_name]
     text = _readable(_fetch(portfolio, surface), surface, portfolio)
     return text, _leaked_status_words(text)
+
+
+def _scan(portfolio: Portfolio, url_name: str) -> tuple[str, list[str]]:
+    """Fetch one named surface and return its readable text beside whatever leaked."""
+    return _scan_surface(portfolio, SURFACE_BY_NAME[url_name])
+
+
+def _workspace(key: str) -> Surface:
+    """Return the workspace surface aimed at one seeded client rather than the default.
+
+    The Portfolio attribute names ARE the `ClientStatus` values, so a status picks a
+    page: `_workspace(ClientStatus.SUSPENDED)` opens the suspended client's own screen
+    and demands its own legal name on it.
+    """
+    return replace(SURFACE_BY_NAME[WORKSPACE], row_client=key)
 
 
 # ----------------------------------------------------------- the stored words, never
@@ -554,10 +709,12 @@ def test_no_scanned_firm_template_reaches_for_the_status_display_helper() -> Non
     everywhere, and this is also what refuses `not applicable` -- a label spelled
     differently from its value, which the text scan above could never name.
 
-    `templates/clients/detail.html` and `templates/clients/_identity.html` are outside
-    this set and DO still call the helper. That is the client workspace, a screen this
-    change does not own; the omission is written down here so it reads as a boundary
-    rather than as a template somebody forgot.
+    `templates/clients/detail.html` and `templates/clients/_identity.html` were outside
+    this set and DID still call the helper -- three times between them, for the client's
+    status, its obligations and its checklist. That was recorded here as a deliberate
+    boundary rather than left silent, and **the boundary is now closed**: both templates
+    are scanned, the workspace is a rendered surface above, and no firm-side template in
+    this product reaches for the helper anywhere.
     """
     offenders = [
         f"{name}:{number}"
@@ -616,6 +773,7 @@ def test_no_word_this_product_ships_is_refused_by_its_own_scan() -> None:
         *CLIENT_STATUS_WORDS.values(),
         *OBLIGATION_STATUS_WORDS.values(),
         *ONBOARDING_STATUS_WORDS.values(),
+        *GOVBR_TRUST_WORDS.values(),
     }
 
     refused = {word: _leaked_status_words(word) for word in sorted(shipped)}
@@ -758,6 +916,114 @@ def test_the_onboarding_queue_row_states_its_status_in_portuguese(
         f"the onboarding queue does not state "
         f"{ONBOARDING_STATUS_WORDS[OnboardingStatus.BLOCKED]!r}; its Situação cell is "
         f"either empty or showing `blocked`, which is the checklist column's own word"
+    )
+
+
+def test_the_gov_br_words_cover_every_tier_the_column_can_hold(
+    portfolio: Portfolio,
+) -> None:
+    """The derived exclusion is only sound while every tier has an approved word.
+
+    `GOVBR_ENGLISH_TOKENS` decides what to refuse by comparing each stored value against
+    the word beside it, so a tier with no word falls into the conservative arm and is
+    refused -- correct, but silent. This names it, and it also holds the fixture to
+    spreading all four tiers across the four clients: two clients sharing a tier would
+    leave one arm of the identity card rendered by nothing.
+    """
+    assert set(GOVBR_TRUST_WORDS) == set(GovBrTrustLevel), (
+        f"GovBrTrustLevel defines {sorted(GovBrTrustLevel.values)} and this module "
+        f"knows a word for {sorted(GOVBR_TRUST_WORDS)}; an unmapped tier is refused by "
+        f"the conservative arm of GOVBR_ENGLISH_TOKENS rather than named"
+    )
+    assert set(GOVBR_TIER_BY_CLIENT.values()) == set(GovBrTrustLevel), (
+        f"the fixture spreads {sorted(set(GOVBR_TIER_BY_CLIENT.values()))} over its "
+        f"four clients, so a tier nobody holds is asserted on no rendered page"
+    )
+    seeded = {
+        str(getattr(portfolio, str(status)).govbr_trust_level)
+        for status in GOVBR_TIER_BY_CLIENT
+    }
+    assert seeded == {str(member.value) for member in GovBrTrustLevel}, (
+        f"the seeded clients hold {sorted(seeded)}, so the fixture and the map above "
+        f"disagree and a tier is asserted against a client that does not carry it"
+    )
+    assert sorted(GOVBR_ENGLISH_TOKENS) == [str(GovBrTrustLevel.UNKNOWN.value)], (
+        f"the derivation refuses {sorted(GOVBR_ENGLISH_TOKENS)}; today exactly one "
+        f"tier is stored under an English word, and a change to that set is a change "
+        f"to what every firm page is scanned for"
+    )
+
+
+@pytest.mark.parametrize("status", sorted(CLIENT_STATUS_WORDS))
+def test_the_workspace_identity_card_names_the_status_and_tier_in_portuguese(
+    portfolio: Portfolio,
+    status: str,
+) -> None:
+    """One client per status, one tier each, and the card read on its own page.
+
+    This is the surface the closed plan recorded as an omission. `_identity.html`
+    reached for `get_status_display` for the client's status and for its gov.br tier,
+    and the labels behind both are the stored English words -- `active`, `suspended`,
+    `closed` and `unknown` -- in front of the accountant who opened the client.
+    """
+    text, leaked = _scan_surface(portfolio, _workspace(str(status)))
+
+    assert CLIENT_STATUS_WORDS[status] in text, (
+        f"the identity card of the {status} client does not say "
+        f"{CLIENT_STATUS_WORDS[status]!r}, so its SITUAÇÃO badge is empty or showing "
+        f"the column's own word"
+    )
+    tier = GOVBR_TIER_BY_CLIENT[status]
+    assert GOVBR_TRUST_WORDS[tier] in text, (
+        f"the identity card does not say {GOVBR_TRUST_WORDS[tier]!r} for a client "
+        f"whose gov.br column holds {tier!r}"
+    )
+    assert leaked == [], (
+        f"the {status} client's workspace shows an accountant the stored word(s) "
+        f"{leaked}"
+    )
+
+
+def test_the_workspace_obligation_table_states_all_five_words_in_portuguese(
+    portfolio: Portfolio,
+) -> None:
+    """The one page where PAID and WAIVED reach a reader as rows rather than options.
+
+    `apps/obligations/queries.py:53,104` excludes both from every queue, so
+    `QUEUE_ROW_STATUSES` can only ever demand three of the five. The workspace's table
+    filters on the client alone, which is what makes this the row-level proof that the
+    map has all five arms and not merely the three a queue happens to reach.
+    """
+    text, _ = _scan_surface(portfolio, _workspace(str(ClientStatus.ACTIVE)))
+
+    missing = [word for word in OBLIGATION_STATUS_WORDS.values() if word not in text]
+    assert missing == [], (
+        f"the workspace's obligation table is missing {missing}; one obligation per "
+        f"status is seeded on this client and the table excludes none of them, so a "
+        f"missing word is an arm that fell through rather than a row nobody has"
+    )
+
+
+def test_the_workspace_checklist_states_every_onboarding_word_in_portuguese(
+    portfolio: Portfolio,
+) -> None:
+    """Four checklist items, four statuses, four badges -- read on one page.
+
+    The onboarding QUEUE fetches blocked items only, so it reaches one arm of a four-arm
+    chain. The workspace's checklist lists the client's items whatever their status,
+    which is the surface where the other three are rendered by something.
+    """
+    text, _ = _scan_surface(portfolio, _workspace(str(ClientStatus.ACTIVE)))
+
+    assert BLOCKED_REASON in text, (
+        f"{BLOCKED_REASON!r} is absent, so the checklist this case reads its badges "
+        f"from is not on the page"
+    )
+    missing = [word for word in ONBOARDING_STATUS_WORDS.values() if word not in text]
+    assert missing == [], (
+        f"the workspace checklist is missing {missing}; the fixture puts a different "
+        f"status on each of its first four items, so a missing word is a badge that "
+        f"fell through its chain"
     )
 
 
