@@ -223,6 +223,11 @@ Credential-bearing URLs cross several independently configured boundaries. A cle
 application audit row does not prove that the proxy, process server, error reporter or
 host log driver is also clean. The current disposition of every known sink is:
 
+> The two rows below marked **RESIDUAL RISK**, the operator gate on container log
+> retention, and everything else the hardening work deliberately left open are written
+> up in [`docs/residual-risks.md`](../docs/residual-risks.md). Read that page before
+> assuming a boundary here is closed.
+
 | Sink | Repository control | Status and boundary |
 | --- | --- | --- |
 | `audit_accesslog.path` | yes | **REDACTED.** Registered credential path segments are replaced before the 180-day access row is written. The visit remains recorded. |
