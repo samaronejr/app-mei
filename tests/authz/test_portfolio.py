@@ -12,6 +12,7 @@ from typing import Final
 
 import pytest
 from django.contrib.auth.models import AnonymousUser
+from pytest_django.fixtures import DjangoAssertNumQueries
 
 from apps.accounts.models import User
 from apps.authz.models import Capability, GrantLevel, RoleGrant
@@ -23,7 +24,14 @@ from apps.authz.portfolio import (
     portfolio_scope,
     visible_clients,
 )
-from apps.authz.services import Actor, resolve_level, role_of
+from apps.authz.services import (
+    Actor,
+    granted_levels,
+    granted_levels_with_role,
+    resolve_level,
+    role_of,
+)
+from apps.authz.stash import PortalStash, portal_stash
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import CLIENT_ROLES, Membership, Tenant, TenantRole
@@ -129,15 +137,118 @@ def test_another_firms_clients_are_never_visible(alpha: Firm) -> None:
     assert visible.isdisjoint({client.pk for client in beta.clients})
 
 
+def _branch_actors(alpha: Firm) -> tuple[User, User, PortalStash]:
+    outsider = User.objects.create_user(email="outsider@scope.example.com")
+    superuser = User.objects.create_superuser(
+        email="superuser@scope.example.com",
+        password=None,
+    )
+    stash = PortalStash(
+        user_pk=alpha.owner.pk,
+        tenant_id=alpha.tenant.pk,
+        levels={
+            VIEW_ASSIGNED: GrantLevel.FULL,
+            VIEW_ALL: GrantLevel.NONE,
+        },
+    )
+    return outsider, superuser, stash
+
+
+def test_the_separate_resolution_query_count_is_explicit_on_every_branch(
+    alpha: Firm,
+    django_assert_num_queries: DjangoAssertNumQueries,
+) -> None:
+    outsider, superuser, stash = _branch_actors(alpha)
+    actions = (VIEW_ASSIGNED, VIEW_ALL)
+
+    with tenant_context(alpha.tenant.pk):
+        token = portal_stash.set(stash)
+        try:
+            with django_assert_num_queries(0):
+                stashed = granted_levels(alpha.owner, actions)
+        finally:
+            portal_stash.reset(token)
+        with django_assert_num_queries(1):
+            anonymous = granted_levels(AnonymousUser(), actions)
+        with django_assert_num_queries(1):
+            elevated = granted_levels(superuser, actions)
+        with django_assert_num_queries(2):
+            missing = granted_levels(outsider, actions)
+        with django_assert_num_queries(4):
+            widest = granted_levels(alpha.owner, actions)
+            separate_role = role_of(alpha.owner)
+
+    assert stashed == {
+        VIEW_ASSIGNED: GrantLevel.FULL,
+        VIEW_ALL: GrantLevel.NONE,
+    }
+    assert set(anonymous.values()) == {GrantLevel.NONE}
+    assert set(elevated.values()) == {GrantLevel.FULL}
+    assert set(missing.values()) == {GrantLevel.NONE}
+    assert set(widest.values()) == {GrantLevel.FULL}
+    assert separate_role == TenantRole.OWNER
+
+
+def test_role_and_levels_share_one_live_resolution_on_every_branch(
+    alpha: Firm,
+    django_assert_num_queries: DjangoAssertNumQueries,
+) -> None:
+    outsider, superuser, stash = _branch_actors(alpha)
+    Membership.objects.create(
+        user=superuser,
+        tenant=alpha.tenant,
+        role=TenantRole.OWNER,
+    )
+    actions = (VIEW_ASSIGNED, VIEW_ALL)
+
+    with tenant_context(alpha.tenant.pk):
+        token = portal_stash.set(stash)
+        try:
+            with django_assert_num_queries(0):
+                stashed = granted_levels_with_role(alpha.owner, actions)
+        finally:
+            portal_stash.reset(token)
+        with django_assert_num_queries(1):
+            anonymous = granted_levels_with_role(AnonymousUser(), actions)
+        with django_assert_num_queries(2):
+            elevated = granted_levels_with_role(superuser, actions)
+        with django_assert_num_queries(2):
+            missing = granted_levels_with_role(outsider, actions)
+        with django_assert_num_queries(3):
+            widest = granted_levels_with_role(alpha.owner, actions)
+
+    assert stashed == (
+        None,
+        {VIEW_ASSIGNED: GrantLevel.FULL, VIEW_ALL: GrantLevel.NONE},
+    )
+    assert anonymous == (
+        None,
+        {VIEW_ASSIGNED: GrantLevel.NONE, VIEW_ALL: GrantLevel.NONE},
+    )
+    assert elevated == (
+        TenantRole.OWNER,
+        {VIEW_ASSIGNED: GrantLevel.FULL, VIEW_ALL: GrantLevel.FULL},
+    )
+    assert missing == (
+        None,
+        {VIEW_ASSIGNED: GrantLevel.NONE, VIEW_ALL: GrantLevel.NONE},
+    )
+    assert widest == (
+        TenantRole.OWNER,
+        {VIEW_ASSIGNED: GrantLevel.FULL, VIEW_ALL: GrantLevel.FULL},
+    )
+
+
 # ------------------------------------------------------------------- the truth table
 #
-# `portfolio_scope` resolves its two capabilities through `granted_levels`, in one
-# round trip, rather than by asking `can()` twice. That is a query optimisation and it
-# must never become a second opinion — the same claim `granted_levels` itself carries
-# one layer down, where `test_bulk_resolution_agrees_with_resolve_level` walks every
-# capability against every role to prove the bulk resolver cannot drift from the single
-# one. This is that argument at the scope layer, and it is needed here for a reason the
-# layer below does not have: the old code SHORT-CIRCUITED. It never asked about
+# `portfolio_scope` resolves its two capabilities and role through
+# `granted_levels_with_role`, in one live answer rather than by asking `can()` twice and
+# then reading the role separately. That is a query optimisation and it must never
+# become a second opinion — the same claim `granted_levels` itself carries one layer
+# down, where `test_bulk_resolution_agrees_with_resolve_level` walks every capability
+# against every role to prove the bulk resolver cannot drift from the single one. This
+# is that argument at the scope layer, needed for a reason the layer below does not
+# have: the old code SHORT-CIRCUITED. It never asked about
 # `clients.view_all` unless `clients.view_assigned` had already answered yes, and the
 # batched form asks about both at once. So the two can only be proved equivalent by
 # enumerating the decision, not by reading it.

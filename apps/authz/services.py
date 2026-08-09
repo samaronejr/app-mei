@@ -135,15 +135,54 @@ def granted_levels(
     `test_bulk_resolution_agrees_with_resolve_level` walks every capability and every
     role to prove the two cannot drift.
     """
+    _, levels = _resolve_levels_and_role(
+        user,
+        actions,
+        tenant_id=tenant_id,
+        include_superuser_role=False,
+    )
+    return levels
+
+
+def granted_levels_with_role(
+    user: Actor,
+    actions: Iterable[str],
+    *,
+    tenant_id: UUID | None = None,
+) -> tuple[str | None, dict[str, str]]:
+    """Return the live role and requested levels from one resolution.
+
+    This is narrower than request caching: each caller still resolves its own answer.
+    A superuser's membership role is still read because portfolio narrowing depends on
+    the role even though capability resolution itself short-circuits for superusers.
+    """
+    return _resolve_levels_and_role(
+        user,
+        actions,
+        tenant_id=tenant_id,
+        include_superuser_role=True,
+    )
+
+
+def _resolve_levels_and_role(
+    user: Actor,
+    actions: Iterable[str],
+    *,
+    tenant_id: UUID | None,
+    include_superuser_role: bool,
+) -> tuple[str | None, dict[str, str]]:
     slugs = tuple(dict.fromkeys(actions))
     # Before the Capability read, for the reason resolve_level states.
     if portal_stash.get() is not None:
         resolved_tenant = current_tenant_id.get()
-        return {
-            slug: stashed_level(user, slug, tenant_id, resolved_tenant)
-            or GrantLevel.NONE
-            for slug in slugs
-        }
+        return (
+            None,
+            {
+                slug: stashed_level(user, slug, tenant_id, resolved_tenant)
+                or GrantLevel.NONE
+                for slug in slugs
+            },
+        )
     known = set(
         Capability.objects.filter(slug__in=slugs).values_list("slug", flat=True),
     )
@@ -155,19 +194,20 @@ def granted_levels(
         )
         raise UnknownCapability(msg)
     if not user.is_authenticated:
-        return dict.fromkeys(slugs, GrantLevel.NONE)
+        return None, dict.fromkeys(slugs, GrantLevel.NONE)
     if user.is_superuser:
-        return dict.fromkeys(slugs, GrantLevel.FULL)
+        role = role_of(user, tenant_id) if include_superuser_role else None
+        return role, dict.fromkeys(slugs, GrantLevel.FULL)
     role = role_of(user, tenant_id)
     if role is None:
-        return dict.fromkeys(slugs, GrantLevel.NONE)
+        return None, dict.fromkeys(slugs, GrantLevel.NONE)
     resolved = dict(
         RoleGrant.objects.filter(
             role=role,
             capability__slug__in=slugs,
         ).values_list("capability__slug", "level"),
     )
-    return {slug: resolved.get(slug, GrantLevel.NONE) for slug in slugs}
+    return role, {slug: resolved.get(slug, GrantLevel.NONE) for slug in slugs}
 
 
 def require_can(
@@ -320,6 +360,7 @@ __all__ = [
     "UnknownCapability",
     "can",
     "granted_levels",
+    "granted_levels_with_role",
     "require_can",
     "resolve_level",
     "role_of",

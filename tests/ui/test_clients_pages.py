@@ -28,6 +28,8 @@ non-digits, which is what "normalize a CNPJ" means to anyone who has not read IN
 nº 2.229/2024, drags the legacy client into the results and this file says so.
 """
 
+from collections import Counter
+from collections.abc import Iterable
 from http import HTTPStatus
 from typing import Final
 from uuid import UUID
@@ -40,6 +42,7 @@ from django.urls import reverse
 from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
 
 from apps.accounts.models import User
+from apps.authz import services as authz_services
 from apps.authz.services import Actor
 from apps.clients.models import ClientCompany
 from apps.core.navigation import visible_nav_items
@@ -100,29 +103,28 @@ BUDGET_CLIENTS: Final = 60
 
 # Measured at 60 clients, never guessed, and re-measured every time it moved. The first
 # draft of this file said 25, a number nobody had counted; it became 27 by measurement,
-# 30 by measurement again when the export gate landed, and 27 once more when
-# `portfolio_scope` stopped asking the same three tables twice. All 27 are accounted
-# for:
+# 30 by measurement again when the export gate landed, 27 when `portfolio_scope`
+# batched its two capability questions, and 26 when that same live resolution returned
+# the role it had already read. All 26 are accounted for:
 #
 #    1-6   session, user, membership, MFA enrolment, tenant resolve, membership
 #    7-9   transaction open, set_config('app.tenant_id'), SAVEPOINT
 #   10-12  require_can       -> capability, membership, grant
-#   13-15  portfolio_scope   -> granted_levels(view_assigned, view_all): capability,
-#                              membership, grant — ONE set of three for BOTH questions
-#      16  portfolio_scope   -> role_of, the membership read that resolves the role
-#      17  Paginator COUNT(*)
-#   18-20  the navigation bar's granted_levels, pinned at NAV_QUERY_BUDGET below
-#   21-23  the export action's own `{% can %}` on clients.view_all, in the template:
+#   13-15  portfolio_scope   -> granted_levels_with_role(view_assigned, view_all):
+#                              capability, membership, grant — one live resolution
+#      16  Paginator COUNT(*)
+#   17-19  the navigation bar's granted_levels, pinned at NAV_QUERY_BUDGET below
+#   20-22  the export action's own `{% can %}` on clients.view_all, in the template:
 #          capability, membership, grant
-#      24  the page's 50 rows
-#   25-27  RELEASE SAVEPOINT, COMMIT, AccessLog INSERT
+#      23  the page's 50 rows
+#   24-26  RELEASE SAVEPOINT, COMMIT, AccessLog INSERT
 #
 # The last three read "RELEASE SAVEPOINT x2" until this was re-measured statement by
 # statement; the second of them is the COMMIT. Corrected here rather than left alone,
 # because an itemisation that does not match the trace is how the total drifts from the
 # reasons for it.
 #
-# 21-23 are the newest three and they were bought on purpose. `export_clients_csv` is
+# 20-22 were bought on purpose. `export_clients_csv` is
 # decorated `@require_can("clients.view_all")`, so an ungated button offers every
 # account that cannot export a control which answers 403 — and a dead button teaches an
 # accountant that the product is broken, which is a worse defect than three queries on a
@@ -131,31 +133,30 @@ BUDGET_CLIENTS: Final = 60
 # capability internally but `visible_clients` encapsulates it and the view never holds
 # the result, so re-deriving it through that path would cost about four.
 #
-# Ten of the 27 are authorization, re-resolved because `require_can`,
-# `visible_clients` and the template each answer independently, and all three are
-# mandatory: the capability decides 200-or-403, the portfolio decides which rows exist,
-# and the template decides what is offered at all. The queryset contract forbids
-# hand-writing the first two. The overhead could be removed by memoising the permission
-# decision on the request, and deliberately is not —
-# `tests/ui/test_dashboard.py:51-59` records that rejection for the same reason it
-# applies here: this is a screen where a stale authorization answer is a visible
-# cross-tenant leak.
+# Twelve of the 26 are authorization. `require_can`, `visible_clients`, navigation and
+# the template each answer independently, and all four are mandatory: the gate decides
+# 200-or-403, the portfolio decides which rows exist, navigation decides which screens
+# are offered, and the template decides which action is offered. Sharing one request-
+# cached answer across them is deliberately rejected: this is a screen where a stale
+# authorization answer is a visible cross-tenant leak. The spy in
+# `test_each_firm_screen_answerer_resolves_authorization_for_itself` counts one live
+# call from each, so a lower budget caused by cross-answerer sharing now reds instead of
+# looking like an optimization.
 #
-# Three came off at 13-16, and they came off WITHOUT touching that rejection. What was
-# 13-19 was `portfolio_scope` asking `can()` twice — capability, membership, grant, then
-# the same three again for the second capability — plus `role_of`. It now asks
-# `granted_levels` for both capabilities at once, which is the same resolution
-# `resolve_level` performs (`test_bulk_resolution_agrees_with_resolve_level` walks every
-# capability against every role to keep the two from drifting), so seven became four:
-# one capability read, one membership read, one grant read, and `role_of` on the branch
-# where both answers were yes.
+# The query at the old position 16 came off WITHOUT touching that rejection.
+# `granted_levels` already read the active role before resolving the two grants, so its
+# sibling `granted_levels_with_role` returns that role with the same levels. The widest
+# branch becomes three queries instead of four: capability, membership and grant. The
+# 49-pair-per-role sweep in `tests/authz/test_portfolio.py` still compares this decision
+# with one-at-a-time resolution across all seven levels.
 #
-# The distinction that makes this legal is WHOSE answer is reused. Nothing is memoised
-# and nothing is shared: `require_can` at 10-12 and the template's `{% can %}` at 21-23
-# still go to the database on their own, and still would if this file demanded it. Only
-# the two questions inside `portfolio_scope`'s single answer were merged, and that
-# answer is still read fresh on every call. A stale answer is still impossible, which is
-# the property the rejection above exists to protect — not the query count.
+# The distinction that makes this legal is whose answer is reused. On this firm screen,
+# no answer crosses from one answerer to another: `require_can` at 10-12, navigation at
+# 17-19 and the template's `{% can %}` at 20-22 still resolve independently. Only the
+# role already read inside `portfolio_scope`'s own fresh answer is reused. The portal
+# stash in `apps/authz/stash.py` is the deliberate exception, not a contradiction: it
+# resolves before `SET LOCAL ROLE` because `app_portal` cannot read the authorization
+# tables, and its identity-and-tenant-bound contract is separate from firm screens.
 #
 # `apps/authz/portfolio.py` compares `full` explicitly rather than truthily, and
 # `tests/authz/test_portfolio.py` sweeps all forty-nine (view_assigned, view_all) level
@@ -166,11 +167,11 @@ BUDGET_CLIENTS: Final = 60
 # no role holds either of these two capabilities at that level today.
 #
 # So this number is a ratchet, not the claim that protects the product. The claim that
-# does is `test_the_query_count_does_not_grow_with_the_portfolio`: 27 is O(1) in
+# does is `test_the_query_count_does_not_grow_with_the_portfolio`: 26 is O(1) in
 # portfolio size, and an N+1 regression moves that test rather than this one. That test
 # measures the small firm and compares the large one against what it measured, so it
 # never needed editing here — which is the point of it being the load-bearing one.
-QUERY_BUDGET: Final = 27
+QUERY_BUDGET: Final = 26
 
 # Additive only. `tests/ui/test_navigation.py` pins `OWNER_ONLY = "Equipe"` and
 # `SHARED = "Exportar clientes"` and neither is touched from here: the export link is
@@ -214,22 +215,23 @@ DETAIL_URL_NAME: Final = "client-detail"
 # the number it actually saw, and why `test_the_detail_query_count_does_not_grow_with_
 # the_portfolio` pins the shape rather than the size.
 #
-# The list screen next door is measured at QUERY_BUDGET = 27 against 60 clients, and its
+# The list screen next door is measured at QUERY_BUDGET = 26 against 60 clients, and its
 # breakdown at lines 101-118 is the floor for this budget; the detail screen runs
 # the same middleware, the same `require_can`, the same `visible_clients` and the same
-# navigation bar, so roughly 23 of those 27 are structural and unavoidable here too.
+# navigation bar, so roughly 22 of those 26 are structural and unavoidable here too.
 # What replaces the list's `Paginator COUNT(*)` and 50-row page is one scoped row read
 # plus one `select_related("capability")` municipality lookup. Sixty therefore leaves
 # about thirty queries of headroom for whatever the screen goes on to show — enough for
 # assignments, obligations and documents, and nowhere near enough to hide an N+1.
 #
-# Some of that headroom is now spent, and the number is recorded rather than left to be
-# rediscovered. The screen measured 37 before the pending portal-invitation list landed
-# and 38 after it: ONE query, because the list renders `email`, `role` and `expires_at`
-# — all local columns, so it needs no `select_related` — and because it is drawn inside
-# the `users.create` tag the invitation form already sits behind, so it buys no second
-# capability triple. Twenty-two queries of headroom remain and the ceiling did not move.
-# It must not: a list that cannot fit inside sixty is to be made cheaper, never louder.
+# Some of that headroom is now spent, and every movement is recorded rather than left to
+# be rediscovered. The pending portal-invitation list moved the screen from 37 to 38:
+# one query, because `email`, `role` and `expires_at` are local columns and the list
+# sits inside the existing `users.create` tag. The role fold then moved 38 to 36 because
+# direct client lookup and `_band_for` each perform their own live portfolio resolution,
+# and each stopped re-reading the role it had just resolved. Twenty-four queries of
+# headroom remain and the ceiling did not move. It must not: a list that cannot fit
+# inside sixty is to be made cheaper, never louder.
 DETAIL_QUERY_BUDGET: Final = 60
 
 # Two real municipalities, neither of them a state capital, so neither is seeded by
@@ -365,6 +367,74 @@ def _cost_of_one_request(firm: Firm) -> int:
 
 
 # --------------------------------------------------------------------- authorization
+
+
+def test_each_firm_screen_answerer_resolves_authorization_for_itself(
+    alpha: Firm,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, tuple[str, ...]]] = []
+    real_resolve_level = authz_services.resolve_level
+    real_portfolio_levels = authz_services.granted_levels_with_role
+    real_navigation_levels = authz_services.granted_levels
+
+    def resolve_level_spy(
+        user: Actor,
+        action: str,
+        *,
+        tenant_id: UUID | None = None,
+    ) -> str:
+        calls.append(("resolve_level", (action,)))
+        return real_resolve_level(user, action, tenant_id=tenant_id)
+
+    def portfolio_levels_spy(
+        user: Actor,
+        actions: Iterable[str],
+        *,
+        tenant_id: UUID | None = None,
+    ) -> tuple[str | None, dict[str, str]]:
+        action_tuple = tuple(actions)
+        calls.append(("portfolio granted_levels_with_role", action_tuple))
+        return real_portfolio_levels(user, action_tuple, tenant_id=tenant_id)
+
+    def navigation_levels_spy(
+        user: Actor,
+        actions: Iterable[str],
+        *,
+        tenant_id: UUID | None = None,
+    ) -> dict[str, str]:
+        action_tuple = tuple(actions)
+        calls.append(("navigation granted_levels", ()))
+        return real_navigation_levels(user, action_tuple, tenant_id=tenant_id)
+
+    session = alpha.as_owner()
+    monkeypatch.setattr(authz_services, "resolve_level", resolve_level_spy)
+    monkeypatch.setattr(
+        "apps.authz.portfolio.granted_levels_with_role",
+        portfolio_levels_spy,
+    )
+    monkeypatch.setattr(
+        "apps.core.navigation.granted_levels",
+        navigation_levels_spy,
+    )
+
+    response = session.get(reverse(LIST_URL_NAME))
+
+    assert response.status_code == HTTPStatus.OK
+    assert Counter(calls) == Counter(
+        {
+            ("resolve_level", ("clients.view_assigned",)): 1,
+            (
+                "portfolio granted_levels_with_role",
+                ("clients.view_assigned", "clients.view_all"),
+            ): 1,
+            ("navigation granted_levels", ()): 1,
+            ("resolve_level", ("clients.view_all",)): 1,
+        },
+    ), (
+        "require_can, visible_clients, navigation and the template must each resolve "
+        f"their own live authorization answer; observed {calls!r}"
+    )
 
 
 @pytest.mark.parametrize(
