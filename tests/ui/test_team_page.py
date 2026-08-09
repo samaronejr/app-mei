@@ -1,6 +1,10 @@
 """The team screen: who is offered its controls, and what it does on a phone.
 
-Three claims, and they are separable on purpose.
+Four claims, and they are separable on purpose.
+
+WHICH INVITATIONS. Equipe is a firm-side screen, so its pending table lists only
+firm-scoped invitations. A portal invitation belongs to one client's workspace and
+must not appear here under a client role that this screen cannot explain.
 
 WHO. The screen is guarded by `require_can("users.create")`, which the published
 matrix grants FULL to `owner` and `operations_admin` and NONE to `staff_accountant`.
@@ -150,6 +154,32 @@ def _team_page(session: Client, *, who: str) -> str:
         f"invite row is a statement about nothing"
     )
     return body
+
+
+def test_the_team_page_lists_firm_invites_but_not_client_invites() -> None:
+    firm = make_firm("escopo-equipe", client_count=1)
+    firm_invite, _firm_token = Invite.issue(
+        tenant=firm.tenant,
+        email="firma-pendente@example.com",
+        role=TenantRole.STAFF_ACCOUNTANT,
+    )
+    client_invite, _client_token = Invite.issue(
+        tenant=firm.tenant,
+        client=firm.clients[0],
+        email="portal-pendente@example.com",
+        role=TenantRole.CLIENT_OWNER,
+    )
+
+    response = firm.as_owner().get(reverse("team"))
+    assert response.status_code == HTTPStatus.OK, response.status_code
+    body = str(response.content.decode())
+
+    assert firm_invite.email in body, (
+        f"firm-scoped invitation {firm_invite.email} is absent from Equipe"
+    )
+    assert client_invite.email not in body, (
+        f"client-scoped invitation {client_invite.email} is PRESENT in Equipe"
+    )
 
 
 # --------------------------------------------------------------- (a) who may act

@@ -435,7 +435,12 @@ def team_view(request: AuthenticatedRequest) -> HttpResponse:
     # already stood down — and, worse, tell the firm a link is live when it is dead.
     pending = (
         Invite.objects.for_user(request.user)
-        .filter(tenant=tenant, accepted_at__isnull=True, revoked_at__isnull=True)
+        .filter(
+            tenant=tenant,
+            client__isnull=True,
+            accepted_at__isnull=True,
+            revoked_at__isnull=True,
+        )
         .order_by("email")
     )
     return render(
