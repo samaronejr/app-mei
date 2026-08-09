@@ -7,6 +7,8 @@ portfolio past its permission ceiling. Comparing the set against the seeded gran
 makes that impossible to introduce silently.
 """
 
+import ast
+import inspect
 import itertools
 from typing import Final
 
@@ -15,6 +17,7 @@ from django.contrib.auth.models import AnonymousUser
 from pytest_django.fixtures import DjangoAssertNumQueries
 
 from apps.accounts.models import User
+from apps.authz import portfolio as portfolio_module
 from apps.authz.models import Capability, GrantLevel, RoleGrant
 from apps.authz.portfolio import (
     FIRM_WIDE_ROLES,
@@ -266,6 +269,62 @@ def test_role_and_levels_share_one_live_resolution_on_every_branch(
 # today. Which is exactly why the sweep writes the levels rather than reading them.
 ALL_LEVELS: Final[list[str]] = [choice.value for choice in GrantLevel]
 
+
+def _portfolio_scope_capabilities() -> set[str]:
+    tree = ast.parse(inspect.getsource(portfolio_scope))
+    resolver_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"granted_levels", "granted_levels_with_role"}
+    ]
+    capability_nodes: list[ast.expr] = []
+    unresolved: list[str] = []
+    for call in resolver_calls:
+        if len(call.args) < 2 or not isinstance(call.args[1], ast.Tuple):
+            unresolved.append(ast.unparse(call))
+            continue
+        capability_nodes.extend(call.args[1].elts)
+
+    derived: set[str] = set()
+    for node in capability_nodes:
+        if isinstance(node, ast.Name):
+            value = getattr(portfolio_module, node.id, None)
+        elif isinstance(node, ast.Constant):
+            value = node.value
+        else:
+            value = None
+        if not isinstance(value, str):
+            unresolved.append(ast.unparse(node))
+            continue
+        derived.add(value)
+
+    expected = {portfolio_module.VIEW_ASSIGNED, portfolio_module.VIEW_ALL}
+    assert len(expected) == 2, (
+        "the two portfolio capability constants must stay distinct"
+    )
+    assert derived, (
+        "portfolio_scope exposed no capabilities through its recognized resolver call; "
+        "the truth-table guard would pass vacuously"
+    )
+    assert len(resolver_calls) == 1, (
+        "portfolio_scope must have exactly one recognized capability resolver call, "
+        "found "
+        f"{len(resolver_calls)}"
+    )
+    assert unresolved == [], (
+        "portfolio_scope has capability arguments this guard cannot derive: "
+        f"{unresolved}"
+    )
+    assert derived == expected, (
+        "portfolio_scope no longer reads exactly the two capabilities swept by the "
+        f"table; unswept={sorted(derived - expected)}, "
+        f"missing={sorted(expected - derived)}, derived={sorted(derived)}"
+    )
+    return derived
+
+
 # What the swept levels can produce for each role, exactly. A role outside
 # FIRM_WIDE_ROLES can never reach ALL however wide its grants are — that is the
 # narrowing this module exists to perform — and a client-side role can never reach
@@ -364,6 +423,16 @@ def test_the_scope_under_the_seeded_matrix_is_the_documented_one(
     user = _member(bare, role)
     with tenant_context(bare.id):
         assert portfolio_scope(user) is SHIPPED_SCOPES[role]
+
+
+def test_the_truth_table_sweeps_every_capability_portfolio_scope_reads() -> None:
+    swept = {VIEW_ASSIGNED, VIEW_ALL}
+    derived = _portfolio_scope_capabilities()
+
+    assert swept == derived, (
+        f"the truth table sweeps {sorted(swept)}, but portfolio_scope reads "
+        f"{sorted(derived)}; unswept={sorted(derived - swept)}"
+    )
 
 
 @pytest.mark.parametrize("role", [choice.value for choice in TenantRole])
