@@ -106,7 +106,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
 -- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
 -- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the
--- portal coverage meta-test inspects. Naming the six tables closes every future table
+-- portal coverage meta-test inspects. Naming the seven tables closes every future table
 -- by default.
 --
 -- to_regclass-guarded because this file runs from the init hook against an EMPTY data
