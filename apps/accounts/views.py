@@ -41,6 +41,7 @@ from apps.accounts.invites import (
     InviteNotPermittedError,
     InviteNotRevocableError,
     InviteRevokedError,
+    InviteScope,
     InviteScopeMismatchError,
     accept_invite,
     issue_client_invite,
@@ -297,14 +298,14 @@ def assert_firm_invite(*, invite: Invite) -> None:
     finds an invitation by token digest alone, which is all an anonymous caller can be
     asked for; which door the token was presented at is a fact only the door holds.
 
-    A named function rather than an `if` inside the view, so the refusal is reachable
-    below HTTP and can be proved there. It lives beside the route rather than in
-    `apps/accounts/invites.py`, and that is a boundary rather than a preference: the
-    lifecycle in that module is shared verbatim by both flows, and a rule keyed to ONE
-    host does not belong in it. The cost is worth naming where it is paid — a future
-    non-HTTP caller of `accept_invite` is not refused by this — and `_client_seat` is
-    what bounds it: acceptance routes off `invite.client_id`, so such a caller still
-    mints the client seat the invitation always promised, never a firm-wide one.
+    A named function rather than an `if` inside the view keeps the pre-render guard
+    callable and testable. Commit `e908d89` recorded its location beside this route as
+    the authority boundary; this hardening supersedes that decision. The view guard
+    remains because a wrong-door GET renders before domain acceptance runs, while the
+    required `InviteScope.FIRM` is revalidated after the row lock for future non-HTTP
+    callers and against a check-to-use race. `_client_seat` already bound a minted row
+    to `invite.client_id`, but it did not bind the caller's host or entry-point
+    expectation. The new domain authority supplies that missing half.
 
     The sentence is `resolve_invite`'s own, character for character, and that is
     deliberate. `_refuse` prints `str(error)`, so on this host a distinct sentence
@@ -359,7 +360,11 @@ def _accept_as_signed_in_user(
     if request.method == "GET":
         return render(request, ACCEPT_TEMPLATE, {"invite": invite, "form": None})
     try:
-        accept_invite(invite=invite, user=user)
+        accept_invite(
+            invite=invite,
+            user=user,
+            expected_scope=InviteScope.FIRM,
+        )
     except InviteError as error:
         return _refuse(request, error)
     return HttpResponseRedirect(settings.LOGIN_REDIRECT_URL)
@@ -384,6 +389,7 @@ def _accept_as_new_account(request: HttpRequest, invite: Invite) -> HttpResponse
         user, _membership = register_and_accept(
             invite=invite,
             password=form.cleaned_data["password2"],
+            expected_scope=InviteScope.FIRM,
             full_name=form.cleaned_data["full_name"],
         )
     except InviteError as error:

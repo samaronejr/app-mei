@@ -40,6 +40,17 @@
 	servers {
 		max_header_size 16KB
 	}
+	# Runtime proxy errors carry the same structured request object as access entries.
+	# A failed upstream must not copy a bearer link into the container log, so remove
+	# both places a credential URL can arrive before the default logger serialises it.
+	log default {
+		output stdout
+		format filter {
+			request>uri delete
+			request>headers>Referer delete
+			wrap json
+		}
+	}
 }
 
 # Container-local liveness. Deliberately NOT proxied to Django: hitting the app through
@@ -69,7 +80,11 @@
 
 	log {
 		output stdout
-		format console
+		format filter {
+			request>uri delete
+			request>headers>Referer delete
+			wrap console
+		}
 		level WARN
 	}
 }

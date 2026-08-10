@@ -39,6 +39,7 @@ from apps.accounts.invites import (
     InviteExpiredError,
     InviteHostMismatchError,
     InviteRevokedError,
+    InviteScope,
     InviteScopeMismatchError,
     accept_invite,
     assert_portal_invite,
@@ -671,7 +672,11 @@ def test_the_domain_refuses_the_wrong_client_s_session_directly(firm: Firm) -> N
 
     # Then the binding is enforced in the domain, not only in the view
     with pytest.raises(InviteEmailMismatchError):
-        accept_invite(invite=resolve_invite(other_token), user=seated)
+        accept_invite(
+            invite=resolve_invite(other_token),
+            user=seated,
+            expected_scope=InviteScope.CLIENT,
+        )
     assert not Membership.objects.filter(user=seated, client=firm.oficina).exists()
 
 

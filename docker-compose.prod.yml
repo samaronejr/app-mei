@@ -238,6 +238,7 @@ services:
         --max-requests 400 --max-requests-jitter 40
         --timeout 60 --graceful-timeout 30
         --access-logfile - --error-logfile -
+        --access-logformat 'remote=%(h)s time=%(t)s method=%(m)s status=%(s)s bytes=%(b)s duration=%(L)s user_agent="%(a)s"'
     expose:
       - "8000"
     # Both headers are load-bearing, and the dev healthcheck (which sends neither) CANNOT

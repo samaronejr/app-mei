@@ -190,6 +190,7 @@ LOGOUT_REDIRECT_URL = "/"
 # login method would authenticate against a field that does not exist.
 ACCOUNT_LOGIN_METHODS = {"email"}
 ACCOUNT_SIGNUP_FIELDS = ["email*", "password1*", "password2*"]
+ACCOUNT_ADAPTER = "apps.accounts.adapter.InvitationOnlyAccountAdapter"
 # Left at allauth's "username" default, this raises AttributeError the first time any
 # allauth template renders a user's display name.
 ACCOUNT_USER_MODEL_USERNAME_FIELD = None
@@ -304,7 +305,7 @@ CSRF_COOKIE_PATH = "/"
 
 X_FRAME_OPTIONS = "DENY"
 SECURE_CONTENT_TYPE_NOSNIFF = True
-SECURE_REFERRER_POLICY = "same-origin"
+SECURE_REFERRER_POLICY = "strict-origin"
 
 REDIS_URL = env.str("REDIS_URL", default="redis://localhost:6379/0")
 
@@ -315,64 +316,58 @@ CACHES = {
     },
 }
 
-# Read from settings so a deployment can tighten them without a code change, and
-# so a test can assert the shipped values rather than a literal copied into one.
-#
-# The credential limits are keyed on email and IP and NEVER on tenant: credentials
-# are platform-global, so a tenant-keyed bucket is a Host-header bypass.
+# Read from settings so a deployment can tighten them without a code change. Credential
+# counters are NEVER tenant-keyed: credentials are platform-global, so rotating the Host
+# header must not mint another allowance.
 RATELIMIT_LOGIN_EMAIL = env.str("RATELIMIT_LOGIN_EMAIL", default="5/m")
+RATELIMIT_RESET_REQUEST_EMAIL = env.str(
+    "RATELIMIT_RESET_REQUEST_EMAIL",
+    default="5/m",
+)
+RATELIMIT_DSR_EMAIL = env.str("RATELIMIT_DSR_EMAIL", default="5/m")
+RATELIMIT_INVITE_ACCEPT_IP = env.str("RATELIMIT_INVITE_ACCEPT_IP", default="5/m")
+RATELIMIT_PORTAL_INVITE_ACCEPT_IP = env.str(
+    "RATELIMIT_PORTAL_INVITE_ACCEPT_IP",
+    default="5/m",
+)
+RATELIMIT_MFA_AUTHENTICATE_IP = env.str(
+    "RATELIMIT_MFA_AUTHENTICATE_IP",
+    default="5/m",
+)
+RATELIMIT_RESET_FROM_KEY_IP = env.str(
+    "RATELIMIT_RESET_FROM_KEY_IP",
+    default="5/m",
+)
 RATELIMIT_LOGIN_IP = env.str("RATELIMIT_LOGIN_IP", default="20/m")
 RATELIMIT_WRITE = env.str("RATELIMIT_WRITE", default="60/m")
 RATELIMIT_READ = env.str("RATELIMIT_READ", default="120/m")
-# Unauthenticated POST endpoints that must not be floodable. Two kinds live here:
-# credential forms, and the LGPD intake — which sends mail to the encarregado on
-# every submission and would otherwise be an amplification vector.
+
+# Every route below receives its own counter and the unchanged `login-ip` 20/m
+# umbrella. Endpoint identity is present in both the group and the key prefix. The
+# former shared `login-email` / `email:unknown` acceptance is superseded: the isolation
+# suite now exhausts every ordered pair among the four address-less routes without one
+# refusing the other. The old claim that the IP bucket never fires there is superseded
+# too: six requests to one route reach its 5/m per-IP counter, while twenty requests
+# spread below every route threshold are served and the twenty-first is refused by the
+# aggregate umbrella.
+#
+# Address-less routes remain per-IP. A submitted address is caller-invented, and a token
+# digest is worse because arbitrary fake-token rotation would mint buckets. The invalid
+# token test rotates six credentials from one IP and sees the sixth refused.
+#
+# Address-bearing routes deliberately use three independent 5/m counters. This is
+# additive on the per-IP axis and NOT additive on the per-address axis: one address's
+# combined login, reset-request, and DSR allowance rises from 5/m to 15/m. Password
+# guessing remains 5/m in `login-email`, and the unchanged 20/m umbrella binds address
+# rotation. In exchange, DSR or reset submissions naming a victim no longer consume the
+# victim's login allowance.
 RATELIMIT_PUBLIC_POST_URL_NAMES = [
     "account_login",
     "account_reset_password",
     "account_reset_password_from_key",
     "mfa_authenticate",
     "dsr-submit",
-    # The firm route is anonymous and can create both an account and a membership.
     "invite-accept",
-    # Portal invitation acceptance. Anonymous by construction, and the POST it accepts
-    # both creates an account and mints a membership -- so unlimited it is a way to
-    # brute-force a token AND an unauthenticated account-creation endpoint.
-    #
-    # The bucket it lands in is SHARED, platform-wide, and that is accepted rather than
-    # overlooked. `_email_key` reads `login` or `email` off the POST; this form carries
-    # neither, because the credential is the token in the URL. So the address normalizes
-    # to `unknown` and every request counts against the single key `email:unknown` in
-    # group `login-email` at `RATELIMIT_LOGIN_EMAIL` -- five a minute for the whole
-    # platform, not five per invitee. `mfa_authenticate` (`code`) and
-    # `account_reset_password_from_key` (`password1`/`password2`) carry no address
-    # either, so all three endpoints share that one counter.
-    #
-    # Measured, not reasoned: five requests from five different IPs across the other
-    # two endpoints exhaust it, and the sixth caller -- a real invitee, on a firm's
-    # portal, from an IP nobody has seen -- is answered 429 with her own IP bucket
-    # untouched. One attacker sustaining five a minute holds the fuse open and every
-    # anonymous credential caller on the platform is refused alongside her. It fails
-    # CLOSED, which is the right direction to fail, but the collateral IS the trade:
-    # the limit protects the token by denying the invitation.
-    #
-    # It is the email bucket doing that denying, not the IP one, despite what this note
-    # used to say -- 5/m global is tighter than `RATELIMIT_LOGIN_IP`'s 20/m per caller,
-    # so the IP bucket never fires here. `credential_limits`
-    # (`apps/security/ratelimit.py:67-72`) binds where an address exists to spread
-    # attempts across, which is login, reset-request and `dsr-submit`, and
-    # `tests/security/test_rate_limit.py:140-148` is where that is pinned. On this
-    # endpoint it is slack, not the binding constraint.
-    #
-    # A per-address bucket was REJECTED and would not have helped: the address would
-    # come from a form field the caller fills in, so every invented address mints its
-    # own five attempts -- a limit with the bypass built into its key. `dsr-submit`
-    # already shows the shape, its `email` being the caller's to type. Normalizing
-    # casing and whitespace stops `A@x` and `a@x ` splitting a bucket; nothing can
-    # make `whatever@x` cost anything. What makes guessing hopeless is the token
-    # itself, `secrets.token_urlsafe(32)` stored as a SHA-256 digest -- these buckets
-    # are depth behind it, which is why paying for them with a shared counter is
-    # tolerable and a keyspace the caller controls would not be.
     "portal-invite-accept",
 ]
 

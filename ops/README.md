@@ -217,6 +217,45 @@ be wrong in.
 All four are settings (`RATELIMIT_*`), so a deployment tightens them without a code
 change. Buckets live in the Redis cache.
 
+## Credential log hygiene
+
+Credential-bearing URLs cross several independently configured boundaries. A clean
+application audit row does not prove that the proxy, process server, error reporter or
+host log driver is also clean. The current disposition of every known sink is:
+
+> The two rows below marked **RESIDUAL RISK**, the operator gate on container log
+> retention, and everything else the hardening work deliberately left open are written
+> up in [`docs/residual-risks.md`](../docs/residual-risks.md). Read that page before
+> assuming a boundary here is closed.
+
+| Sink | Repository control | Status and boundary |
+| --- | --- | --- |
+| `audit_accesslog.path` | yes | **REDACTED.** Registered credential path segments are replaced before the 180-day access row is written. The visit remains recorded. |
+| Django application logs | yes | **REDACTED AND MEASURED.** The production console handler replaces credentials resolved from the shared route registry before `django.request` formats handled 4xx or exception records. RESIDUAL-008 observed the redacted receipt and zero canary hits on success, refusal, rate-limit and safe-error paths. |
+| Gunicorn access log | yes | **SANITIZED.** The explicit production format retains remote address, timestamp, method, status, bytes, duration and user-agent. It omits the request line, path, query string and Referer. No request/correlation header exists in the repository, so none was invented for this change. |
+| Caddy access/error log | yes | **REDACTED AND MEASURED.** RESIDUAL-008 reproduced the former 502 leak as two URI-bearing error/access entries. Both the global error logger and the site access logger now delete `request.uri` and `request.headers.Referer` before serialization. Re-measurement found zero canary hits across success, refusal, rate-limit and safe-error paths; the 502 still produced two diagnostic receipts, each with no URI field. |
+| Docker/container log retention | partial | **CONTENT SANITIZED; RETENTION OPERATOR GATE.** The aggregate local container trace had zero canary hits across all four measured paths after the Django and Caddy filters. Neither Compose file contains a `logging:` block, so driver choice and rotation remain host-level state that the operator must configure and verify. |
+| Sentry events and transactions | yes | **SANITIZED.** The SDK denylist is extended recursively for the live password and code fields. Both send hooks scrub request and Referer URLs, request data, transaction names, breadcrumb URLs, span URLs and repeated credentials in stack-frame locals. |
+| CDN or load balancer | no deployed repository component | **NOT APPLICABLE.** Caddy is the only proxy represented in Git. Reclassify this row if another edge is introduced. |
+| Browser history | no | **RESIDUAL RISK.** The credential remains in the address bar and history by design; the rejected token-exchange redesign is not reopened here. |
+| Referer propagation | yes | **CLOSED GLOBALLY.** `SECURE_REFERRER_POLICY` is `strict-origin`, so same-scheme subrequests carry only the origin and HTTPS-to-HTTP downgrades carry no Referer. |
+| Email scanners and link previews | no | **RESIDUAL RISK.** A mailed bearer link can be visited by recipient-side security tooling outside this repository's control. |
+
+### Referrer-Policy supersession
+
+The operator explicitly superseded RESIDUAL-005's instruction to keep the global
+`SECURE_REFERRER_POLICY = "same-origin"` and stamp `origin` only on credential routes.
+The approved policy is `strict-origin` globally in `config/settings/base.py`; production
+inherits it. This strips paths on every route and also suppresses the Referer on an
+HTTPS-to-HTTP downgrade. The global setting makes a per-route stamp in
+`apps/security/csp.py` redundant, so no route-resolution machinery was added.
+
+This remains compatible with Django's HTTPS CSRF enforcement. Requests carrying an
+`Origin` are checked through that branch first. When `Origin` is absent, the strict
+Referer fallback compares the HTTPS scheme and host, not the path; `strict-origin`
+still supplies that origin on a same-scheme request. A policy that removed the Referer
+entirely would break that fallback and is deliberately not used.
+
 ## Backups
 
 `ops/backup.sh` takes a physical base backup, a logical dump, and prunes the WAL

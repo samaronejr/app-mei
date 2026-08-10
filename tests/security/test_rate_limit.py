@@ -185,9 +185,15 @@ def test_a_different_ip_has_its_own_budget() -> None:
 
 def test_the_limits_are_read_from_settings_not_hardcoded() -> None:
     # Given the shipped configuration
-    # When the four rates are read
+    # When the credential, aggregate, and authenticated rates are read
     # Then they carry the values the plan specifies, from settings
     assert settings.RATELIMIT_LOGIN_EMAIL == "5/m"
+    assert settings.RATELIMIT_RESET_REQUEST_EMAIL == "5/m"
+    assert settings.RATELIMIT_DSR_EMAIL == "5/m"
+    assert settings.RATELIMIT_INVITE_ACCEPT_IP == "5/m"
+    assert settings.RATELIMIT_PORTAL_INVITE_ACCEPT_IP == "5/m"
+    assert settings.RATELIMIT_MFA_AUTHENTICATE_IP == "5/m"
+    assert settings.RATELIMIT_RESET_FROM_KEY_IP == "5/m"
     assert settings.RATELIMIT_LOGIN_IP == "20/m"
     assert settings.RATELIMIT_WRITE == "60/m"
     assert settings.RATELIMIT_READ == "120/m"

@@ -16,9 +16,11 @@ been identified and a tenant has been resolved.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final
+from functools import partial
+from typing import Final, Literal
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 from django.urls import Resolver404, resolve
 from django_ratelimit.core import is_ratelimited
@@ -38,6 +40,60 @@ class Limit:
     key: Callable[[str, HttpRequest], str]
 
 
+@dataclass(frozen=True, slots=True)
+class _EndpointPolicy:
+    group: str
+    rate_setting: str
+    key_prefix: str
+    key_source: Literal["email", "ip"]
+
+
+_ENDPOINT_POLICIES: Final[dict[str, _EndpointPolicy]] = {
+    "account_login": _EndpointPolicy(
+        "login-email",
+        "RATELIMIT_LOGIN_EMAIL",
+        "login",
+        "email",
+    ),
+    "account_reset_password": _EndpointPolicy(
+        "reset-request-email",
+        "RATELIMIT_RESET_REQUEST_EMAIL",
+        "reset-request",
+        "email",
+    ),
+    "dsr-submit": _EndpointPolicy(
+        "dsr-email",
+        "RATELIMIT_DSR_EMAIL",
+        "dsr",
+        "email",
+    ),
+    "invite-accept": _EndpointPolicy(
+        "invite-accept-ip",
+        "RATELIMIT_INVITE_ACCEPT_IP",
+        "invite-accept",
+        "ip",
+    ),
+    "portal-invite-accept": _EndpointPolicy(
+        "portal-invite-accept-ip",
+        "RATELIMIT_PORTAL_INVITE_ACCEPT_IP",
+        "portal-invite-accept",
+        "ip",
+    ),
+    "mfa_authenticate": _EndpointPolicy(
+        "mfa-authenticate-ip",
+        "RATELIMIT_MFA_AUTHENTICATE_IP",
+        "mfa-authenticate",
+        "ip",
+    ),
+    "account_reset_password_from_key": _EndpointPolicy(
+        "reset-from-key-ip",
+        "RATELIMIT_RESET_FROM_KEY_IP",
+        "reset-from-key",
+        "ip",
+    ),
+}
+
+
 def _submitted_email(request: HttpRequest) -> str:
     """Return the address a credential form is being submitted for.
 
@@ -48,12 +104,20 @@ def _submitted_email(request: HttpRequest) -> str:
     return raw.strip().lower() or UNKNOWN
 
 
-def _email_key(_group: str, request: HttpRequest) -> str:
-    return f"email:{_submitted_email(request)}"
-
-
 def _ip_key(_group: str, request: HttpRequest) -> str:
     return f"ip:{client_ip(request) or UNKNOWN}"
+
+
+def _endpoint_key(
+    policy: _EndpointPolicy,
+    _group: str,
+    request: HttpRequest,
+) -> str:
+    if policy.key_source == "email":
+        identity = f"email:{_submitted_email(request)}"
+    else:
+        identity = f"ip:{client_ip(request) or UNKNOWN}"
+    return f"{policy.key_prefix}:{identity}"
 
 
 def _tenant_user_key(_group: str, request: HttpRequest) -> str:
@@ -64,10 +128,29 @@ def _tenant_user_key(_group: str, request: HttpRequest) -> str:
     return f"tenant:{tenant_id}:user:{user_id}"
 
 
-def credential_limits() -> tuple[Limit, ...]:
-    """Limits for endpoints that accept a password, keyed globally."""
+def _resolved_url_name(request: HttpRequest) -> str | None:
+    try:
+        return resolve(
+            request.path_info,
+            urlconf=getattr(request, "urlconf", None),
+        ).url_name
+    except Resolver404:
+        return None
+
+
+def credential_limits(request: HttpRequest) -> tuple[Limit, ...]:
+    """Return the endpoint counter and unchanged aggregate per-IP umbrella."""
+    url_name = _resolved_url_name(request)
+    policy = _ENDPOINT_POLICIES.get(url_name or "")
+    if policy is None:
+        msg = f"No credential rate-limit policy is registered for {url_name!r}"
+        raise ImproperlyConfigured(msg)
     return (
-        Limit("login-email", settings.RATELIMIT_LOGIN_EMAIL, _email_key),
+        Limit(
+            policy.group,
+            getattr(settings, policy.rate_setting),
+            partial(_endpoint_key, policy),
+        ),
         Limit("login-ip", settings.RATELIMIT_LOGIN_IP, _ip_key),
     )
 
@@ -88,11 +171,7 @@ def is_public_post_endpoint(request: HttpRequest) -> bool:
     """
     if (request.method or "") != "POST":
         return False
-    try:
-        match = resolve(request.path_info, urlconf=getattr(request, "urlconf", None))
-    except Resolver404:
-        return False
-    return match.url_name in set(settings.RATELIMIT_PUBLIC_POST_URL_NAMES)
+    return _resolved_url_name(request) in set(settings.RATELIMIT_PUBLIC_POST_URL_NAMES)
 
 
 def exceeds(request: HttpRequest, limit: Limit) -> bool:

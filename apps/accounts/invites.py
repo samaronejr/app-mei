@@ -17,6 +17,7 @@ command, an API, a test helper — cannot reach acceptance without them.
 """
 
 import logging
+from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
 from allauth.account.models import EmailAddress
@@ -64,14 +65,19 @@ class InviteHostMismatchError(InviteNotFoundError):
 
 
 class InviteScopeMismatchError(InviteNotFoundError):
-    """A firm-side invitation was presented at the portal's acceptance route.
+    """The invitation does not belong to the caller's expected acceptance door.
 
-    Also a 404, and also deliberately, and also listed in `_STATUS_BY_ERROR` in its own
-    right rather than relying on the parent's entry. A firm seat has its own route on
-    the platform host; redeeming one here would create a membership with no client while
-    the URL the invitee followed named one firm's portal, and refusing it as "not found
-    here" says the true thing without reporting on the row.
+    Also a 404, deliberately, and listed in `_STATUS_BY_ERROR` in its own right rather
+    than relying on the parent's entry. Refusing the token as "not found here" says the
+    true thing without reporting which of the platform or portal doors it belongs to.
     """
+
+
+class InviteScope(StrEnum):
+    """The acceptance door a caller expects an invitation to belong to."""
+
+    FIRM = "firm"
+    CLIENT = "client"
 
 
 class InviteExpiredError(InviteError):
@@ -296,9 +302,10 @@ def resolve_invite(raw_token: str) -> Invite:
 def assert_portal_invite(*, invite: Invite, firm_slug: str | None) -> None:
     """Refuse an invitation that does not belong at this firm's portal door.
 
-    Lives here rather than in the view for the reason the module docstring gives about
-    every other check in this file: a management command, an API or a test helper must
-    not be able to reach acceptance without it.
+    This remains the portal's pre-render guard. Only the host-aware caller owns
+    `firm_slug`, so the new expected-scope parameter cannot replace the host half. The
+    scope half also stays because a wrong-door GET renders before domain acceptance can
+    revalidate `InviteScope.CLIENT` under the row lock.
 
     Two refusals, and they close different holes.
 
@@ -313,7 +320,8 @@ def assert_portal_invite(*, invite: Invite, firm_slug: str | None) -> None:
     **The scope.** A FIRM-side invitation carries no client, so redeeming it here would
     create a firm-wide membership from the portal's route. That row is exactly what
     `TenantMiddleware._grant_context` accepts as proof of firm-side access, and it would
-    have been minted by a flow whose whole premise is that it grants one client.
+    have been minted by a flow whose whole premise is that it grants one client. The
+    acceptance transaction repeats this arm after locking the current row.
     """
     # The firm is named by its SLUG rather than its id because the slug is what the
     # hostname carries, and re-deriving an id from it would be a second lookup to answer
@@ -342,6 +350,13 @@ def _assert_redeemable(invite: Invite) -> None:
     if invite.expires_at <= timezone.now():
         msg = "That invitation has expired."
         raise InviteExpiredError(msg)
+
+
+def _assert_expected_scope(invite: Invite, expected_scope: InviteScope) -> None:
+    actual_scope = InviteScope.FIRM if invite.client_id is None else InviteScope.CLIENT
+    if expected_scope != actual_scope:
+        msg = "No invitation matches that link."
+        raise InviteScopeMismatchError(msg)
 
 
 def _controls_invited_mailbox(user: User, invite: Invite) -> bool:
@@ -431,14 +446,20 @@ def _client_seat(invite: Invite, user: User) -> Membership:
 
 
 @transaction.atomic
-def accept_invite(*, invite: Invite, user: User) -> Membership:
-    """Redeem an invitation for an account that has proved it owns the address."""
+def accept_invite(
+    *,
+    invite: Invite,
+    user: User,
+    expected_scope: InviteScope,
+) -> Membership:
+    """Redeem at the expected door for an account that owns the invited address."""
     # Re-read under a row lock: two clicks on the same link land in two requests, and
     # a check made outside the lock would let both create a membership.
     # PLATFORM_QUERY_OK: re-reads by primary key the invite already resolved from
     # its token, purely to take a row lock against a double redemption.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
     _assert_redeemable(locked)
+    _assert_expected_scope(locked, expected_scope)
 
     if not _controls_invited_mailbox(user, locked):
         msg = (
@@ -472,12 +493,14 @@ def register_and_accept(
     *,
     invite: Invite,
     password: str,
+    expected_scope: InviteScope,
     full_name: str = "",
 ) -> tuple[User, Membership]:
-    """Create the invited account and redeem the invitation in one transaction."""
+    """Create the account and redeem at the expected door in one transaction."""
     # PLATFORM_QUERY_OK: same primary-key re-read under a row lock as above.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
     _assert_redeemable(locked)
+    _assert_expected_scope(locked, expected_scope)
 
     if User.objects.filter(email__iexact=locked.email).exists():
         msg = "That address already has an account. Sign in to accept."
@@ -497,4 +520,8 @@ def register_and_accept(
         verified=True,
         primary=True,
     )
-    return user, accept_invite(invite=locked, user=user)
+    return user, accept_invite(
+        invite=locked,
+        user=user,
+        expected_scope=expected_scope,
+    )

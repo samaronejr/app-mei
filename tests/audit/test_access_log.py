@@ -14,11 +14,11 @@ the keyed 302 and the password POST remain distinct forensic records.
 
 SCOPE BOUNDARY, stated here so nobody later mistakes this for full-stack credential
 hygiene. The redaction asserted below covers THIS application's own `audit_accesslog`
-rows and claims nothing whatsoever about anything else. A fronting proxy, a load
-balancer, a CDN, a web-server access log or an observability agent that records request
-URLs still sees the raw token in transit, and so does the browser history of whoever
-opened the link. Closing those surfaces is infrastructure work, deliberately outside
-this change, and the tests below must not be read as evidence that it was done.
+rows and claims nothing whatsoever about anything else. The other sinks were closed
+separately and are measured separately — `ops/README.md` holds their disposition table
+and `docs/residual-risks.md` holds what remains open, including the browser history of
+whoever opened the link, which nothing server-side can reach. The tests below must not
+be read as evidence about any sink but this one, in either direction.
 
 For a valid reset, allauth stores the key in the session and redirects to the
 `set-password` URL before rendering the form. The reset exposure asserted here is the

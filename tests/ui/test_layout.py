@@ -78,15 +78,17 @@ CURRENT_CRUMB: Final = re.compile(
     re.IGNORECASE,
 )
 
-# The entrance screens an anonymous visitor can reach, all rendered inside
-# `templates/allauth/layouts/base.html`. Walked on two hosts because that shell's
-# heading branches on which one resolved.
+# The entrance responses an anonymous visitor can reach, all rendered inside
+# `templates/allauth/layouts/base.html`. Signup is the closed refusal rather than the
+# dormant registration form. Walked on two hosts because the shell's heading branches
+# on which one resolved.
 ENTRANCE_PAGES: Final = (
     "account_login",
     "account_signup",
     "account_reset_password",
     "account_reset_password_done",
 )
+CLOSED_SIGNUP_TEMPLATE: Final = "account/signup_closed.html"
 
 EXPORT_LABEL: Final = "Exportar clientes"
 EXPORT_URL_NAME: Final = "clients-export-csv"
@@ -181,6 +183,12 @@ def test_every_page_carries_exactly_one_h1(carteira: Firm) -> None:
         for name in ENTRANCE_PAGES:
             response = anonymous.get(reverse(name))
             assert response.status_code == HTTPStatus.OK, f"{name} on {host}"
+            if name == "account_signup":
+                rendered = [str(template.name) for template in response.templates]
+                assert CLOSED_SIGNUP_TEMPLATE in rendered, (
+                    f"{name} on {host} did not render {CLOSED_SIGNUP_TEMPLATE}: "
+                    f"{rendered}"
+                )
             pages.append(response.content.decode())
 
     pages.append(_second_factor_page(carteira))
