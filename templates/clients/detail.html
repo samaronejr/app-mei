@@ -112,6 +112,27 @@
                 ok, overdue is the one that needs somebody today so it reads late, due
                 is approaching so it reads warn, and scheduled and waived are quiet.
 
+                The COLOUR is a chain and the WORD is not. The chain stays written out
+                because Tailwind compiles only the class names it can find in the
+                source; the word comes from apps/core/templatetags/ptbr.py, which is
+                where this product names an ObligationStatus once for the queues, the
+                portal and this table alike -- an accountant who says "está paga" to
+                somebody whose screen says something else is debugging the product
+                mid-call.
+
+                It replaced get_status_display, which returns the model's own choice
+                label -- and these five labels are the stored English words themselves.
+                Editing them on the enum would alter serialized field metadata on every
+                field declaring choices= from it and emit an AlterField, which is a
+                migration for a display string. obligation.status is a column on the
+                row already fetched, so the filter follows no relation and this screen's
+                budget does not move.
+
+                This table is the ONLY surface in the product where all five words reach
+                a reader as rows: both queues build on _unsettled, which excludes paid
+                and waived outright (apps/obligations/queries.py), while this one filters
+                on the client alone.
+
                 The date shown is the resolved one, because that is the day the client
                 must actually pay by. Both dates are stored and the strip above is
                 where a deferral is announced.
@@ -120,7 +141,7 @@
                 <td data-label="{% translate 'Competência' %}">{{ obligation.competence_month|competencia }}</td>
                 <td data-label="{% translate 'Obrigação' %}">{{ obligation.obligation_type.name }}</td>
                 <td data-label="{% translate 'Vencimento' %}">{{ obligation.resolved_due_date|data }}</td>
-                <td data-label="{% translate 'Situação' %}"><span class="badge {% if obligation.status == 'paid' %}badge-ok{% elif obligation.status == 'overdue' %}badge-late{% elif obligation.status == 'due' %}badge-warn{% else %}badge-neutral{% endif %}">{{ obligation.get_status_display }}</span></td>
+                <td data-label="{% translate 'Situação' %}"><span class="badge {% if obligation.status == 'paid' %}badge-ok{% elif obligation.status == 'overdue' %}badge-late{% elif obligation.status == 'due' %}badge-warn{% else %}badge-neutral{% endif %}">{{ obligation.status|situacao_obrigacao }}</span></td>
               </tr>
             {% empty %}
               <tr>
@@ -148,11 +169,27 @@
         an empty one, so the only way this renders nothing is if the item is not blocked
         -- which means a client stuck with nobody able to say on what cannot exist here
         or in the table underneath.
+
+        The badge's word maps OnboardingStatus and not the client's own status, and the
+        distinction is the whole content of that cell: item.status holds pending,
+        blocked, done or not_applicable -- never onboarding, active, suspended or closed.
+        A client-status filter placed here would name nothing and fall through to
+        Desconhecido, which is a fix that changes the template and not the screen.
+
+        It replaced get_status_display for the reason the obligation table above did:
+        that helper returns the model's own choice label, and these four labels are the
+        stored English words themselves. Travado agrees with the queue's own name,
+        Onboarding travado, so the menu, the heading and this badge say one thing rather
+        than three -- which they do because both read the same map in
+        apps/core/templatetags/ptbr.py.
+
+        The COLOUR chain stays written out beside it: Tailwind compiles only the class
+        names it can find in the source.
       {% endcomment %}
       <ul class="checklist">
         {% for item in checklist %}
           <li class="flex flex-wrap items-center gap-2">
-            <span class="badge {% if item.status == 'done' %}badge-ok{% elif item.status == 'blocked' %}badge-late{% elif item.status == 'pending' %}badge-warn{% else %}badge-neutral{% endif %}">{{ item.get_status_display }}</span>
+            <span class="badge {% if item.status == 'done' %}badge-ok{% elif item.status == 'blocked' %}badge-late{% elif item.status == 'pending' %}badge-warn{% else %}badge-neutral{% endif %}">{{ item.status|situacao_onboarding }}</span>
             <span {% if item.status == 'done' %}class="checklist-done"{% endif %}>{{ item.label }}</span>
             {% if item.status == 'blocked' %}
               <span class="text-xs text-ink-500">{{ item.blocked_reason }}</span>
@@ -210,8 +247,106 @@
           </button>
         </form>
         <p class="mt-5 text-xs text-ink-500">
-          {% translate "O link vai por e-mail, vale para um único uso e tem prazo de validade. Quem recebe define a própria senha ao abrir. Até ser aceito, o convite fica em Convites pendentes, na página da equipe." %}
+          {% translate "O link vai por e-mail, vale para um único uso e tem prazo de validade. Quem recebe define a própria senha ao abrir. Enquanto aguarda a aceitação, o convite aparece na lista abaixo e pode ser revogado ali mesmo." %}
         </p>
+      </div>
+
+      {% comment %}
+        Inside the SAME `pode_convidar` gate as the form above, and deliberately not
+        behind a second `{% can %}` of its own. Two reasons, and both matter.
+
+        The cheap one: another tag would cost three more queries against a budget
+        measured at `tests/ui/test_clients_pages.py:225`, to re-answer a question this
+        block already has the answer to.
+
+        The load-bearing one: what is drawn here is somebody's EMAIL ADDRESS and a
+        control that destroys a live credential. Those are `users.create` business, not
+        `clients.view_assigned` business — and a staff accountant assigned to this
+        client opens this page at 200, so drawing the table outside the gate would hand
+        them both. That is why the gate wraps the whole section rather than only the
+        Revogar button.
+
+        Wrapped and stacked exactly as both tables on Equipe are, for the reason given
+        there: four columns, one holding a control with a long label, does not fit a
+        phone. The wrapper keeps a wide table scrollable instead of pushing the page
+        sideways; `.row-stack` hides the header row below the breakpoint and each cell
+        regrows its column name out of `data-label`. Every cell therefore carries one,
+        or it becomes a bare value on a phone with nothing saying what it measures. The
+        empty-state cell is the single exemption: it spans all four columns and so names
+        no one of them.
+
+        Revocation is a POST and not a link, unlike the Equipe row next door. The link
+        there leads to `invite_confirm.html`, whose Cancelar button goes to `{% url
+        'team' %}` — so offering it here would answer "no, keep it" by moving the reader
+        to a page that, since `cd4de7e`, does not show this invitation at all. The form
+        below posts to the same shipped endpoint that confirmation page posts to
+        (`templates/accounts/invite_confirm.html:27`); no route, view or service is added
+        here. `revoke_invite` re-checks `users.create` against the invitation's own
+        tenant, so the tag above is honesty about what is offered, never the control.
+
+        Each button names the address for the reason Equipe's controls do: a screen
+        reader reading the actions out of table context must not be offered N identical
+        "Revogar" buttons.
+      {% endcomment %}
+      <h3 class="mt-6 mb-3 text-sm font-semibold text-ink-700">{% translate "Convites pendentes" %}</h3>
+      <div class="card max-w-2xl">
+        <div class="table-wrap">
+          <table class="data-table row-stack">
+            <thead>
+              <tr>
+                <th scope="col">{% translate "E-mail" %}</th>
+                <th scope="col">{% translate "Papel" %}</th>
+                <th scope="col">{% translate "Expira em" %}</th>
+                <th scope="col">{% translate "Ações" %}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for invite in pending_portal_invites %}
+                <tr>
+                  <td data-label="{% translate 'E-mail' %}">{{ invite.email }}</td>
+                  <td data-label="{% translate 'Papel' %}">{{ invite.role|papel }}</td>
+                  <td data-label="{% translate 'Expira em' %}">
+                    <div class="text-right sm:text-left">
+                      <time datetime="{{ invite.expires_at.isoformat }}">{{ invite.expires_at|data_hora }}</time>
+                      <div class="text-xs text-ink-500">
+                        {% blocktranslate with prazo=invite.expires_at|timeuntil %}expira em {{ prazo }}{% endblocktranslate %}
+                      </div>
+                    </div>
+                  </td>
+                  <td data-label="{% translate 'Ações' %}">
+                    <form method="post" action="{% url 'invite-revoke' invite.pk %}">
+                      {% csrf_token %}
+                      {% comment %}
+                        The address is ANNOUNCED but not DRAWN, and both halves are
+                        deliberate. Equipe spells "Revogar convite de <email>" into its
+                        button because its table is the width of the page; this one sits
+                        in a `max-w-2xl` card, and a forty-character mailbox inside a
+                        button pushes the row past a 360px viewport and into the
+                        wrapper's horizontal scroll. So the visible word is the verb and
+                        `aria-label` carries the address — which is what a screen reader
+                        announces, so the actions read out of table context are still
+                        distinguishable rather than N identical "Revogar" buttons. That
+                        distinguishability is the whole reason Equipe names its target,
+                        and it is preserved here rather than traded away for the width.
+
+                        `aria-label` and not a visually-hidden span, because this product
+                        ships no such utility: `sr-only` appears in the stylesheet only
+                        inside `@apply` on `.row-stack thead`, never as a class literal,
+                        so a span would mean a new class, a Tailwind rebuild and a
+                        stylesheet diff for one label.
+                      {% endcomment %}
+                      <button type="submit" class="btn btn-danger" aria-label="{% blocktranslate with email=invite.email %}Revogar convite de {{ email }}{% endblocktranslate %}">
+                        {% translate "Revogar" %}
+                      </button>
+                    </form>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="4" class="empty-state">{% translate "Nenhum convite pendente para o portal deste cliente." %}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   {% endif %}

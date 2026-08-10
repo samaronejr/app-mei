@@ -15,6 +15,18 @@ handful of them by coincidence (`password` arrives as `senha`, `email address` a
 `endereco de email`), and that coincidence is what makes the untranslated ones so easy
 to miss: the form looks half-Portuguese rather than obviously wrong.
 
+CASING IS PINNED SEPARATELY, BECAUSE THE ENGLISH SCAN CANNOT SEE IT.
+
+That coincidence has a second edge, and it is why two of the pins below exist at all.
+A label left as `_("password")` does not reach a reader in English -- it reaches her
+as `senha`, lower-case, beside `Confirmação da senha` on the same form. The English
+scan at the foot of this module is blind to that by construction: there is no English
+word on the page to find. So `apps/accounts/forms.py` now declares those two in pt-BR
+itself (`Senha`, `E-mail`), giving up the bundled translation of the two msgids in
+exchange for one casing convention, and the ONLY thing standing between that decision
+and a silent revert is the per-field pin. Reverting either label reds a pin here and
+nothing else -- which is the point, not a gap.
+
 WHERE THE FIX MAY LIVE, AND WHY IT MAY NOT LIVE AT THE MODEL.
 
 The two seat names -- `MEI client owner` and `MEI client collaborator` -- are
@@ -96,8 +108,17 @@ PORTAL_ACCEPT_URL_NAME: Final = "portal-invite-accept"
 # is the person she lets in beside her. Neither carries a gendered parenthetical: the
 # product speaks to one reader at a time and "Colaborador(a)" is a form to fill in, not
 # a sentence to read.
+#
+# `Senha` and `E-mail` are the two the bundled catalogue used to answer for, in lower
+# case. Neither word is invented here: `senha` is already the noun its own confirmation
+# field spells out, and `templates/accounts/team.html` writes `E-mail` as the column
+# heading over the pending-invite table -- the same address, for the same reader, one
+# screen away. Taking the heading's word rather than a new one is the whole reason
+# `Papel` was chosen too.
 FULL_NAME_LABEL: Final = "Nome completo"
+PASSWORD_LABEL: Final = "Senha"  # noqa: S105
 PASSWORD_CONFIRMATION_LABEL: Final = "Confirmação da senha"  # noqa: S105
+EMAIL_LABEL: Final = "E-mail"
 ROLE_LABEL: Final = "Papel"
 
 PORTAL_SEAT_LABELS: Final[dict[str, str]] = {
@@ -204,7 +225,12 @@ def _portal_accept_surface(firm: Firm) -> Surface:
         label="portal acceptance screen",
         document=response.content.decode(),
         sentinel=f"Convite de {firm.tenant.name}",
-        controls=('for="id_full_name"', 'for="id_password2"', 'name="password2"'),
+        controls=(
+            'for="id_full_name"',
+            'for="id_password1"',
+            'for="id_password2"',
+            'name="password2"',
+        ),
     )
 
 
@@ -227,6 +253,7 @@ def _client_detail_surface(firm: Firm) -> Surface:
         document=response.content.decode(),
         sentinel="Acesso ao portal",
         controls=(
+            'for="id_email"',
             'for="id_role"',
             'value="client_owner"',
             'value="client_collaborator"',
@@ -312,45 +339,64 @@ def _options_by_value(surface: Surface, *, name: str) -> dict[str, str]:
 # ------------------------------------------------------- what each field calls itself
 
 
-def test_the_acceptance_screen_names_both_of_its_fields_in_portuguese(
+def test_the_acceptance_screen_names_every_one_of_its_fields_in_portuguese(
     firm: Firm,
 ) -> None:
-    """The first screen of the product, and the two labels it got wrong.
+    """The first screen of the product, and all three labels on it.
 
     Pinned per FIELD rather than as words somewhere on the page. A page-wide presence
     test stays green when the right words land on the wrong control, which on a form
     carrying two password boxes is precisely the mistake worth catching.
+
+    The whole dict is asserted rather than three lookups, so a FOURTH field arriving
+    unlabelled -- or labelled in English -- reds here instead of being ignored by three
+    assertions that each looked somewhere else.
     """
     surface = _portal_accept_surface(firm)
 
     labels = _labels_by_field(surface)
 
-    assert labels.get("id_full_name") == FULL_NAME_LABEL, (
-        f"the name field is labelled {labels.get('id_full_name')!r} rather than "
-        f"{FULL_NAME_LABEL!r}"
-    )
-    assert labels.get("id_password2") == PASSWORD_CONFIRMATION_LABEL, (
-        f"the confirmation field is labelled {labels.get('id_password2')!r} rather "
-        f"than {PASSWORD_CONFIRMATION_LABEL!r}"
+    assert labels == {
+        "id_full_name": FULL_NAME_LABEL,
+        "id_password1": PASSWORD_LABEL,
+        "id_password2": PASSWORD_CONFIRMATION_LABEL,
+    }, (
+        f"the acceptance screen labels its fields {labels} rather than the three "
+        f"sentence-case pt-BR words this form declares. `id_password1` is the one the "
+        f"English scan below cannot defend: left as the bundled msgid it renders "
+        f"`senha`, which is Portuguese, lower-case, and beside "
+        f"{PASSWORD_CONFIRMATION_LABEL!r} on the same form"
     )
 
 
-def test_the_portal_invite_control_names_its_chooser_and_both_seats_in_portuguese(
+def test_the_portal_invite_control_names_its_fields_and_both_seats_in_portuguese(
     firm: Firm,
 ) -> None:
     """The seat names are the half a form-boundary map has to carry.
 
-    The label is one declaration; the two option names are the `TenantRole` labels the
-    model may not translate, mapped over `client_role_choices()` at the form. Asserting
-    the mapping as a whole dict is what makes it falsifiable: a map that lost an entry
-    would fall back to the English it was written to replace, and a map that gained a
-    stored value would offer a seat the CHECK constraint refuses.
+    The two labels are declarations; the two option names are the `TenantRole` labels
+    the model may not translate, mapped over `client_role_choices()` at the form.
+    Asserting the mapping as a whole dict is what makes it falsifiable: a map that lost
+    an entry would fall back to the English it was written to replace, and a map that
+    gained a stored value would offer a seat the CHECK constraint refuses.
+
+    `id_email` is here for the same reason `id_password1` is on the screen above: the
+    bundled catalogue answers that msgid too, so a revert would render `endereço de
+    email` -- Portuguese, lower-case, and invisible to every English word this module
+    refuses.
     """
     surface = _client_detail_surface(firm)
 
-    assert _labels_by_field(surface).get("id_role") == ROLE_LABEL, (
-        f"the seat chooser is labelled {_labels_by_field(surface).get('id_role')!r} "
-        f"rather than {ROLE_LABEL!r}"
+    labels = _labels_by_field(surface)
+
+    assert labels.get("id_email") == EMAIL_LABEL, (
+        f"the address field is labelled {labels.get('id_email')!r} rather than "
+        f"{EMAIL_LABEL!r}, which is the word `templates/accounts/team.html` already "
+        f"heads this same column with"
+    )
+    assert labels.get("id_role") == ROLE_LABEL, (
+        f"the seat chooser is labelled {labels.get('id_role')!r} rather than "
+        f"{ROLE_LABEL!r}"
     )
     assert _options_by_value(surface, name="role") == PORTAL_SEAT_LABELS, (
         f"the chooser offers {_options_by_value(surface, name='role')} rather than "

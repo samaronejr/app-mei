@@ -1,4 +1,4 @@
-{% extends "base.html" %}{% load i18n %}
+{% extends "base.html" %}{% load i18n ptbr %}
 {% block title %}{{ spec.label }}{% endblock %}
 {% block heading %}{{ spec.label }}{% endblock %}
 {% block content %}
@@ -40,20 +40,27 @@
         already read on the portal payments page -- an accountant and her client have
         to call the same row by the same name.
 
-        The chain is here rather than in the view because the view hands down
+        The mapping is here rather than in the view because the view hands down
         ObligationStatus.choices, whose labels ARE the stored English words; and
         editing the labels on the enum would alter serialized field metadata on every
         field declaring choices= from it and emit an AlterField, which is a migration
-        for a display string. The last arm keeps the incoming label, so a status added
-        to the enum and not to this chain renders the word the database has for it
-        rather than an empty option nobody can pick.
+        for a display string.
+
+        It reads the VALUE and not the label, which is what lets one filter serve this
+        option, the queue rows beside it and the client workspace's obligation table:
+        apps/core/templatetags/ptbr.py is keyed on the stored value, so the three
+        surfaces cannot drift apart. A status added to the enum and not to the map
+        renders Desconhecido rather than the English label -- which is worse copy for
+        the reader and better copy for the standing scan, because
+        tests/ui/test_firm_copy.py asserts every one of the five words is offered here
+        and reds on the one that went missing.
       {% endcomment %}
       <div>
         <label class="mb-1 block text-xs font-medium text-ink-600" for="situacao">{% translate "Situação" %}</label>
         <select id="situacao" name="situacao" class="rounded-control border border-ink-300 px-3 py-2 text-sm">
           <option value="">{% translate "Todas" %}</option>
           {% for value, label in statuses %}
-            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{% if value == 'scheduled' %}{% translate "Programada" %}{% elif value == 'due' %}{% translate "A pagar" %}{% elif value == 'paid' %}{% translate "Paga" %}{% elif value == 'overdue' %}{% translate "Em atraso" %}{% elif value == 'waived' %}{% translate "Dispensada" %}{% else %}{{ label }}{% endif %}</option>
+            <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ value|situacao_obrigacao }}</option>
           {% endfor %}
         </select>
       </div>

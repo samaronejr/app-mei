@@ -26,11 +26,19 @@
       changes serialized field metadata and the autodetector emits an AlterField --
       a migration for a display string.
 
-      entry.status is the stored value the view already read, so the chain follows no
-      relation and the dashboard budget does not move. The last arm keeps entry.label
-      as the fallback: a status added to the enum and not to this chain then renders
-      the word the database has for it rather than an empty tile, which is a legible
-      failure instead of a silent one.
+      It is a FILTER and no longer a chain. The words used to be written out here, in
+      clients/list.html and in clients/_identity.html, which is three copies of one
+      vocabulary and two of them stay right only until somebody edits the third. They
+      now come from apps/core/templatetags/ptbr.py, which is the single place this
+      product names a ClientStatus.
+
+      entry.status is the stored value the view already read, so the filter follows no
+      relation and the dashboard budget does not move -- it is pure, touching neither
+      the database nor the request. A status added to the enum and not to the map
+      renders Desconhecido rather than entry.label, which is a legible failure the
+      rendered-word assertions in tests/ui/test_firm_copy.py red on: every tile is
+      drawn whatever its tally, so the missing word is visible without a fixture that
+      happens to hold that status.
 
       The data attribute above deliberately keeps the RAW code. It is how the tests
       and any future automation find a tile, and it is an attribute rather than text,
@@ -40,7 +48,7 @@
       {% for entry in portfolio %}
         <div class="metric" data-portfolio-{{ entry.status }}="{{ entry.count }}">
           <span class="metric-value">{{ entry.count }}</span>
-          <span class="metric-label">{% if entry.status == 'onboarding' %}{% translate "Em onboarding" %}{% elif entry.status == 'active' %}{% translate "Ativo" %}{% elif entry.status == 'suspended' %}{% translate "Suspenso" %}{% elif entry.status == 'closed' %}{% translate "Encerrado" %}{% else %}{{ entry.label }}{% endif %}</span>
+          <span class="metric-label">{{ entry.status|situacao_cliente }}</span>
         </div>
       {% endfor %}
     </div>

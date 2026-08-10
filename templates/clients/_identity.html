@@ -41,8 +41,25 @@
           would ship with no rule behind it. The same four states as the registry list,
           mapped onto the same ramp, so a client does not change colour between the two
           screens.
+
+          The COLOUR is a chain and the WORD is not, and the split is deliberate. The
+          chain has to stay written out for Tailwind; the word comes from
+          apps/core/templatetags/ptbr.py, which is the single place this product names
+          a ClientStatus, so a reword reaches the dashboard tile, the registry badge and
+          this card at once instead of three files agreeing until one is edited.
+
+          It replaced get_status_display, which returns the model's own choice label --
+          the stored English word on three of these four, and ativo on the fourth
+          because Django's bundled catalogue translates that one msgid and no other.
+          Mapping them on the enum instead would alter serialized field metadata on
+          every field declaring choices= from it and emit an AlterField, which is a
+          migration for a display string. client.status is a column on the record
+          already fetched, so the filter follows no relation and this screen's budget
+          does not move. A status added to the enum and not to the map renders
+          Desconhecido rather than the raw column -- a legible failure that the
+          rendered-word assertions in tests/ui/test_firm_copy.py red on.
         {% endcomment %}
-        <span class="badge {% if client.status == 'active' %}badge-ok{% elif client.status == 'onboarding' %}badge-warn{% elif client.status == 'suspended' %}badge-late{% else %}badge-neutral{% endif %}">{{ client.get_status_display }}</span>
+        <span class="badge {% if client.status == 'active' %}badge-ok{% elif client.status == 'onboarding' %}badge-warn{% elif client.status == 'suspended' %}badge-late{% else %}badge-neutral{% endif %}">{{ client.status|situacao_cliente }}</span>
       </dd>
     </div>
     <div>
@@ -59,7 +76,26 @@
     </div>
     <div>
       <dt class="text-xs font-medium text-ink-500">{% translate "Nível gov.br" %}</dt>
-      <dd class="text-sm text-ink-900">{{ client.get_govbr_trust_level_display }}</dd>
+      {% comment %}
+        Only ONE of the four tiers ever read as English. bronze, prata and ouro are
+        already the words a Brazilian reader expects, and the label behind unknown is
+        the stored English value itself -- so this cell said "unknown" to an accountant
+        while the three beside it said the right thing, which is the hardest kind of
+        leak to notice.
+
+        It is mapped through the same filter family as the status above rather than by
+        an {% templatetag openblock %} if {% templatetag closeblock %} for the one word,
+        because a conditional here would be a second naming mechanism installed on the
+        same card the first one is on. The map is exhaustive over the enum and
+        tests/ui/test_ptbr_presentation.py holds it that way, so a fifth tier reds
+        instead of arriving unnamed.
+
+        The category on the line above is NOT mapped and must not be: MEICategory
+        already declares MEI comum and MEI caminhoneiro (apps/fiscal/mei.py), so a map
+        there would restate correct copy in a second place for a third reader to
+        disagree with.
+      {% endcomment %}
+      <dd class="text-sm text-ink-900">{{ client.govbr_trust_level|nivel_govbr }}</dd>
     </div>
     <div>
       <dt class="text-xs font-medium text-ink-500">{% translate "Município" %}</dt>

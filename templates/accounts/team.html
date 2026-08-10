@@ -32,7 +32,7 @@
             {% for membership in memberships %}
               <tr>
                 <td data-label="{% translate 'Pessoa' %}">{{ membership.user.email }}</td>
-                <td data-label="{% translate 'Papel' %}">{{ membership.get_role_display }}</td>
+                <td data-label="{% translate 'Papel' %}">{{ membership.role|papel }}</td>
                 <td data-label="{% translate 'Situação' %}">
                   {% if membership.is_active %}
                     <span class="badge badge-ok">{% translate "ativo" %}</span>
@@ -84,7 +84,7 @@
             {% for invite in pending_invites %}
               <tr>
                 <td data-label="{% translate 'E-mail' %}">{{ invite.email }}</td>
-                <td data-label="{% translate 'Papel' %}">{{ invite.get_role_display }}</td>
+                <td data-label="{% translate 'Papel' %}">{{ invite.role|papel }}</td>
                 <td data-label="{% translate 'Expira em' %}">
                   {% comment %}
                     The absolute Brasília timestamp is the value, and the countdown under

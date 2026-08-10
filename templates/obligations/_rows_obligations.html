@@ -18,18 +18,25 @@
   product mid-call. They are pinned as a set in tests/portal/test_portal_payments.py
   and asserted against this page in tests/ui/test_firm_copy.py.
 
-  It is a chain over row.status and not get_status_display, which returns the model's
+  It is a filter over row.status and not get_status_display, which returns the model's
   own choice label -- and these five labels are the stored English words themselves.
   Mapping them on the enum instead would alter serialized field metadata on every
   field declaring choices= from it and emit an AlterField, which is a migration for a
-  display string. row.status is a column on the row already fetched, so the chain
-  follows no relation and the queue budget does not move. The last arm keeps the
-  stored code, so a status added to the enum and not to this chain renders the
-  database's own value rather than an empty cell.
+  display string. row.status is a column on the row already fetched, so the filter
+  follows no relation and the queue budget does not move; it is pure, touching neither
+  the database nor the request.
+
+  The words used to be written out here, in queue.html's status filter and in the
+  client workspace's obligation table. They now come from
+  apps/core/templatetags/ptbr.py, which is the single place this product names an
+  ObligationStatus, so a reword reaches all three at once instead of two of them
+  staying right until somebody edits the third. A status added to the enum and not to
+  the map renders Desconhecido rather than the database's own value -- a legible
+  failure the rendered-word assertions in tests/ui/test_firm_copy.py red on.
 {% endcomment %}<tr>
   <td data-label="{% translate 'Cliente' %}"><a class="link" href="{% url 'client-detail' row.client_id %}">{{ row.client.legal_name }}</a></td>
   <td data-label="{% translate 'Obrigação' %}">{{ row.obligation_type.code }}</td>
   <td data-label="{% translate 'Competência' %}">{{ row.competence_month|competencia }}</td>
   <td data-label="{% translate 'Vencimento' %}"><time datetime="{{ row.resolved_due_date|date:'Y-m-d' }}">{{ row.resolved_due_date|data }}</time></td>
-  <td data-label="{% translate 'Situação' %}">{% if row.status == 'scheduled' %}{% translate "Programada" %}{% elif row.status == 'due' %}{% translate "A pagar" %}{% elif row.status == 'paid' %}{% translate "Paga" %}{% elif row.status == 'overdue' %}{% translate "Em atraso" %}{% elif row.status == 'waived' %}{% translate "Dispensada" %}{% else %}{{ row.status }}{% endif %}</td>
+  <td data-label="{% translate 'Situação' %}">{{ row.status|situacao_obrigacao }}</td>
 </tr>
