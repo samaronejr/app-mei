@@ -8,9 +8,11 @@ acceptance link would 403 for precisely the people it was sent to.
 """
 
 from http import HTTPStatus
+from smtplib import SMTPException
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
+import sentry_sdk
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login
@@ -20,6 +22,7 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
+from django.template.response import TemplateResponse
 from django.urls import reverse
 from django.utils.translation import gettext as _
 from django.views.decorators.http import require_http_methods, require_POST
@@ -56,7 +59,7 @@ from apps.audit.services import ObjectRef, record_event
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
 from apps.portal.middleware import PORTAL_URLCONF
-from apps.tenants.models import Invite, Membership, TenantRole
+from apps.tenants.models import Invite, Membership, Tenant, TenantRole
 from apps.tenants.validators import PORTAL_HOST_SUFFIX
 
 
@@ -70,6 +73,9 @@ REFUSAL_TEMPLATE = "accounts/invite_refused.html"
 ACCEPT_TEMPLATE = "accounts/invite_accept.html"
 MEMBER_CONFIRM_TEMPLATE = "accounts/member_confirm.html"
 INVITE_CONFIRM_TEMPLATE = "accounts/invite_confirm.html"
+INVITATION_SEND_FAILURE = (
+    "Não foi possível enviar o convite por e-mail. Nada foi criado; tente novamente."
+)
 
 
 class MemberLifecycleError(Exception):
@@ -154,8 +160,24 @@ def issue_invite_view(request: AuthenticatedRequest) -> HttpResponse:
         )
     except InviteNotPermittedError as error:
         raise PermissionDenied(str(error)) from error
-    _mail_invitation(form.cleaned_data["email"], tenant.name, raw_token)
+    try:
+        _mail_invitation(form.cleaned_data["email"], tenant.name, raw_token)
+    except (SMTPException, OSError):
+        _mark_invitation_delivery_failure(form)
+        return TemplateResponse(
+            request,
+            "accounts/team.html",
+            _team_context(request, tenant, form),
+        )
     return HttpResponseRedirect(reverse("invite-issued"))
+
+
+def _mark_invitation_delivery_failure(
+    form: InviteIssueForm | PortalInviteIssueForm,
+) -> None:
+    transaction.set_rollback(True)
+    sentry_sdk.capture_exception()
+    form.add_error(None, INVITATION_SEND_FAILURE)
 
 
 def _mail_invitation(email: str, tenant_name: str, raw_token: str) -> None:
@@ -273,12 +295,24 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
         )
     except InviteNotPermittedError as error:
         raise PermissionDenied(str(error)) from error
-    _mail_portal_invitation(
-        form.cleaned_data["email"],
-        tenant.name,
-        tenant.slug,
-        raw_token,
-    )
+    try:
+        _mail_portal_invitation(
+            form.cleaned_data["email"],
+            tenant.name,
+            tenant.slug,
+            raw_token,
+        )
+    except (SMTPException, OSError):
+        from apps.clients.views import client_detail_context  # noqa: PLC0415
+
+        context = client_detail_context(request, client, portal_invite_form=form)
+        _mark_invitation_delivery_failure(form)
+        return TemplateResponse(
+            request,
+            "clients/detail.html",
+            context,
+            status=HTTPStatus.OK,
+        )
     return HttpResponseRedirect(reverse("invite-issued"))
 
 
@@ -407,25 +441,11 @@ def invite_issued_view(request: HttpRequest) -> HttpResponse:
     return render(request, "accounts/invite_issued.html", {})
 
 
-@require_http_methods(["GET"])
-@login_required
-@require_can(INVITE_CAPABILITY)
-def team_view(request: AuthenticatedRequest) -> HttpResponse:
-    """List who belongs to this firm, and offer the form that invites another.
-
-    `issue_invite_view` is POST-only and had no page to be posted from, so the
-    capability that guards it had no destination a navigation bar could offer. This
-    is that destination.
-
-    Both reads go through `for_user`, which is the only scoping these three
-    policy-free tables have — `Membership` and `Invite` cannot carry a row-level
-    policy because the tenant-resolving middleware must read memberships before
-    `app.tenant_id` exists. The extra `tenant` filter narrows the caller's own firms
-    down to the one this subdomain names.
-    """
-    tenant = getattr(request, "tenant", None)
-    if tenant is None:
-        raise Http404
+def _team_context(
+    request: AuthenticatedRequest,
+    tenant: Tenant,
+    form: InviteIssueForm,
+) -> dict[str, object]:
     # The outer filter is separate from the one inside for_user: that narrows WHICH
     # FIRMS the caller belongs to, while this narrows which rows come back. When the
     # manager's model IS Membership the two are not the same, and without this a
@@ -449,14 +469,32 @@ def team_view(request: AuthenticatedRequest) -> HttpResponse:
         )
         .order_by("email")
     )
+    return {"memberships": memberships, "pending_invites": pending, "form": form}
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_can(INVITE_CAPABILITY)
+def team_view(request: AuthenticatedRequest) -> HttpResponse:
+    """List who belongs to this firm, and offer the form that invites another.
+
+    `issue_invite_view` is POST-only and had no page to be posted from, so the
+    capability that guards it had no destination a navigation bar could offer. This
+    is that destination.
+
+    Both reads go through `for_user`, which is the only scoping these three
+    policy-free tables have — `Membership` and `Invite` cannot carry a row-level
+    policy because the tenant-resolving middleware must read memberships before
+    `app.tenant_id` exists. The extra `tenant` filter narrows the caller's own firms
+    down to the one this subdomain names.
+    """
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        raise Http404
     return render(
         request,
         "accounts/team.html",
-        {
-            "memberships": memberships,
-            "pending_invites": pending,
-            "form": InviteIssueForm(),
-        },
+        _team_context(request, tenant, InviteIssueForm()),
     )
 
 

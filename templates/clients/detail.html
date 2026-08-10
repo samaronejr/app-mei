@@ -218,11 +218,9 @@
     would mean the one value deciding whose books are opened arrives from the same
     place as everything the form distrusts.
 
-    No error summary, because this form is never re-rendered bound. A rejected
-    submission is answered by the shared refusal page and an accepted one redirects to
-    the shared confirmation, which are the same two destinations the firm-side invite
-    form already ends on -- so the two flows cannot start reporting the same outcome
-    differently.
+    The shared error summary stays silent on the ordinary GET. If delivery fails, the
+    issue view re-renders this form with a non-field error so the page cannot claim a
+    message was sent or leave the failure invisible to assistive technology.
 
     The glyph is decorative and marked so inside the partial; the word beside it is
     what is announced and what is read by anyone who does not recognise the mark.
@@ -240,6 +238,7 @@
         </p>
         <form method="post" action="{% url 'portal-invite-issue' client.pk %}" class="mt-5 space-y-4">
           {% csrf_token %}
+          {% include "partials/pure/form_errors.html" with form=portal_invite_form only %}
           {% for field in portal_invite_form %}{% include "partials/pure/field.html" %}{% endfor %}
           <button type="submit" class="btn btn-primary">
             {% include "partials/pure/icons/users.html" %}
