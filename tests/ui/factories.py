@@ -26,7 +26,7 @@ from apps.clients.models import (
 from apps.core.tenancy import tenant_context
 from apps.fiscal.validators import cnpj_check_digits
 from apps.tenants.models import Membership, Tenant, TenantRole
-from tests.support import enrol_totp, totp_code
+from tests.support import enrol_totp, pinned_totp_window, totp_code
 
 PASSWORD = "correct-horse-battery-staple"  # noqa: S105
 HTTP_FOUND = 302
@@ -51,7 +51,7 @@ class Firm:
         """The subdomain `TenantMiddleware` resolves this firm from."""
         return f"{self.tenant.slug}.localhost"
 
-    def sign_in(self, user: User) -> Client:
+    def sign_in(self, user: User, *, totp_step: int = 0) -> Client:
         """Drive the real login and second-factor flow on this firm's subdomain."""
         client = Client(SERVER_NAME=self.host)
         response = client.post(
@@ -61,7 +61,8 @@ class Firm:
         assert response.status_code == HTTP_FOUND, (
             f"password rejected for {user.email}: {response.status_code}"
         )
-        response = client.post(reverse("mfa_authenticate"), {"code": totp_code()})
+        with pinned_totp_window(step=totp_step):
+            response = client.post(reverse("mfa_authenticate"), {"code": totp_code()})
         assert response.status_code == HTTP_FOUND, "TOTP code was not accepted"
         return client
 

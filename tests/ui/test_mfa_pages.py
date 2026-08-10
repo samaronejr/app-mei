@@ -73,7 +73,7 @@ from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Membership, Tenant, TenantRole
-from tests.support import totp_code
+from tests.support import pinned_totp_window, totp_code
 from tests.ui.factories import Firm, add_client, assign, make_firm
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
@@ -616,11 +616,12 @@ def test_a_client_invited_from_the_firm_reaches_inicio_on_day_one(
 
     # When they enrol with a code their authenticator would produce from the secret
     # this very page handed them
-    enrolled = invitee.post(
-        _path("mfa_activate_totp"),
-        {"code": totp_code(_secret_from(gate.content.decode()))},
-        headers={"host": PORTAL_HOST},
-    )
+    with pinned_totp_window():
+        enrolled = invitee.post(
+            _path("mfa_activate_totp"),
+            {"code": totp_code(_secret_from(gate.content.decode()))},
+            headers={"host": PORTAL_HOST},
+        )
     assert enrolled.status_code in REDIRECTED, (
         f"the authenticator code was refused ({enrolled.status_code}), so enrolment "
         f"never completed and the landing page below would be the gate again"
