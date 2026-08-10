@@ -7,13 +7,17 @@ portfolio past its permission ceiling. Comparing the set against the seeded gran
 makes that impossible to introduce silently.
 """
 
+import ast
+import inspect
 import itertools
 from typing import Final
 
 import pytest
 from django.contrib.auth.models import AnonymousUser
+from pytest_django.fixtures import DjangoAssertNumQueries
 
 from apps.accounts.models import User
+from apps.authz import portfolio as portfolio_module
 from apps.authz.models import Capability, GrantLevel, RoleGrant
 from apps.authz.portfolio import (
     FIRM_WIDE_ROLES,
@@ -23,7 +27,14 @@ from apps.authz.portfolio import (
     portfolio_scope,
     visible_clients,
 )
-from apps.authz.services import Actor, resolve_level, role_of
+from apps.authz.services import (
+    Actor,
+    granted_levels,
+    granted_levels_with_role,
+    resolve_level,
+    role_of,
+)
+from apps.authz.stash import PortalStash, portal_stash
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import CLIENT_ROLES, Membership, Tenant, TenantRole
@@ -129,15 +140,118 @@ def test_another_firms_clients_are_never_visible(alpha: Firm) -> None:
     assert visible.isdisjoint({client.pk for client in beta.clients})
 
 
+def _branch_actors(alpha: Firm) -> tuple[User, User, PortalStash]:
+    outsider = User.objects.create_user(email="outsider@scope.example.com")
+    superuser = User.objects.create_superuser(
+        email="superuser@scope.example.com",
+        password=None,
+    )
+    stash = PortalStash(
+        user_pk=alpha.owner.pk,
+        tenant_id=alpha.tenant.pk,
+        levels={
+            VIEW_ASSIGNED: GrantLevel.FULL,
+            VIEW_ALL: GrantLevel.NONE,
+        },
+    )
+    return outsider, superuser, stash
+
+
+def test_the_separate_resolution_query_count_is_explicit_on_every_branch(
+    alpha: Firm,
+    django_assert_num_queries: DjangoAssertNumQueries,
+) -> None:
+    outsider, superuser, stash = _branch_actors(alpha)
+    actions = (VIEW_ASSIGNED, VIEW_ALL)
+
+    with tenant_context(alpha.tenant.pk):
+        token = portal_stash.set(stash)
+        try:
+            with django_assert_num_queries(0):
+                stashed = granted_levels(alpha.owner, actions)
+        finally:
+            portal_stash.reset(token)
+        with django_assert_num_queries(1):
+            anonymous = granted_levels(AnonymousUser(), actions)
+        with django_assert_num_queries(1):
+            elevated = granted_levels(superuser, actions)
+        with django_assert_num_queries(2):
+            missing = granted_levels(outsider, actions)
+        with django_assert_num_queries(4):
+            widest = granted_levels(alpha.owner, actions)
+            separate_role = role_of(alpha.owner)
+
+    assert stashed == {
+        VIEW_ASSIGNED: GrantLevel.FULL,
+        VIEW_ALL: GrantLevel.NONE,
+    }
+    assert set(anonymous.values()) == {GrantLevel.NONE}
+    assert set(elevated.values()) == {GrantLevel.FULL}
+    assert set(missing.values()) == {GrantLevel.NONE}
+    assert set(widest.values()) == {GrantLevel.FULL}
+    assert separate_role == TenantRole.OWNER
+
+
+def test_role_and_levels_share_one_live_resolution_on_every_branch(
+    alpha: Firm,
+    django_assert_num_queries: DjangoAssertNumQueries,
+) -> None:
+    outsider, superuser, stash = _branch_actors(alpha)
+    Membership.objects.create(
+        user=superuser,
+        tenant=alpha.tenant,
+        role=TenantRole.OWNER,
+    )
+    actions = (VIEW_ASSIGNED, VIEW_ALL)
+
+    with tenant_context(alpha.tenant.pk):
+        token = portal_stash.set(stash)
+        try:
+            with django_assert_num_queries(0):
+                stashed = granted_levels_with_role(alpha.owner, actions)
+        finally:
+            portal_stash.reset(token)
+        with django_assert_num_queries(1):
+            anonymous = granted_levels_with_role(AnonymousUser(), actions)
+        with django_assert_num_queries(2):
+            elevated = granted_levels_with_role(superuser, actions)
+        with django_assert_num_queries(2):
+            missing = granted_levels_with_role(outsider, actions)
+        with django_assert_num_queries(3):
+            widest = granted_levels_with_role(alpha.owner, actions)
+
+    assert stashed == (
+        None,
+        {VIEW_ASSIGNED: GrantLevel.FULL, VIEW_ALL: GrantLevel.NONE},
+    )
+    assert anonymous == (
+        None,
+        {VIEW_ASSIGNED: GrantLevel.NONE, VIEW_ALL: GrantLevel.NONE},
+    )
+    assert elevated == (
+        TenantRole.OWNER,
+        {VIEW_ASSIGNED: GrantLevel.FULL, VIEW_ALL: GrantLevel.FULL},
+    )
+    assert missing == (
+        None,
+        {VIEW_ASSIGNED: GrantLevel.NONE, VIEW_ALL: GrantLevel.NONE},
+    )
+    assert widest == (
+        TenantRole.OWNER,
+        {VIEW_ASSIGNED: GrantLevel.FULL, VIEW_ALL: GrantLevel.FULL},
+    )
+
+
 # ------------------------------------------------------------------- the truth table
 #
-# `portfolio_scope` resolves its two capabilities through `granted_levels`, in one
-# round trip, rather than by asking `can()` twice. That is a query optimisation and it
-# must never become a second opinion — the same claim `granted_levels` itself carries
-# one layer down, where `test_bulk_resolution_agrees_with_resolve_level` walks every
-# capability against every role to prove the bulk resolver cannot drift from the single
-# one. This is that argument at the scope layer, and it is needed here for a reason the
-# layer below does not have: the old code SHORT-CIRCUITED. It never asked about
+# `portfolio_scope` resolves its two capabilities and role through
+# `granted_levels_with_role`, in one live answer rather than by asking `can()` twice and
+# then reading the role separately. That is a query optimisation and it must never
+# become a second opinion — the same claim `granted_levels` itself carries one layer
+# down, where `test_bulk_resolution_agrees_with_resolve_level` walks every capability
+# against every role to prove the bulk resolver cannot drift from the single one. This
+# is that argument at the scope layer, needed for a reason the layer below does not
+# have: the old code SHORT-CIRCUITED. It never asked about
 # `clients.view_all` unless `clients.view_assigned` had already answered yes, and the
 # batched form asks about both at once. So the two can only be proved equivalent by
 # enumerating the decision, not by reading it.
@@ -154,6 +268,62 @@ def test_another_firms_clients_are_never_visible(alpha: Firm) -> None:
 # matrix would never show it, because no role holds either of these two at those levels
 # today. Which is exactly why the sweep writes the levels rather than reading them.
 ALL_LEVELS: Final[list[str]] = [choice.value for choice in GrantLevel]
+
+
+def _portfolio_scope_capabilities() -> set[str]:
+    tree = ast.parse(inspect.getsource(portfolio_scope))
+    resolver_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"granted_levels", "granted_levels_with_role"}
+    ]
+    capability_nodes: list[ast.expr] = []
+    unresolved: list[str] = []
+    for call in resolver_calls:
+        if len(call.args) < 2 or not isinstance(call.args[1], ast.Tuple):
+            unresolved.append(ast.unparse(call))
+            continue
+        capability_nodes.extend(call.args[1].elts)
+
+    derived: set[str] = set()
+    for node in capability_nodes:
+        if isinstance(node, ast.Name):
+            value = getattr(portfolio_module, node.id, None)
+        elif isinstance(node, ast.Constant):
+            value = node.value
+        else:
+            value = None
+        if not isinstance(value, str):
+            unresolved.append(ast.unparse(node))
+            continue
+        derived.add(value)
+
+    expected = {portfolio_module.VIEW_ASSIGNED, portfolio_module.VIEW_ALL}
+    assert len(expected) == 2, (
+        "the two portfolio capability constants must stay distinct"
+    )
+    assert derived, (
+        "portfolio_scope exposed no capabilities through its recognized resolver call; "
+        "the truth-table guard would pass vacuously"
+    )
+    assert len(resolver_calls) == 1, (
+        "portfolio_scope must have exactly one recognized capability resolver call, "
+        "found "
+        f"{len(resolver_calls)}"
+    )
+    assert unresolved == [], (
+        "portfolio_scope has capability arguments this guard cannot derive: "
+        f"{unresolved}"
+    )
+    assert derived == expected, (
+        "portfolio_scope no longer reads exactly the two capabilities swept by the "
+        f"table; unswept={sorted(derived - expected)}, "
+        f"missing={sorted(expected - derived)}, derived={sorted(derived)}"
+    )
+    return derived
+
 
 # What the swept levels can produce for each role, exactly. A role outside
 # FIRM_WIDE_ROLES can never reach ALL however wide its grants are — that is the
@@ -253,6 +423,16 @@ def test_the_scope_under_the_seeded_matrix_is_the_documented_one(
     user = _member(bare, role)
     with tenant_context(bare.id):
         assert portfolio_scope(user) is SHIPPED_SCOPES[role]
+
+
+def test_the_truth_table_sweeps_every_capability_portfolio_scope_reads() -> None:
+    swept = {VIEW_ASSIGNED, VIEW_ALL}
+    derived = _portfolio_scope_capabilities()
+
+    assert swept == derived, (
+        f"the truth table sweeps {sorted(swept)}, but portfolio_scope reads "
+        f"{sorted(derived)}; unswept={sorted(derived - swept)}"
+    )
 
 
 @pytest.mark.parametrize("role", [choice.value for choice in TenantRole])
