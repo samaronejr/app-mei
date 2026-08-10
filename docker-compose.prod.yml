@@ -37,8 +37,17 @@ x-app-environment: &app-environment
   # would let an attacker evade the per-IP login limiter by forging the header.
   TRUSTED_PROXY_COUNT: "1"
   PLATFORM_URL: ${PLATFORM_URL:?PLATFORM_URL must be set}
-  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-nao-responda@localhost}
+  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-nao-responda@samaronefialho.dev}
   LGPD_ENCARREGADO_EMAIL: ${LGPD_ENCARREGADO_EMAIL:?LGPD art. 41 requires a named encarregado}
+  # Provider-neutral SMTP transport. The three `:?` credentials make Compose stop
+  # before container startup; core.E013 validates the rest together at Django boot.
+  EMAIL_HOST: ${EMAIL_HOST:?EMAIL_HOST must be set in .env.prod}
+  EMAIL_PORT: "${EMAIL_PORT:-587}"
+  EMAIL_HOST_USER: ${EMAIL_HOST_USER:?EMAIL_HOST_USER must be set in .env.prod}
+  EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:?EMAIL_HOST_PASSWORD must be set in .env.prod}
+  EMAIL_USE_TLS: "${EMAIL_USE_TLS:-True}"
+  EMAIL_USE_SSL: "${EMAIL_USE_SSL:-False}"
+  EMAIL_TIMEOUT: "${EMAIL_TIMEOUT:-10}"
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
   SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
