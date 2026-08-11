@@ -5,6 +5,7 @@ from django.db import DatabaseError, connections, transaction
 from django.http import HttpRequest, JsonResponse
 from redis.exceptions import RedisError
 
+from apps.core.release import current_release
 from apps.obligations.heartbeat import DiskHeadroom, read_heartbeats
 
 OK = 200
@@ -96,3 +97,11 @@ def readyz(_request: HttpRequest) -> JsonResponse:
         },
         status=OK if ready else SERVICE_UNAVAILABLE,
     )
+
+
+@transaction.non_atomic_requests
+def versionz(_request: HttpRequest) -> JsonResponse:
+    """Report the immutable release identity and no other build information."""
+    response = JsonResponse({"release": current_release()})
+    response["Cache-Control"] = "no-store"
+    return response

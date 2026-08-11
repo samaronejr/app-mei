@@ -477,7 +477,7 @@ jobs:
             $COMPOSE up -d --no-build --wait
           "
 
-      # Four assertions BY EFFECT. A green `up --wait` only proves the containers pass
+      # Five assertions BY EFFECT. A green `up --wait` only proves the containers pass
       # their own healthchecks — it cannot see a stack that came up on the old image,
       # skipped its migrations, or is unreachable from the internet.
       - name: 'Assert 1/4 — the running container is this commit'
@@ -532,15 +532,19 @@ jobs:
             "cd '$DEPLOY_PATH' && $COMPOSE exec -T web python manage.py check"
           echo "assert 3/4 ok: manage.py check clean"
 
-      # From the public internet, not from inside the stack: this is the only assertion
-      # that covers Caddy, TLS and DNS. Retried because a just-recreated web container
-      # can still be draining its first requests when compose calls it healthy.
+      # From the runner through the target box's public TLS edge, not from inside the
+      # stack. Pinning resolution covers the box just deployed even before DNS cutover.
+      # Retried because a recreated web container can still be draining first requests.
       - name: 'Assert 4/4 — /healthz is ok over the public edge'
         run: |
           set -euo pipefail
+          DEPLOY_IP="$(getent ahostsv4 "$DEPLOY_HOST" | awk 'NR==1{print $1}')"
+          healthz_url="${HEALTHZ_URL}?cb=${GITHUB_RUN_ID}"
           body=''
           for attempt in 1 2 3; do
-            if body="$(curl -fsS --max-time 30 "$HEALTHZ_URL")"; then
+            if body="$(curl -fsS --max-time 30 \
+              --resolve "samaronefialho.dev:443:$DEPLOY_IP" \
+              "$healthz_url")"; then
               break
             fi
             body=''
@@ -548,15 +552,30 @@ jobs:
             sleep 10
           done
           if [ -z "$body" ]; then
-            echo "::error::$HEALTHZ_URL never answered across 3 attempts"
+            echo "::error::$healthz_url never answered across 3 attempts"
             exit 1
           fi
           printf '%s\n' "$body"
-          if ! printf '%s' "$body" | grep -q '"status": *"ok"'; then
-            echo "::error::$HEALTHZ_URL answered but did not report status ok"
+          if ! printf '%s' "$body" | jq -e '.status == "ok"' >/dev/null; then
+            echo "::error::$healthz_url answered but did not report status ok"
             exit 1
           fi
-          echo "assert 4/4 ok: $HEALTHZ_URL reports status ok"
+          echo "assert 4/4 ok: $healthz_url reports status ok on $DEPLOY_IP"
+
+      - name: 'Assert 5/5 — the deploy target runs this commit'
+        run: |
+          set -euo pipefail
+          DEPLOY_IP="$(getent ahostsv4 "$DEPLOY_HOST" | awk 'NR==1{print $1}')"
+          body="$(curl -fsS \
+            --resolve "samaronefialho.dev:443:$DEPLOY_IP" \
+            "https://samaronefialho.dev/versionz?cb=$GITHUB_RUN_ID")"
+          printf '%s\n' "$body"
+          if ! printf '%s' "$body" \
+            | jq -e --arg GIT_SHA "$GIT_SHA" '.release == $GIT_SHA' >/dev/null; then
+            echo "::error::/versionz on $DEPLOY_IP does not report $GIT_SHA"
+            exit 1
+          fi
+          echo "assert 5/5 ok: public /versionz on $DEPLOY_IP == $GIT_SHA"
 
       # Last, never earlier. Pruning before the assertions would delete the layers the
       # :previous tags depend on for anything not shared with the new image — i.e. it

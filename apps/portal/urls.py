@@ -26,7 +26,7 @@ because `AdminTenantMiddleware` is inert on this host.
 
 from django.urls import include, path
 
-from apps.core.views import healthz, readyz
+from apps.core.views import healthz, readyz, versionz
 from apps.portal.invite_views import portal_invite_accept
 from apps.portal.views import (
     document_download,
@@ -50,6 +50,7 @@ from apps.portal.views import (
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
     path("readyz", readyz, name="readyz"),
+    path("versionz", versionz, name="versionz"),
     path("accounts/", include("allauth.urls")),
     path("pagamentos/", portal_payments, name="portal-payments"),
     path("documentos/", portal_documents, name="portal-documents"),

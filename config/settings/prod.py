@@ -12,6 +12,7 @@ from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
 from sentry_sdk.types import Event, Hint
 
+from apps.core.release import UNKNOWN_RELEASE, current_release
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING, env
 
@@ -308,6 +309,9 @@ SENTRY_OPTIONS: dict[str, Any] = {
     "before_send": scrub_sentry_event,
     "before_send_transaction": scrub_sentry_transaction,
 }
+_release = current_release()
+if _release != UNKNOWN_RELEASE:
+    SENTRY_OPTIONS["release"] = _release
 LOGGING.setdefault("filters", {})["credential_urls"] = {
     "()": CredentialURLLogFilter,
 }
