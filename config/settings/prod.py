@@ -302,6 +302,10 @@ SENTRY_OPTIONS: dict[str, Any] = {
     "environment": env.str("SENTRY_ENVIRONMENT", default="production"),
     "traces_sample_rate": env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.0),
     "send_default_pii": False,
+    # Disabling frame variables removes values from every frame, including most
+    # worker traceback diagnostics. Celery widens what a frame can hold; pilot
+    # privacy deliberately wins that trade.
+    "include_local_variables": False,
     "event_scrubber": EventScrubber(
         denylist=[*DEFAULT_DENYLIST, *sorted(SENTRY_CREDENTIAL_FIELDS)],
         recursive=True,
