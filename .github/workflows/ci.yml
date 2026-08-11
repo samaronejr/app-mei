@@ -19,7 +19,9 @@ jobs:
   test:
     name: Lint, types, migrations, tests, isolation
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Same-commit test-step timings span 986s fast to 1453s slow (~1.47x); with ~151s overhead,
+    # the slow case projects to ~28 minutes. Keep headroom for runner variance without masking runaway.
+    timeout-minutes: 35
 
     # Every credential below is a workflow-local literal for a container that is
     # destroyed when the job ends. Nothing here exists outside this runner, and no
