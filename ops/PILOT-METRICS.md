@@ -48,9 +48,10 @@ against it as touching personal data.
 
 Owner is `operator` unless a row says otherwise. The three roles — operator, support
 contact, security contact — may all be the same person. **They are not named anywhere
-yet:** `ops/PILOT-RUNBOOK.md` does not exist, and naming them is PILOT-502, which is
-blocked on the operator supplying the names. Until that lands, "owner" here means a
-role, not a person, and the runbook references below are forward references.
+yet:** `ops/PILOT-RUNBOOK.md` contains only PILOT-207's monitor-to-action stub, and
+naming them plus completing the procedures is PILOT-502, which is blocked on the
+operator supplying the names. Until that lands, "owner" here means a role, not a
+person, and the runbook references below are forward references.
 
 | # | Metric | Source | Cadence | Owner |
 | --- | --- | --- | --- | --- |
@@ -125,11 +126,11 @@ ladder here on purpose: each of these is already the top of it.
 ### What "pause invitations" means concretely
 
 Stop issuing new invitations and revoke any outstanding unused ones. (The step-by-step
-revocation entry is a forward reference to `ops/PILOT-RUNBOOK.md`, PILOT-502, which is
-not written yet; the capability itself exists — `AuditAction.INVITE_REVOKED` is emitted
-by the shipped revocation path.) Existing users keep working unless the condition itself
-requires otherwise. The point is to stop widening the blast radius while the
-assessment runs.
+revocation entry is a forward reference to `ops/PILOT-RUNBOOK.md`, which contains only
+PILOT-207's monitor-to-action stub today; PILOT-502 writes the procedure. The capability
+itself exists — `AuditAction.INVITE_REVOKED` is emitted by the shipped revocation path.)
+Existing users keep working unless the condition itself requires otherwise. The point
+is to stop widening the blast radius while the assessment runs.
 
 ### Recording a stop
 

@@ -8,6 +8,7 @@ import sentry_sdk
 from botocore.config import Config as BotocoreConfig
 from django.conf import settings
 from django.urls import Resolver404, resolve
+from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
 from sentry_sdk.types import Event, Hint
@@ -297,7 +298,7 @@ STORAGES = {
 
 _sentry_dsn = env.str("SENTRY_DSN", default="")
 SENTRY_OPTIONS: dict[str, Any] = {
-    "integrations": [DjangoIntegration()],
+    "integrations": [DjangoIntegration(), CeleryIntegration()],
     "environment": env.str("SENTRY_ENVIRONMENT", default="production"),
     "traces_sample_rate": env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.0),
     "send_default_pii": False,

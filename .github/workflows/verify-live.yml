@@ -1,0 +1,79 @@
+name: Verify live
+
+on:
+  schedule:
+    - cron: "17 8 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-live:
+    name: JSON, release, and TLS verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Verify live contracts
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          LIVE_BASE_URL: https://samaronefialho.dev
+          LIVE_HOST: samaronefialho.dev
+        run: |
+          set -Eeuo pipefail
+
+          health_body="$(curl -fsS --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-all-errors "$LIVE_BASE_URL/healthz")"
+          jq -e '
+            .status == "ok" and
+            .scheduler == "alive" and
+            .backup == "fresh" and
+            .disk == "ok"
+          ' <<<"$health_body" >/dev/null
+
+          ready_body="$(curl -fsS --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-all-errors "$LIVE_BASE_URL/readyz")"
+          jq -e '
+            .status == "ready" and
+            .database == "ok" and
+            .redis == "ok"
+          ' <<<"$ready_body" >/dev/null
+
+          version_body="$(curl -fsS --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-all-errors "$LIVE_BASE_URL/versionz")"
+          jq -e '
+            (.release | type == "string") and
+            (.release | test("^[0-9a-f]{40}$"))
+          ' <<<"$version_body" >/dev/null
+
+          expected_release="$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)"
+          jq -e --arg expected_release "$expected_release" \
+            '.release == $expected_release' <<<"$version_body" >/dev/null
+
+          certificate="$(mktemp)"
+          trap 'rm -f "$certificate"' EXIT
+          openssl s_client -connect "${LIVE_HOST}:443" -servername "$LIVE_HOST" \
+            </dev/null 2>/dev/null | openssl x509 -out "$certificate"
+          openssl x509 -in "$certificate" -noout -enddate
+          openssl x509 -in "$certificate" -checkend 1209600 -noout
+
+      - name: Ping Healthchecks success
+        if: ${{ success() }}
+        env:
+          HC_VERIFY_URL: ${{ secrets.HC_VERIFY_URL }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$HC_VERIFY_URL"
+          curl -fsS --connect-timeout 10 --max-time 30 --retry 2 \
+            --retry-all-errors "$HC_VERIFY_URL" >/dev/null
+
+      - name: Ping Healthchecks failure
+        if: ${{ failure() }}
+        env:
+          HC_VERIFY_URL: ${{ secrets.HC_VERIFY_URL }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$HC_VERIFY_URL"
+          curl -fsS --connect-timeout 10 --max-time 30 --retry 2 \
+            --retry-all-errors "$HC_VERIFY_URL/fail" >/dev/null
