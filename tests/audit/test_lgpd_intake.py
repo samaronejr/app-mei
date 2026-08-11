@@ -9,14 +9,22 @@ which is why events carry `object_type` and `object_id` and nothing more.
 
 import re
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from http import HTTPStatus
+from unittest.mock import Mock
 
 import pytest
 from django.conf import settings
+from django.contrib import admin
 from django.core import mail
-from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from django.db import transaction
+from django.test import Client, RequestFactory
+from pytest_django.fixtures import (
+    DjangoCaptureOnCommitCallbacks,
+    SettingsWrapper,
+)
 
+from apps.audit.admin import DataSubjectRequestAdmin
 from apps.audit.models import (
     AuditAction,
     DataSubjectRelationship,
@@ -28,6 +36,7 @@ from apps.audit.models import (
 from apps.audit.services import ObjectRef, record_event
 from apps.core.rls import is_exempt_from_tenant_policy
 from apps.core.tenancy import tenant_context
+from apps.lgpd.views import data_subject_request_view
 from apps.tenants.models import Tenant
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -75,13 +84,20 @@ VALID_REQUEST = {
 }
 
 
-def test_a_valid_submission_creates_one_request_and_sends_one_email() -> None:
+def test_a_valid_submission_creates_one_request_and_sends_one_email(
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Given an anonymous data subject — art. 18 rights belong to the subject, not to
     # an account holder, and most of the people processed here have no login at all
     client = Client()
+    stamped_at = datetime(2026, 8, 10, 12, tzinfo=UTC)
+    clock = Mock(return_value=stamped_at)
+    monkeypatch.setattr("apps.lgpd.views.now", clock)
 
     # When they submit the form
-    response = client.post(DSR_URL, VALID_REQUEST)
+    with django_capture_on_commit_callbacks(execute=True):
+        response = client.post(DSR_URL, VALID_REQUEST)
 
     # Then exactly one request is recorded and the encarregado is notified once
     assert response.status_code == HTTPStatus.FOUND
@@ -92,11 +108,79 @@ def test_a_valid_submission_creates_one_request_and_sends_one_email() -> None:
     dsr = DataSubjectRequest.objects.get()
     assert dsr.request_type == DataSubjectRequestType.DELETION
     assert dsr.cpf == VALID_REQUEST["cpf"]
+    assert dsr.encarregado_notified_at == stamped_at
+    clock.assert_called_once_with()
+
+    message = mail.outbox[0].body
+    assert str(dsr.pk) in message
+    assert dsr.request_type in message
+    assert dsr.relationship in message
+    assert dsr.requester_name not in message
+    assert dsr.cpf not in message
+    assert dsr.email not in message
+    assert dsr.detail not in message
 
 
-def test_the_submission_is_recorded_as_a_platform_event_without_the_cpf() -> None:
+def test_a_send_failure_is_durable_and_never_surfaces_from_the_callback(
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given the encarregado's mail server is unavailable
+    error = RuntimeError("SMTP indisponível")
+    unavailable = Mock(side_effect=error)
+    captured = Mock()
+    monkeypatch.setattr("apps.lgpd.views.send_mail", unavailable)
+    monkeypatch.setattr("sentry_sdk.capture_exception", captured)
+
+    # When an anonymous data subject files a legal request
+    with django_capture_on_commit_callbacks(execute=True):
+        response = Client(raise_request_exception=False).post(
+            DSR_URL,
+            VALID_REQUEST,
+            follow=True,
+        )
+
+    # Then the filing survives the delivery failure. Losing this row would silently
+    # erase the statutory request merely because a separate notification failed.
+    dsr = DataSubjectRequest.objects.get()
+    assert dsr.encarregado_notified_at is None
+    assert dsr.notification_last_error == str(error)
+    assert VALID_REQUEST["cpf"] not in dsr.notification_last_error
+    assert "Uma solicitação de titular" not in dsr.notification_last_error
+    unavailable.assert_called_once()
+    captured.assert_called_once_with(error)
+    assert response.status_code == HTTPStatus.OK
+    assert "Sua solicitação foi registrada" in response.content.decode()
+
+
+def test_a_rolled_back_submission_never_runs_its_notification(
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a notification registered by an intake transaction
+    send = Mock()
+    monkeypatch.setattr("apps.lgpd.views.send_mail", send)
+    request = RequestFactory().post(DSR_URL, VALID_REQUEST)
+
+    # When later work makes that transaction roll back
+    with (
+        django_capture_on_commit_callbacks(execute=True),
+        transaction.atomic(),
+    ):
+        data_subject_request_view(request)
+        transaction.set_rollback(True)
+
+    # Then commit-dependent work never runs against a row that does not exist
+    assert DataSubjectRequest.objects.count() == 0
+    send.assert_not_called()
+
+
+def test_the_submission_is_recorded_as_a_platform_event_without_the_cpf(
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+) -> None:
     # Given a submitted request
-    Client().post(DSR_URL, VALID_REQUEST)
+    with django_capture_on_commit_callbacks(execute=True):
+        Client().post(DSR_URL, VALID_REQUEST)
 
     # When the audit record is read
     event = PlatformEvent.objects.get(action=AuditAction.DSR_SUBMITTED)
@@ -132,17 +216,33 @@ def test_the_intake_route_is_reachable_without_authentication() -> None:
     assert response.status_code == HTTPStatus.OK
 
 
-def test_the_request_table_is_allow_listed_and_not_append_only() -> None:
+def test_the_request_table_is_allow_listed_and_not_append_only(
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+) -> None:
     # Given the row-level-security allow-list
     # When the table is classified
     assert is_exempt_from_tenant_policy("audit_datasubjectrequest")
 
     # Then, unlike the audit tables, its rows can be erased — which is the point, as
     # it holds a CPF and the subject may later ask for it to be removed
-    Client().post(DSR_URL, VALID_REQUEST)
+    with django_capture_on_commit_callbacks(execute=True):
+        Client().post(DSR_URL, VALID_REQUEST)
     assert DataSubjectRequest.objects.count() == 1
     DataSubjectRequest.objects.all().delete()
     assert DataSubjectRequest.objects.count() == 0
+
+
+def test_notification_status_is_displayed_read_only_in_the_admin() -> None:
+    # Given the operator-facing request admin
+    model_admin = DataSubjectRequestAdmin(DataSubjectRequest, admin.site)
+    notification_fields = {
+        "encarregado_notified_at",
+        "notification_last_error",
+    }
+
+    # Then delivery state is visible but neither field can be edited
+    assert notification_fields <= set(model_admin.list_display)
+    assert notification_fields <= set(model_admin.readonly_fields)
 
 
 def _values_of(metadatas: Iterable[dict[str, object]]) -> list[str]:
@@ -260,9 +360,13 @@ def test_the_patterns_ignore_the_values_the_audit_tables_actually_carry(
     assert not _document_shaped([value])
 
 
-def test_no_audit_metadata_value_is_document_shaped(tenant: Tenant) -> None:
+def test_no_audit_metadata_value_is_document_shaped(
+    tenant: Tenant,
+    django_capture_on_commit_callbacks: DjangoCaptureOnCommitCallbacks,
+) -> None:
     # Given audit rows written through the product's real paths
-    Client().post(DSR_URL, VALID_REQUEST)
+    with django_capture_on_commit_callbacks(execute=True):
+        Client().post(DSR_URL, VALID_REQUEST)
     with tenant_context(tenant.id):
         record_event(
             action=AuditAction.EXPORT,
