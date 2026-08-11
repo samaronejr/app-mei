@@ -577,6 +577,14 @@ jobs:
           fi
           echo "assert 5/5 ok: public /versionz on $DEPLOY_IP == $GIT_SHA"
 
+      # Post-deploy verification, not a traffic gate: the stack is already rolled.
+      # A probe failure marks the deploy red without stranding traffic between stacks.
+      - name: Verify private object storage after rollout
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" \
+            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web python manage.py storage_probe"
+
       # Last, never earlier. Pruning before the assertions would delete the layers the
       # :previous tags depend on for anything not shared with the new image — i.e. it
       # would destroy the rollback while the deploy was still unproven.
