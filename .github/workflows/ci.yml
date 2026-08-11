@@ -480,7 +480,7 @@ jobs:
       # Five assertions BY EFFECT. A green `up --wait` only proves the containers pass
       # their own healthchecks — it cannot see a stack that came up on the old image,
       # skipped its migrations, or is unreachable from the internet.
-      - name: 'Assert 1/4 — the running container is this commit'
+      - name: 'Assert 1/5 — the running container is this commit'
         run: |
           set -euo pipefail
           release="$("$RUNNER_TEMP/ssh/dssh" \
@@ -497,7 +497,7 @@ jobs:
       # because a dead container emits nothing and nothing contains no pending marker.
       # So: capture to a file, assert the probe's own exit status, assert at least one
       # APPLIED migration as a positive control, and only then assert none pending.
-      - name: 'Assert 2/4 — migrations applied, probe positive-controlled'
+      - name: 'Assert 2/5 — migrations applied, probe positive-controlled'
         run: |
           set -euo pipefail
           plan="$RUNNER_TEMP/migration-plan.txt"
@@ -525,7 +525,7 @@ jobs:
           fi
           echo "assert 2/4 ok: $applied migrations applied, none pending"
 
-      - name: 'Assert 3/4 — Django system checks green in the deployed container'
+      - name: 'Assert 3/5 — Django system checks green in the deployed container'
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" \
@@ -535,7 +535,7 @@ jobs:
       # From the runner through the target box's public TLS edge, not from inside the
       # stack. Pinning resolution covers the box just deployed even before DNS cutover.
       # Retried because a recreated web container can still be draining first requests.
-      - name: 'Assert 4/4 — /healthz is ok over the public edge'
+      - name: 'Assert 4/5 — /healthz is ok over the public edge'
         run: |
           set -euo pipefail
           DEPLOY_IP="$(getent ahostsv4 "$DEPLOY_HOST" | awk 'NR==1{print $1}')"
