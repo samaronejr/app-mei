@@ -33,6 +33,8 @@ Type=oneshot
 ; the container as postgres.
 User=ubuntu
 WorkingDirectory=/opt/app-mei
+; Optional so a missing monitoring secret can never prevent the backup from running.
+EnvironmentFile=-/etc/app-mei/backup.env
 ExecStart=/opt/app-mei/ops/backup.sh
 ; One identifier in the journal for the unit's own lines and the script's alike, so
 ; `journalctl -t app-mei-backup` is the whole history.

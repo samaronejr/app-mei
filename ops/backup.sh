@@ -26,6 +26,14 @@
 
 set -Eeuo pipefail
 
+hc_ping() {
+  [ -n "${HC_URL:-}" ] || return 0
+  curl -fsS --max-time 10 --retry 2 "$HC_URL$1" >/dev/null 2>&1 || true
+}
+on_exit() { rc=$?; if [ "$rc" -ne 0 ] && [ "${HC_DONE:-0}" -eq 0 ]; then hc_ping "/$rc"; fi; }
+trap 'on_exit' EXIT
+hc_ping "/start"
+
 COMPOSE_DIR=${COMPOSE_DIR:-/opt/app-mei}
 RETENTION_DAYS=${RETENTION_DAYS:-7}
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -244,6 +252,8 @@ dbx psql -v ON_ERROR_STOP=1 -qtAc "
   on conflict (name) do update set updated_at = excluded.updated_at
 " >/dev/null
 log "freshness marker recorded; /healthz reports backup=fresh"
+hc_ping ""
+HC_DONE=1
 
 trap - ERR
 log "OK  base=${BASE_SIZE} dump=${DUMP_SIZE} wal=$(dbx sh -c 'du -sh /wal_archive | cut -f1' | tr -d '\r')"
