@@ -671,6 +671,124 @@ can be retired. No `tests/isolation` transcript may be cited as restore proof.
 
 ---
 
+## Restored-environment identity and isolation checklist
+
+Covers PILOT-305. **Not executed.** No scratch environment has been stood up, no login
+has been attempted, and every result below is `PENDING`.
+
+The catalog and RLS-by-effect queries above prove the *database* came back with its
+policies. They do not prove a person can get in, or that the application layered on top
+still refuses the people it should. Those are different claims and they fail
+independently: a restore can carry perfect RLS and still hand every accountant access to
+every client, because the membership check that scopes a firm user to a client is
+application code reading restored rows, not a policy.
+
+So this checklist is walked through the **application**, in a browser or with an
+authenticated HTTP client, inside the PILOT-302 scratch environment. Nothing here is a
+`psql` query.
+
+### Standing rules for the scratch environment
+
+- **`ALLOWED_HOSTS` names scratch hostnames only.** Never the production apex, never the
+  production wildcard, never a real firm's host. A scratch stack that answers to a
+  production hostname is one stale DNS entry away from serving real users from restored
+  data of unknown age.
+- **Never reuse production session material.** No cookie, no session id, no CSRF token,
+  and no `Authorization` header copied out of a production browser profile. Use a fresh
+  private browsing profile or a fresh cookie jar. A session that authenticates against
+  both environments makes the two indistinguishable in exactly the checks meant to tell
+  them apart.
+- **Never copy a production credential in the other direction either.** The passwords
+  used below are the restored users' real passwords, exercised against a scratch stack.
+  They are not written into any evidence file.
+- **The environment is disposable and is destroyed at the end**, together with its
+  volumes, before its `ALLOWED_HOSTS` can drift back toward anything real.
+
+### The rows
+
+`TOTP` in row 1 is the point of the row. The enrolled secret is a restored database row,
+so a code from the operator's existing authenticator device must work without
+re-enrolment. If it does not, the restore lost MFA state and every user is locked out at
+cutover — a failure that no query above would have shown, because the rows are present
+and the policies are intact.
+
+| # | Actor | Action | Acceptance |
+| --- | --- | --- | --- |
+| 1 | Firm user (restored) | Log in with password, then answer the TOTP challenge with a code from the **already-enrolled** device | Both factors accepted, session established, no re-enrolment prompt |
+| 2 | Assigned staff accountant | Open the pilot client's detail page | 200, the client's own name and data render |
+| 3 | **Unassigned staff accountant** | Request the same client's detail page | **REFUSED** — see the negative control below |
+| 4 | Portal user (restored) | Open the Documentos list | 200, and it lists that client's documents and no others |
+| 5 | Any authenticated actor | Attempt a second tenant's data on every surface tried above | Not present anywhere: not in a list, not by direct URL, not in a search result |
+| 6 | Operator | Compare the known document row's metadata against its pre-restore values | Filename, size, content type, `sha256`, and `uploaded_at` all equal |
+
+Row 5 is deliberately phrased as "every surface tried above" rather than as one request.
+Cross-tenant exposure is not usually a missing check on the detail view; it is a list
+endpoint, a picker, an autocomplete, or a count in a header that was written before
+scoping existed. Walk the same surfaces the earlier rows walked and assert absence on
+each, recording which surfaces were covered so a later reader knows what was **not**
+checked.
+
+Row 6 compares against values captured before the restore, from the source, and held in
+the secure rehearsal manifest. Comparing against whatever the restored row says is a
+tautology. The `sha256` here is metadata equality only; whether the bytes behind it still
+exist is [Test A](#test-a--restored-database-to-live-bucket) and is a separate claim.
+
+### The two negative controls
+
+A checklist of six green rows proves the application lets the right people in. It does
+not prove it keeps anyone out, and a build with authorization removed entirely would pass
+all six. Both controls are required, and both go to `.evidence/PILOT-305-failure.txt`.
+
+**Control 1: the unassigned accountant is refused.** A staff accountant who exists, is
+authenticated, belongs to the same firm, and is simply not assigned to this client:
+
+```sh
+: "${SCRATCH_HOST:?the scratch hostname, never a production host}"
+: "${PILOT_CLIENT_ID:?the known client id from the secure rehearsal manifest}"
+
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  --cookie /tmp/pilot-305-unassigned.jar \
+  "https://${SCRATCH_HOST}/clientes/${PILOT_CLIENT_ID}/"
+```
+
+Acceptance: the status is a refusal, and the response body carries no fragment of the
+client's name or data. Record the exact status returned. **Do not accept a redirect to
+the login page as a pass** without checking the session first: an expired cookie produces
+the same shape as a working authorization check, and it would mean the control proved
+nothing. Confirm in the same jar that row 3's actor can still reach a page they *are*
+entitled to, immediately before or after, so the refusal is attributable to
+authorization rather than to being logged out.
+
+**Control 2: a cross-tenant URL probe answers 404.** The second tenant's client id,
+requested with the first tenant's fully valid session:
+
+```sh
+: "${OTHER_TENANT_CLIENT_ID:?a client id belonging to the second tenant}"
+
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  --cookie /tmp/pilot-305-firm.jar \
+  "https://${SCRATCH_HOST}/clientes/${OTHER_TENANT_CLIENT_ID}/"
+```
+
+Acceptance: `404`. Not `403`, and the distinction is deliberate rather than cosmetic — a
+`403` confirms the id exists and is somebody else's, which is a tenant-enumeration oracle
+across a boundary the whole product is built to keep opaque. A `403` here is a finding,
+not a pass with a note.
+
+### Evidence
+
+| Artifact | Contents |
+| --- | --- |
+| `.evidence/PILOT-305-happy.txt` | Rows 1 through 6 with PASS/FAIL, the surfaces covered by row 5, and the metadata fields compared in row 6 |
+| `.evidence/PILOT-305-failure.txt` | Both negative controls, with the observed status codes and the entitled-page check that makes control 1 attributable |
+| `.evidence/PILOT-305-operator.txt` | Scratch hostname, UTC timestamps, and PASS/FAIL per row. No passwords, no TOTP secrets or codes, no session cookies, no client ids |
+
+**PENDING-REHEARSAL (PILOT-305):** every row and both controls are `PENDING`. This
+checklist is a prepared procedure; it is not a record that the restored environment has
+been exercised.
+
+---
+
 ## DNS
 
 Keep the value-bearing Cloudflare export outside Git at **operator password manager →

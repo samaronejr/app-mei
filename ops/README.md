@@ -1333,6 +1333,203 @@ Removing an address the recipient's provider genuinely rejected re-earns the bou
 damages the domain's reputation, so removal is a judgement call and is recorded with a
 reason.
 
+### Mailbox journeys and the log hygiene sweep
+
+Covers PILOT-106. **Not executed.** No mailbox has received anything, no journey has been
+walked, no message-id exists, and no log window has been pulled. Every value below is a
+`<placeholder>` and every result is `PENDING`.
+
+This section depends on [Production access and sandbox
+exit](#production-access-and-sandbox-exit-pilot-105) having landed first. In the sandbox,
+every journey to an unverified external address fails, so running these checks before
+that gate measures the sandbox rather than the application.
+
+#### Two mailboxes, and why they are different people
+
+The journeys split across two real, externally hosted mailboxes:
+
+| Name | Role | Used by |
+| --- | --- | --- |
+| `<mailbox-a>` | the firm-side user — an accountant at the pilot firm | checks 1, 2, 3, 5 |
+| `<mailbox-b>` | the portal-side user — a client of that firm | check 4 |
+
+They must be genuinely separate addresses at a provider the operator does not run, not
+two aliases folding into one inbox. An alias makes a cross-audience mis-send invisible:
+an invitation addressed to the portal user but rendered with the firm user's link would
+land in the same place and read as success. Neither may be an SES-verified identity once
+production access is granted, because a verified recipient would keep working even if the
+account silently fell back into the sandbox.
+
+#### The journey matrix
+
+Eight numbered checks. Six are journeys, one is a negative control, one is a sweep. Each
+row names what proves it, and nothing is satisfied by "the page said it was sent".
+
+| # | Journey | What proves it |
+| --- | --- | --- |
+| 1 | Firm invitation | The invitation lands in `<mailbox-a>`, is accepted from that link, and the resulting user account exists and can authenticate |
+| 2 | Address verification | A verification email lands in `<mailbox-a>` and the confirmation is completed by **POST**, not by following the link with a GET |
+| 3 | TOTP enrolment | The firm user enrols an authenticator and completes one login with a code the operator's device generated |
+| 4 | Portal invitation | The portal invitation lands in `<mailbox-b>`, is accepted, and the resulting portal user reaches that client's own Documentos list |
+| 5 | Password reset | A reset email lands in `<mailbox-a>`, the reset completes, and the new password authenticates |
+| 6 | LGPD DSR notification | A DSR filed at `POST /lgpd/dsr-submit` produces a notification in the encarregado mailbox **and** stamps `encarregado_notified_at` on the request row |
+| 7 | **Negative control** — SMTP auth | With a deliberately wrong `EMAIL_HOST_PASSWORD`, an `smtplib` probe is refused at authentication |
+| 8 | **Hygiene sweep** — logs and Sentry | Over the journey window, `docker compose logs web caddy` and the Sentry issue stream contain no raw invite token, confirm key, or reset key |
+
+Check 2 is a POST for a reason that is easy to lose: the confirmation link is a GET-safe
+landing page and the state change is the form submission on it. Recording "I clicked the
+link" as the acceptance would pass against a build where the POST handler is broken.
+
+Check 6's two halves are separate claims. The mailbox proves the message was delivered;
+the `encarregado_notified_at` stamp proves the application believes it sent one. A row
+with the stamp and no mail is a delivery failure the application cannot see, and a mail
+with no stamp means `lgpd_renotify` will send it again.
+
+#### Check 7 runs in a scratch shell, never against the running stack
+
+The point of the negative control is that checks 1 through 6 succeeded because SES
+authenticated the sender, not because something in the path is an open relay that would
+have delivered regardless. Prove the credential is load-bearing by breaking it:
+
+```sh
+docker compose -f docker-compose.prod.yml run --rm --no-deps \
+  -e EMAIL_HOST_PASSWORD=<deliberately-wrong-password> web python - <<'PY'
+import os
+import smtplib
+
+try:
+    with smtplib.SMTP(os.environ["EMAIL_HOST"], int(os.environ["EMAIL_PORT"])) as smtp:
+        smtp.starttls()
+        smtp.login(os.environ["EMAIL_HOST_USER"], os.environ["EMAIL_HOST_PASSWORD"])
+except smtplib.SMTPAuthenticationError:
+    print("PASS smtp auth refused with a wrong password")
+    raise SystemExit(0)
+print("FAIL smtp accepted a wrong password")
+raise SystemExit(1)
+PY
+```
+
+`run --rm --no-deps` is the whole safety property here. It starts a throwaway container
+with an overridden variable and leaves `web`, `worker` and `beat` untouched, so the live
+stack never holds a credential that cannot send. **Do not** edit `.env.prod` and recreate
+services to produce this result: that makes the production stack unable to send mail for
+the duration of the test, and a forgotten revert is an outage nobody is watching for.
+
+The transcript goes to `.evidence/PILOT-106-failure.txt`. Record the refusal's SMTP
+response class, never the password that produced it.
+
+#### Check 8: the grep windows
+
+This is the check most likely to be performed badly, because a grep that finds nothing
+looks identical whether the logs are clean or the grep is wrong. Four things make it an
+assertion rather than a gesture.
+
+**Bound the window from timestamps taken at the journeys, not from memory.** Record UTC
+immediately before check 1 and immediately after check 6, and pull exactly that span:
+
+```sh
+# Immediately before journey 1.
+date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/pilot-106-window-start.utc
+# ... journeys 1 through 6 ...
+# Immediately after journey 6.
+date -u +%Y-%m-%dT%H:%M:%SZ > /tmp/pilot-106-window-end.utc
+```
+
+**Pull `web` and `caddy`, and only those two.** `web` is where Django's request and error
+logging lands, and `caddy` is where the URI and Referer of every proxied request would
+appear. `worker` and `beat` do not terminate HTTP and carry no credential-bearing URL,
+and `db` and `redis` would only add noise. The window is applied with `--since`/`--until`
+so the sweep cannot be diluted by a month of unrelated lines:
+
+```sh
+cd /opt/app-mei
+compose='docker compose --env-file .env.prod -f docker-compose.prod.yml'
+$compose logs --no-color --timestamps \
+  --since "$(cat /tmp/pilot-106-window-start.utc)" \
+  --until "$(cat /tmp/pilot-106-window-end.utc)" \
+  web caddy > /tmp/pilot-106-window.log
+wc -l /tmp/pilot-106-window.log
+```
+
+**Grep for the token substrings actually observed in the mailboxes.** Not a guessed
+shape, not a regex for "something that looks like a token". Open each delivered message,
+take the credential segment out of the link, and use a **substring** of it — enough
+characters to be unique in a log, fewer than the whole value, so that the search term
+itself is not the credential. There are three distinct kinds and they must be searched
+separately, because they are generated by different code paths and a leak in one says
+nothing about the others:
+
+```sh
+# Substrings taken from the delivered messages, entered in the operator's shell only.
+: "${INVITE_TOKEN_FRAGMENT:?take from the mailbox-a invitation link}"
+: "${CONFIRM_KEY_FRAGMENT:?take from the mailbox-a verification link}"
+: "${RESET_KEY_FRAGMENT:?take from the mailbox-a reset link}"
+
+for fragment in "$INVITE_TOKEN_FRAGMENT" "$CONFIRM_KEY_FRAGMENT" "$RESET_KEY_FRAGMENT"; do
+  grep -c -- "$fragment" /tmp/pilot-106-window.log
+done
+```
+
+**The positive control is mandatory, and it is what makes the zeros mean anything.**
+Grep the same file for a benign string that is certainly present in it — a hostname, a
+status code, a path with no credential in it — and require a **nonzero** count. Without
+it, a mistyped path, an empty capture, a window that excluded the journeys, or a
+`--since` format the daemon rejected all produce three clean zeros and an operator who
+believes the logs are clean:
+
+```sh
+grep -c -- '<benign-known-present-string>' /tmp/pilot-106-window.log   # MUST be > 0
+```
+
+Acceptance for check 8: the positive control is nonzero and all three fragment counts are
+zero. A zero positive control invalidates the whole sweep and the sweep is re-run; it is
+never recorded as a pass with a note.
+
+Sentry is the second half of the same check and is searched the same way. Query the issue
+stream for the window and search each fragment through Sentry's own search rather than by
+eye, with the same positive control — a search term known to appear in a captured event —
+proving the query reaches the right project and period. Acceptance: zero events match any
+fragment, and the control returns at least one.
+
+The rotated-file variant of this sweep lives in [The canary check after
+rotation](#the-canary-check-after-rotation) and runs against
+`/var/lib/docker/containers/*/*-json.log*` after PILOT-209 has actually cycled files.
+Same fragments, same positive control, different files: this one covers the live journey
+window, that one covers what survives rotation.
+
+#### Recording: presence, not contents
+
+One row per journey. **No token, key, or link with its credential segment intact is ever
+written into an evidence file**, including as an example, including redacted-by-eye. The
+recorded link shape is the route with the credential replaced, so a reader can tell which
+route was exercised without the artifact carrying a usable credential.
+
+| Field | Recorded as |
+| --- | --- |
+| Journey | 1 through 6 by name |
+| Recipient | `<mailbox-a>` or `<mailbox-b>`, never the literal address |
+| `Message-ID` | `<message-id-N>`, transcribed to `-operator.txt` only |
+| Sent at (UTC) | `<sent-utc-N>`, from the message headers |
+| Received at (UTC) | `<received-utc-N>`, from the receiving provider's headers |
+| DKIM | PASS / FAIL, from `Authentication-Results` |
+| SPF | PASS / FAIL, and the domain it aligned to |
+| Link shape | e.g. `/accounts/invitations/<token>/accept`, credential elided |
+| Token present in logs | PRESENT / ABSENT, from check 8's counts |
+
+The sent and received timestamps are both recorded because their difference is the only
+delivery-latency figure the pilot will have, and because a message that was accepted by
+SES and arrived forty minutes later is a different operational fact from one that arrived
+immediately.
+
+#### Evidence
+
+| Artifact | Contents |
+| --- | --- |
+| `.evidence/PILOT-106-red.txt` | The pre-production-access refusal, cross-referenced to `.evidence/PILOT-105-red.txt` rather than re-run |
+| `.evidence/PILOT-106-happy.txt` | Checks 1 through 6 and 8: per-journey rows, the window bounds, the line count of the captured window, the positive-control count, and the three fragment counts |
+| `.evidence/PILOT-106-failure.txt` | Check 7, the SMTP authentication refusal |
+| `.evidence/PILOT-106-operator.txt` | Message-ids, mailbox addresses, timestamps, and PASS/FAIL per check. No tokens, no keys, no passwords |
+
 ### Object storage: versioning, lifecycle, probe
 
 Covers PILOT-204. **Not executed.** Versioning state, lifecycle rules, bucket name, and
@@ -2247,3 +2444,199 @@ Executed only after `v0.2.0-rc1` exists and rows 1 through 6 are green.
    volumes intact, the deep rollback is repointing DNS and restarting its Caddy. Destroying
    the instance is the step that ends that option, so it is deliberately the last one and
    it is dated.
+
+### Alerting drills: Sentry, the degraded signal, and the missed ping
+
+Covers PILOT-504. **Not executed.** No Sentry event has been raised deliberately, no
+service has been stopped to provoke an alert, no ping has been skipped, and no alert has
+been received. Every event id, timestamp, and elapsed value below is a `<placeholder>`.
+
+Three monitoring surfaces are configured by earlier todos and none of them has ever
+fired. A configured alert that has never been received is a belief about a delivery chain
+with at least four independent links in it: the condition, the detector, the notifier,
+and the recipient's mail. This section fires each one on purpose and records what
+arrived, because the first real incident is the wrong time to discover that the alert
+address was wrong.
+
+All three parts run inside a **declared maintenance window** on the target box, announced
+to the pilot firm in advance. Part (b) deliberately makes `/healthz` fail, which means an
+external monitor will page, so the window must also be recorded wherever those alerts
+land — an unexplained alert during a drill teaches the recipient to ignore the next one.
+
+#### Non-goals: what this drill does not break
+
+**Do not drill by stopping Redis or Postgres.** Both are tempting because both would
+produce loud alerts quickly, and both are the wrong choice:
+
+- Stopping `db` takes every request down, not just the probe, and the recovery crosses a
+  restore-shaped decision on a box holding real pilot data.
+- Stopping `redis` empties the Celery broker and the rate-limit buckets, so recovery is
+  not the inverse of the action and the blast radius outlives the window.
+
+`beat` is chosen because the scheduler dead-man is a **designed** signal rather than a
+side effect of a broken dependency. Its failure mode is bounded — no HTTP request path
+depends on beat — the alert it raises is the one the runbook already has an entry for,
+and the recovery is one `docker compose start`. Drilling the designed detector proves the
+detector; breaking a dependency proves only that breaking dependencies is noticeable.
+
+**Do not leave any drill state active past the window.** Beat is restarted in part (b),
+the rehearsal Healthchecks check in part (c) is pinged back to green, and the marker
+event from part (a) is resolved in Sentry. A drill that ends with a monitor still red is
+indistinguishable from an incident.
+
+#### (a) A controlled Sentry event
+
+The question is whether an exception raised on this box reaches the project with enough
+context to act on, and without carrying anything it should not.
+
+Raise it with a marker string so the event is unambiguously the drill's and not a real
+error that happened to land in the same minute:
+
+```sh
+cd /opt/app-mei
+compose='docker compose --env-file .env.prod -f docker-compose.prod.yml'
+$compose exec -T web python -c \
+  'raise RuntimeError("PILOT-504-DRILL-<window-id> deliberate controlled event")'
+```
+
+Acceptance, taken from the event's JSON in the Sentry UI and transcribed rather than
+screenshotted:
+
+| Field | Expected |
+| --- | --- |
+| Message | contains `PILOT-504-DRILL-<window-id>` |
+| `release` | equals the deployed SHA, `<deployed-sha>` |
+| `environment` | equals the configured value, `<sentry-environment>` |
+| Credential fields | **absent** — no password, no confirm key, no reset key, no invite token, no `EMAIL_HOST_PASSWORD`, in the event body, the request data, the breadcrumbs, or the stack-frame locals |
+
+`release` is worth asserting rather than assuming. `config/settings/prod.py:313-315` sets
+it **only** when `current_release()` returns something other than the unknown sentinel,
+so an image built without `--build-arg GIT_SHA` produces events with no release field at
+all — and those events cannot be attributed to a deploy, which is most of what makes them
+useful. `environment` comes from `SENTRY_ENVIRONMENT` (`config/settings/prod.py:302`) and
+defaults to `production`; record which of the two it was.
+
+The scrubbing assertion is the reason this is a drill rather than a code review. The
+denylist, the recursive scrubber, and both send hooks are described under [Credential log
+hygiene](#credential-log-hygiene) and are exercised by tests, but no event produced by
+*this box's* configuration has ever been inspected. Transcribe the event JSON with any
+value that would be a secret replaced by its field name and `<redacted>`, and record the
+event id as `<sentry-event-id>` in the operator artifact only.
+
+#### (b) The degraded-signal drill: stop beat
+
+This is the part with a counter-intuitive observation in it, and getting that observation
+right is the reason the drill exists.
+
+```sh
+$compose stop beat
+date -u +%Y-%m-%dT%H:%M:%SZ    # record as <beat-stopped-utc>
+```
+
+Then wait, and record what happens in this order:
+
+| # | Within | Observation | Command |
+| --- | --- | --- | --- |
+| 1 | 20 min of `<beat-stopped-utc>` | `/healthz` returns **503** with `"scheduler": "stale"` | `curl -o /dev/null -w '%{http_code}' .../healthz` |
+| 2 | — | Compose marks `web` **unhealthy** — and does **not** restart it | `$compose ps` |
+| 3 | — | Caddy stays healthy and keeps proxying | `$compose ps`, and a real page fetch |
+| 4 | — | A firm page still answers **200** | `curl -o /dev/null -w '%{http_code}' https://<firm-host>/` |
+| 5 | after the alert | UptimeRobot **M1** alert delivered to `<alert-recipient>` | the recipient mailbox |
+| 6 | 10 min of restart | `/healthz` back to 200, `"scheduler": "alive"`, `web` healthy again | `$compose ps` and the probe |
+
+**Why 20 minutes.** The scheduler stamps its heartbeat every 5 minutes and the probe
+calls it stale after 15 (`apps/obligations/heartbeat.py:34-35`), so `/healthz` flips at
+most 15 minutes after the last tick. The container healthcheck then polls every 10s and
+needs 30 consecutive failures before Compose changes the state
+(`docker-compose.prod.yml:270-273`), which is a further 5 minutes. 15 + 5 is the 20.
+
+**Why `web` goes UNHEALTHY, which is REQUIRED EVIDENCE and not a footnote.** The web
+container's healthcheck asserts an HTTP **200** — `sys.exit(0 if r.status==200 else 1)`
+at `docker-compose.prod.yml:269`. And `/healthz` answers **503** whenever the scheduler
+is stale: `status=OK if report.scheduler_alive else SERVICE_UNAVAILABLE` at
+`apps/core/views.py:65`. Those two facts compose directly. A dead scheduler therefore
+makes the **web** container fail its healthcheck, even though the web process is serving
+requests perfectly, and Compose marks it `unhealthy`.
+
+That is by design and both halves of it must be observed:
+
+- **It goes unhealthy.** Do not record this as "web may appear degraded". The container
+  is marked unhealthy, deterministically, and an operator reading `docker compose ps`
+  during a real stale-scheduler incident will see it. If they do not know why, they will
+  chase the web container while the actual fault is in `beat`.
+- **It is not restarted.** `restart: unless-stopped` restarts a container whose **process
+  exits**; an unhealthy container whose process is alive is left alone. Nothing in this
+  stack converts a failing healthcheck into a restart. Assert the container's start time
+  is unchanged across the drill, because "it didn't restart" and "it restarted so fast I
+  missed it" look identical in `ps`:
+
+  ```sh
+  $compose ps --format '{{.Name}} {{.State}} {{.Status}}'
+  docker inspect --format '{{.State.StartedAt}} {{.State.Health.Status}}' \
+    "$($compose ps -q web)"
+  ```
+
+  Acceptance: `Health.Status` is `unhealthy` and `StartedAt` equals the value recorded
+  before `beat` was stopped.
+- **Caddy keeps proxying.** Its own healthcheck targets Caddy's `:8080` responder rather
+  than the proxied site (`docker-compose.prod.yml:383-384`), so it does not inherit web's
+  state, and its `depends_on: web: service_healthy` is a **start-time** condition that has
+  no effect on a container already running. Traffic is unaffected, which is why row 4 must
+  show a real firm page at 200 and not merely a `/healthz` that is expected to be 503.
+
+Recovery:
+
+```sh
+$compose start beat
+date -u +%Y-%m-%dT%H:%M:%SZ    # record as <beat-started-utc>
+```
+
+Acceptance: within 10 minutes `/healthz` is 200 with `"scheduler": "alive"` and `web`
+returns to `healthy`. Ten minutes is one heartbeat interval plus the healthcheck's own
+recovery poll, with margin; record the observed elapsed value as
+`<recovery-elapsed-seconds>` rather than the bound.
+
+Use `start`, not `up -d beat`. `beat` declares `depends_on: web: condition:
+service_healthy` (`docker-compose.prod.yml:320-326`), and `up` evaluates that condition
+while `start` does not — so `up -d beat` at the one moment `web` is deliberately unhealthy
+would block on the very condition the drill created. That is not a bug to fix, it is a
+trap to know about, and it is exactly the shape of the recovery an operator would attempt
+under pressure.
+
+Row 5 is a delivery assertion and belongs to the recipient, not to the box. Record which
+address received it, the delivery time, and the elapsed interval from
+`<beat-stopped-utc>`; the runbook's [monitor-to-action
+mapping](PILOT-RUNBOOK.md#monitor-to-action) already routes M1's `scheduler` field to the
+stale-scheduler entry, and this drill is what makes that row a measured path.
+
+#### (c) A skipped Healthchecks ping
+
+The backup dead-man is the one alert that fires on **silence**, so it is the one that
+cannot be tested by doing something. It is tested by not doing something.
+
+**Use a rehearsal check, never the production backup check.** Create a separate check
+with the same period and grace as the production one, record its ping URL as
+`<rehearsal-hc-url>` in the operator artifact, and drill against that. Skipping the
+production check's `/start` ping fakes a backup failure on a host holding real pilot data,
+puts a red mark in the surface an operator uses to answer "did last night run", and
+teaches exactly the wrong reflex.
+
+Bring the rehearsal check green, then stop pinging it and wait out its period plus grace:
+
+```sh
+curl -fsS -m 10 --retry 3 "<rehearsal-hc-url>"          # green
+# then send nothing, for period + grace
+```
+
+Acceptance: a **MISSED** / "check is down" notification is delivered to
+`<alert-recipient>`, and the elapsed interval from the last successful ping is recorded
+as `<hc-missed-elapsed>`. Ping the check once more at the end of the window so it returns
+to green before the window closes.
+
+#### Evidence
+
+| Artifact | Contents |
+| --- | --- |
+| `.evidence/PILOT-504-happy.txt` | The part (a) event JSON with secrets replaced by `<redacted>`; the part (b) six-row observation table with UTC timestamps, the `StartedAt`/`Health.Status` pair, and the firm page's 200; the part (c) MISSED notification and its elapsed value |
+| `.evidence/PILOT-504-failure.txt` | The controls: `/healthz` observed at 200 with `"scheduler": "alive"` **before** the drill, so the 503 is attributable to the stop; and the rehearsal check observed green before pings ceased |
+| `.evidence/PILOT-504-operator.txt` | `<window-id>`, window start and end, `<sentry-event-id>`, `<alert-recipient>`, and PASS/FAIL per part. No ping URLs, no DSN, no credentials |
