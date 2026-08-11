@@ -17,6 +17,10 @@ reason alone.
 compose up -d --wait` needs no manual step **to create the roles**. Its portal grants
 are a different matter — see below.
 
+For disaster recovery, do not rely on implicit init ownership. The restore runbook's
+[`Roles recreation`](RESTORE.md#roles-recreation) section starts with `roles.sql`, creates
+the target database under `app_migrator`, restores under that role, and reapplies grants.
+
 Because entrypoint scripts only run against an **empty** data directory, editing
 `roles.sql` requires `docker compose down -v` — a restart will not re-run it.
 
@@ -260,6 +264,19 @@ entirely would break that fallback and is deliberately not used.
 
 `ops/backup.sh` takes a physical base backup, a logical dump, and prunes the WAL
 archive. [`ops/RESTORE.md`](RESTORE.md) is the other half — how to get the data back.
+Its recovery entry points are:
+
+- [`Recovery timing status`](RESTORE.md#recovery-timing-status) — all PILOT-302/303
+  results remain explicitly pending until the disposable rehearsals run.
+- [`Secrets and environment`](RESTORE.md#secrets-and-environment) — password-manager
+  source location and safe `.env.prod` reconstruction.
+- [`Path A — physical restore with WAL replay`](RESTORE.md#path-a--physical-restore-with-wal-replay-rehearsed)
+  — the local base-plus-WAL/PITR procedure and mixed-format archive checks.
+- [`Path B — off-host logical restore`](RESTORE.md#path-b--off-host-logical-restore-ownership-pinned)
+  — the ownership-pinned total-host-loss path.
+- [`DNS`](RESTORE.md#dns) — Cloudflare inventory shape, TTL handling, and public checks.
+- [`Object storage`](RESTORE.md#object-storage) — restored-row/live-byte Test A and
+  `_probe/` version-recovery Test B.
 
 ### Off-host copies are provider-neutral and activated only after the provider gate
 
