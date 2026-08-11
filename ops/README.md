@@ -261,6 +261,62 @@ entirely would break that fallback and is deliberately not used.
 `ops/backup.sh` takes a physical base backup, a logical dump, and prunes the WAL
 archive. [`ops/RESTORE.md`](RESTORE.md) is the other half — how to get the data back.
 
+### Off-host copies are provider-neutral and activated only after the provider gate
+
+After every local phase succeeds, `backup.sh` writes the existing freshness marker and
+completes the existing backup Healthchecks signal. Only then does it copy the physical
+`base.tar.gz` and the logical dump with two explicit `aws s3 cp` commands to
+`pg/<UTC-timestamp>/base.tar.gz` and `pg/<UTC-timestamp>/logical.dump`. A copy failure
+exits nonzero and fails the dedicated off-host check, so systemd records it, while the
+local marker remains stamped: that marker means **the local backup completed**, not that
+the remote destination is healthy.
+
+The destination is not tied to any provider and must not be assumed to be the expiring
+OCI trial. The Wave-4 provider gate selects target-provider S3-compatible object storage,
+or post-trial OCI only if PILOT-405 proves that its entitlement persists. Until that gate,
+leave `OFFHOST_S3_BUCKET` absent; its presence is the script's activation switch. The
+authoritative production copy evidence is deferred to PILOT-406. Local MinIO rehearsals
+are only stand-ins and must never be described as production evidence.
+
+The operator places these values in `/etc/app-mei/backup.env`; none belongs in git:
+
+```text
+HC_URL=<nightly-local-backup-check-url>
+HC_OFFHOST_URL=<dedicated-offhost-copy-check-url>
+OFFHOST_S3_ENDPOINT=<provider-s3-endpoint>
+OFFHOST_S3_BUCKET=<dedicated-ops-bucket>
+OFFHOST_S3_REGION=<provider-region>
+OFFHOST_AWS_ACCESS_KEY_ID=<dedicated-put-only-access-key>
+OFFHOST_AWS_SECRET_ACCESS_KEY=<dedicated-put-only-secret-key>
+OFFHOST_AWS_SESSION_TOKEN=<optional-session-token>
+OFFHOST_AWS_CONFIG_FILE=/etc/app-mei/offhost-aws.conf
+```
+
+The off-host identity is a separate least-purpose credential, never the document-bucket
+credential. Grant object creation under `pg/` and no prefix-list permission. Put this
+non-secret AWS CLI configuration at the path named above to force provider-neutral
+path-style requests and SigV4:
+
+```ini
+[default]
+s3 =
+    addressing_style = path
+    signature_version = s3v4
+```
+
+The host must provide AWS CLI v2. The script intentionally performs no remote listing or
+deletion. In particular, it does not use a tree-mirroring operation: those operations
+need prefix-list permission and are incompatible with the PutObject-only credential.
+Verification is independent: a different read credential/session downloads each object
+and compares byte count and SHA-256 with its local source.
+
+`RETENTION_DAYS` still controls only local base backups, logical dumps, and their WAL
+anchor. The off-host prefix is never pruned by this script; configure and record a
+provider lifecycle at the Wave-4 gate, and do not make it shorter than the local recovery
+window. The nightly off-host logical dump is the authoritative total-host-loss artifact.
+Because this task does not continuously ship WAL, the copied base tarball is only a
+best-effort extra and is not independently restorable after loss of the source host.
+
 ### The schedule is a host systemd timer, and it lives in this repository now
 
 `ops/systemd/` holds `app-mei-backup.service`, `app-mei-backup.timer` and an idempotent
@@ -305,9 +361,11 @@ The job's real failure mode is not a crash. It is a non-zero exit written into a
 that has already closed — which is exactly what happened between 2026-07-29 and
 2026-07-31, when the unit sat in `failed` state for two nights and nothing said so.
 
-So a successful run stamps a freshness marker in `obligations_schedulerheartbeat` (the
-table T-041's scheduler dead-man's switch already uses, keyed by name), written LAST and
-only on full success, so any failure above it ages the marker out. `/healthz` reports:
+So a successful local run stamps a freshness marker in
+`obligations_schedulerheartbeat` (the table T-041's scheduler dead-man's switch already
+uses, keyed by name), written only after every local phase succeeds. A failure before it
+ages the marker out; a later off-host failure leaves this local fact intact and fails the
+separate off-host signal plus the systemd unit instead. `/healthz` reports:
 
 ```json
 {"status": "ok", "scheduler": "alive", "backup": "fresh", "disk": "ok"}

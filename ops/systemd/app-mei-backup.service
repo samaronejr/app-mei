@@ -33,7 +33,13 @@ Type=oneshot
 ; the container as postgres.
 User=ubuntu
 WorkingDirectory=/opt/app-mei
-; Optional so a missing monitoring secret can never prevent the backup from running.
+; Optional so a missing monitoring secret can never prevent the LOCAL backup from
+; running. The operator places values in this root-managed file; none is committed.
+; HC_URL is the local-backup check. HC_OFFHOST_URL is a separate check. The off-host
+; copy is enabled by OFFHOST_S3_BUCKET and then also requires OFFHOST_S3_ENDPOINT,
+; OFFHOST_S3_REGION, OFFHOST_AWS_ACCESS_KEY_ID, OFFHOST_AWS_SECRET_ACCESS_KEY and
+; OFFHOST_AWS_CONFIG_FILE. OFFHOST_AWS_SESSION_TOKEN is optional. The AWS config forces
+; path-style SigV4; see ops/README.md. Never reuse the document-bucket credential.
 EnvironmentFile=-/etc/app-mei/backup.env
 ExecStart=/opt/app-mei/ops/backup.sh
 ; One identifier in the journal for the unit's own lines and the script's alike, so
