@@ -1,5 +1,11 @@
 # Operations
 
+Most of this file describes mechanisms that exist and have been exercised. The last
+section, [Operator runsheets](#operator-runsheets-prepared-not-executed), is different:
+it is procedures written ahead of execution for the pilot migration, and nothing in it
+has been run. It is kept in the same file so the runsheets sit beside the mechanisms
+they configure, and it is fenced off by that heading so the distinction cannot be lost.
+
 ## Database roles
 
 Tenant isolation in this product is enforced by PostgreSQL row-level security, and RLS
@@ -238,7 +244,7 @@ host log driver is also clean. The current disposition of every known sink is:
 | Django application logs | yes | **REDACTED AND MEASURED.** The production console handler replaces credentials resolved from the shared route registry before `django.request` formats handled 4xx or exception records. RESIDUAL-008 observed the redacted receipt and zero canary hits on success, refusal, rate-limit and safe-error paths. |
 | Gunicorn access log | yes | **SANITIZED.** The explicit production format retains remote address, timestamp, method, status, bytes, duration and user-agent. It omits the request line, path, query string and Referer. No request/correlation header exists in the repository, so none was invented for this change. |
 | Caddy access/error log | yes | **REDACTED AND MEASURED.** RESIDUAL-008 reproduced the former 502 leak as two URI-bearing error/access entries. Both the global error logger and the site access logger now delete `request.uri` and `request.headers.Referer` before serialization. Re-measurement found zero canary hits across success, refusal, rate-limit and safe-error paths; the 502 still produced two diagnostic receipts, each with no URI field. |
-| Docker/container log retention | partial | **CONTENT SANITIZED; RETENTION OPERATOR GATE.** The aggregate local container trace had zero canary hits across all four measured paths after the Django and Caddy filters. Neither Compose file contains a `logging:` block, so driver choice and rotation remain host-level state that the operator must configure and verify. |
+| Docker/container log retention | partial | **CONTENT SANITIZED; RETENTION OPERATOR GATE.** The aggregate local container trace had zero canary hits across all four measured paths after the Django and Caddy filters. Neither Compose file contains a `logging:` block, so driver choice and rotation remain host-level state that the operator must configure and verify. The prepared, not-yet-executed procedure is [Host log rotation](#host-log-rotation). |
 | Sentry events and transactions | yes | **SANITIZED.** The SDK denylist is extended recursively for the live password and code fields. Both send hooks scrub request and Referer URLs, request data, transaction names, breadcrumb URLs, span URLs and repeated credentials in stack-frame locals. |
 | CDN or load balancer | no deployed repository component | **NOT APPLICABLE.** Caddy is the only proxy represented in Git. Reclassify this row if another edge is introduced. |
 | Browser history | no | **RESIDUAL RISK.** The credential remains in the address bar and history by design; the rejected token-exchange redesign is not reopened here. |
@@ -277,6 +283,11 @@ Its recovery entry points are:
 - [`DNS`](RESTORE.md#dns) — Cloudflare inventory shape, TTL handling, and public checks.
 - [`Object storage`](RESTORE.md#object-storage) — restored-row/live-byte Test A and
   `_probe/` version-recovery Test B.
+
+The object-recovery layer those tests depend on is not armed yet. Bucket versioning and
+the previous-version prune rule are an operator step with a prepared, not-yet-executed
+procedure in [Object storage: versioning, lifecycle,
+probe](#object-storage-versioning-lifecycle-probe).
 
 ### Off-host copies are provider-neutral and activated only after the provider gate
 
@@ -346,6 +357,12 @@ ssh app-mei 'sudo /opt/app-mei/ops/systemd/install.sh'
 The installer refuses to proceed if `ExecStart` names a script that is not there, prints
 a diff of anything it is about to overwrite, and runs `systemd-analyze verify` before it
 enables anything — because a unit that is wrong only fails at 03:00, into nobody's inbox.
+
+**That installer must not be used to bootstrap the migration target.** Its last action is
+`systemctl enable --now app-mei-backup.timer`, unconditionally, which is correct on a host
+already holding data and wrong on a host that holds none yet. The target copies the units
+manually and leaves them disabled; see [New host
+bootstrap](#new-host-bootstrap-two-phases).
 
 **Those units existed on the box before they existed here.** They had been running since
 2026-07-28 and were not in the repository, which is the same class of undocumented
@@ -737,6 +754,10 @@ store had a bad minute. The signal is "documents are broken, act now", not "hold
 release". Storage is also the one dependency `/healthz` says nothing about: the probe is
 the only place in the deploy where document bytes are exercised end to end.
 
+The probe has so far run only against local storage. Running it against the production
+bucket, and arming versioning and the lifecycle prune behind it, is [Object storage:
+versioning, lifecycle, probe](#object-storage-versioning-lifecycle-probe).
+
 ### Why container health is not deployment proof
 
 Both of the rules above were bought the expensive way, during the manual T-065 deploy.
@@ -1069,3 +1090,691 @@ The box still carries `app-mei-caddy:latest` from before the images were renamed
 costs 154 MB and `docker image prune -f` will not touch it because it is tagged. Untag
 it (`docker rmi app-mei-caddy:latest`) or leave it. Recorded so that its presence is not
 mistaken for a live tag during a rollback.
+
+## Operator runsheets: prepared, NOT executed
+
+Everything under this heading is a **procedure to execute**, not a record of execution.
+No step below has been run, no account below exists yet, and no value below has been
+observed. The sections were written by the executor so the operator has exact commands
+and exact acceptance evidence to work from; the as-executed transcripts land in the QA
+evidence artifacts named in each section, and only then does anything here become a
+statement about reality.
+
+Two conventions make that unambiguous, and they are load-bearing:
+
+- Any value only the operator can supply is written as an angle-bracket
+  `<placeholder>`: regions, bucket names, IAM ARNs, instance IPs, DNS record values,
+  quotas, expiry dates, and every measured timing. A placeholder that survives into a
+  transcript is an unfinished step, not a formatting artifact.
+- Any result not yet observed is written `PENDING`. There are no plausible-looking
+  sample outputs anywhere in this block, because a plausible sample is exactly what a
+  later reader mistakes for evidence.
+
+Where a command's exact form depends on an operator choice, the shape is shown with the
+placeholder in place rather than guessed. An SES endpoint hostname embeds the region,
+so it appears as `feedback-smtp.<region>.amazonses.com` and not as a region someone
+picked while writing documentation.
+
+### Email provider (SES)
+
+Covers PILOT-104 (region, domain identity, DKIM, custom MAIL FROM, DMARC, SMTP identity)
+and PILOT-105 (production access, sandbox exit, bounce and complaint feedback). **Not
+executed.** No AWS account, identity, IAM user, SNS topic, or DNS record described here
+exists yet.
+
+#### Region choice
+
+The region is recorded once and then propagates into the MAIL FROM MX record, the SMTP
+endpoint, and every `aws sesv2` invocation below, so choosing it late means redoing DNS.
+Pick for latency to Brazil and for SES availability, record it in the PILOT-104 operator
+artifact as `<region>`, and use that same string everywhere. Nothing in the repository
+pins a region and nothing should.
+
+#### Domain identity and Easy-DKIM
+
+Create a **domain** identity for `samaronefialho.dev` (not an email-address identity;
+address identities cannot carry DKIM or a custom MAIL FROM). Enable Easy-DKIM, which
+yields three CNAME records of the shape:
+
+```text
+<selector1>._domainkey.samaronefialho.dev  CNAME  <selector1>.dkim.amazonses.com
+<selector2>._domainkey.samaronefialho.dev  CNAME  <selector2>.dkim.amazonses.com
+<selector3>._domainkey.samaronefialho.dev  CNAME  <selector3>.dkim.amazonses.com
+```
+
+Place all three in the Cloudflare zone. They must be **DNS-only** (grey cloud); a
+proxied CNAME resolves to Cloudflare's edge and DKIM verification then fails against a
+record that looks present. Verify by effect from a machine that is not the one that
+created them:
+
+```sh
+for s in <selector1> <selector2> <selector3>; do
+  dig +short CNAME "${s}._domainkey.samaronefialho.dev"
+done
+aws sesv2 get-email-identity --email-identity samaronefialho.dev --region <region>
+```
+
+Acceptance: three CNAMEs resolve publicly, and the identity reports verified with DKIM
+signing enabled. Both halves are required. The console showing "verified" while public
+DNS has not propagated is a race, not a result.
+
+#### Custom MAIL FROM and SPF
+
+Set the custom MAIL FROM subdomain to `mail.samaronefialho.dev`. This is what makes SPF
+align with the visible sending domain instead of with an Amazon-owned bounce domain. Two
+records, both DNS-only:
+
+```text
+mail.samaronefialho.dev  MX   10 feedback-smtp.<region>.amazonses.com
+mail.samaronefialho.dev  TXT  "v=spf1 include:amazonses.com ~all"
+```
+
+The MX hostname embeds the region chosen above. Set the MAIL FROM behaviour on failure
+to **reject** rather than to fall back to the Amazon default: a silent fallback turns an
+alignment failure into mail that still sends and quietly loses its SPF alignment, which
+is the failure this record exists to prevent.
+
+#### DMARC
+
+```text
+_dmarc.samaronefialho.dev  TXT  "v=DMARC1; p=none; rua=mailto:<operator-mailbox>"
+```
+
+`p=none` is deliberate for the pilot: it reports without quarantining, so a
+misconfiguration surfaces as an aggregate report rather than as invitations that never
+arrive. Tightening the policy is a post-pilot decision that needs report data first, and
+that data does not exist yet.
+
+Verification for all five records at once, run **before** any of them are placed to
+capture the red state, then again after:
+
+```sh
+dig +short CNAME <selector1>._domainkey.samaronefialho.dev
+dig +short CNAME <selector2>._domainkey.samaronefialho.dev
+dig +short CNAME <selector3>._domainkey.samaronefialho.dev
+dig +short MX   mail.samaronefialho.dev
+dig +short TXT  mail.samaronefialho.dev
+dig +short TXT  _dmarc.samaronefialho.dev
+```
+
+Also run one deliberately wrong name and require `NXDOMAIN`. Without that control, a
+resolver that wildcards the zone would make every lookup above look successful:
+
+```sh
+dig +noall +comment <deliberately-absent-name>.samaronefialho.dev
+```
+
+Red-state and NXDOMAIN control go to `.evidence/PILOT-104-red.txt` and
+`.evidence/PILOT-104-failure.txt`; the post-placement outputs go to
+`.evidence/PILOT-104-happy.txt` with the console statuses in `-operator.txt`.
+
+#### A sending identity that can only send
+
+Create a dedicated IAM user for SMTP. It exists to send raw mail and to do nothing else,
+so its policy names exactly one action:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SendRawOnly",
+      "Effect": "Allow",
+      "Action": "ses:SendRawEmail",
+      "Resource": "arn:aws:ses:<region>:<account-id>:identity/samaronefialho.dev"
+    }
+  ]
+}
+```
+
+Generate SMTP credentials from that user. The SMTP username and password are **derived**
+from the access key and a region-specific signing step, so they are not interchangeable
+between regions: regenerate them if the region ever changes. Record the IAM user name,
+the policy name, and the access-key id in the operator artifact. **Never record the
+secret or the SMTP password anywhere in the repository or in evidence files.** They go
+into `.env.prod` as `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` on the host, and nowhere
+else.
+
+#### Rotation procedure
+
+Rotation is two-key, never delete-then-create, because the second ordering has a window
+in which the stack cannot send at all:
+
+1. Create a **second** access key on the same IAM user and derive SMTP credentials from
+   it. The user now has two valid keys.
+2. Replace `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` in `.env.prod` on the host and
+   recreate the services that read them (`web`, `worker`, `beat`).
+3. Prove the new credential sends: a `swaks` or `smtplib` probe from the box to an
+   operator mailbox, delivered, headers captured.
+4. Only then deactivate the old key, wait one full day so anything holding it fails
+   visibly rather than silently, and delete it.
+
+Adding a key without removing the old one is not a rotation, and removing the old one
+before step 3 makes an outage out of a maintenance task.
+
+#### Production access and sandbox exit (PILOT-105)
+
+A fresh SES account is in the sandbox: it delivers only to verified recipients, which is
+precisely the state in which every external-mailbox journey in PILOT-106 would fail.
+
+Capture the red state first. From the box, send with the SMTP credentials to a mailbox
+the operator controls but has **not** verified in SES, and record the refusal:
+
+```sh
+swaks --server email-smtp.<region>.amazonses.com:587 --tls \
+      --auth-user '<smtp-username>' --auth-password '<smtp-password>' \
+      --from 'no-reply@samaronefialho.dev' --to '<unverified-external-mailbox>'
+```
+
+That transcript, plus the account status page, is `.evidence/PILOT-105-red.txt`.
+
+Request production access, then take the evidence from a command rather than from the
+console, because console prose is not an assertion anyone can re-run:
+
+```sh
+aws sesv2 get-account --region <region>
+```
+
+Acceptance: the JSON reports `"ProductionAccessEnabled": true`, and the granted
+`MaxSendRate` and 24-hour quota are transcribed as `<max-send-rate>` and
+`<daily-quota>` in the operator artifact. Re-run the exact same `swaks` command above;
+it must now deliver, and the delivered message's headers must show `DKIM=pass`,
+`SPF=pass` for `mail.samaronefialho.dev`, and a `From` aligned with the domain identity.
+
+#### Bounce and complaint feedback reaches a human
+
+"Bounces go to the console" is not a mechanism, because nobody watches a console. Wire
+an SNS topic per identity with a confirmed email subscription to an operator mailbox,
+and prove the subscription is confirmed rather than merely created:
+
+```sh
+aws sns list-subscriptions-by-topic --topic-arn <bounce-topic-arn> --region <region>
+```
+
+Acceptance: the subscription's `SubscriptionArn` is a real ARN and not
+`PendingConfirmation`. Record topic and subscription **names** only.
+
+Then probe the path end to end using the SES simulator, which produces a real bounce
+without harming any domain's reputation:
+
+```sh
+swaks --server email-smtp.<region>.amazonses.com:587 --tls \
+      --auth-user '<smtp-username>' --auth-password '<smtp-password>' \
+      --from 'no-reply@samaronefialho.dev' --to 'bounce@simulator.amazonses.com'
+```
+
+Acceptance: a bounce notification arrives in the operator mailbox. That artifact is
+`.evidence/PILOT-105-failure.txt`, alongside the sandbox refusal.
+
+**The anonymous DSR path is a monitored sender.** `POST /lgpd/dsr-submit` is reachable
+without authentication, and its success path sends a notification to the encarregado.
+That means an attacker, or an ordinary typo, can drive outbound mail from an unauthenticated
+endpoint, and a run of bounces or complaints originating there is the earliest signal that
+the endpoint is being abused. Whoever watches the bounce mailbox must know that this sender
+exists and what a burst from it means. `lgpd_renotify` retries the same notification for
+rows whose send failed, so a persistently bouncing encarregado address surfaces there too.
+See [Credential log hygiene](#credential-log-hygiene) for what must never appear in the
+logs those bursts generate.
+
+#### Suppression list
+
+SES keeps an account-level suppression list, and an address on it is silently not
+delivered to: a journey that "sent successfully" but never arrived is the symptom.
+Before declaring any PILOT-106 journey failed, check and, when the operator is certain
+the address is good, remove it:
+
+```sh
+aws sesv2 get-suppressed-destination --email-address <address> --region <region>
+aws sesv2 list-suppressed-destinations --region <region>
+aws sesv2 delete-suppressed-destination --email-address <address> --region <region>
+```
+
+Removing an address the recipient's provider genuinely rejected re-earns the bounce and
+damages the domain's reputation, so removal is a judgement call and is recorded with a
+reason.
+
+### Object storage: versioning, lifecycle, probe
+
+Covers PILOT-204. **Not executed.** Versioning state, lifecycle rules, bucket name, and
+the probe run below are all `PENDING`; the probe has so far run only against local
+storage in PILOT-203, never against the real bucket.
+
+#### Red state first
+
+Capture the pre-state before changing anything, from commands rather than from the
+console, so the change is provable afterwards:
+
+```sh
+aws s3api get-bucket-versioning \
+  --bucket <bucket-name> --endpoint-url <oci-s3-endpoint>
+aws s3api get-bucket-lifecycle-configuration \
+  --bucket <bucket-name> --endpoint-url <oci-s3-endpoint>
+```
+
+Expect versioning absent or `Suspended`, and the lifecycle call to fail with a
+no-such-configuration error. Both outputs go to `.evidence/PILOT-204-red.txt`.
+
+#### Enable versioning, then prove it from a command
+
+Enable versioning on the documents bucket. **Do not enable retention rules**: on OCI
+Object Storage retention rules and versioning are mutually exclusive, so arming
+retention silently costs the version history that the whole object-recovery layer
+depends on. Versioning is what turns an overwrite or a delete into something
+recoverable; retention would only make objects immutable for a window and would give
+nothing back after an overwrite.
+
+```sh
+aws s3api get-bucket-versioning \
+  --bucket <bucket-name> --endpoint-url <oci-s3-endpoint>
+```
+
+Acceptance: `Status` is `Enabled`. Console prose alone does not satisfy this; the
+command output is the evidence.
+
+#### Lifecycle: prune previous versions after 30 days
+
+Versioning without a prune rule grows without bound, and an unbounded document bucket is
+a cost incident waiting to happen. The rule targets **previous** (non-current) versions
+only and never touches a current object:
+
+```sh
+aws s3api get-bucket-lifecycle-configuration \
+  --bucket <bucket-name> --endpoint-url <oci-s3-endpoint>
+```
+
+Acceptance: the returned configuration contains a rule deleting non-current versions
+older than 30 days, and contains **no** rule expiring current objects. Thirty days is
+chosen to comfortably exceed the pilot's incident-response window while keeping the
+version tail finite.
+
+#### The versioning drill
+
+A setting that has never been exercised is a belief. Overwrite a `_probe/` object, then
+restore its prior version and verify the bytes:
+
+```sh
+aws s3api list-object-versions \
+  --bucket <bucket-name> --prefix _probe/ --endpoint-url <oci-s3-endpoint>
+aws s3api get-object --bucket <bucket-name> --key <probe-key> \
+  --version-id <prior-version-id> --endpoint-url <oci-s3-endpoint> /tmp/restored
+sha256sum /tmp/restored
+```
+
+Acceptance: the restored bytes match the pre-overwrite SHA-256, recorded as
+`<pre-overwrite-sha256>` in the operator artifact. **Operate only on `_probe/` keys.**
+Customer object keys are slash-free random tokens, so `_probe/` is a disjoint namespace
+by construction and a drill confined to it cannot reach a customer object.
+
+#### The probe against the real bucket
+
+```sh
+docker compose -f docker-compose.prod.yml exec -T web python manage.py storage_probe
+```
+
+The command writes, reads back with an authenticated SHA-256 comparison, requires two
+anonymous GETs to be refused, deletes, and confirms absence, cleaning up in a `finally`
+either way. Run it on the box. Its stdout goes to `.evidence/PILOT-204-happy.txt`.
+
+For the failure path, run it once in a **scratch shell with a deliberately wrong**
+`OCI_S3_SECRET_ACCESS_KEY`, never against the live stack's environment. Acceptance: the
+auth failure is named, the exit status is nonzero, and a follow-up listing shows no
+partial `_probe/` object left behind. That transcript is
+`.evidence/PILOT-204-failure.txt`, and it is what proves the successful run was
+authentication working rather than the bucket being open.
+
+This section is also the destination-independent half of the
+[off-host backup copy](#off-host-copies-are-provider-neutral-and-activated-only-after-the-provider-gate):
+the ops bucket that receives backups is a different bucket with a different, PutObject-only
+credential, and nothing here applies to it.
+
+### Host log rotation
+
+Covers PILOT-209. **Not executed.** `/etc/docker/daemon.json` has not been written, no
+rolling restart has happened, and the flood test below has not been run.
+
+This is **retention**, not redaction. Content redaction is a separate, already-measured
+property covered by [Credential log hygiene](#credential-log-hygiene); nothing here
+changes what gets written, only how much of it is kept. The 180-day
+`ACCESS_LOG_RETENTION_DAYS` governs the database access log and is a different mechanism
+entirely, untouched by any of this.
+
+#### Red state
+
+```sh
+docker info --format '{{.LoggingDriver}}'
+docker inspect --format '{{json .HostConfig.LogConfig}}' <container-name>
+```
+
+Expect the default `json-file` driver with an empty options map, meaning unbounded
+growth. That is `.evidence/PILOT-209-red.txt`.
+
+#### The configuration
+
+Host-level `daemon.json` rather than `logging:` blocks in the compose files, so CI and
+local development behave exactly as they do today and the host policy cannot drift into
+the application's configuration:
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "5"
+  }
+}
+```
+
+That is a 250 MB ceiling per container. The floor the values must respect is **3 days or
+200 MB, whichever is larger**: retention tight enough to lose the incident window is a
+worse failure than a full disk, because a disk fills loudly and a missing journey window
+fails silently at exactly the moment it is needed.
+
+Validate the file before restarting anything, and rehearse an invalid file somewhere
+disposable rather than on production:
+
+```sh
+dockerd --validate --config-file /etc/docker/daemon.json
+```
+
+Acceptance for the failure path: a deliberately invalid key is rejected by that command
+in the rehearsal environment. Transcript to `.evidence/PILOT-209-failure.txt`.
+
+#### Rolling restart, because existing containers keep their old LogConfig
+
+`systemctl restart docker` makes the daemon read the new defaults, but a container that
+already exists keeps the `LogConfig` it was created with. The caps only apply to
+containers **recreated** afterwards. In a maintenance window:
+
+```sh
+systemctl restart docker
+cd /opt/app-mei && docker compose -f docker-compose.prod.yml up -d --force-recreate
+for c in $(docker ps --format '{{.Names}}'); do
+  printf '%s ' "$c"
+  docker inspect --format '{{json .HostConfig.LogConfig}}' "$c"
+done
+```
+
+Acceptance: **every** running container reports `max-size=50m` and `max-file=5`. A
+single container still showing empty options is a container that was not recreated, and
+it is the one that will fill the disk.
+
+#### journald
+
+The daemon's own logs are journald's problem, and journald has a separate cap:
+
+```sh
+journalctl --disk-usage
+grep -E '^\s*SystemMaxUse' /etc/systemd/journald.conf
+```
+
+Record `SystemMaxUse` as `<systemmaxuse-value>`. If it is unset the default is a share
+of the filesystem, which is acceptable but must be recorded rather than assumed.
+
+#### The flood test proves rotation, on a throwaway container
+
+Never on an application container:
+
+```sh
+docker run --rm --name log-flood-throwaway \
+  --log-driver json-file --log-opt max-size=50m --log-opt max-file=5 \
+  alpine sh -c 'i=0; while [ $i -lt 60 ]; do head -c 1048576 /dev/urandom | base64; i=$((i+1)); done'
+```
+
+While it runs, or immediately after, inspect the log files the daemon wrote for it and
+confirm no single file exceeded the cap and that the file count did not exceed five.
+Acceptance: total retained bytes for that container are bounded at roughly 250 MB
+despite ~60 MB per pass being emitted well past that. Transcript to
+`.evidence/PILOT-209-happy.txt`.
+
+#### The canary check after rotation
+
+Rotation must not be the thing that makes a credential visible. After the rotation has
+actually cycled files, grep the rotated files for the token substrings observed during
+the PILOT-106 mailbox journeys and require zero hits, with a benign known-present string
+as the positive control proving the grep could have seen a leak at all:
+
+```sh
+grep -c '<benign-known-present-string>' /var/lib/docker/containers/*/*-json.log*
+grep -c '<observed-token-substring>'     /var/lib/docker/containers/*/*-json.log*
+```
+
+Acceptance: positive control nonzero, token substrings zero. Record counts only; never
+copy a token into an evidence file.
+
+This procedure is repeated verbatim on the target host as part of
+[New host bootstrap](#new-host-bootstrap-two-phases), Phase A for the configuration and
+Phase B for the re-verification.
+
+### Host requirements
+
+Covers PILOT-401. **Not executed.** No provider has been chosen, no instance ordered, and
+no shape below has been measured against a real host.
+
+The move is like-for-like. Nothing here selects managed Kubernetes or a PaaS, and nothing
+here changes the architecture; the target runs the same compose stack the current box
+runs.
+
+| Requirement | Minimum | Recommended | Why |
+| --- | --- | --- | --- |
+| vCPU | 1 | 2 | The current box is an OCI E2.1.Micro with 1 OCPU and the stack runs, but backups are niced to idle precisely because one core cannot serve and back up at once |
+| RAM | 1 GiB **plus swap** | 2 GiB | The current box has 954 MiB plus 4 GiB of swap; the container memory limits total roughly 1.5 GiB nominal, so without swap the 1 GiB shape is not survivable |
+| Disk | 40 GiB | 40 GiB or more | The deploy preflight refuses to land an image pair with less than 3 GiB free under the docker data root, and the WAL archive accrues on the same filesystem |
+| OS | Ubuntu LTS | Ubuntu LTS | systemd units are shipped as-is; an image without systemd invalidates the bootstrap |
+| Network | 80, 443, SSH inbound | same | No provider-level firewall may block them; Caddy needs 80 and 443, CI needs SSH |
+| Region | acceptable latency to Brazil | same | Users and the SES region should not disagree by an ocean |
+| Access | root or sudo-capable SSH | same | Bootstrap installs packages and writes `/etc/docker/daemon.json` and `/etc/systemd/system` |
+
+Swap deserves emphasis because it is the requirement a provider's marketing page will not
+mention. A 1 GiB instance with no swap will OOM-kill a container during a migration or a
+base backup, and the failure looks like an unrelated crash.
+
+#### Acceptance transcript
+
+One command, run from the operator's machine, recorded verbatim:
+
+```sh
+ssh <target-host> 'uname -a && free -m && df -h /'
+```
+
+Acceptance: the OS line matches the chosen image, `free -m` shows the RAM **and** a
+non-zero swap total, and `df -h /` shows at least 40 GiB with enough free for the 3 GiB
+deploy headroom plus the archive. Transcript to `.evidence/PILOT-401-happy.txt`, with
+provider, instance shape, region, OS image, and public IP recorded as `<provider>`,
+`<shape>`, `<region>`, `<os-image>`, `<target-ip>` in `-operator.txt`.
+
+Any UNMET row blocks the bootstrap and is recorded in `.evidence/PILOT-401-failure.txt`
+rather than worked around. A host that does not meet the sheet will fail during the
+cutover window, which is the worst possible time to discover it.
+
+### New host bootstrap (two phases)
+
+Covers PILOT-402. **This section is the runsheet, pre-execution.** No host has been
+bootstrapped. Once the procedure has actually been executed end to end, this section is
+replaced by the as-executed version written from the resulting transcripts; until then
+every step below is a proposal that has never met a real machine.
+
+The split into two phases exists because the deadline lane needs a base host early, and
+the finalizing values do not exist until later waves land. Phase A depends on
+[Host requirements](#host-requirements) and nothing else. Phase B depends on PILOT-106
+for the final `EMAIL_*` values, PILOT-208 for `HC_URL`, PILOT-209 for the rotation
+re-verification, and PILOT-301 for the off-host credentials.
+
+**The stack is not started in either phase.** The first deploy belongs to PILOT-403.
+
+#### Two rules that apply to both phases
+
+**Never run `ops/systemd/install.sh` on the target.** Its last action is
+`systemctl enable --now app-mei-backup.timer`, unconditionally. Running it during
+bootstrap arms the nightly backup on a host with no data, pointing at credentials that
+may still be `CHANGEME`, and the resulting failures teach the operator to ignore the
+alarm. Units are copied manually and left disabled. PILOT-404 step 8 is the single point
+at which the timer is enabled, after the data is actually on the box.
+
+**The target uses the real ACME configuration from the start.** Never `tls internal`.
+`TLS_DIRECTIVE` stays empty and `ACME_DNS_OPTION=acme_dns cloudflare {env.CF_API_TOKEN}`
+with a `CF_API_TOKEN` scoped to Zone → DNS → Edit on this zone only. The DNS-01 challenge
+issues the wildcard certificate through a TXT record, so it never needs the A record to
+point at the target: the target therefore holds a browser-valid certificate **before**
+cutover. That is exactly what makes the deploy job's pinned `--resolve` assertions and
+the pre-flip verification in PILOT-404 possible, and a self-signed placeholder would
+break both. Note that compose reads `${TLS_DIRECTIVE-tls internal}`, which substitutes
+the default only when the variable is **unset**, so the deliberate empty value must be
+present in `.env.prod` and not merely omitted.
+
+#### Phase A: base host
+
+Nothing in Phase A depends on Waves 1 through 3.
+
+1. **Docker and the compose plugin.** Install from the distribution's or Docker's
+   official repository. Verify: `docker --version && docker compose version`.
+2. **Deploy user and key.** Create the account CI will connect as, install the
+   authorized key, and confirm it can reach the docker socket. Verify:
+   `ssh <deploy-user>@<target-ip> 'docker ps'` returns without a permission error.
+3. **Checkout.** `git clone` the repository at the deploy path on `main`. Verify:
+   `git -C <deploy-path> rev-parse HEAD` and `git -C <deploy-path> status --short`.
+4. **Log rotation.** Apply `/etc/docker/daemon.json` with the decided 50m × 5 values and
+   restart the daemon, exactly as in [Host log rotation](#host-log-rotation). Verify with
+   a throwaway container's `LogConfig`, since no application container exists yet.
+5. **`.env.prod` skeleton.** Copy `.env.prod.example`. Set the ACME variables per the
+   rule above. Every value that is not yet known, meaning `EMAIL_*`, `HC_URL`, and the
+   off-host credentials, is written as a literal `CHANGEME` so that a missed value is a
+   grep away rather than an empty string that compose would happily accept.
+6. **systemd units, copied and left inert.**
+
+   ```sh
+   cp <deploy-path>/ops/systemd/app-mei-backup.service /etc/systemd/system/
+   cp <deploy-path>/ops/systemd/app-mei-backup.timer   /etc/systemd/system/
+   systemctl daemon-reload
+   ```
+
+   No `enable`. No `start`. No `install.sh`.
+
+7. **Prove the timer is inert**, which is the assertion that catches an accidental
+   `enable`:
+
+   ```sh
+   systemctl is-enabled app-mei-backup.timer   # expect: disabled
+   systemctl is-active  app-mei-backup.timer   # expect: inactive
+   journalctl -u app-mei-backup.service -n 5   # expect: zero invocations
+   ```
+
+Red state for Phase A is the pre-bootstrap transcript showing `docker --version` absent
+and the checkout missing, to `.evidence/PILOT-402-red.txt`.
+
+#### Phase B: pre-cutover finalization
+
+Run after PILOT-106, 208, 209, and 301, and before PILOT-403.
+
+1. **Refresh the checkout first.** This step is not optional and its position is not
+   arbitrary. Phase A copied the units from a pre-Wave-2 checkout, and PILOT-208
+   subsequently added `EnvironmentFile=-/etc/app-mei/backup.env` to
+   `app-mei-backup.service`. Enabling the stale unit at cutover would run the backup with
+   no monitoring and no off-host credentials, succeeding locally and signalling nothing.
+
+   ```sh
+   git -C <deploy-path> fetch --prune origin
+   git -C <deploy-path> reset --hard origin/main
+   ```
+
+2. **Re-copy both units and reload**, then verify the unit parses:
+
+   ```sh
+   cp <deploy-path>/ops/systemd/app-mei-backup.service /etc/systemd/system/
+   cp <deploy-path>/ops/systemd/app-mei-backup.timer   /etc/systemd/system/
+   systemctl daemon-reload
+   systemd-analyze verify /etc/systemd/system/app-mei-backup.service
+   ```
+
+   `install.sh` remains forbidden here for the same reason as in Phase A.
+
+3. **Re-prove inertness**, the same three assertions as Phase A step 7. Re-copying a unit
+   does not enable it, but the assertion costs nothing and the failure it catches is a
+   backup running against a half-configured host.
+
+4. **Replace every `CHANGEME`.** The check is a sorted-key diff against the example file,
+   which catches both a missing variable and a placeholder left behind:
+
+   ```sh
+   diff <(grep -oE '^[A-Z_]+=' <deploy-path>/.env.prod.example | sort) \
+        <(grep -oE '^[A-Z_]+=' <deploy-path>/.env.prod        | sort)
+   grep -c CHANGEME <deploy-path>/.env.prod
+   ```
+
+   Acceptance: the diff is empty and the `CHANGEME` count is zero. Values are never
+   recorded in evidence, only the fact that the diff was empty.
+
+5. **Place the backup environment file** at `/etc/app-mei/backup.env` with `HC_URL`,
+   `HC_OFFHOST_URL`, and the off-host credentials described under
+   [Off-host copies](#off-host-copies-are-provider-neutral-and-activated-only-after-the-provider-gate).
+   Confirm the path matches the refreshed unit's `EnvironmentFile=` line; the leading `-`
+   makes the file optional, which protects the backup from a missing monitoring secret but
+   equally means a **wrong path fails silently**. Root-owned, mode 0600.
+
+6. **Re-run the PILOT-209 verification** on this host: `LogConfig` on every container
+   that exists, and the journald cap.
+
+7. **Timer still disabled.** Re-transcribe `systemctl is-enabled app-mei-backup.timer`
+   as `disabled`. PILOT-404 step 8 is the sole enable point.
+
+For the failure path, deliberately omit one variable from `.env.prod`, attempt a compose
+config parse, and capture the `${VAR:?}` refusal message before adding it back. That
+refusal is the guard that makes an incomplete Phase B unable to reach a running stack.
+Transcript to `.evidence/PILOT-402-failure.txt`; the per-step transcripts go to
+`.evidence/PILOT-402-happy.txt`.
+
+### Decommissioning the old host
+
+Covers PILOT-406. **Not executed.** Nothing has been re-verified from a target host, and
+no host has been decommissioned.
+
+**The old box is the deep-rollback anchor and must not be decommissioned before
+`v0.2.0-rc1` exists.** Every check below is about earning the right to stop it, not about
+stopping it.
+
+#### Re-verification checklist, all from the target
+
+Everything proven on the old box is proven again from the new one, because evidence
+gathered on a host that is about to be switched off is evidence about the wrong machine.
+
+| # | Check | Acceptance |
+| --- | --- | --- |
+| 1 | One email journey per type: firm invite, address verification, password reset, LGPD DSR notification | Each delivered to a real external mailbox, message-ids recorded, DKIM and SPF pass, `From` aligned |
+| 2 | Backup timer fires once end to end | Local base and logical artifacts present with a fresh marker, off-host copy landed under `pg/<UTC-timestamp>/`, both Healthchecks checks green. This is the **authoritative** off-host evidence; the local MinIO rehearsal never was |
+| 3 | `verify-live` workflow green against the target | Scheduled or dispatched run passes, with `/versionz` release equal to `main` |
+| 4 | UptimeRobot | All monitors UP with their JSON assertions passing |
+| 5 | Log rotation on the target | The [Host log rotation](#host-log-rotation) checks re-run: `LogConfig` on every container, journald cap recorded |
+| 6 | Sentry receives a target-origin event | The event's `release` field equals the deployed SHA |
+
+Any failing row blocks Wave 5 and its remediation is recorded in
+`.evidence/PILOT-406-failure.txt` rather than retried until it passes without explanation.
+Row 2 in particular is the one that has never had authoritative evidence.
+
+The off-host copy check has an independent verification half worth stating explicitly: a
+**separate read credential** downloads both artifacts and compares byte count and SHA-256
+against the local sources. The backup identity is PutObject-only by design and cannot
+list or read, so it cannot verify its own work.
+
+#### Decommission plan
+
+Executed only after `v0.2.0-rc1` exists and rows 1 through 6 are green.
+
+1. **What leaves the old box, and when.** Stop `caddy` first so the old box cannot serve
+   the public edge even if DNS regresses, then the remaining services. Leave the docker
+   volumes intact. Record the stop timestamp as `<old-box-stop-utc>`.
+2. **Data retained.** Postgres data, the WAL archive, and the local backup artifacts stay
+   on the old box for `<retention-days>` after RC, then the instance is destroyed. The
+   retention window is a decision recorded in the operator artifact, not a default.
+3. **Evidence retained.** The final backup taken during the cutover freeze, its off-host
+   copy, and the cutover window log are kept independently of the instance's lifetime,
+   because they outlive the machine that produced them.
+4. **Secrets rotated at cutover, names only.** Rotate rather than migrate: a credential
+   that lived on a host being decommissioned should not be the credential guarding the
+   new one. The list, recorded by name with values never written down here, is the deploy
+   SSH key, the SES SMTP credential (via the two-key procedure above), the Cloudflare API
+   token, the document-bucket credential, the off-host ops-bucket credential, and both
+   Healthchecks ping URLs. Each rotation is verified by effect before the previous value
+   is deleted.
+5. **Rollback stays available until the last moment.** While the old box exists with its
+   volumes intact, the deep rollback is repointing DNS and restarting its Caddy. Destroying
+   the instance is the step that ends that option, so it is deliberately the last one and
+   it is dated.
