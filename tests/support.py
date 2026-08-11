@@ -1,10 +1,14 @@
 """Helpers shared across suites, kept out of any one feature's test module."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from http import HTTPStatus
 from typing import Final
 
 import pytest
 from allauth.account.models import EmailAddress
+from allauth.mfa import app_settings
+from allauth.mfa.totp.internal import auth as totp_auth
 from allauth.mfa.totp.internal.auth import (
     TOTP,
     format_hotp_value,
@@ -25,12 +29,15 @@ PINNED_INSTANT: Final = 1_800_000_000.0
 
 
 class _PinnedClock:
-    """The only member of `time` that `django_ratelimit.core` reads."""
+    def __init__(self, instant: float = PINNED_INSTANT) -> None:
+        self._instant = instant
 
-    @staticmethod
-    def time() -> float:
+    def time(self) -> float:
         """Return the pinned instant, so every request lands in one window."""
-        return PINNED_INSTANT
+        return self._instant
+
+    def advance(self, seconds: float) -> None:
+        self._instant += seconds
 
 
 def pin_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,7 +60,16 @@ def pin_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
     the process — least of all the deadline arithmetic this product is built on — sees
     a frozen clock.
     """
-    monkeypatch.setattr(ratelimit_core, "time", _PinnedClock)
+    monkeypatch.setattr(ratelimit_core, "time", _PinnedClock())
+
+
+@contextmanager
+def pinned_totp_window(*, step: int = 0) -> Iterator[None]:
+    instant = PINNED_INSTANT + (step * app_settings.TOTP_PERIOD)
+    clock = _PinnedClock(instant)
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(totp_auth, "time", clock)
+        yield
 
 
 def enrol_totp(user: User) -> None:
@@ -76,7 +92,13 @@ def totp_code(secret: str = TOTP_SECRET) -> str:
     return str(format_hotp_value(hotp_value(secret, counter)))
 
 
-def sign_in(user: User, password: str, *, with_mfa: bool = False) -> Client:
+def sign_in(
+    user: User,
+    password: str,
+    *,
+    with_mfa: bool = False,
+    totp_step: int = 0,
+) -> Client:
     """Drive the real login flow, including the second factor when one is enrolled."""
     EmailAddress.objects.get_or_create(
         user=user,
@@ -90,6 +112,7 @@ def sign_in(user: User, password: str, *, with_mfa: bool = False) -> Client:
     )
     assert response.status_code == HTTPStatus.FOUND, "password was not accepted"
     if with_mfa:
-        response = client.post(reverse("mfa_authenticate"), {"code": totp_code()})
+        with pinned_totp_window(step=totp_step):
+            response = client.post(reverse("mfa_authenticate"), {"code": totp_code()})
         assert response.status_code == HTTPStatus.FOUND, "TOTP code was not accepted"
     return client

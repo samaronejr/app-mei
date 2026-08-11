@@ -56,7 +56,7 @@ from apps.fiscal.capabilities import (
 from apps.fiscal.models import Municipality
 from apps.tenants.models import TenantRole
 from tests.isolation.rolecheck import assert_isolated_role
-from tests.support import totp_code
+from tests.support import pinned_totp_window, totp_code
 from tests.ui.factories import (
     PASSWORD,
     Firm,
@@ -491,7 +491,8 @@ def test_a_portal_only_account_is_refused_rather_than_shown_an_empty_registry(
         reverse("account_login"),
         {"login": portal.email, "password": PASSWORD},
     )
-    session.post(reverse("mfa_authenticate"), {"code": totp_code()})
+    with pinned_totp_window():
+        session.post(reverse("mfa_authenticate"), {"code": totp_code()})
     response = session.get(url)
     assert response.status_code == HTTPStatus.FORBIDDEN, (
         f"{TenantRole.CLIENT_OWNER} was answered {response.status_code} rather than "
