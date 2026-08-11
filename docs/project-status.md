@@ -37,7 +37,7 @@ appear in commit bodies and in evidence filenames.
 
 | Plan | Status | Basis |
 | --- | --- | --- |
-| `pilot-readiness-v1` | **current** | In execution on `chore/pilot-w0-governance`; 3 of 45 checkboxes closed at the time of writing. |
+| `pilot-readiness-v1` | **current** | In execution on `feat/pilot-w2-readiness` at `b4e2cbc`; 13 of 45 checkboxes fully closed, plus the repository half of four operator-gated todos (PILOT-207, 208, 301, 304) delivered while their acceptance stays open. See the note below. |
 | `post-ui-ux-residual-hardening` | **closed** | All 24 todos checked. Its four pull requests merged; `main` is byte-identical to the final reviewed head. Its unfixed leftovers are written up in `docs/residual-risks.md`. |
 | `ui-ux-post-completion-followups` | **closed** | All 11 todos checked. Seven findings that survived the UI/UX plan, closed as separate work. |
 | `ui-ux-development-plan` | **closed** | All 39 todos checked; approved at a recorded head with the final verification wave accepted twice. The follow-ups plan above treats it as immutable and re-verifies its hash. |
@@ -49,6 +49,25 @@ appear in commit bodies and in evidence filenames.
 
 These statuses were assigned by reading each plan's own checkboxes and status
 headers. None is inferred from a filename.
+
+### Half-done is a real state, and the current plan is full of it
+
+Most of `pilot-readiness-v1`'s remaining todos are not blocked and not done. They split
+cleanly into a repository half an agent can deliver and an operator half that needs a
+real host, a real mailbox, a real bucket, or a real account — and the two halves land at
+different times. Counting them as either "done" or "blocked" loses the distinction that
+matters most for scheduling.
+
+So the count above is deliberately two numbers. **13 todos are fully closed.** Four more
+(PILOT-207 monitoring, PILOT-208 backup dead-man, PILOT-301 off-host copy, PILOT-304
+restore-runbook gap closure) have shipped every line of code and documentation they own,
+and stay open because their acceptance names evidence only the operator can produce. The
+narrow remaining action is written down in each case; none of them is waiting on
+engineering.
+
+Nothing in this repository closes an operator gate. A workflow that would assert a live
+deploy is not a live deploy, a script that would copy to a bucket is not a copy, and a
+runbook that documents a restore is not a rehearsal.
 
 ## How changes reach `main`
 
@@ -69,6 +88,13 @@ implementation head. Counts recorded so far:
 - `main`: **1912** passing.
 - `chore/pilot-w0-governance`: **1918** passing (1912 plus two tests added by
   PILOT-006 and four by PILOT-007).
+- `feat/pilot-w1-email`: **1946** passing.
+- `feat/pilot-w2-readiness` at `b4e2cbc`: **1994** passing. The wave-2 delta is
+  PILOT-201 (+14), PILOT-202 (+12), PILOT-203 (+2), PILOT-205 (+14), PILOT-206 (+5) and
+  PILOT-207 (+1), which is 1946 + 48.
+
+Documentation-only commits must land on that last number unchanged, which is the point
+of recording it per branch rather than once.
 
 One consequence of the test setup is binding: there is a single shared PostgreSQL
 test database, so test runs are strictly sequential. Two concurrent runs collide.

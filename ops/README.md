@@ -665,9 +665,10 @@ The mechanism is deliberately unglamorous:
 5. **Roll the stack** with `up -d --no-build --wait`, no `--force-recreate` and no
    service list. Compose already recreates exactly the containers whose image id moved,
    and naming services would silently skip any service added to the file later.
-6. **Assert four times, by effect** (below), and only then `docker image prune -f`.
-   Pruning earlier would delete the layers the `:previous` tags depend on, destroying
-   the rollback while the deploy was still unproven.
+ 6. **Assert five times, by effect** (below), then run the post-rollout storage probe,
+    and only then `docker image prune -f`. Pruning earlier would delete the layers the
+    `:previous` tags depend on, destroying the rollback while the deploy was still
+    unproven.
 
 #### Sync before the load, because only one of those two is reversible
 
@@ -690,14 +691,30 @@ it started in. The disk preflight moved with it and now runs *after* the Sync, s
 free space it measures is what the load will actually find — the checkout writes to the
 same filesystem as the docker data root.
 
-The four assertions are the point of the job:
+The five assertions are the point of the job:
 
 | # | Assertion | What it catches |
 | --- | --- | --- |
 | 1 | `/app/RELEASE` inside the running `web` container equals the pushed SHA | A stack that came back up on the **old** image |
 | 2 | `showmigrations --plan` exits 0, shows at least one `[X]`, and shows no `[ ]` | Migrations that never ran, and a probe that died instead of reporting |
 | 3 | `manage.py check` inside the deployed container | Silent failure of the portal-grant healer, and every other system check |
-| 4 | `GET https://samaronefialho.dev/healthz` returns 200 with `"status": "ok"` | Caddy, TLS and DNS, which nothing inside the stack can see |
+| 4 | `GET https://samaronefialho.dev/healthz` returns 200 with `"status": "ok"`, resolved onto the deploy target's own address | Caddy, TLS and DNS, which nothing inside the stack can see |
+| 5 | `GET https://samaronefialho.dev/versionz`, resolved onto the deploy target, reports `.release == $GIT_SHA` | An edge that answers from some *other* box, or from a stack whose public face is not the commit just shipped |
+
+Assertions 1 and 5 look like the same question and are not. Assertion 1 reads
+`/app/RELEASE` through ssh, from inside the container — it proves the box took the
+image. Assertion 5 reads `/versionz` from the runner through the public TLS edge, so it
+proves the thing the internet reaches serves that commit. A stack can pass 1 and fail 5.
+
+Both 4 and 5 pin resolution with `curl --resolve samaronefialho.dev:443:$DEPLOY_IP`,
+where `DEPLOY_IP` comes from `getent ahostsv4 "$DEPLOY_HOST"`. That is what makes them
+assertions about **the box just deployed** rather than about whatever DNS currently
+points at — which matters most during a host migration, when the two are different
+machines on purpose.
+
+The **step names in `.github/workflows/ci.yml` still read `1/4` through `4/4`, then
+`5/5`.** The labels were not renumbered when the fifth was added; only the last one is
+self-consistent. Count the steps, not the labels.
 
 Assertion 2's positive control is not decoration. A bare `! … | grep -q '\[ \]'` passes
 when the command inside it dies, because a dead container emits nothing and nothing
@@ -705,6 +722,20 @@ contains no pending marker. So the plan is captured to a file, the probe's own e
 status is asserted, at least one applied migration is required, and only then is
 "none pending" meaningful. The first real deploy reported `assert 2/4 ok: 94 migrations
 applied, none pending`.
+
+#### After the assertions: the storage probe is verification, not a gate
+
+The job's last check before the prune is
+`docker compose exec -T web python manage.py storage_probe`, which writes, reads back,
+refuses anonymously, and deletes a `_probe/` object against the configured bucket. It is
+deliberately placed **after** the rollout rather than before it.
+
+That ordering is the whole point. The stack is already serving by the time the probe
+runs, so a probe failure marks the deploy red without stranding traffic between two
+stacks — which is what a pre-rollout storage gate would do the first time the object
+store had a bad minute. The signal is "documents are broken, act now", not "hold the
+release". Storage is also the one dependency `/healthz` says nothing about: the probe is
+the only place in the deploy where document bytes are exercised end to end.
 
 ### Why container health is not deployment proof
 
@@ -766,6 +797,24 @@ the second deploy onward both anchors are real. Check before relying on one:
 ```sh
 ssh app-mei 'docker image ls --filter reference="app-mei*" --format "{{.Repository}}:{{.Tag}} {{.ID}}"'
 ```
+
+##### A deliberate rollback makes `/versionz` and `verify-live` go red, correctly
+
+After a `:previous` rollback the box is intentionally running an older commit, so
+`/versionz` reports that **older** SHA. Everything downstream of it then disagrees with
+`main`, and all of it is right to:
+
+- The scheduled `verify-live` workflow compares `/versionz` against the head of `main`,
+  so it turns **red for as long as the rollback stands**. That is the check working: the
+  deployed release genuinely is not the released one.
+- Re-running the deploy job's assertion 5 by hand against `$sha` of `main` fails for the
+  same reason.
+
+Do not "fix" either by editing the check or by re-deploying the bad image. Treat the red
+as the open-incident indicator it is, and let it clear when the roll-forward lands. If
+the rollback is going to stand for more than a short window, say so wherever the alert
+is received — a check that is knowingly red and unexplained is a check people learn to
+ignore.
 
 #### Bad data: restore
 
@@ -938,17 +987,52 @@ ssh app-mei 'cd /opt/app-mei && docker compose --env-file .env.prod \
   -f docker-compose.prod.yml up -d --no-build --wait'
 ```
 
-Then run the four assertions by hand; a manual deploy that skips them is exactly the
-T-065 situation described above.
+Then run all **five** assertions by hand, and the storage probe after them. A manual
+deploy that skips them is exactly the T-065 situation described above — and one that
+runs only the first four proves nothing about what the public edge actually serves.
+
+`deploy_ip` is the same pin CI uses. Resolve the deploy target's own address once and
+send both public assertions to it explicitly, or a stale DNS record will let some other
+box answer for the name and both checks will pass against the wrong machine.
 
 ```sh
 compose='docker compose --env-file .env.prod -f docker-compose.prod.yml'
+deploy_ip="$(getent ahostsv4 <deploy-host> | awk 'NR==1{print $1}')"
+
+# 1/5 — the running container is this commit.
 ssh app-mei "cd /opt/app-mei && $compose exec -T web cat /app/RELEASE"          # == $sha
+
+# 2/5 — migrations applied, with the positive control.
 ssh app-mei "cd /opt/app-mei && $compose exec -T web sh -c \
   'DATABASE_URL=\"\$DATABASE_MIGRATION_URL\" python manage.py showmigrations --plan --skip-checks'" \
   | grep -c '\[X\]'                                                             # >= 1, and no [ ]
+
+# 3/5 — system checks green in the deployed container.
 ssh app-mei "cd /opt/app-mei && $compose exec -T web python manage.py check"
-curl -fsS https://samaronefialho.dev/healthz
+
+# 4/5 — /healthz is ok over the public edge, pinned to the deploy target.
+curl -fsS --max-time 30 --resolve "samaronefialho.dev:443:$deploy_ip" \
+  "https://samaronefialho.dev/healthz?cb=$sha" \
+  | jq -e '.status == "ok"'
+
+# 5/5 — the deploy target's public face runs THIS commit.
+curl -fsS --resolve "samaronefialho.dev:443:$deploy_ip" \
+  "https://samaronefialho.dev/versionz?cb=$sha" \
+  | jq -e --arg GIT_SHA "$sha" '.release == $GIT_SHA'
+```
+
+`jq -e` is what makes assertions 4 and 5 bite: it exits nonzero when the predicate is
+false, so a 200 carrying the wrong body fails instead of scrolling past. Retry 4/5 a
+couple of times before believing a refusal — a just-recreated `web` container can still
+be draining its first requests, which is why the CI step loops three times with a
+10-second pause.
+
+Finally, the post-rollout storage probe. It is verification, not a gate: the stack is
+already serving, so a failure here means documents are broken and needs acting on
+immediately — it does not mean the release should be held back.
+
+```sh
+ssh app-mei "cd /opt/app-mei && $compose exec -T web python manage.py storage_probe"
 ```
 
 ### Command-to-evidence crossref
@@ -971,6 +1055,8 @@ than linked.
 | `manage.py showmigrations --plan --skip-checks` | CI run 30643246807, assert 2/4 (94 applied, none pending) |
 | `manage.py check` | todo 1 QA, `FIX-01-happy`; CI run 30643246807, assert 3/4 |
 | `curl … /healthz` | todo 3 QA, `FIX-03-happy`; CI run 30643246807, assert 4/4 |
+| `curl --resolve … /versionz` + `jq -e '.release == $GIT_SHA'` | PILOT-202 QA (endpoint and assertion shape). **Not yet observed against a live deploy** — the first CI run carrying it has not landed, and PILOT-002 owns the live observation |
+| `manage.py storage_probe` | PILOT-203 QA (`PILOT-203-happy`, against local storage). **Not yet run against the real bucket** — PILOT-204 owns that |
 | `docker image ls --filter reference="app-mei*"` | todo 6 QA, `FIX-06-happy` (live, against the box) |
 | `docker image prune -f` | CI run 30643246807, Reclaim step |
 | `gh secret set` / `gh secret list` | todo 4 QA, `FIX-04-happy`; todo 6 QA, `FIX-06-happy` |

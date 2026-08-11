@@ -6,10 +6,22 @@ pilot-readiness plan. The historical record remains append-only in
 restates that history. It records only the pilot classification, required action, and
 the repository evidence that supports or will gate that classification.
 
-The first three columns below carry the plan's §7 adjudication table verbatim. The
-fourth column adds durable repository evidence pointers. A future control remains
-classified as a mitigation or operator gate until its named pilot todo supplies that
-evidence.
+The first three columns below carry the plan's §7 adjudication table verbatim, including
+its classifications. They are the adjudication as made and are not rewritten as work
+lands. The fourth column is this document's own contribution: durable repository evidence
+pointers, and the current state of each control.
+
+Read the fourth column carefully, because "the code landed" and "the risk is closed" are
+different claims and several rows are deliberately between the two. A row is marked:
+
+- **LANDED** when the repository change exists at the reviewed head and its pins are green.
+- **HALF LANDED, HALF STILL OPEN** when the mechanism exists but the evidence that closes
+  the residual is external — a real deploy, a real bucket, a real mailbox, a host setting.
+- unqualified when the named todo has not delivered anything yet.
+
+No operator gate is ever closed by a repository change alone. A control stays classified
+as a mitigation or operator gate until its named pilot todo supplies the evidence, and
+landing the code does not advance the classification.
 
 | Residual | Classification | Basis / action | Repository evidence |
 | --- | --- | --- | --- |
@@ -22,14 +34,15 @@ evidence.
 | §3.1 Per-endpoint DoS survives | ACCEPTED FOR CONTROLLED PILOT | Correct trade per record; monitoring adds 429-visibility (Sentry breadcrumbs/logs); no limit changes. | Endpoint isolation and the surviving per-endpoint limit are pinned by `tests/security/test_rate_limit_isolation.py`. |
 | §3.2 15/m combined per-address | ACCEPTED FOR CONTROLLED PILOT | Operator already accepted; restated in §29. | The independent address buckets and unchanged IP umbrella are pinned by `tests/security/test_rate_limit_isolation.py`. |
 | §3.3 Redis gaierror→429 | ALREADY RESOLVED (fails closed) | Keep; test stays. | The measured `socket.gaierror` behavior is pinned by `tests/security/test_rate_limit_isolation.py`. |
-| §3.3 Redis ConnectionError→500 | MITIGATE BEFORE PILOT | PILOT-206: narrow fail-closed 429 at exceeds(); test-first; no auth bypass, no enumeration delta, no infra detail leak, auto-recovery, Sentry visibility. | The current measured behavior remains in `tests/security/test_rate_limit_isolation.py` and [`docs/residual-risks.md`](residual-risks.md); PILOT-206 must replace it with its fail-closed pin before pilot. |
+| §3.3 Redis ConnectionError→500 | MITIGATE BEFORE PILOT | PILOT-206: narrow fail-closed 429 at exceeds(); test-first; no auth bypass, no enumeration delta, no infra detail leak, auto-recovery, Sentry visibility. | **MITIGATION LANDED.** `exceeds()` in `apps/security/ratelimit.py` catches `redis.exceptions.ConnectionError` and the builtin `ConnectionError`, calls `sentry_sdk.capture_exception()`, and denies — which `apps/security/middleware.py` renders as 429. The fail-closed pins are in `tests/security/test_rate_limit_isolation.py`; the dated correction is appended to [`docs/residual-risks.md`](residual-risks.md). |
 | §4.1/4.2/4.3 Invitation scope semantics | ALREADY RESOLVED / ACCEPTED | Documented behavior inherited; 410 lifecycle disclosure stays (deliberate, tested). | `tests/accounts/test_invite_route_scope.py` pins live wrong-door indistinguishability and deliberate dead-token disclosure; `tests/accounts/test_invite_revocation.py` pins withdrawal scope. |
 | §5.1 Comment-reference guard limit | ACCEPTED | Inherited honestly; new docs keep citations resolvable (guard scans docs). | `tests/scope/test_comment_references.py` scans this document and proves existence, not semantic currency. |
 | §5.2 Public signup closed | ALREADY RESOLVED | Walkthrough re-verifies (step 14). | `tests/accounts/test_signup_surface.py` pins the closed route on both host families. |
 | §6.1 .git/info/exclude local-only | ACCEPTED + documented | PILOT-001 documents portability rule; no CI clean-worktree gate added. | The boundary is recorded in [`docs/residual-risks.md`](residual-risks.md); PILOT-001 owns the portable operator documentation. |
-| §6.2 Staging release inferred | MITIGATE BEFORE PILOT | PILOT-002 observes now; PILOT-202 makes it observable forever (/versionz + public deploy assert). | `.github/workflows/ci.yml` is the current inferred deploy path; PILOT-002 and PILOT-202 must add observed evidence before pilot. |
-| §6.3 TOTP flake | MITIGATE BEFORE PILOT | PILOT-006 deterministic fix; single red re-run diagnostically only until fix lands. | The pinned-clock helper is in `tests/support.py`; its login consumers include `tests/accounts/test_invite_revocation.py` and `tests/accounts/test_member_lifecycle.py`. |
+| §6.2 Staging release inferred | MITIGATE BEFORE PILOT | PILOT-002 observes now; PILOT-202 makes it observable forever (/versionz + public deploy assert). | **HALF LANDED, HALF STILL OPEN.** The mechanism exists: `versionz` is served from `apps/core/views.py` and routed in `config/urls.py`, `.github/workflows/ci.yml` asserts it over the public edge against the deployed SHA, and `.github/workflows/verify-live.yml` re-checks it against the head of `main` on a schedule. **No live observation exists yet** — none of this has reached `main`, no deploy has run it, and PILOT-002's observed-release evidence is still owed. |
+| §6.3 TOTP flake | MITIGATE BEFORE PILOT | PILOT-006 deterministic fix; single red re-run diagnostically only until fix lands. | **FIX LANDED.** The step-boundary determinism is in `tests/support.py` and pinned by `tests/test_support.py`; its login consumers include `tests/accounts/test_invite_revocation.py` and `tests/accounts/test_member_lifecycle.py`. |
 | §7 guards' reach limits | ACCEPTED | Inherited; F4 must not claim broader coverage. | `tests/scope/test_comment_references.py`, `tests/scope/test_status_literals.py`, and `tests/ui/test_status_render_policy.py` state and pin their deliberately narrow reach. |
+| NEW (found in review of PILOT-207): Celery worker events widen Sentry's stack-local capture | ACCEPTED AND RECORDED; owner decides at PILOT-504 | Adding `CeleryIntegration` extends capture from request handling to task execution, so `include_local_variables` (SDK default: on) can now serialize task-local objects — a `client` during a failed calendar sweep, for example — that no web request would have held. The existing denylist, both send hooks and `send_default_pii=False` still apply to every one of those events, which bounds the exposure rather than removing it. At 10-30 pilot clients the accepted view is that diagnostics on a broken worker are worth more than the residue. | The integration and every scrubber are in `config/settings/prod.py`; the scrubbing canaries are `tests/security/test_credential_log_hygiene.py`. **Nothing was changed for this row.** PILOT-504 already inspects a controlled event; it now also inspects a **worker-origin** one and either sets `include_local_variables=False` or folds this into the §2.5 Sentry-shape residual. |
 | NEW (this plan): storage lifecycle unadjudicated (orphan bytes, no real-bucket proof, single bucket, on-host backups, no object DR) | MITIGATE BEFORE PILOT | PILOT-203/204/205/301/303 + §29 records what remains. | The shipped storage boundary is configured in `config/settings/prod.py`; real-bucket, lifecycle, orphan, off-host, and recovery evidence remains gated by PILOT-203, PILOT-204, PILOT-205, PILOT-301, and PILOT-303. |
 
 ## Credential-GET proof boundary
@@ -46,3 +59,30 @@ stores the validated key in the session and redirects to the non-secret `set-pas
 URL; the POST submits there using that same session-held key. The `set-password` special
 case in `config/settings/prod.py` is log-redaction handling, not the reset-flow
 implementation.
+
+## The Celery capture widening, and why nothing was changed for it
+
+This one was found by review rather than by a todo, so the reasoning is written out here
+rather than compressed into a table cell.
+
+Before PILOT-207 the only Sentry integration was `DjangoIntegration`, so the events that
+carried stack-frame locals were request-shaped, and every scrubber in
+`config/settings/prod.py` was tuned against exactly those shapes. Adding
+`CeleryIntegration` was the right call — a worker that dies silently is the failure mode
+monitoring exists to catch — but it changes what an event can contain. Task frames hold
+whatever the task held: an ORM instance, a `client` mid-sweep, a storage handle. The SDK
+serializes those locals by default.
+
+Three things bound it, and none of them removes it. The recursive denylist still redacts
+the named credential fields. Both send hooks still scrub URLs, request data, transaction
+names, breadcrumbs, spans and repeated credentials in stack-frame locals. And
+`send_default_pii=False` still suppresses the SDK's own user and request attachment. What
+survives is the residue: whatever a worker frame happened to be holding that none of
+those rules names.
+
+**No setting was touched.** `include_local_variables=False` would close it and would also
+strip the variable values from every traceback, which is most of what makes a worker
+stack trace worth having. That is a diagnostics-versus-privacy trade, it belongs to the
+owner, and at 10-30 pilot clients it is not obvious in either direction. PILOT-504 is
+already the place a controlled event gets inspected; it now inspects a worker-origin one
+too, and the decision gets made against a real payload instead of against this paragraph.
