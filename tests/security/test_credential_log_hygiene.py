@@ -74,6 +74,7 @@ def _credential_form(request: HttpRequest, credential: str) -> HttpResponse:
 
 @csrf_exempt
 def _credential_exception(request: HttpRequest, key: str) -> HttpResponse:
+    leaked_alias = key
     transaction_url = request.POST.get("transaction_url")
     if transaction_url:
         sentry_sdk.set_transaction_name(transaction_url)
@@ -84,7 +85,7 @@ def _credential_exception(request: HttpRequest, key: str) -> HttpResponse:
     if span_url:
         with sentry_sdk.start_span(op="http.client", name="credential-url") as span:
             span.set_data("url", span_url)
-    message = f"credential escaped as {key}"
+    message = f"credential escaped as {leaked_alias}"
     raise RuntimeError(message)
 
 
@@ -170,6 +171,7 @@ def _capture_real_exception_events(
     if not hardened:
         options.update(
             {
+                "include_local_variables": True,
                 "event_scrubber": EventScrubber(),
                 "before_send": None,
                 "before_send_transaction": None,
@@ -327,6 +329,7 @@ def test_real_integration_control_exposes_every_planted_canary(
     )
     request = cast("dict[str, Any]", first_error["request"])
     recovery_request = cast("dict[str, Any]", recovery_error["request"])
+    exception = cast("dict[str, Any]", first_error["exception"])
     assert statuses == (
         HTTPStatus.INTERNAL_SERVER_ERROR,
         HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -347,6 +350,12 @@ def test_real_integration_control_exposes_every_planted_canary(
     assert SENTRY_SPAN_CANARY in json.dumps(
         [event.get("spans") for event in transaction_events]
     )
+    frame_variables = [
+        frame.get("vars")
+        for value in exception["values"]
+        for frame in value["stacktrace"]["frames"]
+    ]
+    assert SENTRY_REAL_URL_CANARY in json.dumps(frame_variables)
 
 
 @override_settings(
