@@ -1,12 +1,17 @@
 """Operational endpoints that belong to no tenant."""
 
-from django.db import DatabaseError, transaction
+from django.core.cache import InvalidCacheBackendError, caches
+from django.db import DatabaseError, connections, transaction
 from django.http import HttpRequest, JsonResponse
+from redis.exceptions import RedisError
 
 from apps.obligations.heartbeat import DiskHeadroom, read_heartbeats
 
 OK = 200
 SERVICE_UNAVAILABLE = 503
+READY_CACHE_KEY = "readyz:probe"
+READY_CACHE_VALUE = "ok"
+READY_CACHE_TIMEOUT_SECONDS = 5
 
 
 # ATOMIC_REQUESTS wraps every view in a transaction, which this probe must not open:
@@ -57,4 +62,37 @@ def healthz(_request: HttpRequest) -> JsonResponse:
             "disk": report.disk.value,
         },
         status=OK if report.scheduler_alive else SERVICE_UNAVAILABLE,
+    )
+
+
+@transaction.non_atomic_requests
+def readyz(_request: HttpRequest) -> JsonResponse:
+    """Report whether the database and Redis can serve application traffic."""
+    database_status = "ok"
+    try:
+        with connections["default"].cursor() as cursor:
+            cursor.execute("SELECT 1")
+    except DatabaseError:
+        database_status = "error"
+
+    redis_status = "ok"
+    try:
+        cache = caches["default"]
+        cache.set(
+            READY_CACHE_KEY,
+            READY_CACHE_VALUE,
+            timeout=READY_CACHE_TIMEOUT_SECONDS,
+        )
+        if cache.get(READY_CACHE_KEY) != READY_CACHE_VALUE:
+            redis_status = "error"
+    except (InvalidCacheBackendError, RedisError):
+        redis_status = "error"
+    ready = database_status == redis_status == "ok"
+    return JsonResponse(
+        {
+            "status": "ready" if ready else "unready",
+            "database": database_status,
+            "redis": redis_status,
+        },
+        status=OK if ready else SERVICE_UNAVAILABLE,
     )

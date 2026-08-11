@@ -400,7 +400,7 @@ ACCESS_LOG_RETENTION_DAYS = env.int("ACCESS_LOG_RETENTION_DAYS", default=180)
 # Marco Civil access log's most important rows by construction, silently, before the
 # vault existed to notice. Nothing serves /media/ either, asserted separately: the two
 # together mean the only route to a document's bytes is the portal view, which logs.
-ACCESS_LOG_EXEMPT_PREFIXES = ["/healthz", STATIC_URL]
+ACCESS_LOG_EXEMPT_PREFIXES = ["/healthz", "/readyz", "/versionz", STATIC_URL]
 
 # V3. The portal serves document bytes from memory, never as a StreamingHttpResponse:
 # PortalMiddleware refuses one, because its iterator would be consumed after the role
