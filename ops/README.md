@@ -1607,8 +1607,9 @@ re-verification, and PILOT-301 for the off-host credentials.
 `systemctl enable --now app-mei-backup.timer`, unconditionally. Running it during
 bootstrap arms the nightly backup on a host with no data, pointing at credentials that
 may still be `CHANGEME`, and the resulting failures teach the operator to ignore the
-alarm. Units are copied manually and left disabled. PILOT-404 step 8 is the single point
-at which the timer is enabled, after the data is actually on the box.
+alarm. Units are copied manually and left disabled. Step 8 of
+[Cutover: data freeze, restore, and DNS flip](#cutover-data-freeze-restore-and-dns-flip)
+is the single point at which the timer is enabled, after the data is actually on the box.
 
 **The target uses the real ACME configuration from the start.** Never `tls internal`.
 `TLS_DIRECTIVE` stays empty and `ACME_DNS_OPTION=acme_dns cloudflare {env.CF_API_TOKEN}`
@@ -1714,13 +1715,480 @@ Run after PILOT-106, 208, 209, and 301, and before PILOT-403.
    that exists, and the journald cap.
 
 7. **Timer still disabled.** Re-transcribe `systemctl is-enabled app-mei-backup.timer`
-   as `disabled`. PILOT-404 step 8 is the sole enable point.
+   as `disabled`. Step 8 of
+   [Cutover: data freeze, restore, and DNS flip](#cutover-data-freeze-restore-and-dns-flip)
+   is the sole enable point.
 
 For the failure path, deliberately omit one variable from `.env.prod`, attempt a compose
 config parse, and capture the `${VAR:?}` refusal message before adding it back. That
 refusal is the guard that makes an incomplete Phase B unable to reach a running stack.
 Transcript to `.evidence/PILOT-402-failure.txt`; the per-step transcripts go to
 `.evidence/PILOT-402-happy.txt`.
+
+### Cutover: data freeze, restore, and DNS flip
+
+Covers PILOT-404. **Not executed.** No target host holds production data, no DNS record
+has been changed, no freeze window has been scheduled, and every measured value below is
+a `<placeholder>`.
+
+This is the most dangerous procedure in the pilot, and the reason is not that it is
+complicated. It is that its two principal failure modes produce a system that looks
+completely healthy.
+
+**Cutting over from a live-written source silently loses rows.** If the write freeze in
+step 2 is skipped or is incomplete, every row committed on the old box after the final
+backup is simply absent on the target. Nothing errors, no log line records it, and
+`/healthz` is green. The gap is found weeks later by a user who cannot locate a document
+they know they uploaded, at which point the old box may already be gone.
+
+**Restoring from an archive that stops short of the freeze point silently truncates
+history.** WAL is archived per segment, and `archive_timeout=300` forces a switch every
+five minutes, so at the instant the last write lands the tail of the log is still sitting
+in the active segment and has never reached the archive. If step 3 does not force a
+segment switch and then wait for the archive queue to drain, PITR-to-end replays only
+what the archive happens to hold. Recovery reports success. It is short.
+
+Neither failure raises an alarm anywhere in the stack. The only thing standing between
+them and production is step 7's row-count comparison against counts captured on the old
+box **after** the freeze, which is why step 7 is not optional and why the stale-count
+control below exists.
+
+#### Standing rules for the window
+
+- **MUST NOT skip the write freeze.** See above. A "quick" cutover without it is a
+  cutover that loses data it cannot name.
+- **MUST NOT disable HSTS, and MUST NOT serve any non-TLS window.**
+  `SECURE_HSTS_SECONDS` is one year (`config/settings/prod.py:221-223`), so every browser
+  that has visited the site will refuse plaintext for a year regardless of what the
+  server later says. A single non-TLS moment is not a degraded experience, it is an
+  outage for returning visitors that no server-side change can shorten. The DNS-01
+  wildcard the target already holds (see the TLS rule under
+  [New host bootstrap](#new-host-bootstrap-two-phases)) exists precisely so this
+  constraint costs nothing.
+- **MUST NOT lower the DNS TTL below 300s permanently.** 300s for the window only,
+  restored in step 12.
+- **MUST NOT destroy old-box data.** It is the rollback anchor until `v0.2.0-rc1` exists.
+  See [Decommissioning the old host](#decommissioning-the-old-host).
+
+#### The ordered state machine
+
+The order is the procedure. A step run out of sequence is not a slower cutover, it is a
+different and usually silent outcome. Every step is transcribed to
+`.evidence/PILOT-404-happy.txt` as it is executed.
+
+| # | Step | Its check |
+| --- | --- | --- |
+| 1 | Lower TTL to 300s, at least one hour before the window | `dig +noall +answer samaronefialho.dev` reports `300` |
+| 2 | Freeze the source: caddy, then beat, then drain, then worker | Drain counters both zero, transcribed |
+| 3 | Final backup, forced WAL switch, archive drain | Zero `.ready` files, `failed_count` unchanged |
+| 4 | Transfer base, WAL archive, and logical dump old host to target | SHA-256 match on both ends |
+| 5 | Reset target state: `down`, remove three volumes, quarantine target-made artifacts | `docker volume ls` shows none of the three; listing transcribed |
+| 6 | Restore on target per RESTORE.md, then `up -d db redis web caddy` | Recovery confirmed, worker and beat absent from `docker compose ps` |
+| 7 | Verify on target **before** the flip | Five checks, all green, including row counts |
+| 8 | `up -d worker beat`, then enable the backup timer | `systemctl is-enabled` reports `enabled` |
+| 9 | Flip A/AAAA apex and wildcard to the target | Cloudflare shows the new values |
+| 10 | Verify publicly, unpinned | Target IP answers, correct issuer, `/versionz` equals `main` |
+| 11 | Old box stays stopped but intact | Volumes present, caddy down, freeze still in force |
+| 12 | Restore the TTL | `dig` reports the pre-window value |
+
+##### 1. Lower the TTL, at least an hour ahead
+
+In Cloudflare, set the apex `A`, any `AAAA`, and the wildcard record to a 300s TTL. Do
+this **at least one hour before** the window opens so that resolvers holding the old,
+longer TTL have expired their cached copies before the flip matters. Lowering the TTL at
+the same moment as the flip achieves nothing: the caches that need to expire were
+populated under the old value.
+
+```sh
+dig +noall +answer samaronefialho.dev A
+dig +noall +answer '*.samaronefialho.dev' A
+```
+
+Record the pre-window TTL as `<pre-window-ttl>`; step 12 restores exactly that value.
+
+##### 2. Freeze the source, in this exact order
+
+The order closes each write path before the one that feeds it, so nothing is abandoned
+mid-flight.
+
+```sh
+cd /opt/app-mei
+compose='docker compose --env-file .env.prod -f docker-compose.prod.yml'
+
+# a. Public ingress first. No new HTTP writes can arrive after this.
+$compose stop caddy
+
+# b. No new scheduled tasks can be enqueued after this.
+$compose stop beat
+
+# c. DRAIN. Both counters must reach zero before the worker is stopped.
+$compose exec -T worker celery -A config inspect active
+$compose exec -T worker celery -A config inspect reserved
+$compose exec -T worker celery -A config inspect scheduled
+$compose exec -T redis redis-cli -h 127.0.0.1 llen celery
+
+# d. Only now.
+$compose stop worker
+```
+
+Acceptance for the drain: `active`, `reserved` and `scheduled` all report empty lists
+for every worker, **and** `llen celery` returns `0`. Both halves are required and they
+answer different questions. The `inspect` calls describe what the worker holds in
+memory; `llen` describes what is still queued in Redis waiting for a worker that is
+about to stop existing. Transcribe all four outputs verbatim, because "the drain looked
+clean" is not a check.
+
+`celery -A config` is the correct invocation here: the app object lives at
+`config/celery.py` and is re-exported from `config/__init__.py`, which is the same form
+the container healthchecks use (`docker-compose.prod.yml:290`).
+
+Stopping `caddy` before `beat` matters more than it looks. Reverse them and a scheduled
+task can still be enqueued while HTTP writes are also arriving, so the queue keeps
+growing while you are trying to empty it.
+
+##### 3. Final backup, forced WAL switch, and archive drain
+
+```sh
+sudo /opt/app-mei/ops/backup.sh
+```
+
+Acceptance: exit status `0`, a fresh base and logical dump under `ops/backups/`, the
+freshness marker stamped, and both Healthchecks pings green. The script writes the local
+freshness marker at `ops/backup.sh:226` and only then starts the off-host copy at
+`ops/backup.sh:268`, so a green marker with a failed off-host copy means the local
+artifacts are complete and the remote copy needs re-running, not that the backup is
+suspect.
+
+The base backup alone is not sufficient, and this is the step that is easy to skip
+because everything already looks finished. Force the switch and wait:
+
+```sh
+$compose exec -T -u postgres db psql -U "$POSTGRES_USER" -d app_mei -XAt \
+  -c "SELECT pg_switch_wal();"
+
+# Wait until this reports 0. Re-run until it does.
+$compose exec -T -u postgres db sh -ceu \
+  'ls -1 "$PGDATA"/pg_wal/archive_status/*.ready 2>/dev/null | wc -l'
+
+# And confirm the archiver did not start failing while draining.
+$compose exec -T -u postgres db psql -U "$POSTGRES_USER" -d app_mei -XAt \
+  -c "SELECT archived_count, failed_count, last_archived_wal FROM pg_stat_archiver;"
+```
+
+Acceptance: zero `.ready` files, and `failed_count` identical to the value read before
+the switch. Record both readings, not just the second, because "failed_count is 2" means
+nothing without the prior value. Record `last_archived_wal` as `<final-archived-wal>`:
+that segment name is the proof of what the archive actually contains, and step 6's
+recovery is expected to reach it.
+
+A rising `failed_count` here stops the cutover. It means the archive does not contain
+what the restore is about to assume it contains, and the correct response is to fix
+archiving on the old box, which is still intact and still frozen, rather than to proceed
+and discover the gap on the target.
+
+##### 4. Transfer directly, host to host
+
+```sh
+BASE=<final-base-directory-name>
+rsync -av --checksum \
+  /opt/app-mei/ops/backups/base/"$BASE"/ \
+  <deploy-user>@<target-ip>:/opt/app-mei/ops/backups/base/"$BASE"/
+rsync -av --checksum \
+  /opt/app-mei/ops/backups/logical/ \
+  <deploy-user>@<target-ip>:/opt/app-mei/ops/backups/logical/
+```
+
+The WAL archive is a docker volume rather than a host path, so it moves as a stream
+rather than as a directory copy. Take it from the old box and land it on the target
+using the same volume name:
+
+```sh
+# On the old box.
+docker run --rm -v app-mei_wal_archive:/wal -w /wal alpine tar -cf - . \
+  | gzip -1 > /tmp/wal_archive.tar.gz
+sha256sum /tmp/wal_archive.tar.gz
+scp /tmp/wal_archive.tar.gz <deploy-user>@<target-ip>:/tmp/
+```
+
+Acceptance: SHA-256 of every transferred artifact matches on both ends, compared
+explicitly rather than assumed from a green `rsync`. The off-host bucket copy from step 3
+runs as usual and is not a substitute for this transfer: it is the disaster copy, this is
+the migration path.
+
+##### 5. Reset the target's state, deliberately and completely
+
+PILOT-403 proved the deploy pipeline against a fresh, empty-but-migrated database on the
+target. **All of that state is discarded here**, and each of the three volumes has its own
+reason:
+
+- `postgres_data` holds the pipeline-test cluster. Restoring the source base backup over
+  a populated data directory is not a restore, and the RESTORE.md procedure requires the
+  volume to be absent so that the image entrypoint skips `initdb` and enters archive
+  recovery.
+- `wal_archive` is the one people forget, and it is the one that corrupts the result.
+  WAL segment names are a function of timeline and LSN, not of which cluster produced
+  them, so the target's own segments **collide by name** with the source's. Recovery would
+  then read a mixture of two unrelated clusters' WAL, and the `restore_command` has no way
+  to notice.
+- `redis_data` holds whatever tasks the pipeline test queued. Leaving it means step 8
+  starts a worker that immediately executes test-run tasks against real production data.
+
+```sh
+cd /opt/app-mei
+$compose down
+docker volume rm app-mei_postgres_data app-mei_wal_archive app-mei_redis_data
+docker volume ls --filter name=app-mei
+```
+
+Acceptance: none of the three names appears in the final listing. Note this is a
+deliberate, named removal and **not** `down -v`, which would also take `caddy_data` and
+discard the ACME account and certificate material the target already holds
+(`docker-compose.prod.yml:392-397`).
+
+Then quarantine any backup artifact the target produced for itself, locally and off-host.
+A target-made base backup sitting beside the source's is an artifact that will restore
+cleanly to the wrong data:
+
+```sh
+ls -la /opt/app-mei/ops/backups/base /opt/app-mei/ops/backups/logical
+aws s3 ls "s3://$OFFHOST_S3_BUCKET/pg/" --endpoint-url "$OFFHOST_S3_ENDPOINT"
+```
+
+Transcribe both listings before and after, and record which entries were removed with
+their timestamps. An artifact whose timestamp falls between the PILOT-403 deploy and this
+step is target-made by construction.
+
+##### 6. Restore on the target, then start only four services
+
+Follow [`Path A — physical restore with WAL replay`](RESTORE.md#path-a--physical-restore-with-wal-replay-rehearsed)
+exactly as rehearsed, restoring the transferred base into `app-mei_postgres_data` and the
+transferred archive into `app-mei_wal_archive`, recovering to the end of the WAL. The
+roles step is [`Roles recreation`](RESTORE.md#roles-recreation); `ops/sql/roles.sql`
+guards every `CREATE ROLE` with an `IF NOT EXISTS` catalog check
+(`ops/sql/roles.sql:27-37`), so re-applying it against a restored cluster that already
+carries the roles is safe.
+
+Bring up **four** services and no more:
+
+```sh
+$compose up -d --no-build --wait db redis web caddy
+$compose ps
+```
+
+Acceptance: `db`, `redis`, `web` and `caddy` are healthy, and `worker` and `beat` do not
+appear. Starting the worker here would begin executing tasks against data whose row
+counts have not yet been verified, before there is any decision to keep this restore.
+Confirm recovery reached the expected point per
+[`Confirm recovery really happened`](RESTORE.md#confirm-recovery-really-happened), and
+check the recovered position against `<final-archived-wal>` from step 3.
+
+##### 7. Verify on the target, before the flip
+
+Five checks. Public DNS still points at the old box throughout, so every HTTP check pins
+resolution the same way the deploy job's assertions do.
+
+```sh
+target_ip="$(getent ahostsv4 <target-host> | awk 'NR==1{print $1}')"
+```
+
+1. **Migrations, positive-controlled.** Not "no pending", but "at least one applied and
+   none pending", because a probe that dies emits nothing and nothing contains no pending
+   marker.
+
+   ```sh
+   $compose exec -T web sh -c \
+     'DATABASE_URL="$DATABASE_MIGRATION_URL" python manage.py showmigrations --plan --skip-checks' \
+     > /tmp/plan.txt
+   grep -c '\[X\]' /tmp/plan.txt      # >= 1
+   ! grep -q '\[ \]' /tmp/plan.txt    # no pending
+   ```
+
+2. **RLS spot check.** With `app.tenant_id` empty, a session running as `app_runtime`
+   must see zero rows. This is the property the whole isolation model rests on, and a
+   restore that silently landed tables without their policies would pass every other
+   check here.
+
+3. **Row counts match the old box's post-freeze counts.** Capture the counts on the old
+   box after the freeze, into a file, and compare. Table names are
+   `tenants_tenant`, `clients_clientcompany` and `obligations_document`:
+
+   ```sh
+   # On the OLD box, after step 2's freeze:
+   $compose exec -T -u postgres db psql -U "$POSTGRES_USER" -d app_mei -XAt -F'|' -c \
+     "SELECT 'tenants', count(*) FROM tenants_tenant
+      UNION ALL SELECT 'clients', count(*) FROM clients_clientcompany
+      UNION ALL SELECT 'documents', count(*) FROM obligations_document
+      ORDER BY 1;" | tee /tmp/expected-counts.txt
+   sha256sum /tmp/expected-counts.txt
+
+   # On the TARGET, after the restore, the identical query:
+   ... | tee /tmp/actual-counts.txt
+   diff /tmp/expected-counts.txt /tmp/actual-counts.txt
+   ```
+
+   Acceptance: `diff` is empty. This is the only check in the entire procedure that can
+   detect either of the two silent failure modes described at the top of this section.
+   Treat a mismatch as "the freeze or the archive drain was incomplete", not as "the
+   counts drifted".
+
+4. **Canary document.** Fetch one known document through the target and compare its
+   SHA-256 against the value recorded on the old box. Row counts prove the metadata
+   arrived; only a byte-level fetch proves the document path works end to end from the
+   restored rows to the object store. Use the identifiers from the secure rehearsal
+   manifest rather than writing any id into evidence, following
+   [`Restored-data and RLS-by-effect evidence`](RESTORE.md#restored-data-and-rls-by-effect-evidence).
+
+5. **Pinned health and version.**
+
+   ```sh
+   curl -fsS --max-time 30 --resolve "samaronefialho.dev:443:$target_ip" \
+     "https://samaronefialho.dev/healthz?cb=<window-id>" | jq -e '.status == "ok"'
+
+   curl -fsS --resolve "samaronefialho.dev:443:$target_ip" \
+     "https://samaronefialho.dev/versionz?cb=<window-id>" \
+     | jq -e --arg SHA "<main-head-sha>" '.release == $SHA'
+   ```
+
+   `jq -e` is what makes these bite: a 200 carrying the wrong body exits nonzero rather
+   than scrolling past. Note `/healthz` will report `"backup": "stale"` here, because the
+   restored marker is the old box's and the target's timer is still disabled. That is
+   expected and does not change `status`; it clears after step 8's first timer run.
+
+Any failing check stops the cutover **before** anything public has changed. That is the
+entire point of doing all five here rather than after the flip: at this moment the old
+box is still serving, still intact, and the rollback is "do nothing".
+
+##### 8. Start the remaining services, and enable the timer
+
+```sh
+$compose up -d --no-build --wait worker beat
+systemctl enable --now app-mei-backup.timer
+systemctl is-enabled app-mei-backup.timer   # expect: enabled
+systemctl list-timers app-mei-backup.timer --no-pager
+```
+
+**This is the single point in the entire plan at which the backup timer is enabled.**
+PILOT-402 Phase A step 7 and Phase B step 7 both assert it is `disabled`, deliberately,
+because a timer armed on a host with no data teaches the operator to ignore its alarms.
+It is enabled here and not one step earlier because a backup of an unverified restore is
+an artifact nobody should be tempted to trust.
+
+Use `systemctl enable --now` directly. `ops/systemd/install.sh` is still forbidden on
+this host for the reason given under
+[New host bootstrap](#new-host-bootstrap-two-phases): it enables unconditionally and
+would have been just as happy to do so at bootstrap.
+
+##### 9. Flip DNS
+
+In Cloudflare, repoint the apex `A` (and `AAAA` if one exists) and the wildcard record to
+`<target-ip>`. Record the previous values as `<old-ip>` before changing them; step 12's
+rollback path is these exact values and nothing else. Record the flip timestamp as
+`<flip-utc>`.
+
+##### 10. Verify publicly, unpinned
+
+Everything here deliberately drops the `--resolve` pin, because the question has changed
+from "does the target serve correctly" to "does the name now reach the target".
+
+```sh
+dig +short A samaronefialho.dev
+dig +short A '*.samaronefialho.dev'
+
+# The connection line names the address actually used.
+curl -fsSI -v https://samaronefialho.dev/healthz 2>&1 | grep -i 'Connected to'
+
+curl -fsS https://samaronefialho.dev/healthz | jq -e '.status == "ok"'
+curl -fsS https://samaronefialho.dev/versionz | jq -e --arg SHA "<main-head-sha>" '.release == $SHA'
+curl -fsSI https://<portal-host>/ | head -1
+
+echo | openssl s_client -connect samaronefialho.dev:443 -servername samaronefialho.dev 2>/dev/null \
+  | openssl x509 -noout -issuer -ext subjectAltName
+```
+
+Acceptance: `dig` returns `<target-ip>`; the `Connected to` line names `<target-ip>`; the
+certificate issuer is Let's Encrypt and its SANs cover both the apex and the wildcard;
+`/versionz` equals `main`; the portal host serves. UptimeRobot monitors are hostname
+based, so they follow the flip on their own: confirm all of them report UP rather than
+reconfiguring anything.
+
+##### 11. The old box stays stopped but intact
+
+Its `caddy` is already down from step 2, its worker and beat are stopped, and its
+database is frozen at the backup point. **Leave every volume in place.** While that is
+true, the deep rollback is available and cheap. Nothing about the old box changes until
+the rollback decision is explicitly closed and recorded, and its eventual shutdown and
+destruction belong to [Decommissioning the old host](#decommissioning-the-old-host),
+not to this window.
+
+##### 12. Restore the TTL, and record the rollback path
+
+Set the apex and wildcard TTLs back to `<pre-window-ttl>` and confirm with `dig`.
+
+The rollback path, valid for as long as step 11 holds:
+
+1. Repoint the `A`, `AAAA` and wildcard records back to `<old-ip>`.
+2. `docker compose up -d caddy` on the old box.
+3. Wait out the 300s TTL, then re-run step 10's checks expecting `<old-ip>`.
+
+Its cost must be recorded in the window log rather than discovered: the old box's data is
+at the freeze point, so **every write the target accepted after `<flip-utc>` is lost by
+this rollback**. Record `<flip-utc>`, the rollback decision time, and the elapsed window
+between them, because that interval is exactly the quantity of data at stake and it is
+what makes the choice between rolling back and rolling forward an informed one rather
+than a reflex.
+
+#### The two negative controls
+
+Both are run during the window and both go to `.evidence/PILOT-404-failure.txt`.
+
+**Control 1: the rollback target answers.** During the window, before the old box's stop
+is final, pin a request at `<old-ip>` and confirm it is served:
+
+```sh
+curl -fsS --max-time 30 --resolve "samaronefialho.dev:443:<old-ip>" \
+  "https://samaronefialho.dev/healthz" | jq -e '.status == "ok"'
+```
+
+Acceptance: 200 with `"status": "ok"` from `<old-ip>`. This is not a duplicate of step
+10. Step 10 proves the new edge works; this proves the rollback in step 12 is a real
+option rather than a paragraph, and it is worth exactly nothing after the old box has
+been touched, which is why it runs inside the window.
+
+To run it the old box's `caddy` must be briefly up while its worker, beat and database
+writes stay frozen. Starting `caddy` alone does not unfreeze anything: the freeze is
+that no writer is running, not that the edge is closed.
+
+**Control 2: the row-count check bites.** A comparison that has never failed is not yet
+a check, it is a command that has always printed nothing. Prove it fails before trusting
+it:
+
+```sh
+cp /tmp/expected-counts.txt /tmp/expected-counts.bak
+sha256sum /tmp/expected-counts.bak
+
+# Alter exactly one count.
+sed -i '0,/^documents|/{s/^documents|\([0-9]*\)$/documents|999999/}' /tmp/expected-counts.txt
+diff /tmp/expected-counts.txt /tmp/actual-counts.txt   # MUST report the documents line
+
+# Restore and re-prove.
+cp /tmp/expected-counts.bak /tmp/expected-counts.txt
+sha256sum /tmp/expected-counts.txt                     # matches the pre-mutation hash
+diff /tmp/expected-counts.txt /tmp/actual-counts.txt   # empty again
+```
+
+Acceptance: the mutated run fails **and names the `documents` line**, the restored file's
+SHA-256 equals the recorded pre-mutation value, and the re-run is clean. A mutation that
+fails without naming which count moved would leave the operator unable to act on a real
+mismatch, so the naming is part of the acceptance and not incidental.
+
+#### Evidence
+
+| Artifact | Contents |
+| --- | --- |
+| `.evidence/PILOT-404-red.txt` | `dig +short A samaronefialho.dev` returning `<old-ip>`, with the old box serving |
+| `.evidence/PILOT-404-happy.txt` | The 12-step transcript, per step, including the drain counters, the WAL-switch wait, the volume-reset listing, and all five step-7 checks |
+| `.evidence/PILOT-404-failure.txt` | Both negative controls |
+| `.evidence/PILOT-404-operator.txt` | `<target-ip>`, `<old-ip>`, `<flip-utc>`, `<pre-window-ttl>`, window duration, and PASS/FAIL per step. No secrets, no document ids |
 
 ### Decommissioning the old host
 
@@ -1764,7 +2232,8 @@ Executed only after `v0.2.0-rc1` exists and rows 1 through 6 are green.
 2. **Data retained.** Postgres data, the WAL archive, and the local backup artifacts stay
    on the old box for `<retention-days>` after RC, then the instance is destroyed. The
    retention window is a decision recorded in the operator artifact, not a default.
-3. **Evidence retained.** The final backup taken during the cutover freeze, its off-host
+3. **Evidence retained.** The final backup taken during the
+   [cutover freeze](#cutover-data-freeze-restore-and-dns-flip), its off-host
    copy, and the cutover window log are kept independently of the instance's lifetime,
    because they outlive the machine that produced them.
 4. **Secrets rotated at cutover, names only.** Rotate rather than migrate: a credential
