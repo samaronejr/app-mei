@@ -1,3 +1,4 @@
+import logging
 import socket
 from collections import Counter
 from dataclasses import dataclass
@@ -5,8 +6,10 @@ from http import HTTPStatus
 from itertools import cycle, islice
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import Mock
 
 import pytest
+import redis
 from allauth.account.models import EmailAddress
 from django.conf import settings as django_settings
 from django.core.cache import caches
@@ -476,16 +479,168 @@ def test_socket_name_resolution_failure_fails_closed(
     assert _post(_LOGIN, ip=SOURCE_IP).status_code == HTTPStatus.TOO_MANY_REQUESTS
 
 
-def test_non_dns_redis_failure_propagates_as_500(
+def test_builtin_connection_error_fails_closed_and_is_captured(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rate_cache = caches[getattr(django_settings, "RATELIMIT_USE_CACHE", "default")]
+    capture_exception = Mock()
+    failures_remaining = 1
+
+    def unavailable(*_args: object, **_kwargs: object) -> bool:
+        nonlocal failures_remaining
+        if failures_remaining:
+            failures_remaining -= 1
+            raise ConnectionError
+        return True
+
+    monkeypatch.setattr(rate_cache, "add", unavailable)
+    monkeypatch.setattr("sentry_sdk.capture_exception", capture_exception)
+    caplog.set_level(logging.ERROR, logger="apps.security.ratelimit")
+    client = Client(raise_request_exception=False)
+    response = client.post(
+        _path(_LOGIN, 0),
+        _payload(_LOGIN, 0),
+        headers={"host": _LOGIN.host},
+        REMOTE_ADDR=SOURCE_IP,
+    )
+
+    # Conscious spec change: this builtin exception was previously pinned to 500.
+    assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    capture_exception.assert_called_once_with()
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "apps.security.ratelimit"
+    ] == ["Rate-limit store connection failed; request denied"]
+
+
+def test_redis_connection_error_fails_closed_and_is_captured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    rate_cache = caches[getattr(django_settings, "RATELIMIT_USE_CACHE", "default")]
+    capture_exception = Mock()
+    failures_remaining = 1
+
+    def unavailable(*_args: object, **_kwargs: object) -> bool:
+        nonlocal failures_remaining
+        if failures_remaining:
+            failures_remaining -= 1
+            raise redis.exceptions.ConnectionError
+        return True
+
+    monkeypatch.setattr(rate_cache, "add", unavailable)
+    monkeypatch.setattr("sentry_sdk.capture_exception", capture_exception)
+
+    response = _post(_LOGIN, ip=SOURCE_IP)
+
+    assert response.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    capture_exception.assert_called_once_with()
+
+
+def test_rate_limit_counting_recovers_after_a_connection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rate_cache = caches[getattr(django_settings, "RATELIMIT_USE_CACHE", "default")]
+    healthy_add = rate_cache.add
+
+    def unavailable(*_args: object, **_kwargs: object) -> bool:
+        raise ConnectionError
+
+    monkeypatch.setattr(rate_cache, "add", unavailable)
+    assert _post(_LOGIN, ip=SOURCE_IP).status_code == HTTPStatus.TOO_MANY_REQUESTS
+
+    monkeypatch.setattr(rate_cache, "add", healthy_add)
+    served = [
+        _post(
+            _LOGIN,
+            ip=SOURCE_IP,
+            index=index,
+            email="recovered@example.invalid",
+        ).status_code
+        for index in range(_allowed(_LOGIN))
+    ]
+
+    assert HTTPStatus.TOO_MANY_REQUESTS not in served
+    assert (
+        _post(
+            _LOGIN,
+            ip=SOURCE_IP,
+            index=_allowed(_LOGIN),
+            email="recovered@example.invalid",
+        ).status_code
+        == HTTPStatus.TOO_MANY_REQUESTS
+    )
+
+
+def test_connection_failure_429_does_not_reveal_if_an_address_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    known_email = "known-during-outage@example.com"
+    known = User.objects.create_user(email=known_email, password=PASSWORD)
+    EmailAddress.objects.create(
+        user=known,
+        email=known_email,
+        verified=True,
+        primary=True,
+    )
     rate_cache = caches[getattr(django_settings, "RATELIMIT_USE_CACHE", "default")]
 
     def unavailable(*_args: object, **_kwargs: object) -> bool:
         raise ConnectionError
 
     monkeypatch.setattr(rate_cache, "add", unavailable)
+    monkeypatch.setattr("sentry_sdk.capture_exception", Mock())
+
+    known_response = _post(
+        _RESET_REQUEST,
+        ip=SOURCE_IP,
+        email=known_email,
+    )
+    unknown_response = _post(
+        _RESET_REQUEST,
+        ip=TARGET_IP,
+        email="unknown-during-outage@example.com",
+    )
+
+    assert known_response.status_code == HTTPStatus.TOO_MANY_REQUESTS
+    assert (
+        known_response.status_code,
+        dict(known_response.headers),
+        known_response.content,
+    ) == (
+        unknown_response.status_code,
+        dict(unknown_response.headers),
+        unknown_response.content,
+    )
+
+
+def test_programming_errors_are_not_converted_to_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rate_cache = caches[getattr(django_settings, "RATELIMIT_USE_CACHE", "default")]
+
+    def broken(*_args: object, **_kwargs: object) -> bool:
+        msg = "rate-limit programming error"
+        raise TypeError(msg)
+
+    monkeypatch.setattr(rate_cache, "add", broken)
+
+    with pytest.raises(TypeError, match="rate-limit programming error"):
+        _post(_LOGIN, ip=SOURCE_IP)
+
+
+def test_redis_timeout_error_still_propagates_as_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rate_cache = caches[getattr(django_settings, "RATELIMIT_USE_CACHE", "default")]
+
+    def unavailable(*_args: object, **_kwargs: object) -> bool:
+        raise redis.exceptions.TimeoutError
+
+    monkeypatch.setattr(rate_cache, "add", unavailable)
     client = Client(raise_request_exception=False)
+
     response = client.post(
         _path(_LOGIN, 0),
         _payload(_LOGIN, 0),
