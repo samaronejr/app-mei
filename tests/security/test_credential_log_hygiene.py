@@ -16,6 +16,7 @@ from django.middleware.csrf import get_token
 from django.test import Client, RequestFactory, override_settings
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
+from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.scrubber import EventScrubber
 from sentry_sdk.transport import Transport
 
@@ -292,6 +293,14 @@ def test_sentry_event_scrubber_extends_the_sdk_denylist_recursively() -> None:
     assert isinstance(scrubber, EventScrubber)
     assert set(scrubber.denylist) >= expected_fields
     assert scrubber.recursive is True
+
+
+def test_sentry_reports_celery_task_exceptions() -> None:
+    integrations = prod_settings.SENTRY_OPTIONS["integrations"]
+
+    assert any(
+        isinstance(integration, CeleryIntegration) for integration in integrations
+    )
 
 
 @override_settings(

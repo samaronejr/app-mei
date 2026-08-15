@@ -15,16 +15,25 @@
 # retained base backup, not the newest: deleting WAL newer than that would silently
 # render every older base backup unrestorable while appearing to succeed.
 #
-# On success it stamps a freshness marker into the database, which `/healthz` reads and
-# reports as `"backup": "fresh"`. That marker is the whole alarm: this job's real failure
-# mode is not a crash, it is a non-zero exit written into a terminal nobody is watching.
-# It is written LAST and only on full success, so any failure above — including a failed
-# prune — ages the marker out and becomes visible without anyone reading a log.
+# On local success it stamps a freshness marker into the database, which `/healthz` reads
+# and reports as `"backup": "fresh"`. The off-host copy deliberately follows that marker:
+# a remote failure makes the unit fail and alerts its own check, but does not lie about or
+# damage the completed LOCAL backup. Failures before the marker still age it out.
 #
 # Exit codes: 0 ok, 1 precondition failed, 2 backup failed, 3 pruning failed,
-#             4 freshness marker not recorded.
+#             4 freshness marker not recorded, 5 off-host copy failed.
 
 set -Eeuo pipefail
+
+hc_ping() {
+  url=${1:-}
+  suffix=${2:-}
+  [ -n "$url" ] || return 0
+  curl -fsS --max-time 10 --retry 2 "$url$suffix" >/dev/null 2>&1 || true
+}
+on_exit() { rc=$?; if [ "$rc" -ne 0 ] && [ "${HC_DONE:-0}" -eq 0 ]; then hc_ping "${HC_URL:-}" "/$rc"; fi; }
+trap 'on_exit' EXIT
+hc_ping "${HC_URL:-}" "/start"
 
 COMPOSE_DIR=${COMPOSE_DIR:-/opt/app-mei}
 RETENTION_DAYS=${RETENTION_DAYS:-7}
@@ -36,6 +45,13 @@ C=(docker compose -f docker-compose.prod.yml --env-file .env.prod)
 
 log() { printf '%s [%s] %s\n' "$(date -Is)" "$LOG_TAG" "$*"; }
 die() { log "FATAL: $2"; exit "$1"; }
+offhost_die() {
+  rc=$1
+  shift
+  log "FATAL: $*"
+  hc_ping "${HC_OFFHOST_URL:-}" "/$rc"
+  exit "$rc"
+}
 
 trap 'die 2 "aborted at line $LINENO"' ERR
 
@@ -207,8 +223,8 @@ else
   log "WAL pruned against oldest base ${OLDEST} (${START_WAL}): ${BEFORE} -> ${AFTER} segments"
 fi
 
-# --- freshness marker ---------------------------------------------------------------
-# The last thing the run does, and the only thing anyone will notice when it stops.
+# --- local freshness marker ---------------------------------------------------------
+# The last LOCAL phase, and the signal `/healthz` uses for the on-host recovery track.
 # `obligations_schedulerheartbeat` is the table the T-041 dead-man's switch already uses;
 # it is keyed by name precisely so more than one signal can live in it, and /healthz
 # reads both rows in a single query. Written in SQL rather than through manage.py because
@@ -244,7 +260,70 @@ dbx psql -v ON_ERROR_STOP=1 -qtAc "
   on conflict (name) do update set updated_at = excluded.updated_at
 " >/dev/null
 log "freshness marker recorded; /healthz reports backup=fresh"
+hc_ping "${HC_URL:-}" ""
+HC_DONE=1
 
 trap - ERR
+
+# --- provider-neutral off-host copy -------------------------------------------------
+# OFFHOST_S3_BUCKET is the activation switch. It stays absent until the Wave-4 provider
+# gate selects durable object storage; no provider, endpoint, bucket, or credential is
+# compiled into this repository. The credential is distinct from the document bucket's
+# credential and is mapped into the AWS names only for this process.
+if [ -z "${OFFHOST_S3_BUCKET:-}" ]; then
+  log "off-host copy not configured; local backup remains complete"
+else
+  hc_ping "${HC_OFFHOST_URL:-}" "/start"
+
+  [ -n "${OFFHOST_S3_ENDPOINT:-}" ] \
+    || offhost_die 5 "OFFHOST_S3_ENDPOINT is required when OFFHOST_S3_BUCKET is set"
+  [ -n "${OFFHOST_S3_REGION:-}" ] \
+    || offhost_die 5 "OFFHOST_S3_REGION is required when OFFHOST_S3_BUCKET is set"
+  [ -n "${OFFHOST_AWS_ACCESS_KEY_ID:-}" ] \
+    || offhost_die 5 "the dedicated off-host access key is not configured"
+  [ -n "${OFFHOST_AWS_SECRET_ACCESS_KEY:-}" ] \
+    || offhost_die 5 "the dedicated off-host secret key is not configured"
+  [ -n "${OFFHOST_AWS_CONFIG_FILE:-}" ] && [ -r "$OFFHOST_AWS_CONFIG_FILE" ] \
+    || offhost_die 5 "the AWS config enforcing path-style SigV4 is not readable"
+  command -v aws >/dev/null 2>&1 \
+    || offhost_die 5 "aws CLI is required for the off-host copy"
+
+  export AWS_ACCESS_KEY_ID="$OFFHOST_AWS_ACCESS_KEY_ID"
+  export AWS_SECRET_ACCESS_KEY="$OFFHOST_AWS_SECRET_ACCESS_KEY"
+  export AWS_CONFIG_FILE="$OFFHOST_AWS_CONFIG_FILE"
+  export AWS_DEFAULT_REGION="$OFFHOST_S3_REGION"
+  export AWS_PAGER=""
+  if [ -n "${OFFHOST_AWS_SESSION_TOKEN:-}" ]; then
+    export AWS_SESSION_TOKEN="$OFFHOST_AWS_SESSION_TOKEN"
+  else
+    unset AWS_SESSION_TOKEN
+  fi
+
+  if ! BASE_BYTES=$(dbx stat -c %s "/backups/base/${STAMP}/base.tar.gz" | tr -d '\r'); then
+    offhost_die 5 "could not read the local base tarball size"
+  fi
+
+  log "starting off-host copy for UTC backup ${STAMP}"
+  if ! dbx cat "/backups/base/${STAMP}/base.tar.gz" \
+    | aws s3 cp - "s3://${OFFHOST_S3_BUCKET}/pg/${STAMP}/base.tar.gz" \
+        --endpoint-url "$OFFHOST_S3_ENDPOINT" \
+        --region "$OFFHOST_S3_REGION" \
+        --expected-size "$BASE_BYTES" \
+        --no-progress --only-show-errors; then
+    offhost_die 5 "off-host base tarball copy failed; local backup and marker are intact"
+  fi
+  if ! dbx cat "/backups/logical/${STAMP}.dump" \
+    | aws s3 cp - "s3://${OFFHOST_S3_BUCKET}/pg/${STAMP}/logical.dump" \
+        --endpoint-url "$OFFHOST_S3_ENDPOINT" \
+        --region "$OFFHOST_S3_REGION" \
+        --expected-size "$DUMP_BYTES" \
+        --no-progress --only-show-errors; then
+    offhost_die 5 "off-host logical dump copy failed; local backup and marker are intact"
+  fi
+
+  hc_ping "${HC_OFFHOST_URL:-}" ""
+  log "off-host copy complete for pg/${STAMP}/ (base.tar.gz and logical.dump)"
+fi
+
 log "OK  base=${BASE_SIZE} dump=${DUMP_SIZE} wal=$(dbx sh -c 'du -sh /wal_archive | cut -f1' | tr -d '\r')"
 log "disk: $(df -h / | awk 'NR==2{print $4" free of "$2}')"

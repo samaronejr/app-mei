@@ -1,37 +1,71 @@
 # Restore runbook
 
-Every command and number below was executed against the live staging host
-(`144.33.16.182`, Oracle E2.1.Micro, sa-vinhedo-1) on 2026-07-28, not derived from
-documentation. The rehearsal destroyed the database volume for real and recovered from
-the archive.
+This runbook combines historical physical/WAL staging evidence with the ownership-pinned
+host-loss procedure prepared for PILOT-302 and PILOT-303. The historical excerpts below
+retain their rehearsal dates. Anything that depends on the new disposable rehearsals is
+marked `PENDING-REHEARSAL`; do not promote a placeholder to a measured result from a
+desk check or a local simulation.
 
-## Measured figures
+## Recovery timing status
 
-| Metric | Value | Where it comes from |
+| Result | Value | Command that produces it |
 | --- | --- | --- |
-| **RTO** | **207 s** | volume destroyed -> `db` healthy again |
-| **RPO** | **<= 5 min** | `archive_timeout=300`; see the warning below |
-| Base backup size | 4.4 MB gzip | near-empty database; grows with data |
-| Logical dump size | 164 KB | `pg_dump -Fc` |
-| WAL segment size | 16 MB each | PostgreSQL default |
-| Archived segment size | ~90 KB | `gzip -6`; a timeout-forced segment is ~99.5% zero padding |
-| Compression cost | 46 ms/segment | measured `gzip -6` on a real 16 MiB segment |
+| Track L physical/WAL start-to-verified RTO | **PENDING-REHEARSAL (PILOT-302)** | `pilot-302-track-l-start.epoch` commands below |
+| Track H off-host logical start-to-verified RTO | **PENDING-REHEARSAL (PILOT-302)** | `pilot-302-track-h-start.epoch` commands below |
+| Track H dump-age RPO at recovery start | **PENDING-REHEARSAL (PILOT-302)** | off-host `head-object` command below |
+| `_probe/` version recovery time | **PENDING-REHEARSAL (PILOT-303)** | Test B prints `object_recovery_seconds` |
 
-Compression changes the restore *procedure*, not the restore *guarantees*: `RETENTION_DAYS`
-and `archive_timeout` are both unchanged, so the recovery window and the RPO below are
-exactly what they were.
+Start only the track being rehearsed, immediately before its first destructive or
+host-loss-recovery action. For Track L:
 
-### The RPO is not zero, and it is not negotiable by wishing
+```sh
+export RECOVERY_TRACK=l
+date -u +%s > /tmp/pilot-302-track-l-start.epoch
+```
+
+For Track H, record the start **before** querying object metadata. Dump age comes from
+the remote object's `LastModified`, never the download's local mtime. Python's standard
+library converts the S3 timestamp without depending on GNU `date -d`:
+
+```sh
+export RECOVERY_TRACK=h
+RECOVERY_START_EPOCH=$(date -u +%s)
+printf '%s\n' "$RECOVERY_START_EPOCH" > /tmp/pilot-302-track-h-start.epoch
+: "${OFFHOST_BACKUP_STAMP:?select the UTC backup timestamp}"
+DUMP_LAST_MODIFIED=$(aws s3api head-object \
+  --bucket "$OFFHOST_S3_BUCKET" \
+  --key "pg/$OFFHOST_BACKUP_STAMP/logical.dump" \
+  --endpoint-url "$OFFHOST_S3_ENDPOINT" \
+  --region "$OFFHOST_S3_REGION" \
+  --query LastModified --output text)
+DUMP_EPOCH=$(python3 - "$DUMP_LAST_MODIFIED" <<'PY'
+from datetime import datetime
+import sys
+
+value = sys.argv[1].replace("Z", "+00:00")
+print(int(datetime.fromisoformat(value).timestamp()))
+PY
+)
+printf 'track_h_rpo_seconds=%s\n' "$((RECOVERY_START_EPOCH - DUMP_EPOCH))"
+```
+
+Historical staging measurements remain useful for capacity planning, but they are not
+PILOT-302/303 results: a near-empty base backup was 4.4 MB gzip, its logical dump was
+164 KB, WAL segments were 16 MB, timeout-forced archived segments were about 90 KB at
+`gzip -6`, and compression cost 46 ms per segment.
+
+### The configured archive interval is not a measured rehearsal result
 
 Recovery replays only WAL that reached `/wal_archive`. The segment currently being
 written has **not** been archived, so a catastrophic loss of the data volume loses every
-transaction since the last segment switch. `archive_timeout=300` forces a switch every
-5 minutes *when there is activity*, which bounds the loss at roughly 5 minutes of writes.
+transaction since the last segment switch. `archive_timeout=300` forces a switch after
+that interval when there is activity. PILOT-302 must still measure and record the
+observed result; the configuration alone is not recovery evidence.
 
-Lowering `archive_timeout` tightens RPO but writes a full 16 MB segment each time it
-fires, even a nearly empty one. On this host that is a disk-space and IO trade, not a
-free win. Genuine zero-RPO needs synchronous replication to a second machine, which the
-Always Free tier cannot host.
+Lowering `archive_timeout` writes a full 16 MB segment each time it fires, even a nearly
+empty one. On this host that is a disk-space and IO trade, not a free win. Synchronous
+replication to a second machine would be a different recovery design and is not provided
+by this deployment.
 
 ## Which restore do I want?
 
@@ -50,9 +84,16 @@ This is the procedure that was actually executed.
 ```sh
 cd /opt/app-mei
 BASE=$(ls -1 ops/backups/base | sort | tail -1)     # or pick an older one deliberately
+test -n "$BASE"
+DATA_VOLUME=app-mei_postgres_data
+test "$(docker volume inspect "$DATA_VOLUME" \
+  --format '{{ index .Labels "com.docker.compose.project" }}')" = app-mei
 
 docker compose -f docker-compose.prod.yml --env-file .env.prod down
-docker volume rm app-mei_postgres_data
+printf 'Type REMOVE-%s to destroy only the selected data volume: ' "$DATA_VOLUME"
+read -r RECOVERY_CONFIRM
+test "$RECOVERY_CONFIRM" = "REMOVE-$DATA_VOLUME"
+docker volume rm "$DATA_VOLUME"
 ```
 
 > **Do not run `down -v`.** It deletes `app-mei_wal_archive` as well, destroying the very
@@ -65,7 +106,7 @@ enters archive recovery:
 
 ```sh
 docker run --rm \
-  -v app-mei_postgres_data:/pgdata \
+  -v "${DATA_VOLUME}:/pgdata" \
   -v app-mei_wal_archive:/wal_archive \
   -v /opt/app-mei/ops/backups:/backups \
   postgres:16 bash -c "
@@ -159,9 +200,9 @@ either one, be sure which of the two you are reading.
 
 #### Rehearsal 1: 2026-07-28, live staging host, archive was entirely plain
 
-This is the drill named at the top of this file: the data volume was destroyed for real
-and the database recovered from an archive whose every segment was plain `cp` output,
-because compression did not exist yet. It is where the 207 s RTO comes from.
+The data volume was destroyed for real and the database recovered from an archive whose
+every segment was plain `cp` output, because compression did not exist yet. It remains
+historical evidence for the physical procedure, not a current PILOT-302 timing.
 
 ```
 redo starts at 0/D000028
@@ -266,9 +307,9 @@ step left the original untouched, and the procedure was resumable after interrup
 | Disk free | 623 MB | 30.85 GiB |
 
 **Nothing was deleted to reclaim that space.** Every segment, every base backup and
-every logical dump was retained; the seven-day physical recovery window and the ≤5 min
-RPO were both preserved, and `archive_timeout` is still `300`. This is recorded because
-it is the one time the archive was rewritten wholesale — a future reader comparing
+every logical dump was retained; the seven-day physical recovery window and
+`archive_timeout=300` were both preserved. This is recorded because it is the one time
+the archive was rewritten wholesale — a future reader comparing
 segment mtimes against `.backup` label dates will find them inconsistent, and this is
 why.
 
@@ -307,19 +348,128 @@ Recovery pauses at the target instead of replaying to the end of the archive.
 
 ---
 
-## Path B — logical restore
+## Secrets and environment
+
+The canonical recovery source is the operator password manager at **vault `app-mei` →
+item `Production recovery` → secure document `.env.prod`**. Create or confirm that item
+before PILOT-302; the runbook records this location, never the document's contents. The
+reconstructed host file belongs at `/opt/app-mei/.env.prod`, mode `0600`, and must never
+be copied into an evidence transcript.
+
+On a replacement host, use the password manager's secure write/paste workflow after the
+empty file is installed. The final command validates Compose interpolation but suppresses
+the rendered configuration because it contains secrets:
 
 ```sh
-DUMP=$(ls -1 ops/backups/logical/*.dump | sort | tail -1)
-
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
-  -u postgres -e PGUSER=app_mei db \
-  pg_restore --clean --if-exists --no-owner --dbname=app_mei < "$DUMP"
+cd /opt/app-mei
+umask 077
+install -m 600 /dev/null .env.prod
+# Write the secure document into .env.prod without printing it to the terminal.
+test "$(stat -c %a .env.prod)" = 600
+docker compose -f docker-compose.prod.yml --env-file .env.prod config >/dev/null
 ```
 
-`--no-owner` matters: objects must end up owned by `app_migrator`, never `app_runtime`.
-An owner bypasses its own row-level security unless the policy is `FORCE`, so restoring
-ownership to the runtime role would quietly disable tenant isolation.
+Compare variable **names**, never values, against `.env.prod.example` after every template
+change. Missing keys fail; extra operator-only keys are permitted:
+
+```sh
+python3 - <<'PY'
+from pathlib import Path
+
+def names(path: str) -> set[str]:
+    result = set()
+    for raw in Path(path).read_text().splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and "=" in line:
+            result.add(line.split("=", 1)[0])
+    return result
+
+missing = sorted(names(".env.prod.example") - names(".env.prod"))
+for name in missing:
+    print(f"MISSING_ENV_NAME {name}")
+raise SystemExit(bool(missing))
+PY
+```
+
+## Roles recreation
+
+`ops/sql/roles.sql` is idempotent: it creates missing roles, then re-asserts flags,
+memberships, passwords, default privileges, and grants on every run. A new host must run
+it **before** creating the restored database. Bootstrap PostgreSQL with `postgres` as the
+initial database so the image does not silently create `app_mei` under the bootstrap
+superuser. The second pass is the explicit idempotence control:
+
+```sh
+compose() { docker compose -f docker-compose.prod.yml --env-file .env.prod "$@"; }
+export POSTGRES_DB=postgres
+compose up -d db
+unset POSTGRES_DB
+
+for pass in 1 2; do
+  compose exec -T -u postgres db \
+    sh -ceu 'psql -U "$POSTGRES_USER" -d postgres \
+      -v ON_ERROR_STOP=1 -v DBNAME=postgres' \
+    < ops/sql/roles.sql
+done
+
+compose exec -T -u postgres db \
+  sh -ceu 'dropdb -U "$POSTGRES_USER" --if-exists app_mei'
+compose exec -T -u postgres db \
+  sh -ceu 'createdb -O app_migrator -U "$POSTGRES_USER" app_mei'
+```
+
+Never let the bootstrap superuser create the target database implicitly. `app_migrator`
+must own the database and every restored application table so the next migration can
+alter the schema.
+
+## Path B — off-host logical restore (ownership-pinned)
+
+This is the total-host-loss path. Use only the logical dump downloaded from the off-host
+`pg/<UTC-timestamp>/logical.dump` prefix; declare the source host unavailable for the
+exercise. `OFFHOST_S3_BUCKET` is the production activation switch and is not configured
+yet. PILOT-301 proved the code path only against a local MinIO stand-in, with independent
+byte/hash verification in `.evidence/PILOT-301-happy.txt`; it did not contact a production
+bucket.
+
+Activate an independent recovery-reader credential/session from the password manager.
+Do not reuse the backup job's PutObject-only credential. Select the timestamp explicitly,
+download, assert a non-trivial file, and perform the read-only format inspection:
+
+```sh
+: "${OFFHOST_BACKUP_STAMP:?select the UTC backup timestamp}"
+aws s3 cp \
+  "s3://$OFFHOST_S3_BUCKET/pg/$OFFHOST_BACKUP_STAMP/logical.dump" \
+  /tmp/app-mei-logical.dump \
+  --endpoint-url "$OFFHOST_S3_ENDPOINT" \
+  --region "$OFFHOST_S3_REGION" \
+  --no-progress --only-show-errors
+test "$(stat -c %s /tmp/app-mei-logical.dump)" -gt 10240
+compose exec -T -u postgres db pg_restore --list < /tmp/app-mei-logical.dump >/dev/null
+```
+
+Restore through the bootstrap connection but force object creation under
+`app_migrator`. All four ownership flags are load-bearing:
+
+```sh
+compose exec -T -u postgres db \
+  sh -ceu 'pg_restore --clean --if-exists --no-owner --role=app_migrator \
+    --exit-on-error -U "$POSTGRES_USER" --dbname=app_mei' \
+  < /tmp/app-mei-logical.dump
+```
+
+Re-run the idempotent roles file **after** restore. This re-applies runtime and portal
+grants to tables that did not exist during the first pass:
+
+```sh
+compose exec -T -u postgres db \
+  sh -ceu 'psql -U "$POSTGRES_USER" -d app_mei \
+    -v ON_ERROR_STOP=1 -v DBNAME=app_mei' \
+  < ops/sql/roles.sql
+```
+
+**PENDING-REHEARSAL (PILOT-302):** the commands in this host-loss path are the prepared
+runsheet. They are not yet evidence of a completed off-host recovery and carry no measured
+timing until the disposable rehearsal runs.
 
 ---
 
@@ -328,149 +478,518 @@ ownership to the runtime role would quietly disable tenant isolation.
 A restore that returns rows but loses row-level security is worse than an outage: it
 looks like success and leaks across tenants.
 
+### Ownership and migration control
+
+The owner catalog assertion is exact: it must return **zero rows**. Do not replace it
+with a count of tables or a successful connection.
+
 ```sh
-# 1. RLS coverage must match pre-incident. Measured 2026-07-28: 8/8/13. Measured
-#    2026-07-31 (throwaway rehearsal, below): 9 enabled / 9 forced / 14 tenant tables.
-#    The figure grows with the schema — compare against the CURRENT source database,
-#    not against a number written down here.
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
-  -u postgres -e PGUSER=app_mei -e PGDATABASE=app_mei db psql -tAc "
-select count(*) filter (where relrowsecurity) || '/' ||
-       count(*) filter (where relforcerowsecurity) || '/' || count(*)
-from pg_class c join pg_namespace n on n.oid = c.relnamespace
-where n.nspname='public' and c.relkind='r'
-  and exists (select 1 from pg_attribute a
-              where a.attrelid=c.oid and a.attname='tenant_id' and not a.attisdropped)"
-
-# 2. Roles: app_runtime must hold neither SUPERUSER nor BYPASSRLS
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
-  -u postgres -e PGUSER=app_mei -e PGDATABASE=app_mei db psql -tAc \
-  "select rolname, rolsuper, rolbypassrls from pg_roles where rolname like 'app_%' order by 1"
-
-# 3. The isolation suite is the real proof
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T \
-  -e DJANGO_SETTINGS_MODULE=config.settings.test \
-  -e TEST_DB_USER=app_test -e TEST_DB_PASSWORD="$(grep '^APP_TEST_PASSWORD=' .env.prod | cut -d= -f2- | tr -d '\"')" \
-  web python -m pytest tests/isolation -q     # 41 passed 2026-07-28; 111 on 2026-07-31
-
-# 4. Application actually serves
-curl -sk https://<site>/healthz     # {"status": "ok", "scheduler": "alive"}
+UNEXPECTED_OWNERS=$(compose exec -T -u postgres db \
+  sh -ceu 'psql -U "$POSTGRES_USER" -d app_mei -XAt -v ON_ERROR_STOP=1' <<'SQL'
+SELECT tablename
+FROM pg_tables
+WHERE schemaname='public' AND tableowner <> 'app_migrator';
+SQL
+)
+test -z "$UNEXPECTED_OWNERS" || {
+  printf 'unexpected table owners:\n%s\n' "$UNEXPECTED_OWNERS"
+  exit 1
+}
 ```
+
+Run the migration plan through `DATABASE_MIGRATION_URL`, not the runtime URL. The first
+assertion is the positive control; without it, an empty result from a failed command can
+look like "none pending":
+
+```sh
+MIGRATION_PLAN=$(compose run --rm --no-deps web sh -ceu '
+  DATABASE_URL="$DATABASE_MIGRATION_URL" \
+    python manage.py showmigrations --plan --skip-checks
+')
+printf '%s\n' "$MIGRATION_PLAN"
+printf '%s\n' "$MIGRATION_PLAN" | grep -q '\[X\]'
+if printf '%s\n' "$MIGRATION_PLAN" | grep -q '\[ \]'; then
+  echo 'pending migrations found'
+  exit 1
+fi
+```
+
+### Role and RLS catalog controls
+
+The role assertion also has a count control, so a missing role cannot make `bool_and`
+pass over a smaller set:
+
+```sh
+ROLE_FLAGS=$(compose exec -T -u postgres db sh -ceu \
+  'psql -U "$POSTGRES_USER" -d app_mei -XAt -v ON_ERROR_STOP=1' <<'SQL'
+SELECT count(*) = 3 AND bool_and(
+  CASE rolname
+    WHEN 'app_runtime' THEN rolcanlogin AND NOT rolsuper AND NOT rolbypassrls
+    WHEN 'app_portal' THEN NOT rolcanlogin AND NOT rolinherit
+                           AND NOT rolsuper AND NOT rolbypassrls
+    WHEN 'app_migrator' THEN rolcanlogin AND rolbypassrls AND NOT rolsuper
+    ELSE false
+  END
+)
+FROM pg_roles
+WHERE rolname IN ('app_runtime', 'app_portal', 'app_migrator');
+SQL
+)
+test "$ROLE_FLAGS" = t
+```
+
+Every public table carrying `tenant_id` must have RLS enabled and forced. The query must
+return zero rows; compare the complete policy set with the pre-incident inventory in the
+operator record as well:
+
+```sh
+RLS_GAPS=$(compose exec -T -u postgres db sh -ceu \
+  'psql -U "$POSTGRES_USER" -d app_mei -XAt -v ON_ERROR_STOP=1' <<'SQL'
+SELECT c.relname
+FROM pg_class AS c
+JOIN pg_namespace AS n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relkind = 'r'
+  AND EXISTS (
+    SELECT 1 FROM pg_attribute AS a
+    WHERE a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped
+  )
+  AND NOT (c.relrowsecurity AND c.relforcerowsecurity);
+SQL
+)
+test -z "$RLS_GAPS" || {
+  printf 'RLS gaps:\n%s\n' "$RLS_GAPS"
+  exit 1
+}
+```
+
+### Restored-data and RLS-by-effect evidence
+
+Set the known rehearsal IDs in the operator shell without printing them. `TENANT_A` and
+`TENANT_B` must be distinct tenants that each own at least one restored document. The
+first query proves the named firm, client, obligation, and document metadata exist while
+keeping the storage key and hash out of the transcript:
+
+```sh
+: "${TENANT_A:?load known tenant A from the secure rehearsal manifest}"
+: "${TENANT_B:?load known tenant B from the secure rehearsal manifest}"
+: "${CLIENT_ID:?load the known client id from the secure rehearsal manifest}"
+: "${OBLIGATION_ID:?load the known obligation id from the secure rehearsal manifest}"
+: "${DOCUMENT_ID:?load the known document id from the secure rehearsal manifest}"
+export TENANT_A TENANT_B CLIENT_ID OBLIGATION_ID DOCUMENT_ID
+
+KNOWN_ROWS=$(compose exec -T -u postgres \
+  -e TENANT_A -e CLIENT_ID -e OBLIGATION_ID -e DOCUMENT_ID db sh -ceu \
+  'psql -U "$POSTGRES_USER" -d app_mei -XAt -F "|" -v ON_ERROR_STOP=1 \
+    -v tenant_a="$TENANT_A" -v client_id="$CLIENT_ID" \
+    -v obligation_id="$OBLIGATION_ID" -v document_id="$DOCUMENT_ID"' <<'SQL'
+SELECT
+  EXISTS (SELECT 1 FROM tenants_tenant WHERE id = :'tenant_a'::uuid),
+  EXISTS (SELECT 1 FROM clients_clientcompany WHERE id = :'client_id'::uuid),
+  EXISTS (SELECT 1 FROM obligations_obligation WHERE id = :'obligation_id'::uuid),
+  EXISTS (
+    SELECT 1 FROM obligations_document
+    WHERE id = :'document_id'::uuid
+      AND storage_key <> ''
+      AND sha256 ~ '^[0-9a-f]{64}$'
+  );
+SQL
+)
+test "$KNOWN_ROWS" = 't|t|t|t'
+```
+
+Then query the **restored database itself** as `app_runtime`. Empty tenant context must
+return zero rows; each populated context must return rows only for that tenant:
+
+```sh
+RLS_RESULTS=$(compose exec -T -u postgres -e TENANT_A -e TENANT_B db sh -ceu \
+  'psql -U "$POSTGRES_USER" -d app_mei -qAt -v ON_ERROR_STOP=1 \
+    -v tenant_a="$TENANT_A" -v tenant_b="$TENANT_B"' <<'SQL'
+BEGIN;
+SET LOCAL ROLE app_runtime;
+SELECT set_config('app.tenant_id', '', true) AS ignored \gset
+SELECT count(*) = 0 FROM obligations_document;
+SELECT set_config('app.tenant_id', :'tenant_a', true) AS ignored \gset
+SELECT count(*) > 0
+  AND count(*) FILTER (WHERE tenant_id <> :'tenant_a'::uuid) = 0
+FROM obligations_document;
+SELECT set_config('app.tenant_id', :'tenant_b', true) AS ignored \gset
+SELECT count(*) > 0
+  AND count(*) FILTER (WHERE tenant_id <> :'tenant_b'::uuid) = 0
+FROM obligations_document;
+ROLLBACK;
+SQL
+)
+test "$RLS_RESULTS" = "$(printf 't\nt\nt')"
+```
+
+These catalog and RLS-by-effect queries are the restored-database evidence.
+`tests/isolation` is a separate-cluster **CONTROL**: it creates and tests
+`test_app_mei` as `app_test`, never touches the restored `app_mei`, and therefore does
+not prove the restore. It may still be run after the direct evidence:
+
+```sh
+TEST_DB_PASSWORD=$(python3 - <<'PY'
+from pathlib import Path
+for raw in Path('.env.prod').read_text().splitlines():
+    if raw.startswith('APP_TEST_PASSWORD='):
+        print(raw.split('=', 1)[1].strip().strip('"'))
+        break
+else:
+    raise SystemExit('APP_TEST_PASSWORD is missing')
+PY
+)
+export TEST_DB_PASSWORD
+compose run --rm --no-deps \
+  -e DJANGO_SETTINGS_MODULE=config.settings.test \
+  -e TEST_DB_USER=app_test -e TEST_DB_PASSWORD \
+  web python -m pytest tests/isolation -q
+unset TEST_DB_PASSWORD
+```
+
+Start the complete stack only after the direct checks pass, then verify the public effect
+without disabling TLS verification:
+
+```sh
+compose up -d --wait
+: "${RECOVERED_SITE:?set the recovered site hostname}"
+curl -fsS "https://${RECOVERED_SITE}/healthz"
+
+: "${RECOVERY_TRACK:?set to l or h at the track start}"
+case "$RECOVERY_TRACK" in l|h) ;; *) exit 1 ;; esac
+START_FILE="/tmp/pilot-302-track-${RECOVERY_TRACK}-start.epoch"
+test -s "$START_FILE"
+END_EPOCH=$(date -u +%s)
+START_EPOCH=$(tr -d '\n' < "$START_FILE")
+printf 'track_%s_rto_seconds=%s\n' \
+  "$RECOVERY_TRACK" "$((END_EPOCH - START_EPOCH))"
+```
+
+**PENDING-REHEARSAL (PILOT-302):** record the direct query outputs and the final timing
+only when that disposable track has run. Both tracks must complete before the placeholders
+can be retired. No `tests/isolation` transcript may be cited as restore proof.
 
 ---
 
-## Throwaway-database rehearsal
+## Restored-environment identity and isolation checklist
 
-Path B restores over the live database, so it cannot be rehearsed on a running system.
-This variant restores into a scratch database instead, which makes the drill repeatable
-at any time and — because the source is still there to compare against — turns "the
-restore succeeded" into a measurable claim. Executed 2026-07-31 against staging.
+Covers PILOT-305. **Not executed.** No scratch environment has been stood up, no login
+has been attempted, and every result below is `PENDING`.
 
-### Measured
+The catalog and RLS-by-effect queries above prove the *database* came back with its
+policies. They do not prove a person can get in, or that the application layered on top
+still refuses the people it should. Those are different claims and they fail
+independently: a restore can carry perfect RLS and still hand every accountant access to
+every client, because the membership check that scopes a firm user to a client is
+application code reading restored rows, not a policy.
 
-| Step | Time |
+So this checklist is walked through the **application**, in a browser or with an
+authenticated HTTP client, inside the PILOT-302 scratch environment. Nothing here is a
+`psql` query.
+
+### Standing rules for the scratch environment
+
+- **`ALLOWED_HOSTS` names scratch hostnames only.** Never the production apex, never the
+  production wildcard, never a real firm's host. A scratch stack that answers to a
+  production hostname is one stale DNS entry away from serving real users from restored
+  data of unknown age.
+- **Never reuse production session material.** No cookie, no session id, no CSRF token,
+  and no `Authorization` header copied out of a production browser profile. Use a fresh
+  private browsing profile or a fresh cookie jar. A session that authenticates against
+  both environments makes the two indistinguishable in exactly the checks meant to tell
+  them apart.
+- **Never copy a production credential in the other direction either.** The passwords
+  used below are the restored users' real passwords, exercised against a scratch stack.
+  They are not written into any evidence file.
+- **The environment is disposable and is destroyed at the end**, together with its
+  volumes, before its `ALLOWED_HOSTS` can drift back toward anything real.
+
+### The rows
+
+`TOTP` in row 1 is the point of the row. The enrolled secret is a restored database row,
+so a code from the operator's existing authenticator device must work without
+re-enrolment. If it does not, the restore lost MFA state and every user is locked out at
+cutover — a failure that no query above would have shown, because the rows are present
+and the policies are intact.
+
+| # | Actor | Action | Acceptance |
+| --- | --- | --- | --- |
+| 1 | Firm user (restored) | Log in with password, then answer the TOTP challenge with a code from the **already-enrolled** device | Both factors accepted, session established, no re-enrolment prompt |
+| 2 | Assigned staff accountant | Open the pilot client's detail page | 200, the client's own name and data render |
+| 3 | **Unassigned staff accountant** | Request the same client's detail page | **REFUSED** — see the negative control below |
+| 4 | Portal user (restored) | Open the Documentos list | 200, and it lists that client's documents and no others |
+| 5 | Any authenticated actor | Attempt a second tenant's data on every surface tried above | Not present anywhere: not in a list, not by direct URL, not in a search result |
+| 6 | Operator | Compare the known document row's metadata against its pre-restore values | Filename, size, content type, `sha256`, and `uploaded_at` all equal |
+
+Row 5 is deliberately phrased as "every surface tried above" rather than as one request.
+Cross-tenant exposure is not usually a missing check on the detail view; it is a list
+endpoint, a picker, an autocomplete, or a count in a header that was written before
+scoping existed. Walk the same surfaces the earlier rows walked and assert absence on
+each, recording which surfaces were covered so a later reader knows what was **not**
+checked.
+
+Row 6 compares against values captured before the restore, from the source, and held in
+the secure rehearsal manifest. Comparing against whatever the restored row says is a
+tautology. The `sha256` here is metadata equality only; whether the bytes behind it still
+exist is [Test A](#test-a--restored-database-to-live-bucket) and is a separate claim.
+
+### The two negative controls
+
+A checklist of six green rows proves the application lets the right people in. It does
+not prove it keeps anyone out, and a build with authorization removed entirely would pass
+all six. Both controls are required, and both go to `.evidence/PILOT-305-failure.txt`.
+
+**Control 1: the unassigned accountant is refused.** A staff accountant who exists, is
+authenticated, belongs to the same firm, and is simply not assigned to this client:
+
+```sh
+: "${SCRATCH_HOST:?the scratch hostname, never a production host}"
+: "${PILOT_CLIENT_ID:?the known client id from the secure rehearsal manifest}"
+
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  --cookie /tmp/pilot-305-unassigned.jar \
+  "https://${SCRATCH_HOST}/clientes/${PILOT_CLIENT_ID}/"
+```
+
+Acceptance: the status is a refusal, and the response body carries no fragment of the
+client's name or data. Record the exact status returned. **Do not accept a redirect to
+the login page as a pass** without checking the session first: an expired cookie produces
+the same shape as a working authorization check, and it would mean the control proved
+nothing. Confirm in the same jar that row 3's actor can still reach a page they *are*
+entitled to, immediately before or after, so the refusal is attributable to
+authorization rather than to being logged out.
+
+**Control 2: a cross-tenant URL probe answers 404.** The second tenant's client id,
+requested with the first tenant's fully valid session:
+
+```sh
+: "${OTHER_TENANT_CLIENT_ID:?a client id belonging to the second tenant}"
+
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  --cookie /tmp/pilot-305-firm.jar \
+  "https://${SCRATCH_HOST}/clientes/${OTHER_TENANT_CLIENT_ID}/"
+```
+
+Acceptance: `404`. Not `403`, and the distinction is deliberate rather than cosmetic — a
+`403` confirms the id exists and is somebody else's, which is a tenant-enumeration oracle
+across a boundary the whole product is built to keep opaque. A `403` here is a finding,
+not a pass with a note.
+
+### Evidence
+
+| Artifact | Contents |
 | --- | --- |
-| `ops/backup.sh` (base backup + logical dump + verify + prune) | 27 s |
-| `createdb` + `pg_restore` of a 220853-byte custom-format dump | 8 s |
-| Isolation suite (the control) | 703 s |
+| `.evidence/PILOT-305-happy.txt` | Rows 1 through 6 with PASS/FAIL, the surfaces covered by row 5, and the metadata fields compared in row 6 |
+| `.evidence/PILOT-305-failure.txt` | Both negative controls, with the observed status codes and the entitled-page check that makes control 1 attributable |
+| `.evidence/PILOT-305-operator.txt` | Scratch hostname, UTC timestamps, and PASS/FAIL per row. No passwords, no TOTP secrets or codes, no session cookies, no client ids |
 
-### Take the dump AFTER the change you want to see restored
+**PENDING-REHEARSAL (PILOT-305):** every row and both controls are `PENDING`. This
+checklist is a prepared procedure; it is not a record that the restored environment has
+been exercised.
 
-The equality assertions below are only meaningful if the dump contains the rows. A dump
-older than the data does not fail loudly — it produces an equality check between two
-numbers that agree for the wrong reason. Assert the dump's mtime against a timestamp
-taken from the data itself:
+---
 
-```sh
-SEED=$(… psql -tAc "select floor(extract(epoch from max(created_at))) from clients_clientcompany")
-DUMP=$(ls -1t ops/backups/logical/*.dump | head -1)
-[ "$(stat -c %Y "$DUMP")" -gt "$SEED" ] || { echo "dump predates the data"; exit 1; }
-```
+## DNS
 
-### The drill
+Keep the value-bearing Cloudflare export outside Git at **operator password manager →
+vault `app-mei` → item `Production recovery` → secure document `Cloudflare DNS
+inventory`**. The inventory must contain record type, name, target/value, proxy status,
+TTL, and purpose. This runbook records only the non-secret shape:
 
-Every command runs as the cluster superuser role `app_mei`. `postgres` is only the OS
-user inside the container. Paths passed to `pg_restore` are **container** paths:
-`./ops/backups` is mounted at `/backups` (`docker-compose.prod.yml:127`), so a host path
-produces a confusing "no such file".
+| Record | Purpose | Recovery rule |
+| --- | --- | --- |
+| apex `A` (and `AAAA` only when deployed) | platform root | target comes from the replacement-host provider console |
+| wildcard `A` (and matching `AAAA` only when deployed) | firm and `-portal` hosts | target must match the recovered platform host |
+| existing `MX`, `TXT`, `CNAME`, and `CAA` records | mail, verification, and certificate policy | preserve exactly from the secure inventory; do not infer or "clean up" during recovery |
+| `_acme-challenge` `TXT` | wildcard ACME DNS-01 | Caddy manages it through the scoped token; do not make a stale challenge record authoritative |
 
-```sh
-cd /opt/app-mei
-C='docker compose -f docker-compose.prod.yml --env-file .env.prod'
-DUMP=$(basename "$(ls -1t ops/backups/logical/*.dump | head -1)")
+For a planned move, reduce DNS-only records to 300 seconds at least one old-TTL window
+before cutover. Cloudflare-proxied records use Cloudflare's automatic TTL; preserve the
+record's proxy status because changing it also changes the real client-IP hop count.
+During an unplanned recovery, use the lowest permitted TTL and restore the inventory's
+normal TTL only after TLS, `/versionz`, `/healthz`, firm-host, and portal-host checks pass.
 
-$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=postgres db createdb rehearsal_scratch
-$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=rehearsal_scratch db \
-   pg_restore --no-owner --exit-on-error -d rehearsal_scratch "/backups/logical/$DUMP"
-```
-
-Then check the schema is current. **Connect as `app_mei`, not `app_migrator`:**
-`--no-owner` run by `app_mei` makes `app_mei` the owner of every restored table, and
-`pg_dump` omits an ACL entry that equals the owner default — so `app_migrator` ends up
-with no privileges at all and the probe dies with `permission denied for table
-django_migrations`, which says nothing about the schema. Schema currency is the subject
-here; role fidelity is not.
+Verify the public resolver and the recovered origin independently. Do not put the target
+address into evidence; record only PASS/FAIL and UTC timestamps:
 
 ```sh
-$C exec -T -e DATABASE_URL="postgres://app_mei:$(grep '^POSTGRES_PASSWORD=' .env.prod \
-   | cut -d= -f2- | tr -d '"')@db:5432/rehearsal_scratch" \
-   web python manage.py migrate --check --skip-checks     # expect exit 0
+: "${APEX_DOMAIN:?set the recovered apex hostname}"
+: "${FIRM_HOST:?set a known firm hostname}"
+: "${PORTAL_HOST:?set its known portal hostname}"
+dig +short A "$APEX_DOMAIN" @1.1.1.1
+dig +short A "$FIRM_HOST" @1.1.1.1
+curl -fsS "https://${APEX_DOMAIN}/versionz"
+curl -fsS "https://${FIRM_HOST}/healthz"
+curl -fsS "https://${PORTAL_HOST}/healthz"
 ```
 
-### Subject and control are different claims
+**PENDING-REHEARSAL (PILOT-302):** the secure record inventory and replacement-host DNS
+effects must be confirmed by the operator. No DNS value is recorded in repository QA.
 
-Keep them apart in whatever you write down, because they answer different questions and
-only one of them is about the restore.
+## Object storage
 
-**Subject — the scratch database.** Row counts for `tenants_tenant`,
-`tenants_membership` and `clients_clientcompany`, plus `relrowsecurity` /
-`relforcerowsecurity` per tenant-scoped table and the `pg_policies` set. Assert the
-**source count is greater than zero first**, then assert equality: `0 == 0` is a passing
-comparison and an empty restore. The 2026-07-31 run measured 2 / 2 / 7 rows equal on
-both sides, identical RLS flags across all 14 tenant-scoped tables (9 of them enabled
-**and** forced), and 18 identical policies over 9 tables.
+Database recovery and document-byte recovery are separate claims. Test A proves a
+restored row still resolves to matching live bytes. Test B proves a lost current object
+can be recovered from bucket version history. Customer objects are read-only throughout;
+every write/delete in Test B is confined to `_probe/`.
 
-**Control — the cluster.** The isolation suite builds its *own* database (`test_app_mei`)
-as `app_test`. It proves the cluster's roles and policies still enforce tenant isolation;
-it does not touch `rehearsal_scratch` and is not evidence about the restored data.
+### Test A — restored database to live bucket
+
+Set `CANARY_DOCUMENT_ID` from the secure rehearsal manifest without printing it. This
+scratch command reads `storage_key` and `sha256` from the restored database through the
+migration connection, fetches the same key with the application's S3 endpoint and runtime
+storage credential, and emits no key, hash, bucket, endpoint, or credential:
 
 ```sh
-$C exec -T -e DJANGO_SETTINGS_MODULE=config.settings.test -e TEST_DB_USER=app_test \
-   -e TEST_DB_PASSWORD="$(grep '^APP_TEST_PASSWORD=' .env.prod | cut -d= -f2- | tr -d '"')" \
-   web python -m pytest tests/isolation -q
+: "${CANARY_DOCUMENT_ID:?load the canary id from the secure rehearsal manifest}"
+export CANARY_DOCUMENT_ID
+compose run --rm --no-deps -e CANARY_DOCUMENT_ID web \
+  sh -ceu 'DATABASE_URL="$DATABASE_MIGRATION_URL" python -' <<'PY'
+import hashlib
+import hmac
+import os
+
+import boto3
+import django
+from django.db import connection
+
+try:
+    django.setup()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT storage_key, sha256 FROM obligations_document WHERE id = %s",
+            [os.environ["CANARY_DOCUMENT_ID"]],
+        )
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("missing canary row")
+    storage_key, expected_sha256 = row
+    client = boto3.client(
+        "s3",
+        region_name=os.environ["OCI_S3_REGION"],
+        endpoint_url=os.environ["OCI_S3_ENDPOINT_URL"],
+        aws_access_key_id=os.environ["OCI_S3_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["OCI_S3_SECRET_ACCESS_KEY"],
+    )
+    response = client.get_object(Bucket=os.environ["OCI_S3_BUCKET"], Key=storage_key)
+    actual_sha256 = hashlib.sha256(response["Body"].read()).hexdigest()
+    if not hmac.compare_digest(actual_sha256, expected_sha256):
+        raise RuntimeError("sha256 mismatch")
+except Exception:
+    print("FAIL test-a restored-row-to-live-object")
+    raise SystemExit(1)
+print("PASS test-a restored-row-to-live-object sha256-match")
+PY
 ```
 
-**111 passed** on 2026-07-31 (the `41` above is the 2026-07-28 figure; the suite has
-grown). Pin the assertion as a floor, not an equality, or every new isolation test turns
-the runbook red.
-
-### Prove the detector fires, then clean up
-
-A rehearsal that only ever restores a good dump does not show that a bad one would be
-caught. Truncate a **copy** and confirm the same command rejects it:
+Run the repository's globally complete, report-only reconciler against the restored
+database and live bucket. The command has no delete path and no `--dry-run` option; it is
+intrinsically dry-run. Suppress raw output because an anomaly line contains a storage
+key, and copy only the final PASS into evidence:
 
 ```sh
-$C exec -T -u postgres -e PGUSER=app_mei db sh -c \
-  "head -c 10240 /backups/logical/$DUMP > /backups/logical/truncated.dump"
-$C exec -T -u postgres -e PGUSER=app_mei db pg_restore --list /backups/logical/truncated.dump
-# pg_restore: error: could not read from input file: end of file   (exit 1)
+RECONCILE_OUTPUT=$(compose run --rm --no-deps web sh -ceu '
+  DATABASE_URL="$DATABASE_MIGRATION_URL" \
+    python manage.py reconcile_documents --hash-sample-size 20
+' 2>&1) || {
+  printf 'FAIL reconcile_documents; inspect only in the secure operator terminal\n'
+  exit 1
+}
+printf '%s\n' "$RECONCILE_OUTPUT" | grep -q 'missing=0'
+printf '%s\n' "$RECONCILE_OUTPUT" | grep -q 'hash_mismatches=0'
+if printf '%s\n' "$RECONCILE_OUTPUT" | grep -q '^CRITICAL '; then
+  printf 'FAIL reconcile_documents reported a critical finding\n'
+  exit 1
+fi
+printf 'PASS reconcile_documents rows have objects and sampled hashes match\n'
+unset RECONCILE_OUTPUT
 ```
 
-Finish by dropping the scratch database and deleting the truncated copy — and verify
-both are gone rather than assuming. Keep the dump and the base backup: they are real
-backups, not rehearsal artifacts.
+### Test B — recover a deleted `_probe/` object version
+
+This script creates two versions, hides the live version behind a delete marker, proves
+an ordinary authenticated read now has a 404-shaped failure, lists exact-key version
+history, removes the delete marker to restore the prior live version, verifies SHA-256,
+and removes every probe version in `finally`. It prints the only object-recovery timing
+accepted for PILOT-303:
 
 ```sh
-$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=postgres db dropdb rehearsal_scratch
-$C exec -T -u postgres -e PGUSER=app_mei -e PGDATABASE=postgres db \
-   psql -tAc "select count(*) from pg_database where datname='rehearsal_scratch'"   # 0
+compose run --rm --no-deps web python - <<'PY'
+import hashlib
+import os
+import secrets
+import time
+
+import boto3
+from botocore.exceptions import ClientError
+
+client = boto3.client(
+    "s3",
+    region_name=os.environ["OCI_S3_REGION"],
+    endpoint_url=os.environ["OCI_S3_ENDPOINT_URL"],
+    aws_access_key_id=os.environ["OCI_S3_ACCESS_KEY_ID"],
+    aws_secret_access_key=os.environ["OCI_S3_SECRET_ACCESS_KEY"],
+)
+bucket = os.environ["OCI_S3_BUCKET"]
+key = f"_probe/recovery-{secrets.token_urlsafe(16)}"
+try:
+    client.put_object(Bucket=bucket, Key=key, Body=os.urandom(1024))
+    live_payload = os.urandom(1024)
+    live = client.put_object(Bucket=bucket, Key=key, Body=live_payload)
+    if live.get("VersionId") in (None, "null"):
+        raise RuntimeError("bucket versioning is not enabled")
+    expected_sha256 = hashlib.sha256(live_payload).digest()
+
+    started = time.monotonic()
+    deleted = client.delete_object(Bucket=bucket, Key=key)
+    marker_id = deleted.get("VersionId")
+    if not deleted.get("DeleteMarker") or not marker_id:
+        raise RuntimeError("delete marker was not created")
+    try:
+        client.get_object(Bucket=bucket, Key=key)
+    except ClientError as error:
+        if str(error.response.get("Error", {}).get("Code")) not in {"404", "NoSuchKey"}:
+            raise
+    else:
+        raise RuntimeError("deleted probe remained readable")
+
+    history = client.list_object_versions(Bucket=bucket, Prefix=key)
+    exact_versions = [item for item in history.get("Versions", []) if item["Key"] == key]
+    exact_markers = [item for item in history.get("DeleteMarkers", []) if item["Key"] == key]
+    if len(exact_versions) < 2 or not any(item["VersionId"] == marker_id for item in exact_markers):
+        raise RuntimeError("version history is incomplete")
+
+    client.delete_object(Bucket=bucket, Key=key, VersionId=marker_id)
+    restored = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+    if hashlib.sha256(restored).digest() != expected_sha256:
+        raise RuntimeError("restored version sha256 mismatch")
+    elapsed = time.monotonic() - started
+    print("PASS test-b delete-hidden-read version-list restore sha256-match")
+    print(f"object_recovery_seconds={elapsed:.3f}")
+except Exception:
+    print("FAIL test-b object-version-recovery")
+    raise SystemExit(1)
+finally:
+    try:
+        history = client.list_object_versions(Bucket=bucket, Prefix=key)
+        for collection in ("Versions", "DeleteMarkers"):
+            for item in history.get(collection, []):
+                if item["Key"] == key:
+                    client.delete_object(
+                        Bucket=bucket,
+                        Key=key,
+                        VersionId=item["VersionId"],
+                    )
+    except Exception:
+        print("FAIL test-b cleanup")
+        raise SystemExit(1) from None
+PY
 ```
 
-> **No cleanup step may disable, drop or work around an audit or immutability control.**
-> `audit_event` and `audit_platformevent` are append-only through a trigger that binds
-> every role including the superuser. If tidying up collides with it, leave the artifact
-> and say so. An append-only trail whose entries can be removed by an operator cleaning
-> up after themselves is not append-only.
+**PENDING-REHEARSAL (PILOT-303):** neither test has contacted the live bucket. Record
+only PASS/FAIL, UTC timestamps, and the Test B elapsed value; never record credentials,
+bucket values, object keys, storage keys, or hashes. Bucket versioning remains a
+single-bucket control, not an independent offsite copy.
 
 ### The backup directory can lose its owner while the container keeps running
 
@@ -605,7 +1124,8 @@ Each of these was hit for real, not anticipated.
 
 2. **There is no `postgres` role.** The cluster superuser is whatever `POSTGRES_USER`
    names (`app_mei`). The OS user inside the container *is* `postgres`, so every libpq
-   tool defaults to a role that does not exist. `PGUSER` must be set explicitly.
+   tool defaults to a role that does not exist. Select the connection role explicitly
+   with `-U "$POSTGRES_USER"`; do not hardcode the superuser into recovery commands.
 
 3. **`down -v` destroys the backups.** It removes `app-mei_wal_archive` too. Remove the
    single data volume instead.
@@ -614,9 +1134,17 @@ Each of these was hit for real, not anticipated.
    from the archive, so streaming it into the backup would store every segment twice.
    A base backup on its own is therefore **not** restorable — it needs `/wal_archive`.
 
-## Off-box copies
+## Off-host copy status
 
-Everything above lives on **one host**. That is not a backup strategy; a lost instance
-takes the backups with it. Oracle Always Free instances can additionally be reclaimed
-when idle. Before this stops being staging, `ops/backups/` and `app-mei_wal_archive`
-must be replicated somewhere else (object storage, or a second provider).
+`ops/backup.sh` now streams the physical base tarball and logical dump with two explicit
+`aws s3 cp` operations under `pg/<UTC-timestamp>/`; it never mirrors a tree. A remote-copy
+failure exits 5 and leaves the completed local-backup marker intact. `OFFHOST_S3_BUCKET`
+is the activation switch and remains unset until the provider gate supplies a durable
+destination and independent recovery-reader access.
+
+The PILOT-301 happy artifact proves the repository's local MinIO copy,
+Put-without-List, and independent-download/hash behavior only. It is not production
+bucket evidence. The nightly off-host logical dump is the authoritative artifact for
+total host loss and feeds ownership-pinned Path B. The off-host base tarball is a
+best-effort extra: `pg_basebackup --wal-method=none` excludes WAL, and the WAL archive is
+not continuously copied off-host, so that tarball alone cannot support host-loss recovery.

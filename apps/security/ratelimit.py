@@ -14,11 +14,14 @@ Tenant-keying is correct for the *authenticated* limits below it, where the call
 been identified and a tenant has been resolved.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import Final, Literal
 
+import redis
+import sentry_sdk
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
@@ -26,6 +29,8 @@ from django.urls import Resolver404, resolve
 from django_ratelimit.core import is_ratelimited
 
 from apps.core.netaddr import client_ip
+
+logger = logging.getLogger(__name__)
 
 WRITE_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 UNKNOWN = "unknown"
@@ -176,13 +181,18 @@ def is_public_post_endpoint(request: HttpRequest) -> bool:
 
 def exceeds(request: HttpRequest, limit: Limit) -> bool:
     """Count this request against a bucket and report whether it just overflowed."""
-    return bool(
-        is_ratelimited(
-            request=request,
-            group=limit.group,
-            key=limit.key,
-            rate=limit.rate,
-            method=is_ratelimited.ALL,
-            increment=True,
-        ),
-    )
+    try:
+        return bool(
+            is_ratelimited(
+                request=request,
+                group=limit.group,
+                key=limit.key,
+                rate=limit.rate,
+                method=is_ratelimited.ALL,
+                increment=True,
+            ),
+        )
+    except (redis.exceptions.ConnectionError, ConnectionError):
+        sentry_sdk.capture_exception()
+        logger.log(logging.ERROR, "Rate-limit store connection failed; request denied")
+        return True

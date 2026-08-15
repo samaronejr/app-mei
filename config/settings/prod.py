@@ -8,10 +8,12 @@ import sentry_sdk
 from botocore.config import Config as BotocoreConfig
 from django.conf import settings
 from django.urls import Resolver404, resolve
+from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
 from sentry_sdk.types import Event, Hint
 
+from apps.core.release import UNKNOWN_RELEASE, current_release
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING, env
 
@@ -296,7 +298,7 @@ STORAGES = {
 
 _sentry_dsn = env.str("SENTRY_DSN", default="")
 SENTRY_OPTIONS: dict[str, Any] = {
-    "integrations": [DjangoIntegration()],
+    "integrations": [DjangoIntegration(), CeleryIntegration()],
     "environment": env.str("SENTRY_ENVIRONMENT", default="production"),
     "traces_sample_rate": env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.0),
     "send_default_pii": False,
@@ -308,6 +310,9 @@ SENTRY_OPTIONS: dict[str, Any] = {
     "before_send": scrub_sentry_event,
     "before_send_transaction": scrub_sentry_transaction,
 }
+_release = current_release()
+if _release != UNKNOWN_RELEASE:
+    SENTRY_OPTIONS["release"] = _release
 LOGGING.setdefault("filters", {})["credential_urls"] = {
     "()": CredentialURLLogFilter,
 }

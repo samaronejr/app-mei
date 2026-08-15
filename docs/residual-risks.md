@@ -178,6 +178,29 @@ because only `socket.gaierror` is caught on that path. It is recorded as measure
 Redis outage of the second shape degrades credential endpoints to a server error rather
 than to a closed door.
 
+#### 2026-08-10 correction (PILOT-206)
+
+The repository boundary now has this measured exception map:
+
+* `socket.gaierror` from `cache.add` still becomes **429** inside django-ratelimit; that
+  library behaviour is unchanged.
+* `redis.exceptions.ConnectionError` (MRO `RedisError` → `Exception`, distinct from the
+  builtin and not an `OSError`) and the builtin `ConnectionError` are caught by
+  `exceeds()` and become **429**.
+* `redis.exceptions.TimeoutError` remains deliberately uncaught and therefore still
+  surfaces as a **500**, visible to Sentry; revisit that choice after the pilot.
+
+Each caught connection failure is captured explicitly in Sentry before one ERROR log is
+emitted. That capture is load-bearing: after conversion to 429 there is no raised
+exception for Sentry to observe, so it is the sole remaining exception signal for this
+outage path. `/readyz` independently reports Redis as unhealthy for monitoring.
+
+The availability blast radius is site-wide, not limited to credential endpoints:
+`exceeds()` runs on every authenticated request through `authenticated_limit`. A Redis
+outage therefore now yields a **site-wide 429 instead of a site-wide 500**. Both modes
+refuse service, so this is an availability-mode change, **not** a weakening of rate
+limits or enumeration posture.
+
 ---
 
 ## 4. Invitation scope: severity, and the limit of indistinguishability

@@ -22,6 +22,7 @@ from datetime import date
 from http import HTTPStatus
 from typing import Any, Final
 
+import sentry_sdk
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -459,6 +460,22 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
     )
 
 
+def _delete_saved_document(saved_name: str) -> None:
+    """Delete only the object name returned by this request's storage write."""
+    try:
+        default_storage.delete(saved_name)  # PILOT-205-COMPENSATING-DELETE
+    except Exception as error:  # noqa: BLE001
+        _capture_storage_error(error)
+
+
+def _capture_storage_error(error: Exception) -> None:
+    """Report storage inconsistency without replacing the request's root error."""
+    try:
+        sentry_sdk.capture_exception(error)
+    except Exception:  # noqa: BLE001
+        return
+
+
 @require_http_methods(["POST"])
 @login_required
 @require_can(VAULT_CAPABILITY)
@@ -499,8 +516,17 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
         byte_size=len(payload),
         uploaded_by=request.user,
     )
-    default_storage.save(document.storage_key, ContentFile(payload))
-    document.save(force_insert=True)
+    saved_name = default_storage.save(document.storage_key, ContentFile(payload))
+    if saved_name != document.storage_key:
+        _delete_saved_document(saved_name)
+        msg = "storage changed the requested document key"
+        raise RuntimeError(msg)
+
+    try:
+        document.save(force_insert=True)
+    except Exception:
+        _delete_saved_document(saved_name)
+        raise
     # Back to the vault rather than to the landing page, so the client lands on the list
     # their upload just joined and can see it there. The confirmation is queued rather
     # than rendered here: this response is a redirect, and a message written into the
@@ -532,14 +558,26 @@ def document_download(
     """
     document = get_object_or_404(Document, storage_key=storage_key)
 
-    # Size from metadata BEFORE the body. Under object storage this is a HEAD rather
-    # than
-    # a GET, so an oversized document is refused without transferring it.
-    if default_storage.size(document.storage_key) > settings.PORTAL_DOCUMENT_MAX_BYTES:
-        return HttpResponseBadRequest("Documento excede o limite de transferência.")
+    try:
+        # Size from metadata BEFORE the body. Under object storage this is a HEAD rather
+        # than
+        # a GET, so an oversized document is refused without transferring it.
+        if (
+            default_storage.size(document.storage_key)
+            > settings.PORTAL_DOCUMENT_MAX_BYTES
+        ):
+            return HttpResponseBadRequest(
+                "Documento excede o limite de transferência.",
+            )
 
-    with default_storage.open(document.storage_key) as handle:
-        payload = handle.read()
+        with default_storage.open(document.storage_key) as handle:
+            payload = handle.read()
+    except OSError as error:
+        _capture_storage_error(error)
+        return HttpResponse(
+            "Documento indisponível no momento.",
+            status=HTTPStatus.SERVICE_UNAVAILABLE,
+        )
 
     response = HttpResponse(payload, content_type=document.content_type)
     response["Content-Disposition"] = (
