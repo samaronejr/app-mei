@@ -463,6 +463,56 @@ def _object_storage_config_errors() -> list[CheckMessage]:
     ]
 
 
+SMTP_EMAIL_BACKEND: Final = "django.core.mail.backends.smtp.EmailBackend"
+
+
+def _email_config_errors() -> list[CheckMessage]:
+    """Refuse the production SMTP backend unless its transport is complete."""
+    if str(getattr(settings, "EMAIL_BACKEND", "")) != SMTP_EMAIL_BACKEND:
+        return []
+
+    required = (
+        "EMAIL_HOST",
+        "EMAIL_HOST_USER",
+        "EMAIL_HOST_PASSWORD",
+        "DEFAULT_FROM_EMAIL",
+    )
+    invalid = [name for name in required if not getattr(settings, name, None)]
+
+    timeout = getattr(settings, "EMAIL_TIMEOUT", None)
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or timeout <= 0
+    ):
+        invalid.append("EMAIL_TIMEOUT")
+
+    use_tls = getattr(settings, "EMAIL_USE_TLS", None) is True
+    use_ssl = getattr(settings, "EMAIL_USE_SSL", None) is True
+    if use_tls == use_ssl:
+        invalid.extend(("EMAIL_USE_TLS", "EMAIL_USE_SSL"))
+
+    sender = str(getattr(settings, "DEFAULT_FROM_EMAIL", "") or "")
+    # All three send sites pass from_email=None, so DEFAULT_FROM_EMAIL alone controls
+    # provider From-alignment; SERVER_EMAIL is deliberately derived from the same value.
+    if sender.lower().endswith("@localhost"):
+        invalid.append("DEFAULT_FROM_EMAIL")
+
+    if not invalid:
+        return []
+    return [
+        Error(
+            "Production SMTP is configured but invalid; check: "
+            + ", ".join(sorted(set(invalid))),
+            hint=(
+                "Set every named EMAIL_* value in the deployment environment, select "
+                "exactly one encrypted transport, and use an aligned non-local sender."
+            ),
+            id="core.E013",
+        ),
+    ]
+
+
 PORTAL_GRANT_LOOPS: Final[dict[str, str]] = {
     "portal_table": "SELECT",
     "portal_write_table": "INSERT",
@@ -564,6 +614,14 @@ def check_object_storage_config(
 ) -> list[CheckMessage]:
     """Reject a deployment that selects object storage without configuring it."""
     return _object_storage_config_errors()
+
+
+def check_email_config(
+    app_configs: Sequence[AppConfig] | None,  # noqa: ARG001
+    **kwargs: Any,  # noqa: ANN401, ARG001
+) -> list[CheckMessage]:
+    """Reject an incomplete or misaligned production SMTP transport."""
+    return _email_config_errors()
 
 
 def check_portal_capability_gates(

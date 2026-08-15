@@ -104,7 +104,18 @@ class AccessLogAdmin(ReadOnlyAdmin):
 class DataSubjectRequestAdmin(admin.ModelAdmin[DataSubjectRequest]):
     """Rights requests. Editable, because closing one is part of answering it."""
 
-    list_display = ("created_at", "request_type", "requester_name", "resolved_at")
+    list_display = (
+        "created_at",
+        "request_type",
+        "requester_name",
+        "resolved_at",
+        "encarregado_notified_at",
+        "notification_last_error",
+    )
     list_filter = ("request_type", "relationship")
     search_fields = ("requester_name", "email")
-    readonly_fields: ClassVar[tuple[str, ...]] = ("created_at",)
+    readonly_fields: ClassVar[tuple[str, ...]] = (
+        "created_at",
+        "encarregado_notified_at",
+        "notification_last_error",
+    )

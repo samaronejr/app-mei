@@ -285,6 +285,14 @@ class DataSubjectRequest(UUIDv7PrimaryKeyModel):
     detail = models.TextField(_("detail"), blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     resolved_at = models.DateTimeField(_("resolved at"), null=True, blank=True)
+    encarregado_notified_at = models.DateTimeField(
+        _("encarregado notified at"),
+        null=True,
+    )
+    notification_last_error = models.TextField(
+        _("notification last error"),
+        blank=True,
+    )
 
     objects = PlatformScopedManager["DataSubjectRequest"]()
 

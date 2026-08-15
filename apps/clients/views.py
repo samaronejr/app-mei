@@ -221,6 +221,86 @@ def _band_for(
     return None
 
 
+def client_detail_context(
+    request: AuthenticatedRequest,
+    client: ClientCompany,
+    *,
+    portal_invite_form: PortalInviteIssueForm | None = None,
+) -> dict[str, object]:
+    """Build portal-failure context before transaction.set_rollback(True)."""
+    tenant = _tenant(request)
+    tenant_id = UUID(str(tenant.pk))
+    obligations = (
+        Obligation.objects.filter(client=client)
+        # Rendered on every row, so without this the table issues a query per row and
+        # the detail screen's budget is what notices.
+        .select_related("obligation_type")
+        # Newest competence first, because the question this table answers is "what is
+        # outstanding now". The primary key closes the order: two obligations can share
+        # a competence month, and under the month alone a row can appear on both pages
+        # or on neither.
+        .order_by("-competence_month", "pk")
+    )
+    if portal_invite_form is None:
+        # Unbound, always, and never re-rendered with errors: the issue endpoint
+        # answers a rejected submission with the shared refusal page rather than
+        # bouncing back here, so this key only ever carries an empty form. Passing
+        # the form object instead of writing the two controls by hand is what keeps
+        # the field ids, the label binding and the described-by chain identical to
+        # every other form in this product.
+        # PILOT-102 adds one exception: delivery failure supplies the bound form so
+        # this same detail page can render its non-field error after rollback.
+        portal_invite_form = PortalInviteIssueForm()
+    return {
+        "client": client,
+        # The whole view object under a neutral key, never unpacked into flags
+        # here. `MunicipalityCapabilityView` carries its own `status`, and a view
+        # that pulled two booleans out of it would drop the third state — the one
+        # that says nobody has checked this municipality — and report an
+        # unverified guess in the shape of a verified fact.
+        "municipio": capability_for(client.municipality_ibge_code),
+        "calendar": das_calendar(client),
+        "calendar_client": client,
+        "page": _page(obligations, request, OBLIGATION_PAGE_SIZE),
+        "filter_query": "",
+        "checklist": OnboardingItem.objects.filter(client=client).order_by(
+            "position",
+            "key",
+            "pk",
+        ),
+        "banda": _band_for(request, tenant_id, client),
+        "portal_invite_form": portal_invite_form,
+        # The other half of the control above, and since `cd4de7e` the only place
+        # a portal invitation is legible at all: Equipe filters
+        # `client__isnull=True`, so a client-scoped row appears on no firm-side
+        # screen. Issuing without listing would leave a live credential nobody can
+        # see and nobody can stand down.
+        #
+        # Scoped THREE ways, and the redundancy is deliberate. `for_user` is the
+        # application-layer control this table has instead of a row-level policy
+        # (`apps/core/access.py:1-15` — `tenants_invite` is in `NON_TENANT_TABLES`,
+        # so the database enforces nothing). `tenant_id` narrows that to the firm
+        # THIS request resolved, which `for_user` alone does not do for an account
+        # holding memberships in two firms. `client_id` narrows it to these books:
+        # the client's UUID already implies its tenant, so this filter is
+        # belt and braces on a page whose whole failure mode is naming somebody else's
+        # invitee.
+        #
+        # No `select_related`: the row renders `email`, `role` and `expires_at`,
+        # all local columns, so the list costs exactly one query and the detail
+        # budget at `tests/ui/test_clients_pages.py:225` does not move.
+        "pending_portal_invites": Invite.objects.for_user(request.user)
+        .filter(
+            tenant_id=tenant_id,
+            client_id=client.pk,
+            accepted_at__isnull=True,
+            revoked_at__isnull=True,
+        )
+        .order_by("email"),
+        "page_title": client.legal_name,
+    }
+
+
 @require_http_methods(["GET"])
 @login_required
 @require_tenant
@@ -272,75 +352,10 @@ def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse
     if client is None:
         raise Http404
 
-    obligations = (
-        Obligation.objects.filter(client=client)
-        # Rendered on every row, so without this the table issues a query per row and
-        # the detail screen's budget is what notices.
-        .select_related("obligation_type")
-        # Newest competence first, because the question this table answers is "what is
-        # outstanding now". The primary key closes the order: two obligations can share
-        # a competence month, and under the month alone a row can appear on both pages
-        # or on neither.
-        .order_by("-competence_month", "pk")
-    )
-
     return render(
         request,
         "clients/detail.html",
-        {
-            "client": client,
-            # The whole view object under a neutral key, never unpacked into flags
-            # here. `MunicipalityCapabilityView` carries its own `status`, and a view
-            # that pulled two booleans out of it would drop the third state — the one
-            # that says nobody has checked this municipality — and report an
-            # unverified guess in the shape of a verified fact.
-            "municipio": capability_for(client.municipality_ibge_code),
-            "calendar": das_calendar(client),
-            "calendar_client": client,
-            "page": _page(obligations, request, OBLIGATION_PAGE_SIZE),
-            "filter_query": "",
-            "checklist": OnboardingItem.objects.filter(client=client).order_by(
-                "position",
-                "key",
-                "pk",
-            ),
-            "banda": _band_for(request, tenant_id, client),
-            # Unbound, always, and never re-rendered with errors: the issue endpoint
-            # answers a rejected submission with the shared refusal page rather than
-            # bouncing back here, so this key only ever carries an empty form. Passing
-            # the form object instead of writing the two controls by hand is what keeps
-            # the field ids, the label binding and the described-by chain identical to
-            # every other form in this product.
-            "portal_invite_form": PortalInviteIssueForm(),
-            # The other half of the control above, and since `cd4de7e` the only place
-            # a portal invitation is legible at all: Equipe filters
-            # `client__isnull=True`, so a client-scoped row appears on no firm-side
-            # screen. Issuing without listing would leave a live credential nobody can
-            # see and nobody can stand down.
-            #
-            # Scoped THREE ways, and the redundancy is deliberate. `for_user` is the
-            # application-layer control this table has instead of a row-level policy
-            # (`apps/core/access.py:1-15` — `tenants_invite` is in `NON_TENANT_TABLES`,
-            # so the database enforces nothing). `tenant_id` narrows that to the firm
-            # THIS request resolved, which `for_user` alone does not do for an account
-            # holding memberships in two firms. `client_id` narrows it to these books:
-            # the client's UUID already implies its tenant, so this filter is belt and
-            # braces on a page whose whole failure mode is naming somebody else's
-            # invitee.
-            #
-            # No `select_related`: the row renders `email`, `role` and `expires_at`,
-            # all local columns, so the list costs exactly one query and the detail
-            # budget at `tests/ui/test_clients_pages.py:225` does not move.
-            "pending_portal_invites": Invite.objects.for_user(request.user)
-            .filter(
-                tenant_id=tenant_id,
-                client_id=client.pk,
-                accepted_at__isnull=True,
-                revoked_at__isnull=True,
-            )
-            .order_by("email"),
-            "page_title": client.legal_name,
-        },
+        client_detail_context(request, client),
         status=HTTPStatus.OK,
     )
 

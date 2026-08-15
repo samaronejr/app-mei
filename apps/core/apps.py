@@ -5,6 +5,7 @@ from django.core.checks import register
 from django.db.models.signals import post_migrate
 
 from apps.core.checks import (
+    check_email_config,
     check_object_storage_config,
     check_portal_capability_gates,
     check_portal_grant_drift,
@@ -41,5 +42,6 @@ class CoreConfig(AppConfig):
         register(check_portal_role)
         register(check_portal_capability_gates)
         register(check_object_storage_config)
+        register(check_email_config)
         register(check_portal_grant_drift)
         register(check_tenant_slugs)

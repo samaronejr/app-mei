@@ -114,11 +114,10 @@ jobs:
       # them once per settings module so ATOMIC_REQUESTS, the host-only cookie rules
       # and the CSRF origin rule are validated in test and prod too, not just dev.
       - name: Django system checks (dev, test, prod settings)
-        # The prod iteration selects S3 storage, and core.E011 refuses to boot while
-        # any of these five are empty. They are dummies: they prove the configuration
-        # SHAPE is complete, nothing more. As with every other credential in this file,
-        # no real value may ever appear here — production storage credentials live in
-        # the deployment environment only (see the note at the top of this job).
+        # The prod iteration selects S3 storage and SMTP; core.E011/core.E013 refuse to
+        # boot while either transport is incomplete. These dummies prove configuration
+        # SHAPE only. As with every other credential in this file, no real value may
+        # ever appear here — production credentials live in the deployment environment.
         #
         # Scoped to this step rather than the job so they never reach the pytest step
         # below, which must exercise the suite's own storage configuration. The dev and
@@ -130,6 +129,14 @@ jobs:
           OCI_S3_REGION: ephemeral-ci-region
           OCI_S3_ACCESS_KEY_ID: ephemeral-ci-access-key-id
           OCI_S3_SECRET_ACCESS_KEY: ephemeral-ci-secret-access-key
+          EMAIL_HOST: smtp.ci-ephemeral.invalid
+          EMAIL_PORT: "587"
+          EMAIL_HOST_USER: ephemeral-ci-smtp-user
+          EMAIL_HOST_PASSWORD: ephemeral-ci-smtp-password
+          EMAIL_USE_TLS: "True"
+          EMAIL_USE_SSL: "False"
+          EMAIL_TIMEOUT: "10"
+          DEFAULT_FROM_EMAIL: nao-responda@ci-ephemeral.invalid
         run: |
           set -euo pipefail
           for module in dev test prod; do

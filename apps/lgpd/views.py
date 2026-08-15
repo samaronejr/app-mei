@@ -6,13 +6,18 @@ its firms — have no login here at all. Requiring one would put an access wall 
 of a legal obligation.
 """
 
+from functools import partial
 from http import HTTPStatus
+from uuid import UUID
 
+import sentry_sdk
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import reverse
+from django.utils.timezone import now
 from django.utils.translation import gettext as _
 from django.views.decorators.http import require_http_methods
 
@@ -41,7 +46,7 @@ def data_subject_request_view(request: HttpRequest) -> HttpResponse:
         )
 
     dsr = form.save()
-    _notify_encarregado(dsr)
+    transaction.on_commit(partial(_notify_encarregado_safe, dsr.pk))
     # A PlatformEvent, not an Event: the requester is anonymous and no tenant has been
     # resolved, so the tenant-scoped table would reject this row outright. The event
     # carries the request's id — never the CPF, which lives in an erasable table.
@@ -51,6 +56,34 @@ def data_subject_request_view(request: HttpRequest) -> HttpResponse:
         metadata={"request_id": str(dsr.pk), "request_type": dsr.request_type},
     )
     return HttpResponseRedirect(reverse("dsr-received"))
+
+
+def _notify_encarregado_safe(request_id: UUID) -> None:
+    try:
+        # PLATFORM_QUERY_OK: this post-commit callback receives the UUID of the legal
+        # request the same view just saved; it neither lists nor accepts a tenant row.
+        dsr = DataSubjectRequest.objects.get(pk=request_id)
+        _notify_encarregado(dsr)
+        # PLATFORM_QUERY_OK: stamp only that callback-owned platform request UUID.
+        DataSubjectRequest.objects.filter(pk=request_id).update(
+            encarregado_notified_at=now(),
+        )
+    except Exception as error:  # noqa: BLE001
+        try:
+            # PLATFORM_QUERY_OK: persist delivery status only on the same callback UUID.
+            DataSubjectRequest.objects.filter(pk=request_id).update(
+                notification_last_error=str(error),
+            )
+        except Exception as persistence_error:  # noqa: BLE001
+            _capture_exception_safely(persistence_error)
+        _capture_exception_safely(error)
+
+
+def _capture_exception_safely(error: Exception) -> None:
+    try:
+        sentry_sdk.capture_exception(error)
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _notify_encarregado(dsr: DataSubjectRequest) -> None:
