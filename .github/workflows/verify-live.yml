@@ -25,12 +25,72 @@ jobs:
 
           health_body="$(curl -fsS --connect-timeout 10 --max-time 30 \
             --retry 2 --retry-all-errors "$LIVE_BASE_URL/healthz")"
-          jq -e '
-            .status == "ok" and
-            .scheduler == "alive" and
-            .backup == "fresh" and
-            .disk == "ok"
-          ' <<<"$health_body" >/dev/null
+
+          # Per field, not one conjunction. A single `and` expression answers "something
+          # in /healthz is wrong" and nothing more, so the first thing an operator has
+          # to do on a red run is re-fetch the body by hand to find out which of the
+          # four signals moved. Naming each one costs three extra invocations and turns
+          # the failure into the answer.
+          for field_check in \
+            '.status == "ok"' \
+            '.scheduler == "alive"' \
+            '.backup == "fresh"' \
+            '.disk == "ok"'; do
+            if ! jq -e "$field_check" <<<"$health_body" >/dev/null; then
+              echo "healthz assertion failed: $field_check" >&2
+              echo "body: $health_body" >&2
+              exit 1
+            fi
+          done
+
+          # Negative control for the loop above. A jq predicate that has only ever been
+          # true is not yet a check -- a typo in the expression, an empty body, or a
+          # `jq -e` that stopped being `-e` all produce a green run. This asserts a value
+          # the endpoint cannot report and REQUIRES it to fail.
+          if jq -e '.status == "wrong-value-negative-control"' \
+            <<<"$health_body" >/dev/null 2>&1; then
+            echo "the healthz negative control PASSED, so the four assertions above" >&2
+            echo "prove nothing about the live body" >&2
+            exit 1
+          fi
+
+          # The exact substrings the four UptimeRobot keyword monitors search for, on
+          # the live bytes rather than on parsed JSON. UptimeRobot cannot do JSONPath,
+          # so keyword matching is the external fallback -- and its configuration is
+          # external state this repository cannot read. Checking the identical strings
+          # here is what makes a drift between the endpoint and the monitors visible
+          # from CI instead of only from a monitor that quietly stopped matching.
+          # Sourced from ops/README.md, "External uptime monitoring"; the same four are
+          # pinned against a rendered response in tests/test_healthz_keyword_monitors.py.
+          #
+          # grep reads a herestring rather than a pipe. Under `pipefail` a
+          # `printf | grep -q` returns 141 whenever grep matches and exits early enough
+          # to SIGPIPE the writer, which would report a PRESENT keyword as absent on a
+          # body just large enough to make it happen.
+          healthz_keywords=(
+            '"status": "ok"'
+            '"scheduler": "alive"'
+            '"backup": "fresh"'
+            '"disk": "ok"'
+          )
+          for keyword in "${healthz_keywords[@]}"; do
+            if ! grep -qF -- "$keyword" <<<"$health_body"; then
+              echo "keyword monitor fragment absent from the live body: $keyword" >&2
+              echo "body: $health_body" >&2
+              exit 1
+            fi
+          done
+
+          # Negative control for the keyword check. `JsonResponse` renders a space after
+          # every colon, so the form written from memory matches nothing. A monitor
+          # configured with it alerts on absence forever, or -- worse -- sits green while
+          # asserting nothing. If this ever DOES match, the serializer changed and every
+          # keyword above needs re-cutting from the new bytes.
+          if grep -qF -- '"backup":"fresh"' <<<"$health_body"; then
+            echo 'the unspaced keyword matched, so JsonResponse separators changed;' >&2
+            echo 'recut every UptimeRobot keyword from the new response bytes' >&2
+            exit 1
+          fi
 
           ready_body="$(curl -fsS --connect-timeout 10 --max-time 30 \
             --retry 2 --retry-all-errors "$LIVE_BASE_URL/readyz")"
