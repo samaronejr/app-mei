@@ -25,7 +25,8 @@ does not exist as a supported procedure; do not improvise one during an incident
 None of the following has been created, and no entry in this file may be read as a
 claim that it has:
 
-- No UptimeRobot account and no monitors M1-M4.
+- No UptimeRobot account and no monitors: M1a, M1b, M1c, M1d, the M1n negative control,
+  M2, M3 and M4 are all uncreated.
 - No Healthchecks account, no check, and no `HC_URL` or `HC_VERIFY_URL` secret.
 - Amazon SES is not configured for production sending; the account is not out of
   sandbox.
@@ -68,14 +69,16 @@ PILOT-208 are activated by the operator.
 
 | Monitor | Signal | Entry that owns it |
 | --- | --- | --- |
-| UptimeRobot M1 — public `/healthz` | `scheduler` is not `alive` | [stale-scheduler](#stale-scheduler) |
-| UptimeRobot M1 — public `/healthz` | `backup` is not `fresh` | [stale-backup](#stale-backup) |
-| UptimeRobot M1 — public `/healthz` | `disk` is not `ok` | [low-disk](#low-disk) |
+| UptimeRobot M1a — public `/healthz` | keyword `"status": "ok"` absent | Whichever of M1b–M1d is also DOWN |
+| UptimeRobot M1b — public `/healthz` | keyword `"scheduler": "alive"` absent | [stale-scheduler](#stale-scheduler) |
+| UptimeRobot M1c — public `/healthz` | keyword `"backup": "fresh"` absent | [stale-backup](#stale-backup) |
+| UptimeRobot M1d — public `/healthz` | keyword `"disk": "ok"` absent | [low-disk](#low-disk) — **unless M1b is also DOWN**, in which case `disk` reads `unknown` because the stalled scheduler stopped refreshing the reading, and the fault is [stale-scheduler](#stale-scheduler) |
+| UptimeRobot M1n — public `/healthz` | **DOWN is the expected state.** Reporting UP means keyword matching is not happening and M1a–M1d prove nothing | Nothing to action while DOWN; investigate the monitors themselves if UP |
 | UptimeRobot M2 — public `/readyz` | `database` is `error` | [database-outage](#database-outage) |
 | UptimeRobot M2 — public `/readyz` | `redis` is `error` | [redis-outage](#redis-outage) |
 | UptimeRobot M3 — public `/versionz` | `release` is not a lowercase 40-hex SHA | [rollback-steps](#rollback-steps) |
-| UptimeRobot M4 — pilot portal `/healthz` | Any M1 field differs, portal host only | The matching M1 entry, scoped to the portal host |
-| Scheduled `verify-live` workflow | JSON contract failure, live release differs from `main`, TLS under 14 days, or the daily ping is absent | [rollback-steps](#rollback-steps) for release drift; TLS renewal is in `ops/README.md` |
+| UptimeRobot M4 — pilot portal `/healthz` | Any M1a–M1d keyword absent, portal host only | The matching M1 entry, scoped to the portal host |
+| Scheduled `verify-live` workflow | Per-field JSON contract failure, a `/healthz` keyword fragment missing from the live body, live release differs from `main`, TLS under 14 days, or the daily ping is absent | [rollback-steps](#rollback-steps) for release drift; TLS renewal is in `ops/README.md` |
 | Sentry — Celery worker/beat | An unhandled task exception reaches Sentry | [sentry-alert-triage](#sentry-alert-triage) |
 | Sentry — web | Invitation, portal upload, LGPD notification, or rate-limit-store exception | The matching entry below; triage path is [sentry-alert-triage](#sentry-alert-triage) |
 
@@ -84,6 +87,15 @@ are in the same module. `/healthz` deliberately does **not** return 503 for a st
 backup or low disk — it reports them in the body and stays 200, because flapping the
 container healthcheck would cause a worse outage than the one being reported. Read
 the body, not the status code, for those three fields.
+
+**M1 is four monitors, not one, because UptimeRobot cannot evaluate JSONPath.** Its only
+body-inspection primitive is a plain substring match, so each field gets its own keyword
+monitor and a fifth impossible keyword sits permanently DOWN to prove matching is
+happening at all. The keywords carry a space after the colon exactly as `JsonResponse`
+renders them; the configuration and the reason are in
+[`ops/README.md`](README.md), "External uptime monitoring: four keyword monitors and a
+negative control". The semantic per-field assertions live in the scheduled `verify-live`
+workflow, which has `jq`.
 
 ---
 
