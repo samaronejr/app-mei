@@ -1624,6 +1624,145 @@ This section is also the destination-independent half of the
 the ops bucket that receives backups is a different bucket with a different, PutObject-only
 credential, and nothing here applies to it.
 
+### External uptime monitoring: four keyword monitors and a negative control
+
+Covers PILOT-207's external half. **Not executed.** No UptimeRobot account exists, no
+monitor has been created, and no alert has been received.
+
+**UptimeRobot cannot evaluate JSONPath.** The operator's capability proof established
+that its only body-inspection primitive is a plain **substring** match over the raw
+response. Every earlier note in this repository that describes M1 as one monitor with
+"JSON assertions" predates that proof and describes a capability the product does not
+have. The semantic, per-field assertions still exist — they moved to the scheduled
+[`verify-live`](../.github/workflows/verify-live.yml) workflow, which does have `jq` —
+and the external monitor falls back to keyword matching, which is what this section
+configures.
+
+#### One monitor per field, because a substring match cannot say which field moved
+
+`/healthz` reports four fields, and they fail for four unrelated reasons: a dead beat, a
+nightly backup that stopped, a filling disk, and the aggregate the first of those drives.
+A single monitor keyed on one keyword would alert on one of them and stay silent on the
+rest. So there are four, each alerting on the **absence** of its own field's healthy
+value, plus a fifth that exists only to prove the mechanism can fail at all.
+
+| Monitor | Type | Keyword | Alert when | Owning runbook entry |
+| --- | --- | --- | --- | --- |
+| M1a | Keyword | `"status": "ok"` | keyword **not** found | whichever of M1b–M1d is also red |
+| M1b | Keyword | `"scheduler": "alive"` | keyword **not** found | [stale-scheduler](PILOT-RUNBOOK.md#stale-scheduler) |
+| M1c | Keyword | `"backup": "fresh"` | keyword **not** found | [stale-backup](PILOT-RUNBOOK.md#stale-backup) |
+| M1d | Keyword | `"disk": "ok"` | keyword **not** found | [low-disk](PILOT-RUNBOOK.md#low-disk) |
+| M1n | Keyword | `"scheduler": "impossible-keyword-negative-control"` | keyword **not** found | none — see below |
+
+All five point at the same URL, `https://samaronefialho.dev/healthz`, on the same
+interval. M1a is not redundant with the other three: `status` is the only field that also
+carries the HTTP status code, so it is the one an operator can correlate with a 503 and
+with the container healthcheck.
+
+**Do not configure these as HTTP(s) monitors.** A plain HTTP monitor keys on the status
+code, and three of the four conditions above — stale backup, low disk, and an unreadable
+heartbeat table — are reported in the body at HTTP **200** by deliberate design (see
+[A failed backup is visible at `/healthz`, and does not
+503`](#a-failed-backup-is-visible-at-healthz-and-does-not-503) and [The disk fuse](#the-disk-fuse-healthz-reports-headroom-and-does-not-503)).
+An HTTP monitor would report those three as permanently UP.
+
+#### The keyword is the exact rendered substring, spaces included
+
+This is the one detail that silently destroys the whole arrangement, so it is stated
+before the values rather than after them.
+
+`/healthz` is rendered by Django's `JsonResponse`, which serializes with `json.dumps`
+default separators — `", "` between pairs and **`": "` between a key and its value**.
+The body carries a space after every colon:
+
+```json
+{"status": "ok", "scheduler": "alive", "backup": "fresh", "disk": "ok"}
+```
+
+A keyword typed the way it is usually written in code, `"backup":"fresh"` with no space,
+matches **nothing**. Configured as alert-on-absence it then reads permanently DOWN, which
+at least announces itself. Configured the other way round it reads permanently UP — a
+green monitor asserting nothing at all, indistinguishable from a working one until the
+night it is needed. Copy the values, do not retype them:
+
+<!-- healthz-keyword-monitors -->
+
+```text
+"status": "ok"
+"scheduler": "alive"
+"backup": "fresh"
+"disk": "ok"
+```
+
+Those four strings are pinned by `tests/test_healthz_keyword_monitors.py`, which reads
+them **out of this file** and asserts each one is a literal substring of a real rendered
+healthy `/healthz` response. A space deleted from the block above turns CI red, and so
+does a change to the endpoint that stops rendering any of them. The test also asserts the
+unspaced form is absent, so the trap described in the previous paragraph is measured
+rather than warned about.
+
+#### The negative control: an impossible keyword, permanently DOWN
+
+Four green monitors prove nothing on their own. They look identical whether the keyword is
+being matched against a healthy body or is not being evaluated at all — a monitor pointed
+at the wrong URL, a paused check, and a free-plan account that silently stopped inspecting
+bodies all produce exactly the same four green rows.
+
+M1n is what separates those cases. It uses the same URL, the same interval and the same
+alert-on-absence setting as the other four, with a keyword the endpoint can never render:
+
+<!-- healthz-keyword-negative-control -->
+
+```text
+"scheduler": "impossible-keyword-negative-control"
+```
+
+`scheduler` renders only `alive`, `stale` or `unknown` (`apps/obligations/heartbeat.py`
+and `apps/core/views.py`), so no state of the application — healthy, degraded, or with the
+heartbeat table unreadable — can produce that string. The same test module asserts its
+absence from all three of those rendered bodies.
+
+**Acceptance is therefore four UP and one DOWN, and the DOWN one is required.** M1n
+reporting UP means keyword evaluation is not happening, and the other four are worthless
+until that is explained. Suppress M1n's notifications rather than deleting it: it is read,
+not delivered, and a permanently-alerting monitor that pages nobody is the point.
+
+#### Acceptance
+
+| # | Check | Acceptance |
+| --- | --- | --- |
+| 1 | M1a–M1d against a healthy deployment | all four UP |
+| 2 | M1n against the same deployment | DOWN, with notifications suppressed |
+| 3 | M1b during the [beat-stopped drill](#b-the-degraded-signal-drill-stop-beat) | transitions to DOWN, alert delivered to `<alert-recipient>` |
+| 4 | M1a and **M1d** during the same drill | both transition to DOWN, at the same 15-minute mark as M1b |
+| 5 | M1c during the same drill | stays UP |
+
+Check 3 is the only one that proves delivery, and it is already scheduled: it is row 5 of
+the [beat-stopped drill](#b-the-degraded-signal-drill-stop-beat), which is where the
+elapsed interval from `<beat-stopped-utc>` is recorded. Checks 4 and 5 are read from the
+same window at no extra cost.
+
+**Three monitors go red from one cause, and M1d is the one that surprises people.** A
+stopped beat flips `status` to `degraded`, so M1a follows M1b immediately — that part is
+obvious. `disk` is the one that is not: the reading is taken and stamped by the scheduler,
+so a stalled writer can no longer vouch for the number it last wrote, and `_headroom`
+degrades `ok` to `unknown` on the scheduler's own window rather than reporting a
+comfortable value nobody is refreshing (see [The disk
+fuse](#the-disk-fuse-healthz-reports-headroom-and-does-not-503)). `DISK_STALE_AFTER`
+equals `HEARTBEAT_STALE_AFTER`, so M1b and M1d flip together at fifteen minutes.
+
+Only M1c stays UP, because the nightly marker is written by a host systemd timer that a
+stopped beat container does not touch. **Read three simultaneous reds as one fault, not
+three.** Chasing M1d as a capacity incident during a scheduler outage is the specific
+mistake this note exists to prevent, and it is the same class of confusion as the web
+container going `unhealthy` while web is serving perfectly. Both are asserted in
+`tests/test_healthz_keyword_monitors.py`.
+
+Record monitor ids and the alert recipient in `.evidence/PILOT-207-operator.txt`; the UP
+and DOWN states go to `.evidence/PILOT-207-happy.txt`, and check 2's required DOWN plus
+its keyword go to `.evidence/PILOT-207-failure.txt`. Never record an API key or a ping
+URL in any of them.
+
 ### Host log rotation
 
 Covers PILOT-209. **Not executed.** `/etc/docker/daemon.json` has not been written, no
@@ -2305,8 +2444,10 @@ echo | openssl s_client -connect samaronefialho.dev:443 -servername samaronefial
 Acceptance: `dig` returns `<target-ip>`; the `Connected to` line names `<target-ip>`; the
 certificate issuer is Let's Encrypt and its SANs cover both the apex and the wildcard;
 `/versionz` equals `main`; the portal host serves. UptimeRobot monitors are hostname
-based, so they follow the flip on their own: confirm all of them report UP rather than
-reconfiguring anything.
+based, so they follow the flip on their own: confirm they report their expected states
+rather than reconfiguring anything. Expected is **M1a–M1d UP and M1n DOWN** — see
+[External uptime monitoring](#external-uptime-monitoring-four-keyword-monitors-and-a-negative-control).
+M1n reporting UP here would mean the monitors followed the flip in name only.
 
 ##### 11. The old box stays stopped but intact
 
@@ -2406,7 +2547,7 @@ gathered on a host that is about to be switched off is evidence about the wrong 
 | 1 | One email journey per type: firm invite, address verification, password reset, LGPD DSR notification | Each delivered to a real external mailbox, message-ids recorded, DKIM and SPF pass, `From` aligned |
 | 2 | Backup timer fires once end to end | Local base and logical artifacts present with a fresh marker, off-host copy landed under `pg/<UTC-timestamp>/`, both Healthchecks checks green. This is the **authoritative** off-host evidence; the local MinIO rehearsal never was |
 | 3 | `verify-live` workflow green against the target | Scheduled or dispatched run passes, with `/versionz` release equal to `main` |
-| 4 | UptimeRobot | All monitors UP with their JSON assertions passing |
+| 4 | UptimeRobot | M1a–M1d UP against the target, and the M1n negative control DOWN. Four UP with no DOWN control does not satisfy this row — see [External uptime monitoring](#external-uptime-monitoring-four-keyword-monitors-and-a-negative-control) |
 | 5 | Log rotation on the target | The [Host log rotation](#host-log-rotation) checks re-run: `LogConfig` on every container, journald cap recorded |
 | 6 | Sentry receives a target-origin event | The event's `release` field equals the deployed SHA |
 
@@ -2541,7 +2682,7 @@ Then wait, and record what happens in this order:
 | 2 | — | Compose marks `web` **unhealthy** — and does **not** restart it | `$compose ps` |
 | 3 | — | Caddy stays healthy and keeps proxying | `$compose ps`, and a real page fetch |
 | 4 | — | A firm page still answers **200** | `curl -o /dev/null -w '%{http_code}' https://<firm-host>/` |
-| 5 | after the alert | UptimeRobot **M1** alert delivered to `<alert-recipient>` | the recipient mailbox |
+| 5 | after the alert | UptimeRobot **M1b** (`"scheduler": "alive"`) alert delivered to `<alert-recipient>`, with **M1a** and **M1d** also DOWN and **M1c** still UP | the recipient mailbox and the monitor list |
 | 6 | 10 min of restart | `/healthz` back to 200, `"scheduler": "alive"`, `web` healthy again | `$compose ps` and the probe |
 
 **Why 20 minutes.** The scheduler stamps its heartbeat every 5 minutes and the probe
@@ -2606,8 +2747,8 @@ under pressure.
 Row 5 is a delivery assertion and belongs to the recipient, not to the box. Record which
 address received it, the delivery time, and the elapsed interval from
 `<beat-stopped-utc>`; the runbook's [monitor-to-action
-mapping](PILOT-RUNBOOK.md#monitor-to-action) already routes M1's `scheduler` field to the
-stale-scheduler entry, and this drill is what makes that row a measured path.
+mapping](PILOT-RUNBOOK.md#monitor-to-action) already routes M1b's `scheduler` keyword to
+the stale-scheduler entry, and this drill is what makes that row a measured path.
 
 #### (c) A skipped Healthchecks ping
 
