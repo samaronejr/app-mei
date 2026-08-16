@@ -23,9 +23,9 @@ jobs:
     # on merge commit c588669 the job was cancelled at 35m18s after the coverage suite had PASSED and the kill
     # landed during the isolation suite, so the CNPJ regression pack never ran at all. A rerun of that identical
     # commit finished in 22m02s, proving the ceiling sat inside the runner's own variance band; re-running was
-    # luck, not a fix. Fifty minutes provides runner-variance margin, not permission for indefinite runtime growth:
+    # luck, not a fix. Seventy-five minutes provides runner-variance margin, not permission for indefinite runtime growth:
     # coverage, isolation, RLS, migration, and CNPJ checks all remain mandatory and unconditional.
-    timeout-minutes: 50
+    timeout-minutes: 75
 
     # Every credential below is a workflow-local literal for a container that is
     # destroyed when the job ends. Nothing here exists outside this runner, and no
@@ -358,6 +358,12 @@ jobs:
       # generation stays resident until the prune at the very end, so the load needs
       # room for both plus the decompressed stream.
       MIN_FREE_KIB: "3145728"
+      # 1.5 GiB is deliberate: two images are decompressed and loaded concurrently
+      # beside a running stack. The observed failure is a stalled `docker load` over
+      # SSH, not a clean OOM, so these floors fail fast and legibly instead of hanging
+      # for 24 minutes while the box cannot make progress.
+      MIN_MEM_AVAILABLE_KIB: "1572864"
+      MIN_SWAP_FREE_KIB: "1048576"
 
     steps:
       - name: Checkout
@@ -436,18 +442,46 @@ jobs:
 
       # After the Sync, so the free space measured is what the load will actually find:
       # the checkout writes to the same filesystem the docker data root lives on.
-      - name: Disk preflight on the box
+      - name: Disk capacity preflight on the box
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" 'df -h /var/lib/docker; echo; docker system df'
-          free_kib="$("$RUNNER_TEMP/ssh/dssh" \
+          free_disk_kib="$("$RUNNER_TEMP/ssh/dssh" \
             'df -Pk /var/lib/docker | tail -n1 | tr -s " " | cut -d" " -f4')"
-          if [ "$free_kib" -lt "$MIN_FREE_KIB" ]; then
-            echo "::error::only ${free_kib} KiB free under /var/lib/docker on the box;" \
-                 "${MIN_FREE_KIB} KiB required to land the pair beside the running one"
+          if [ "$free_disk_kib" -lt "$MIN_FREE_KIB" ]; then
+            echo "::error::disk floor unmet: measured ${free_disk_kib} KiB free under" \
+                 "/var/lib/docker; floor ${MIN_FREE_KIB} KiB required to land the" \
+                 "pair beside the running one"
             exit 1
           fi
-          echo "disk preflight ok: ${free_kib} KiB free (floor ${MIN_FREE_KIB})"
+          echo "disk preflight ok: ${free_disk_kib} KiB free (floor ${MIN_FREE_KIB})"
+
+      - name: Memory capacity preflight on the box
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" \
+            'grep -E "^(MemAvailable|SwapFree):" /proc/meminfo'
+          mem_available_kib="$("$RUNNER_TEMP/ssh/dssh" \
+            'awk "/^MemAvailable:/ {print \$2}" /proc/meminfo')"
+          swap_free_kib="$("$RUNNER_TEMP/ssh/dssh" \
+            'awk "/^SwapFree:/ {print \$2}" /proc/meminfo')"
+
+          resource_failure=0
+          if ! [[ "$mem_available_kib" =~ ^[0-9]+$ ]] \
+             || [ "$mem_available_kib" -lt "$MIN_MEM_AVAILABLE_KIB" ]; then
+            echo "::error::MemAvailable floor unmet: measured ${mem_available_kib:-unreadable}" \
+                 "KiB; floor ${MIN_MEM_AVAILABLE_KIB} KiB required, or docker load can" \
+                 "stall over SSH beside the running stack"
+            resource_failure=1
+          fi
+          if ! [[ "$swap_free_kib" =~ ^[0-9]+$ ]] \
+             || [ "$swap_free_kib" -lt "$MIN_SWAP_FREE_KIB" ]; then
+            echo "::error::SwapFree floor unmet: measured ${swap_free_kib:-unreadable}" \
+                 "KiB; floor ${MIN_SWAP_FREE_KIB} KiB required, or docker load can" \
+                 "stall over SSH beside the running stack"
+            resource_failure=1
+          fi
+          exit "$resource_failure"
 
       # BEFORE the load, and BOTH images: once `docker load` overwrites the :prod tags
       # the previous generation is unreachable by name and rollback has no anchor.
