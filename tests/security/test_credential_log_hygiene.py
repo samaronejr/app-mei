@@ -171,6 +171,7 @@ def _capture_real_exception_events(
     if not hardened:
         options.update(
             {
+                "include_local_variables": True,
                 "event_scrubber": EventScrubber(),
                 "before_send": None,
                 "before_send_transaction": None,
