@@ -23,7 +23,18 @@ x-app-environment: &app-environment
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:?ALLOWED_HOSTS must be set}
   # A wildcard here is rejected by the core.E003 system check: cookies are host-only
   # by design, so every tenant origin must be enumerated.
-  CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?CSRF_TRUSTED_ORIGINS must be set}
+  #
+  # `${VAR?}`, NOT `${VAR:?}` — the same distinction TLS_DIRECTIVE makes below, for the
+  # same class of reason. The colon form rejects unset AND empty, but empty is this
+  # variable's CORRECT production value: .env.prod.example ships `CSRF_TRUSTED_ORIGINS=`
+  # and base.py defaults it to []. Every form in this product posts to the host that
+  # served it, and Django accepts a same-origin POST by comparing Origin to the request
+  # host without consulting this list at all. So with the colon, a correctly configured
+  # .env.prod stops Compose before a single container starts, and the operator's only
+  # route out is to invent a value that weakens CSRF — PILOT-403's shadow deploy failed
+  # exactly here. Without the colon an ABSENT declaration still fails, which is the case
+  # worth keeping: it means nobody ever decided whether cross-origin POSTs are allowed.
+  CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS?CSRF_TRUSTED_ORIGINS must be declared in .env.prod, even if empty}
   # app_runtime holds neither SUPERUSER nor BYPASSRLS and owns no table. Pointing this
   # at the bootstrap superuser would make every RLS policy inert without erroring.
   DATABASE_URL: postgres://app_runtime:${APP_RUNTIME_PASSWORD:?}@db:5432/${POSTGRES_DB:-app_mei}
