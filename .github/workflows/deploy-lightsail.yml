@@ -352,10 +352,10 @@ jobs:
       # Sync is the reversible half and therefore precedes image transfer. The target
       # checkout is not evidence of the running release; assertions below inspect both.
       #
-      # `fetch --prune origin` updates every remote head, so it reaches 5a9fba0 while
-      # that commit's branch still exists on the remote. Deleting the branch after merge
-      # without repinning GIT_SHA to the merge commit leaves the SHA unreachable here,
-      # and `reset --hard` then fails on the target with nothing else wrong.
+      # `fetch --prune origin` reaches 5a9fba0 after merge because it is an ancestor of
+      # origin/main. Deleting the feature branch after merge is safe and needs no repin;
+      # before merge, reachability depends on that branch alone, so deleting it or
+      # dispatching against it then makes `reset --hard` fail on the target with nothing else wrong.
       - name: Sync the Lightsail checkout to commit 5a9fba0
         run: |
           set -euo pipefail
