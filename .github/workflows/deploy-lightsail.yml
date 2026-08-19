@@ -80,7 +80,7 @@ jobs:
           unset oidc_token
 
   deploy-lightsail:
-    name: Deploy commit 1238306 to the Lightsail shadow
+    name: Deploy commit 5a9fba0 to the Lightsail shadow
     if: inputs.operation == 'deploy-lightsail'
     needs: oidc-claim-probe
     runs-on: ubuntu-24.04
@@ -99,7 +99,7 @@ jobs:
       DEPLOY_PATH_LIGHTSAIL: ${{ secrets.DEPLOY_PATH_LIGHTSAIL }}
       LIGHTSAIL_INSTANCE_NAME: ${{ vars.LIGHTSAIL_INSTANCE_NAME }}
       LIGHTSAIL_PRESERVED_SSH_CIDRS: ${{ vars.LIGHTSAIL_PRESERVED_SSH_CIDRS }}
-      GIT_SHA: 12383060b8d373cdb6b38989d1228e77023b30fc
+      GIT_SHA: 5a9fba06c93a90d3809202f9c63d49f44c4159f7
       COMPOSE: docker compose --env-file .env.prod -f docker-compose.prod.yml
       HEALTHZ_URL: https://samaronefialho.dev/healthz
       READYZ_URL: https://samaronefialho.dev/readyz
@@ -135,13 +135,20 @@ jobs:
             fi
           done
 
-      # The workflow lives on a later branch, but PILOT-403 deliberately proves the
-      # immutable origin/main commit named above. Building the dispatch ref and merely
-      # labelling it 1238306 would make both release assertions dishonest.
+      # The workflow lives one commit later, but PILOT-403 deliberately proves the
+      # immutable application commit named above. Building the dispatch ref and merely
+      # labelling it 5a9fba0 would make both release assertions dishonest.
+      #
+      # 5a9fba0 is the CSRF_TRUSTED_ORIGINS interpolation fix, and it deliberately
+      # replaces the commit this workflow pinned before: that one still carries the
+      # `${VAR:?}` that stopped run 32200796577 against a correctly configured
+      # .env.prod, so re-deploying it could only fail the same way. 5a9fba0 sits on
+      # this pull request's branch rather than on origin/main, which the Sync step
+      # below depends on — see the note there.
       - name: Checkout the immutable deployment commit
         uses: actions/checkout@v7
         with:
-          ref: 12383060b8d373cdb6b38989d1228e77023b30fc
+          ref: 5a9fba06c93a90d3809202f9c63d49f44c4159f7
           persist-credentials: false
 
       # PLAIN `docker build`, never Compose: the production file has mandatory
@@ -344,7 +351,12 @@ jobs:
 
       # Sync is the reversible half and therefore precedes image transfer. The target
       # checkout is not evidence of the running release; assertions below inspect both.
-      - name: Sync the Lightsail checkout to commit 1238306
+      #
+      # `fetch --prune origin` reaches 5a9fba0 after merge because it is an ancestor of
+      # origin/main. Deleting the feature branch after merge is safe and needs no repin;
+      # before merge, reachability depends on that branch alone, so deleting it or
+      # dispatching against it then makes `reset --hard` fail on the target with nothing else wrong.
+      - name: Sync the Lightsail checkout to commit 5a9fba0
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" "
@@ -357,14 +369,29 @@ jobs:
 
       # PILOT-403 is the disposable shadow proof. A prior db container or named volume
       # means the database is not fresh; never erase it implicitly to make this pass.
+      #
+      # Rendering and parsing are TWO steps, under pipefail, because this gate has
+      # already reported the wrong cause once. Run 32200796577 piped `compose config`
+      # straight into python3 under a plain `set -eu`: Compose exited non-zero, wrote
+      # `required variable CSRF_TRUSTED_ORIGINS is missing` to stderr and NOTHING to
+      # stdout, the shell then reported only python3's status, and python3 raised
+      # `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`. The gate held — it
+      # failed safely — but the operator spent that failure reading a traceback about an
+      # empty string instead of the one line naming the variable, and the actual defect
+      # took a second investigation to find. Check the render's own status before
+      # anything parses it, and hand the JSON to python3 in an environment variable
+      # rather than through a pipe, so Compose's own stderr stays the answer.
       - name: Require a fresh empty database target
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" "
-            set -eu
+            set -euo pipefail
             cd '$DEPLOY_PATH_LIGHTSAIL'
-            project_name=\"\$($COMPOSE config --format json \
-              | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"name\"])')\"
+            if ! compose_config=\"\$($COMPOSE config --format json)\"; then
+              echo 'docker compose config failed; its own error above names the cause' >&2
+              exit 1
+            fi
+            project_name=\"\$(COMPOSE_CONFIG=\"\$compose_config\" python3 -c 'import json,os; print(json.loads(os.environ[\"COMPOSE_CONFIG\"])[\"name\"])')\"
             db_volume=\"\${project_name}_postgres_data\"
             if [ -n \"\$($COMPOSE ps -aq db)\" ]; then
               echo 'database container already exists; PILOT-403 requires a fresh target' >&2
@@ -431,12 +458,19 @@ jobs:
               --format "{{.Repository}}:{{.Tag}} {{.ID}}"
           '
 
+      # `set -euo pipefail` on the REMOTE side too, not only on the runner. The runner's
+      # own pipefail covers `docker save | gzip | ssh`, but everything after that ssh is
+      # a second, separate shell — and without pipefail it reports only `docker load`'s
+      # status. A gunzip that dies on a truncated or corrupt stream is then invisible,
+      # `docker load` can exit 0 having loaded a stale or partial set of layers, and the
+      # step goes green while :prod is not the image that was built. Same
+      # last-command-wins trap that docker-compose.prod.yml's archive_command documents.
       - name: Ship both images to Lightsail
         run: |
           set -euo pipefail
           docker save app-mei:prod app-mei-caddy:prod \
             | gzip -1 \
-            | "$RUNNER_TEMP/ssh/dssh" 'gunzip | docker load'
+            | "$RUNNER_TEMP/ssh/dssh" 'set -euo pipefail; gunzip | docker load'
 
       # DNS stays on OCI. Lightsail's ACME_DNS_OPTION/CF_API_TOKEN drive DNS-01 so it
       # can obtain a public certificate before cutover; two hosts issuing for the same
@@ -451,7 +485,7 @@ jobs:
             $COMPOSE up -d --no-build --wait
           "
 
-      - name: 'Assert 1/6 — the running container is commit 1238306'
+      - name: 'Assert 1/6 — the running container is commit 5a9fba0'
         run: |
           set -euo pipefail
           release="$("$RUNNER_TEMP/ssh/dssh" \
@@ -547,7 +581,7 @@ jobs:
           fi
           echo "assert 5/6 ok: /readyz dependencies are ready on $LIGHTSAIL_IP"
 
-      - name: 'Assert 6/6 — the Lightsail public edge runs commit 1238306'
+      - name: 'Assert 6/6 — the Lightsail public edge runs commit 5a9fba0'
         run: |
           set -euo pipefail
           body="$(curl -fsS --connect-timeout 10 --max-time 30 \
