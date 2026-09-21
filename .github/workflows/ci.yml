@@ -328,32 +328,46 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  deploy-staging:
-    name: Deploy to staging (main only, after the gates above)
+  deploy-pilot:
+    name: Deploy to the pilot host (main only, after the gates above)
     runs-on: ubuntu-24.04
     needs: [test, container-smoke]
     # Both halves are load-bearing. `push` excludes pull_request runs, whose head is a
     # synthetic merge commit that exists on no branch and therefore cannot be checked
     # out on the box. The ref check excludes any branch a future trigger might add.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    timeout-minutes: 30
+    timeout-minutes: 60
+
+    # The environment is what scopes the OIDC token's `environment` claim and gates
+    # access to the _LIGHTSAIL secrets; the IAM trust policy accepts nothing else.
+    environment: lightsail-pilot
+    permissions:
+      id-token: write
+      contents: read
 
     # Never cancel a deploy in flight: a half-loaded image or a stack caught mid-`up`
-    # is a worse state than a queue. GitHub retains only the NEWEST pending run per
-    # group, so back-to-back pushes supersede one another and the superseded deploy
-    # reports `cancelled` — by design. Anything asserting on deploy history must
-    # therefore read the latest COMPLETED run, not the latest run.
+    # is a worse state than a queue, and a cancelled job may skip the `if: always()`
+    # firewall cleanup below, stranding the runner's SSH rule open. The group is
+    # shared with the stale-rule cleanup in deploy-lightsail.yml so the two can never
+    # mutate the same firewall concurrently. GitHub retains only the NEWEST pending
+    # run per group, so back-to-back pushes supersede one another and the superseded
+    # deploy reports `cancelled` — by design. Anything asserting on deploy history
+    # must therefore read the latest COMPLETED run, not the latest run.
     concurrency:
-      group: deploy-staging
+      group: lightsail-pilot-firewall
       cancel-in-progress: false
 
     env:
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      DEPLOY_HOST_LIGHTSAIL: ${{ secrets.DEPLOY_HOST_LIGHTSAIL }}
+      DEPLOY_USER_LIGHTSAIL: ${{ secrets.DEPLOY_USER_LIGHTSAIL }}
+      DEPLOY_PATH_LIGHTSAIL: ${{ secrets.DEPLOY_PATH_LIGHTSAIL }}
+      LIGHTSAIL_INSTANCE_NAME: ${{ vars.LIGHTSAIL_INSTANCE_NAME }}
+      LIGHTSAIL_PRESERVED_SSH_CIDRS: ${{ vars.LIGHTSAIL_PRESERVED_SSH_CIDRS }}
       GIT_SHA: ${{ github.sha }}
       COMPOSE: docker compose --env-file .env.prod -f docker-compose.prod.yml
       HEALTHZ_URL: https://samaronefialho.dev/healthz
+      READYZ_URL: https://samaronefialho.dev/readyz
+      VERSIONZ_URL: https://samaronefialho.dev/versionz
       # 3 GiB. The pair is ~1.16 GB (app 1.01 GB, caddy 154 MB) and the previous
       # generation stays resident until the prune at the very end, so the load needs
       # room for both plus the decompressed stream.
@@ -366,26 +380,208 @@ jobs:
       MIN_SWAP_FREE_KIB: "1048576"
 
     steps:
+      - name: Refuse incomplete Lightsail configuration
+        env:
+          DEPLOY_SSH_KEY_LIGHTSAIL: ${{ secrets.DEPLOY_SSH_KEY_LIGHTSAIL }}
+          DEPLOY_KNOWN_HOSTS_LIGHTSAIL: ${{ secrets.DEPLOY_KNOWN_HOSTS_LIGHTSAIL }}
+          AWS_ROLE_ARN_LIGHTSAIL: ${{ vars.AWS_ROLE_ARN_LIGHTSAIL }}
+        run: |
+          set -euo pipefail
+          for name in \
+            DEPLOY_HOST_LIGHTSAIL \
+            DEPLOY_USER_LIGHTSAIL \
+            DEPLOY_PATH_LIGHTSAIL \
+            DEPLOY_SSH_KEY_LIGHTSAIL \
+            DEPLOY_KNOWN_HOSTS_LIGHTSAIL \
+            AWS_ROLE_ARN_LIGHTSAIL \
+            LIGHTSAIL_INSTANCE_NAME \
+            LIGHTSAIL_PRESERVED_SSH_CIDRS; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::required Lightsail configuration $name is empty"
+              exit 1
+            fi
+          done
+
+      # The deploy target is the pushed commit itself: GIT_SHA is github.sha, so the
+      # checkout, the image build, the Sync and the release assertions all name the
+      # same commit by construction.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-      - name: Open an authenticated channel to the box
+      # PLAIN `docker build`, never Compose: the production file has mandatory
+      # interpolation whose values exist only in .env.prod on the target.
+      - name: Build both images
+        run: |
+          set -euo pipefail
+          docker build --build-arg GIT_SHA="$GIT_SHA" -t app-mei:prod .
+          docker build -t app-mei-caddy:prod ops/caddy
+          docker image ls --filter reference='app-mei*:prod' \
+            --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+
+      - name: Configure short-lived AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_LIGHTSAIL }}
+          aws-region: sa-east-1
+          audience: sts.amazonaws.com
+
+      # Read the whole firewall state before mutation. The preservation variable is an
+      # explicit operator-owned allow-list: inference is unsafe because an arbitrary
+      # /32 and a stale runner /32 are indistinguishable in the Lightsail API.
+      - name: Open only the runner SSH rule
+        run: |
+          set -euo pipefail
+          runner_ip="$(curl -fsS --connect-timeout 10 --max-time 30 \
+            --retry 4 --retry-all-errors https://checkip.amazonaws.com \
+            | tr -d '[:space:]')"
+          runner_cidr="$(python3 - "$runner_ip" <<'PY'
+          import ipaddress
+          import sys
+
+          address = ipaddress.ip_address(sys.argv[1])
+          if address.version != 4:
+              raise SystemExit("runner address is not IPv4")
+          print(f"{address}/32")
+          PY
+          )"
+
+          PRESERVED="$LIGHTSAIL_PRESERVED_SSH_CIDRS" \
+          python3 - > "$RUNNER_TEMP/lightsail-preserved-ssh-cidrs.txt" <<'PY'
+          import ipaddress
+          import os
+
+          values = os.environ["PRESERVED"].replace(",", " ").split()
+          if not values:
+              raise SystemExit("LIGHTSAIL_PRESERVED_SSH_CIDRS must name the operator /32")
+          if len(values) > 8:
+              raise SystemExit("LIGHTSAIL_PRESERVED_SSH_CIDRS exceeds the 8-entry bound")
+          for value in values:
+              network = ipaddress.ip_network(value, strict=True)
+              if network.version != 4 or network.prefixlen != 32:
+                  raise SystemExit(f"preserved SSH entry is not an IPv4 /32: {value}")
+              print(network)
+          PY
+
+          if grep -Fxq "$runner_cidr" "$RUNNER_TEMP/lightsail-preserved-ssh-cidrs.txt"; then
+            echo "::error::runner CIDR $runner_cidr is operator-preserved; refusing to" \
+                 "claim and later remove an operator SSH rule"
+            exit 1
+          fi
+
+          aws lightsail get-instance-port-states \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+            --output json > "$RUNNER_TEMP/lightsail-ports-before.json"
+
+          while IFS= read -r preserved_cidr; do
+            if ! jq -e --arg cidr "$preserved_cidr" '
+              any(.portStates[];
+                .protocol == "tcp" and .fromPort == 22 and .toPort == 22 and
+                .state == "open" and ((.cidrs // []) | index($cidr) != null))
+            ' "$RUNNER_TEMP/lightsail-ports-before.json" >/dev/null; then
+              echo "::error::explicitly preserved operator SSH CIDR $preserved_cidr" \
+                   "is absent from the current Lightsail port-22 state"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/lightsail-preserved-ssh-cidrs.txt"
+
+          if ! jq -e '
+            any(.portStates[];
+              .protocol == "tcp" and .fromPort == 22 and .toPort == 22 and
+              .state == "open" and
+              ((.cidrListAliases // []) | index("lightsail-connect") != null))
+          ' "$RUNNER_TEMP/lightsail-ports-before.json" >/dev/null; then
+            echo "::error::Lightsail browser SSH alias lightsail-connect is absent;" \
+                 "refusing a mutation whose preservation baseline is incomplete"
+            exit 1
+          fi
+
+          for public_port in 80 443; do
+            if ! jq -e --argjson port "$public_port" '
+              any(.portStates[];
+                .protocol == "tcp" and .fromPort == $port and .toPort == $port and
+                .state == "open")
+            ' "$RUNNER_TEMP/lightsail-ports-before.json" >/dev/null; then
+              echo "::error::TCP/$public_port is not open in the baseline; refusing a" \
+                   "firewall mutation that cannot prove HTTP/HTTPS preservation"
+              exit 1
+            fi
+          done
+
+          lightsail_ip="$(aws lightsail get-instance \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+            --query 'instance.publicIpAddress' --output text)"
+          python3 - "$lightsail_ip" <<'PY'
+          import ipaddress
+          import sys
+
+          address = ipaddress.ip_address(sys.argv[1])
+          if address.version != 4:
+              raise SystemExit("Lightsail public address is not IPv4")
+          PY
+
+          printf 'RUNNER_CIDR=%s\n' "$runner_cidr" >> "$GITHUB_ENV"
+          printf 'LIGHTSAIL_IP=%s\n' "$lightsail_ip" >> "$GITHUB_ENV"
+
+          port_info="$(jq -cn --arg cidr "$runner_cidr" \
+            '{fromPort:22,toPort:22,protocol:"tcp",cidrs:[$cidr]}')"
+          aws lightsail open-instance-public-ports \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+            --port-info "$port_info" >/dev/null
+
+      - name: Verify the runner rule exists and nothing else changed
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+              --output json > "$RUNNER_TEMP/lightsail-ports-open.json"
+            if jq -e --arg cidr "$RUNNER_CIDR" '
+              any(.portStates[];
+                .protocol == "tcp" and .fromPort == 22 and .toPort == 22 and
+                .state == "open" and ((.cidrs // []) | index($cidr) != null))
+            ' "$RUNNER_TEMP/lightsail-ports-open.json" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::runner SSH rule $RUNNER_CIDR was not observable after open"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          normalize_without_runner() {
+            jq -S --arg cidr "$RUNNER_CIDR" '
+              .portStates
+              | map(
+                  if .protocol == "tcp" and .fromPort == 22 and .toPort == 22 then
+                    .cidrs = ((.cidrs // []) | map(select(. != $cidr)) | sort)
+                  else . end
+                  | .ipv6Cidrs = ((.ipv6Cidrs // []) | sort)
+                  | .cidrListAliases = ((.cidrListAliases // []) | sort)
+                )
+              | sort_by(.protocol, .fromPort, .toPort, .state)
+            ' "$1"
+          }
+          if ! diff -u \
+            <(normalize_without_runner "$RUNNER_TEMP/lightsail-ports-before.json") \
+            <(normalize_without_runner "$RUNNER_TEMP/lightsail-ports-open.json"); then
+            echo "::error::opening $RUNNER_CIDR changed firewall state beyond that exact" \
+                 "TCP/22 CIDR; operator SSH, browser SSH, HTTP, and HTTPS must survive"
+            exit 1
+          fi
+
+      - name: Open an authenticated channel to Lightsail
         env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        # Secrets arrive as env vars rather than `${{ }}` interpolated into the script:
-        # interpolation splices the value into the shell source, where a newline or a
-        # quote in a secret becomes executable text.
-        #
-        # IdentitiesOnly and IdentityAgent=none are not belt-and-braces. Without them
-        # ssh silently falls back to an agent identity or ~/.ssh/id_*, so a green
-        # connection would prove only that SOME key works, not that the deploy key does.
+          DEPLOY_SSH_KEY_LIGHTSAIL: ${{ secrets.DEPLOY_SSH_KEY_LIGHTSAIL }}
+          DEPLOY_KNOWN_HOSTS_LIGHTSAIL: ${{ secrets.DEPLOY_KNOWN_HOSTS_LIGHTSAIL }}
         run: |
           set -euo pipefail
           install -m 700 -d "$RUNNER_TEMP/ssh"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/id_deploy"
+          printf '%s\n' "$DEPLOY_SSH_KEY_LIGHTSAIL" > "$RUNNER_TEMP/ssh/id_deploy"
           chmod 600 "$RUNNER_TEMP/ssh/id_deploy"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS_LIGHTSAIL" > "$RUNNER_TEMP/ssh/known_hosts"
           chmod 600 "$RUNNER_TEMP/ssh/known_hosts"
 
           cat > "$RUNNER_TEMP/ssh/dssh" <<'WRAPPER'
@@ -399,45 +595,33 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
-            "$DEPLOY_USER@$DEPLOY_HOST" "$@"
+            "$DEPLOY_USER_LIGHTSAIL@$DEPLOY_HOST_LIGHTSAIL" "$@"
           WRAPPER
           chmod 700 "$RUNNER_TEMP/ssh/dssh"
 
+          resolved_host_ip="$(getent ahostsv4 "$DEPLOY_HOST_LIGHTSAIL" \
+            | awk 'NR==1{print $1}')"
+          if [ "$resolved_host_ip" != "$LIGHTSAIL_IP" ]; then
+            echo "::error::DEPLOY_HOST_LIGHTSAIL resolves to $resolved_host_ip, but the" \
+                 "Lightsail control plane reports $LIGHTSAIL_IP"
+            exit 1
+          fi
           "$RUNNER_TEMP/ssh/dssh" 'echo "channel open on $(hostname)"'
 
-      # PLAIN `docker build`, never `docker compose -f docker-compose.prod.yml build`.
-      # That file carries ~15 mandatory `${VAR:?}` interpolations and no .env.prod
-      # exists on a runner, so compose aborts while PARSING — before it would ever
-      # reach a build. Reproduced; do not "simplify" this back into a compose call.
-      - name: Build both images
-        run: |
-          set -euo pipefail
-          docker build --build-arg GIT_SHA="$GIT_SHA" -t app-mei:prod .
-          docker build -t app-mei-caddy:prod ops/caddy
-          docker image ls --filter reference='app-mei*:prod' \
-            --format '{{.Repository}}:{{.Tag}} {{.Size}}'
-
-      # BEFORE anything lands on the box. The box needs the tree as well as the images —
-      # compose reads docker-compose.prod.yml, ops/Caddyfile and ops/sql from disk there —
-      # and the two halves are genuinely independent: this step touches only git under
-      # $DEPLOY_PATH, the load below touches only the docker daemon. Neither reads what
-      # the other writes, so the order is free to choose and only one choice is safe.
+      # Sync is the reversible half and therefore precedes image transfer. The target
+      # checkout is not evidence of the running release; assertions below inspect both.
       #
-      # `docker load` OVERWRITES the :prod tags. While this step ran LAST, a Sync failure
-      # left app-mei:prod naming an image the stack was not running, with the checkout
-      # still on the previous commit — which is exactly how deploy 30672150324 ended when
-      # `git reset --hard` died on a permission error. Syncing first means the cheap,
-      # fully reversible half of the deploy fails before the irreversible half has
-      # happened at all, and the box is left untouched rather than half-updated.
-      - name: Sync the box checkout to this commit
+      # GIT_SHA is the head of the push that triggered this run, so `fetch --prune
+      # origin` always reaches it: the commit is on origin/main by definition.
+      - name: Sync the Lightsail checkout to this commit
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" "
             set -eu
             export GIT_TERMINAL_PROMPT=0
-            git -C '$DEPLOY_PATH' fetch --prune origin
-            git -C '$DEPLOY_PATH' reset --hard '$GIT_SHA'
-            git -C '$DEPLOY_PATH' rev-parse HEAD
+            git -C '$DEPLOY_PATH_LIGHTSAIL' fetch --prune origin
+            git -C '$DEPLOY_PATH_LIGHTSAIL' reset --hard '$GIT_SHA'
+            test \"\$(git -C '$DEPLOY_PATH_LIGHTSAIL' rev-parse HEAD)\" = '$GIT_SHA'
           "
 
       # Runs against the just-synced checkout, so the audit is the version this commit
@@ -446,11 +630,9 @@ jobs:
       - name: Audit .env.prod for leftover placeholders
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/ssh/dssh" "cd '$DEPLOY_PATH' && python3 ops/check_env_prod.py .env.prod .env.prod.example"
+          "$RUNNER_TEMP/ssh/dssh" "cd '$DEPLOY_PATH_LIGHTSAIL' && python3 ops/check_env_prod.py .env.prod .env.prod.example"
 
-      # After the Sync, so the free space measured is what the load will actually find:
-      # the checkout writes to the same filesystem the docker data root lives on.
-      - name: Disk capacity preflight on the box
+      - name: Disk capacity preflight on Lightsail
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" 'df -h /var/lib/docker; echo; docker system df'
@@ -464,7 +646,7 @@ jobs:
           fi
           echo "disk preflight ok: ${free_disk_kib} KiB free (floor ${MIN_FREE_KIB})"
 
-      - name: Memory capacity preflight on the box
+      - name: Memory capacity preflight on Lightsail
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" \
@@ -491,12 +673,10 @@ jobs:
           fi
           exit "$resource_failure"
 
-      # BEFORE the load, and BOTH images: once `docker load` overwrites the :prod tags
-      # the previous generation is unreachable by name and rollback has no anchor.
-      # On the first-ever deploy app-mei-caddy:prod does not exist on the box yet, so
-      # its tag is a no-op — hence `|| true`, which must NOT be widened into ignoring
-      # a real failure on the app image.
-      - name: Anchor rollback — tag the running images :previous
+      # Both tags are anchored before docker load overwrites :prod. The first deploy to
+      # this host has no prior generation, so each missing source tag is an allowed
+      # no-op.
+      - name: Anchor rollback by tagging both current images previous
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" '
@@ -507,53 +687,56 @@ jobs:
               --format "{{.Repository}}:{{.Tag}} {{.ID}}"
           '
 
-      - name: Ship both images to the box
+      # `set -euo pipefail` on the REMOTE side too, not only on the runner. The runner's
+      # own pipefail covers `docker save | gzip | ssh`, but everything after that ssh is
+      # a second, separate shell — and without pipefail it reports only `docker load`'s
+      # status. A gunzip that dies on a truncated or corrupt stream is then invisible,
+      # `docker load` can exit 0 having loaded a stale or partial set of layers, and the
+      # step goes green while :prod is not the image that was built. Same
+      # last-command-wins trap that docker-compose.prod.yml's archive_command documents.
+      - name: Ship both images to Lightsail
         run: |
           set -euo pipefail
           docker save app-mei:prod app-mei-caddy:prod \
             | gzip -1 \
-            | "$RUNNER_TEMP/ssh/dssh" 'gunzip | docker load'
+            | "$RUNNER_TEMP/ssh/dssh" 'set -euo pipefail; gunzip | docker load'
 
-      # --no-build because the images were just loaded; building on a 1-vCPU box is
-      # what T-065 proved unworkable. No --force-recreate and no service list: compose
-      # already recreates exactly the containers whose image id moved, and naming
-      # services would silently skip any service added to the file later.
-      - name: Roll the stack onto the new images
+      # Until the DNS flip the public name still resolves to OCI, so this stack is a
+      # shadow of the live edge. Lightsail's ACME_DNS_OPTION/CF_API_TOKEN drive DNS-01
+      # so it can hold a public certificate before cutover; two hosts issuing for the
+      # same domain can race on the shared _acme-challenge TXT record, so do not run
+      # OCI and Lightsail issuance concurrently.
+      - name: Roll the shadow stack onto the new images
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" "
             set -eu
-            cd '$DEPLOY_PATH'
+            cd '$DEPLOY_PATH_LIGHTSAIL'
             $COMPOSE up -d --no-build --wait
           "
 
-      # Five assertions BY EFFECT. A green `up --wait` only proves the containers pass
-      # their own healthchecks — it cannot see a stack that came up on the old image,
-      # skipped its migrations, or is unreachable from the internet.
-      - name: 'Assert 1/5 — the running container is this commit'
+      - name: 'Assert 1/6 — the running container is this commit'
         run: |
           set -euo pipefail
           release="$("$RUNNER_TEMP/ssh/dssh" \
-            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web cat /app/RELEASE" \
+            "cd '$DEPLOY_PATH_LIGHTSAIL' && $COMPOSE exec -T web cat /app/RELEASE" \
             | tr -d '[:space:]')"
           if [ "$release" != "$GIT_SHA" ]; then
             echo "::error::/app/RELEASE reads '$release' but this run deploys" \
-                 "'$GIT_SHA' — the box did not take the new image"
+                 "'$GIT_SHA' — Lightsail did not take the pushed image"
             exit 1
           fi
-          echo "assert 1/4 ok: /app/RELEASE == $GIT_SHA"
+          echo "assert 1/6 ok: /app/RELEASE == $GIT_SHA"
 
-      # A bare `! ... | grep -q '\[ \]'` would PASS when the command inside it dies,
-      # because a dead container emits nothing and nothing contains no pending marker.
-      # So: capture to a file, assert the probe's own exit status, assert at least one
-      # APPLIED migration as a positive control, and only then assert none pending.
-      - name: 'Assert 2/5 — migrations applied, probe positive-controlled'
+      # Capture and positive-control the probe before asking whether anything is
+      # pending. An empty plan from a dead container would otherwise pass vacuously.
+      - name: 'Assert 2/6 — migrations applied, probe positive-controlled'
         run: |
           set -euo pipefail
           plan="$RUNNER_TEMP/migration-plan.txt"
           rc=0
           "$RUNNER_TEMP/ssh/dssh" \
-            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web sh -c 'DATABASE_URL=\"\$DATABASE_MIGRATION_URL\" python manage.py showmigrations --plan --skip-checks'" \
+            "cd '$DEPLOY_PATH_LIGHTSAIL' && $COMPOSE exec -T web sh -c 'DATABASE_URL=\"\$DATABASE_MIGRATION_URL\" python manage.py showmigrations --plan --skip-checks'" \
             > "$plan" || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::error::showmigrations exited $rc — the probe itself failed, so its" \
@@ -569,31 +752,29 @@ jobs:
             exit 1
           fi
           if grep -q '\[ \]' "$plan"; then
-            echo "::error::migrations are pending on the box:"
+            echo "::error::migrations are pending on Lightsail:"
             grep -n '\[ \]' "$plan"
             exit 1
           fi
-          echo "assert 2/4 ok: $applied migrations applied, none pending"
+          echo "assert 2/6 ok: $applied migrations applied, none pending"
 
-      - name: 'Assert 3/5 — Django system checks green in the deployed container'
+      - name: 'Assert 3/6 — Django system checks green in the deployed container'
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" \
-            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web python manage.py check"
-          echo "assert 3/4 ok: manage.py check clean"
+            "cd '$DEPLOY_PATH_LIGHTSAIL' && $COMPOSE exec -T web python manage.py check"
+          echo "assert 3/6 ok: manage.py check clean"
 
-      # From the runner through the target box's public TLS edge, not from inside the
-      # stack. Pinning resolution covers the box just deployed even before DNS cutover.
-      # Retried because a recreated web container can still be draining first requests.
-      - name: 'Assert 4/5 — /healthz is ok over the public edge'
+      # Every public assertion goes through the Lightsail address while ordinary DNS
+      # still resolves to OCI. Dropping --resolve would test the rollback target instead.
+      - name: 'Assert 4/6 — /healthz is ok over the Lightsail public edge'
         run: |
           set -euo pipefail
-          DEPLOY_IP="$(getent ahostsv4 "$DEPLOY_HOST" | awk 'NR==1{print $1}')"
           healthz_url="${HEALTHZ_URL}?cb=${GITHUB_RUN_ID}"
           body=''
           for attempt in 1 2 3; do
-            if body="$(curl -fsS --max-time 30 \
-              --resolve "samaronefialho.dev:443:$DEPLOY_IP" \
+            if body="$(curl -fsS --connect-timeout 10 --max-time 30 \
+              --resolve "samaronefialho.dev:443:$LIGHTSAIL_IP" \
               "$healthz_url")"; then
               break
             fi
@@ -606,50 +787,143 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$body"
-          if ! printf '%s' "$body" | jq -e '.status == "ok"' >/dev/null; then
-            echo "::error::$healthz_url answered but did not report status ok"
+          if ! jq -e '.status == "ok"' <<<"$body" >/dev/null; then
+            echo "::error::$healthz_url answered from $LIGHTSAIL_IP without status ok"
             exit 1
           fi
-          echo "assert 4/4 ok: $healthz_url reports status ok on $DEPLOY_IP"
+          echo "assert 4/6 ok: $healthz_url reports status ok on $LIGHTSAIL_IP"
 
-      - name: 'Assert 5/5 — the deploy target runs this commit'
+      - name: 'Assert 5/6 — /readyz reports database and Redis ready'
         run: |
           set -euo pipefail
-          DEPLOY_IP="$(getent ahostsv4 "$DEPLOY_HOST" | awk 'NR==1{print $1}')"
-          body="$(curl -fsS \
-            --resolve "samaronefialho.dev:443:$DEPLOY_IP" \
-            "https://samaronefialho.dev/versionz?cb=$GITHUB_RUN_ID")"
+          body="$(curl -fsS --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-all-errors \
+            --resolve "samaronefialho.dev:443:$LIGHTSAIL_IP" \
+            "${READYZ_URL}?cb=${GITHUB_RUN_ID}")"
           printf '%s\n' "$body"
-          if ! printf '%s' "$body" \
-            | jq -e --arg GIT_SHA "$GIT_SHA" '.release == $GIT_SHA' >/dev/null; then
-            echo "::error::/versionz on $DEPLOY_IP does not report $GIT_SHA"
+          if ! jq -e '
+            .status == "ready" and
+            .database == "ok" and
+            .redis == "ok"
+          ' <<<"$body" >/dev/null; then
+            echo "::error::/readyz on $LIGHTSAIL_IP did not report ready/ok/ok"
             exit 1
           fi
-          echo "assert 5/5 ok: public /versionz on $DEPLOY_IP == $GIT_SHA"
+          echo "assert 5/6 ok: /readyz dependencies are ready on $LIGHTSAIL_IP"
 
-      # Post-deploy verification, not a traffic gate: the stack is already rolled.
-      # A probe failure marks the deploy red without stranding traffic between stacks.
-      - name: Verify private object storage after rollout
+      - name: 'Assert 6/6 — the Lightsail public edge runs this commit'
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-all-errors \
+            --resolve "samaronefialho.dev:443:$LIGHTSAIL_IP" \
+            "${VERSIONZ_URL}?cb=${GITHUB_RUN_ID}")"
+          printf '%s\n' "$body"
+          if ! jq -e --arg GIT_SHA "$GIT_SHA" '.release == $GIT_SHA' \
+            <<<"$body" >/dev/null; then
+            echo "::error::/versionz on $LIGHTSAIL_IP does not report $GIT_SHA"
+            exit 1
+          fi
+          echo "assert 6/6 ok: public /versionz on $LIGHTSAIL_IP == $GIT_SHA"
+
+      # The command owns a disjoint _probe/ key, authenticates readback, deletes it,
+      # confirms absence, and repeats deletion in finally. It never touches customer
+      # objects or bucket policy, and no broader storage operation is approved here.
+      - name: Verify private object storage within the approved probe namespace
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" \
-            "cd '$DEPLOY_PATH' && $COMPOSE exec -T web python manage.py storage_probe"
+            "cd '$DEPLOY_PATH_LIGHTSAIL' && $COMPOSE exec -T web python manage.py storage_probe"
 
-      # Last, never earlier. Pruning before the assertions would delete the layers the
-      # :previous tags depend on for anything not shared with the new image — i.e. it
-      # would destroy the rollback while the deploy was still unproven.
+      # Last: the previous tags are the rollback anchor until every assertion passes.
       - name: Reclaim orphaned layers
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/ssh/dssh" 'docker image prune -f; df -h /var/lib/docker'
 
-      - name: Capture stack state on failure
-        if: failure()
+      - name: Capture Lightsail stack state on failure
+        if: failure() && env.RUNNER_CIDR != ''
         run: |
-          "$RUNNER_TEMP/ssh/dssh" "cd '$DEPLOY_PATH' && $COMPOSE ps" || true
           "$RUNNER_TEMP/ssh/dssh" \
-            "cd '$DEPLOY_PATH' && $COMPOSE logs --tail=100 --no-log-prefix web" || true
+            "cd '$DEPLOY_PATH_LIGHTSAIL' && $COMPOSE ps" || true
+          "$RUNNER_TEMP/ssh/dssh" \
+            "cd '$DEPLOY_PATH_LIGHTSAIL' && $COMPOSE logs --tail=100 --no-log-prefix web" || true
 
-      - name: Shred the key material
+      # This step owns exactly RUNNER_CIDR. It never sends the rest of the port-22
+      # cidrs, the lightsail-connect alias, or ports 80/443 back through a replacing API.
+      - name: Close only the runner SSH rule
         if: always()
-        run: shred -u "$RUNNER_TEMP/ssh/id_deploy" 2>/dev/null || true
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_CIDR:-}" ]; then
+            echo 'runner CIDR was never allocated; no JIT SSH rule can require cleanup'
+            exit 0
+          fi
+          aws lightsail get-instance-port-states \
+            --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+            --output json > "$RUNNER_TEMP/lightsail-ports-before-close.json"
+          if jq -e --arg cidr "$RUNNER_CIDR" '
+            any(.portStates[];
+              .protocol == "tcp" and .fromPort == 22 and .toPort == 22 and
+              .state == "open" and ((.cidrs // []) | index($cidr) != null))
+          ' "$RUNNER_TEMP/lightsail-ports-before-close.json" >/dev/null; then
+            port_info="$(jq -cn --arg cidr "$RUNNER_CIDR" \
+              '{fromPort:22,toPort:22,protocol:"tcp",cidrs:[$cidr]}')"
+            aws lightsail close-instance-public-ports \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+              --port-info "$port_info" >/dev/null
+          fi
+
+      - name: Verify the runner SSH rule is absent and all baseline rules remain
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${RUNNER_CIDR:-}" ]; then
+            echo 'runner CIDR was never allocated; absence verification is not applicable'
+            exit 0
+          fi
+          for attempt in 1 2 3 4 5 6; do
+            aws lightsail get-instance-port-states \
+              --instance-name "$LIGHTSAIL_INSTANCE_NAME" \
+              --output json > "$RUNNER_TEMP/lightsail-ports-after-close.json"
+            if ! jq -e --arg cidr "$RUNNER_CIDR" '
+              any(.portStates[];
+                .protocol == "tcp" and .fromPort == 22 and .toPort == 22 and
+                .state == "open" and ((.cidrs // []) | index($cidr) != null))
+            ' "$RUNNER_TEMP/lightsail-ports-after-close.json" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::runner SSH rule $RUNNER_CIDR remains after close"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          normalize_without_runner() {
+            jq -S --arg cidr "$RUNNER_CIDR" '
+              .portStates
+              | map(
+                  if .protocol == "tcp" and .fromPort == 22 and .toPort == 22 then
+                    .cidrs = ((.cidrs // []) | map(select(. != $cidr)) | sort)
+                  else . end
+                  | .ipv6Cidrs = ((.ipv6Cidrs // []) | sort)
+                  | .cidrListAliases = ((.cidrListAliases // []) | sort)
+                )
+              | sort_by(.protocol, .fromPort, .toPort, .state)
+            ' "$1"
+          }
+          if ! diff -u \
+            <(normalize_without_runner "$RUNNER_TEMP/lightsail-ports-before.json") \
+            <(normalize_without_runner "$RUNNER_TEMP/lightsail-ports-after-close.json"); then
+            echo "::error::firewall state after cleanup differs from the pre-deploy" \
+                 "baseline beyond $RUNNER_CIDR"
+            exit 1
+          fi
+          echo "firewall cleanup verified: $RUNNER_CIDR absent; baseline preserved"
+
+      - name: Shred the Lightsail key material
+        if: always()
+        run: |
+          shred -u "$RUNNER_TEMP/ssh/id_deploy" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/ssh/dssh" "$RUNNER_TEMP/ssh/known_hosts"

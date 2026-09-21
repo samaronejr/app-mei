@@ -647,11 +647,11 @@ on a larger one, which is backwards.
 
 After any stop longer than 15 minutes, `/healthz` is expected to return 503 until beat's first tick writes a scheduler heartbeat. The web service may report unhealthy for up to about 7 minutes; this is expected and self-heals.
 
-Staging deploys itself. A push that lands on `main` and passes both gates ships to the
-box with no human in the loop, and the job proves the deployment landed by observing
-its **effects** rather than by trusting that the containers came up. Everything below
-describes `deploy-staging` in `.github/workflows/ci.yml`; the manual path exists for
-the day GitHub is unavailable, not as the normal route.
+The pilot host deploys itself. A push that lands on `main` and passes both gates ships
+to the Lightsail instance with no human in the loop, and the job proves the deployment
+landed by observing its **effects** rather than by trusting that the containers came
+up. Everything below describes `deploy-pilot` in `.github/workflows/ci.yml`; the
+manual path exists for the day GitHub is unavailable, not as the normal route.
 
 ### The job
 
@@ -665,35 +665,60 @@ Gating is `needs: [test, container-smoke]`, so lint, types, the migration check,
 full suite, the isolation suite and a cold-booted `/healthz` all pass before anything
 touches the server.
 
+The job runs against the `lightsail-pilot` GitHub environment, which is what scopes
+the OIDC token's `environment` claim and gates access to the `_LIGHTSAIL` secrets —
+the IAM trust policy accepts that claim and nothing else. Its permissions are
+`id-token: write`, to mint the OIDC token, and `contents: read`; nothing more.
+
 The mechanism is deliberately unglamorous:
 
-1. **Build both images on the runner** with plain `docker build`, never `docker compose
+1. **Refuse incomplete configuration** — every `_LIGHTSAIL` secret and variable must
+   be non-empty before anything runs, so a half-configured environment fails on the
+   missing name rather than mid-deploy.
+2. **Build both images on the runner** with plain `docker build`, never `docker compose
    -f docker-compose.prod.yml build`. That file carries roughly fifteen mandatory
    `${VAR:?}` interpolations and no `.env.prod` exists on a runner, so compose aborts
    while *parsing*, before it would ever reach a build. The app image takes
    `--build-arg GIT_SHA`; the Caddy image is built from `ops/caddy`.
-2. **Sync the checkout** with `git fetch --prune origin && git reset --hard "$GIT_SHA"`.
+3. **Open the firewall just in time.** The host's SSH port is closed to the world at
+   rest. The job mints short-lived AWS credentials through OIDC
+   (`configure-aws-credentials`, role `AWS_ROLE_ARN_LIGHTSAIL`), reads the runner's own
+   public address, and opens TCP/22 to exactly that `/32`. Before mutating, it
+   snapshots the whole port state and verifies the preservation baseline — the
+   operator's `/32`s in `LIGHTSAIL_PRESERVED_SSH_CIDRS`, the `lightsail-connect`
+   browser-SSH alias, and ports 80/443 — then verifies afterwards that nothing but the
+   runner rule changed. Two `if: always()` steps close the rule and verify the
+   baseline is intact, so the host is never left SSH-open to a runner address. A
+   runner that dies mid-job leaves its rule behind; `deploy-lightsail.yml`'s
+   `stale-rule-cleanup` is the bounded manual path for removing it.
+4. **Sync the checkout** with `git fetch --prune origin && git reset --hard "$GIT_SHA"`.
    The box needs the tree as well as the images, because compose reads
    `docker-compose.prod.yml`, `ops/Caddyfile` and `ops/sql` from disk there. **This runs
    before anything lands on the box**, and the ordering is load-bearing — see below.
-3. **Anchor the rollback** by tagging the currently running images `:previous` on the
+   Right after it, `ops/check_env_prod.py` audits the box's `.env.prod` for leftover
+   placeholders, printing key names only.
+5. **Preflight disk and memory** on the box: `MIN_FREE_KIB` free under
+   `/var/lib/docker`, plus `MemAvailable` and `SwapFree` floors, because the observed
+   failure is a stalled `docker load`, not a clean error.
+6. **Anchor the rollback** by tagging the currently running images `:previous` on the
    box — before the load, because once `docker load` overwrites the `:prod` tags the
    previous generation is unreachable by name.
-4. **Ship the pair** as `docker save … | gzip -1 | ssh 'gunzip | docker load'`. The
-   images are never built on the server; see the next section for why.
-5. **Roll the stack** with `up -d --no-build --wait`, no `--force-recreate` and no
+7. **Ship the pair** as `docker save … | gzip -1 | ssh 'set -euo pipefail; gunzip |
+   docker load'`. The images are never built on the server; see the next section for
+   why.
+8. **Roll the stack** with `up -d --no-build --wait`, no `--force-recreate` and no
    service list. Compose already recreates exactly the containers whose image id moved,
    and naming services would silently skip any service added to the file later.
- 6. **Assert five times, by effect** (below), then run the post-rollout storage probe,
-    and only then `docker image prune -f`. Pruning earlier would delete the layers the
-    `:previous` tags depend on, destroying the rollback while the deploy was still
-    unproven.
+9. **Assert six times, by effect** (below), then run the post-rollout storage probe,
+   and only then `docker image prune -f`. Pruning earlier would delete the layers the
+   `:previous` tags depend on, destroying the rollback while the deploy was still
+   unproven.
 
 #### Sync before the load, because only one of those two is reversible
 
-Steps 2 and 4 do not depend on each other. The Sync touches only git under
-`$DEPLOY_PATH`; the load touches only the docker daemon. Neither reads what the other
-writes, so the order is free to choose — and exactly one choice is safe.
+The Sync and the load do not depend on each other. The Sync touches only git under
+`$DEPLOY_PATH_LIGHTSAIL`; the load touches only the docker daemon. Neither reads what
+the other writes, so the order is free to choose — and exactly one choice is safe.
 
 `docker load` **overwrites** the `:prod` tags. While Sync ran after the load, a Sync
 failure left `app-mei:prod` naming an image the stack was not running, on a box whose
@@ -718,22 +743,23 @@ The five assertions are the point of the job:
 | 2 | `showmigrations --plan` exits 0, shows at least one `[X]`, and shows no `[ ]` | Migrations that never ran, and a probe that died instead of reporting |
 | 3 | `manage.py check` inside the deployed container | Silent failure of the portal-grant healer, and every other system check |
 | 4 | `GET https://samaronefialho.dev/healthz` returns 200 with `"status": "ok"`, resolved onto the deploy target's own address | Caddy, TLS and DNS, which nothing inside the stack can see |
-| 5 | `GET https://samaronefialho.dev/versionz`, resolved onto the deploy target, reports `.release == $GIT_SHA` | An edge that answers from some *other* box, or from a stack whose public face is not the commit just shipped |
+| 5 | `GET https://samaronefialho.dev/readyz`, resolved onto the deploy target, reports `ready`/`ok`/`ok` | A stack that answers liveness while its database or Redis is not actually ready |
+| 6 | `GET https://samaronefialho.dev/versionz`, resolved onto the deploy target, reports `.release == $GIT_SHA` | An edge that answers from some *other* box, or from a stack whose public face is not the commit just shipped |
 
-Assertions 1 and 5 look like the same question and are not. Assertion 1 reads
+Assertions 1 and 6 look like the same question and are not. Assertion 1 reads
 `/app/RELEASE` through ssh, from inside the container — it proves the box took the
-image. Assertion 5 reads `/versionz` from the runner through the public TLS edge, so it
-proves the thing the internet reaches serves that commit. A stack can pass 1 and fail 5.
+image. Assertion 6 reads `/versionz` from the runner through the public TLS edge, so it
+proves the thing the internet reaches serves that commit. A stack can pass 1 and fail 6.
 
-Both 4 and 5 pin resolution with `curl --resolve samaronefialho.dev:443:$DEPLOY_IP`,
-where `DEPLOY_IP` comes from `getent ahostsv4 "$DEPLOY_HOST"`. That is what makes them
-assertions about **the box just deployed** rather than about whatever DNS currently
-points at — which matters most during a host migration, when the two are different
-machines on purpose.
-
-The **step names in `.github/workflows/ci.yml` still read `1/4` through `4/4`, then
-`5/5`.** The labels were not renumbered when the fifth was added; only the last one is
-self-consistent. Count the steps, not the labels.
+Assertions 4, 5 and 6 pin resolution with
+`curl --resolve samaronefialho.dev:443:$LIGHTSAIL_IP`, where `LIGHTSAIL_IP` comes from
+the Lightsail control plane (`aws lightsail get-instance`), never from DNS — and the
+channel-open step refuses to proceed if `DEPLOY_HOST_LIGHTSAIL` resolves to anything
+else. That is what makes them assertions about **the box just deployed** rather than
+about whatever DNS currently points at — which matters most during the cutover window,
+when the name still resolves to the old OCI box on purpose. A `dig +short` anywhere in
+`ci.yml` would be that mistake returning, so `tests/scope/test_deploy_binding.py`
+forbids the token outright.
 
 Assertion 2's positive control is not decoration. A bare `! … | grep -q '\[ \]'` passes
 when the command inside it dies, because a dead container emits nothing and nothing
@@ -866,29 +892,36 @@ the commit message, and treat `ops/RESTORE.md` as the only rollback that exists 
 
 ### Secrets, and what they are worth to an attacker
 
-Five repository secrets drive the job: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PATH`,
-`DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. They arrive as environment variables rather
-than `${{ }}` interpolated into the shell script, because interpolation splices the
-value into the shell *source*, where a newline or a quote in a secret becomes
-executable text. The private key is written to `$RUNNER_TEMP`, used through a wrapper
-that sets `IdentitiesOnly=yes` and `IdentityAgent=none`, and shredded in an
-`if: always()` step.
+The deploy is driven by five environment-scoped secrets on `lightsail-pilot` —
+`DEPLOY_HOST_LIGHTSAIL`, `DEPLOY_USER_LIGHTSAIL`, `DEPLOY_PATH_LIGHTSAIL`,
+`DEPLOY_SSH_KEY_LIGHTSAIL` and `DEPLOY_KNOWN_HOSTS_LIGHTSAIL` — plus the environment
+variables `LIGHTSAIL_INSTANCE_NAME`, `LIGHTSAIL_PRESERVED_SSH_CIDRS` and
+`AWS_ROLE_ARN_LIGHTSAIL`. The OCI-era repository secrets `DEPLOY_HOST`, `DEPLOY_USER`,
+`DEPLOY_PATH`, `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS` are retired at cutover: no
+workflow references them any longer, and they are deleted rather than left to rot.
+
+Secrets arrive as environment variables rather than `${{ }}` interpolated into the
+shell script, because interpolation splices the value into the shell *source*, where a
+newline or a quote in a secret becomes executable text. The private key is written to
+`$RUNNER_TEMP`, used through a wrapper that sets `IdentitiesOnly=yes` and
+`IdentityAgent=none`, and shredded in an `if: always()` step. The AWS credential is
+minted per run through OIDC and expires with it; nothing long-lived for AWS exists in
+the repository at all.
 
 The blast radius is worth stating without euphemism. The deploy key authenticates as
 `ubuntu`, and that account's groups include `docker`. Membership in `docker` is
 **root-equivalent**: it permits starting an arbitrary container with an arbitrary host
 bind-mount, which is a complete filesystem read/write as root by design of the daemon,
 not by a bug. Therefore anyone who can push to `main`, and anyone who extracts
-`DEPLOY_SSH_KEY`, controls the VPS. That includes the Postgres data volume and
-`/opt/app-mei/.env.prod`, which holds every production credential, including
-`OCI_S3_SECRET_ACCESS_KEY` and therefore the offsite backups.
+`DEPLOY_SSH_KEY_LIGHTSAIL`, controls the pilot host. That includes the Postgres data
+volume and `/opt/app-mei/.env.prod`, which holds every production credential,
+including `OCI_S3_SECRET_ACCESS_KEY` and therefore the offsite backups.
 
-This is an accepted trade, approved at the planning gate: a solo staging box on a
-single-maintainer repository does not carry the operational weight of a hardened deploy
-account with a rootless daemon and a restricted `command=` in `authorized_keys`. It is
-a deliberate decision with a known cost, recorded here so that the decision is visible
-when the cost changes — a second contributor, real customer data, or a move off
-staging all change it.
+This is an accepted trade, approved at the planning gate: a single-maintainer
+repository does not carry the operational weight of a hardened deploy account with a
+rootless daemon and a restricted `command=` in `authorized_keys`. It is a deliberate
+decision with a known cost, recorded here so that the decision is visible when the
+cost changes — a second contributor or real customer data both change it.
 
 #### Rotate on any of these triggers
 
@@ -907,7 +940,8 @@ ssh-keygen -t ed25519 -f /tmp/deploy_new -C 'gha-deploy' -N ''
 
 # 2. Replace the secret. --body or stdin is mandatory: `gh secret set` with neither
 #    blocks forever on an interactive prompt inside a non-interactive shell.
-gh secret set DEPLOY_SSH_KEY -R samaronejr/app-mei < /tmp/deploy_new
+gh secret set DEPLOY_SSH_KEY_LIGHTSAIL -R samaronejr/app-mei \
+  --env lightsail-pilot < /tmp/deploy_new
 
 # 3. Authorise the new key, then REMOVE the old line. Adding without removing leaves
 #    the rotated-out key valid, which is not a rotation.
@@ -962,9 +996,12 @@ the next tick. This is written down so that nobody spends 4am debugging a non-bu
 
 ### Concurrency: a `cancelled` deploy is often the correct outcome
 
-The job declares `concurrency: { group: deploy-staging, cancel-in-progress: false }`.
-Never cancelling in flight is the important half: a half-loaded image or a stack caught
-mid-`up` is a worse state than a queue.
+The job declares `concurrency: { group: lightsail-pilot-firewall, cancel-in-progress:
+false }`. Never cancelling in flight is the important half: a half-loaded image or a
+stack caught mid-`up` is a worse state than a queue, and a cancelled job may skip the
+`if: always()` firewall cleanup, stranding the runner's SSH rule open. The group is
+shared with `stale-rule-cleanup` in `deploy-lightsail.yml` so the deploy and the
+cleanup can never mutate the same firewall concurrently.
 
 The consequence is that GitHub retains only the **newest pending** run per group, so
 back-to-back pushes supersede one another and the superseded deploy reports `cancelled`
@@ -978,7 +1015,9 @@ gh run list -R samaronejr/app-mei --workflow=ci.yml --branch=main --status=compl
 ### Manual fallback
 
 For when GitHub Actions is unavailable. This is the CI job by hand, in the same order,
-and it must be run from a clean checkout of the commit being deployed.
+and it must be run from a clean checkout of the commit being deployed. The operator's
+own SSH `/32` is already in `LIGHTSAIL_PRESERVED_SSH_CIDRS`, so the manual path needs
+no firewall change — the JIT rule exists only for ephemeral runner addresses.
 
 ```sh
 sha="$(git rev-parse HEAD)"
@@ -1010,42 +1049,51 @@ ssh app-mei 'cd /opt/app-mei && docker compose --env-file .env.prod \
   -f docker-compose.prod.yml up -d --no-build --wait'
 ```
 
-Then run all **five** assertions by hand, and the storage probe after them. A manual
+Then run all **six** assertions by hand, and the storage probe after them. A manual
 deploy that skips them is exactly the T-065 situation described above — and one that
-runs only the first four proves nothing about what the public edge actually serves.
+runs only the in-stack checks proves nothing about what the public edge actually
+serves.
 
-`deploy_ip` is the same pin CI uses. Resolve the deploy target's own address once and
-send both public assertions to it explicitly, or a stale DNS record will let some other
-box answer for the name and both checks will pass against the wrong machine.
+`lightsail_ip` is the same pin CI uses. Take the deploy target's address from the
+Lightsail control plane — never from DNS, which during the cutover window still
+resolves to the old box — and send every public assertion to it explicitly, or a stale
+DNS record will let some other machine answer for the name and the checks will pass
+against the wrong host.
 
 ```sh
 compose='docker compose --env-file .env.prod -f docker-compose.prod.yml'
-deploy_ip="$(getent ahostsv4 <deploy-host> | awk 'NR==1{print $1}')"
+lightsail_ip="$(aws lightsail get-instance --instance-name <instance> \
+  --query 'instance.publicIpAddress' --output text)"
 
-# 1/5 — the running container is this commit.
+# 1/6 — the running container is this commit.
 ssh app-mei "cd /opt/app-mei && $compose exec -T web cat /app/RELEASE"          # == $sha
 
-# 2/5 — migrations applied, with the positive control.
+# 2/6 — migrations applied, with the positive control.
 ssh app-mei "cd /opt/app-mei && $compose exec -T web sh -c \
   'DATABASE_URL=\"\$DATABASE_MIGRATION_URL\" python manage.py showmigrations --plan --skip-checks'" \
   | grep -c '\[X\]'                                                             # >= 1, and no [ ]
 
-# 3/5 — system checks green in the deployed container.
+# 3/6 — system checks green in the deployed container.
 ssh app-mei "cd /opt/app-mei && $compose exec -T web python manage.py check"
 
-# 4/5 — /healthz is ok over the public edge, pinned to the deploy target.
-curl -fsS --max-time 30 --resolve "samaronefialho.dev:443:$deploy_ip" \
+# 4/6 — /healthz is ok over the public edge, pinned to the deploy target.
+curl -fsS --max-time 30 --resolve "samaronefialho.dev:443:$lightsail_ip" \
   "https://samaronefialho.dev/healthz?cb=$sha" \
   | jq -e '.status == "ok"'
 
-# 5/5 — the deploy target's public face runs THIS commit.
-curl -fsS --resolve "samaronefialho.dev:443:$deploy_ip" \
+# 5/6 — /readyz reports database and Redis ready, pinned to the deploy target.
+curl -fsS --max-time 30 --resolve "samaronefialho.dev:443:$lightsail_ip" \
+  "https://samaronefialho.dev/readyz?cb=$sha" \
+  | jq -e '.status == "ready" and .database == "ok" and .redis == "ok"'
+
+# 6/6 — the deploy target's public face runs THIS commit.
+curl -fsS --resolve "samaronefialho.dev:443:$lightsail_ip" \
   "https://samaronefialho.dev/versionz?cb=$sha" \
   | jq -e --arg GIT_SHA "$sha" '.release == $GIT_SHA'
 ```
 
-`jq -e` is what makes assertions 4 and 5 bite: it exits nonzero when the predicate is
-false, so a 200 carrying the wrong body fails instead of scrolling past. Retry 4/5 a
+`jq -e` is what makes assertions 4 through 6 bite: it exits nonzero when the predicate
+is false, so a 200 carrying the wrong body fails instead of scrolling past. Retry 4/6 a
 couple of times before believing a refusal — a just-recreated `web` container can still
 be draining its first requests, which is why the CI step loops three times with a
 10-second pause.
@@ -1072,13 +1120,15 @@ than linked.
 | `docker tag app-mei:prod app-mei:previous` | CI run 30643246807, Anchor step |
 | `docker tag app-mei-caddy:prod app-mei-caddy:previous` | CI run 30643246807 (no-op on the first deploy, as designed) |
 | `docker save … \| gzip \| ssh 'gunzip \| docker load'` | T-065 manual deploy; every CI deploy |
-| `git fetch --prune origin` / `reset --hard <sha>` | todo 4 QA, `FIX-04-happy`; CI run 30643246807, Sync step |
+| `git fetch --prune origin` / `reset --hard <sha>` | todo 4 QA, `FIX-04-happy`; CI run 30643246807, Sync step; PILOT-403 shadow deploys |
 | `git bundle create` + `git fetch <bundle>` | T-065 manual deploy (21 commits shipped this way) |
-| `docker compose … up -d --no-build --wait` | T-065 manual deploy; CI run 30643246807 |
-| `manage.py showmigrations --plan --skip-checks` | CI run 30643246807, assert 2/4 (94 applied, none pending) |
-| `manage.py check` | todo 1 QA, `FIX-01-happy`; CI run 30643246807, assert 3/4 |
-| `curl … /healthz` | todo 3 QA, `FIX-03-happy`; CI run 30643246807, assert 4/4 |
-| `curl --resolve … /versionz` + `jq -e '.release == $GIT_SHA'` | PILOT-202 QA (endpoint and assertion shape). **Not yet observed against a live deploy** — the first CI run carrying it has not landed, and PILOT-002 owns the live observation |
+| `docker compose … up -d --no-build --wait` | T-065 manual deploy; CI run 30643246807; PILOT-403 shadow deploys |
+| `manage.py showmigrations --plan --skip-checks` | CI run 30643246807, assert 2/4 (94 applied, none pending); PILOT-403 shadow deploys, assert 2/6 |
+| `manage.py check` | todo 1 QA, `FIX-01-happy`; CI run 30643246807, assert 3/4; PILOT-403 shadow deploys, assert 3/6 |
+| `curl … /healthz` | todo 3 QA, `FIX-03-happy`; CI run 30643246807, assert 4/4; PILOT-403 shadow deploys, assert 4/6 |
+| `curl --resolve … /readyz` + `jq -e` ready/ok/ok | PILOT-403 shadow deploys, assert 5/6 |
+| `curl --resolve … /versionz` + `jq -e '.release == $GIT_SHA'` | PILOT-202 QA (endpoint and assertion shape); PILOT-403 shadow deploys, assert 6/6 |
+| `aws lightsail open/close-instance-public-ports` (runner /32 only) | PILOT-403 shadow deploys, Open/Close runner-rule steps |
 | `manage.py storage_probe` | PILOT-203 QA (`PILOT-203-happy`, against local storage). **Not yet run against the real bucket** — PILOT-204 owns that |
 | `docker image ls --filter reference="app-mei*"` | todo 6 QA, `FIX-06-happy` (live, against the box) |
 | `docker image prune -f` | CI run 30643246807, Reclaim step |
@@ -1087,7 +1137,7 @@ than linked.
 
 ### One orphan image on the box
 
-The box still carries `app-mei-caddy:latest` from before the images were renamed to the
+The retiring OCI box still carries `app-mei-caddy:latest` from before the images were renamed to the
 `:prod` tags the compose file now references. Nothing points at it and nothing will; it
 costs 154 MB and `docker image prune -f` will not touch it because it is tagged. Untag
 it (`docker rmi app-mei-caddy:latest`) or leave it. Recorded so that its presence is not
