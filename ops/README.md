@@ -2028,17 +2028,21 @@ Run after PILOT-106, 208, 209, and 301, and before PILOT-403.
    does not enable it, but the assertion costs nothing and the failure it catches is a
    backup running against a half-configured host.
 
-4. **Replace every `CHANGEME`.** The check is a sorted-key diff against the example file,
-   which catches both a missing variable and a placeholder left behind:
+4. **Replace every `CHANGEME`.** The check is a sorted-key diff against the example
+   file, and `ops/check_env_prod.py` IS that diff: it fails on a key the example
+   declares but `.env.prod` lacks, on a `CHANGEME` left behind, on a non-empty value
+   still byte-identical to the example (bar a short allow-list of fixed settings),
+   and on a malformed non-empty `SENTRY_DSN`:
 
    ```sh
-   diff <(grep -oE '^[A-Z_]+=' <deploy-path>/.env.prod.example | sort) \
-        <(grep -oE '^[A-Z_]+=' <deploy-path>/.env.prod        | sort)
-   grep -c CHANGEME <deploy-path>/.env.prod
+   python3 <deploy-path>/ops/check_env_prod.py \
+       <deploy-path>/.env.prod <deploy-path>/.env.prod.example
    ```
 
-   Acceptance: the diff is empty and the `CHANGEME` count is zero. Values are never
-   recorded in evidence, only the fact that the diff was empty.
+   The same script runs as a deploy preflight in `ci.yml`, so a placeholder that
+   slips through this step is caught again before any image lands. Acceptance: it
+   prints `OK <n> keys audited`. On failure it lists key NAMES only — values are
+   never printed and never recorded in evidence.
 
 5. **Place the backup environment file** at `/etc/app-mei/backup.env` with `HC_URL`,
    `HC_OFFHOST_URL`, and the off-host credentials described under
