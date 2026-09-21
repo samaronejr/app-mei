@@ -1111,18 +1111,314 @@ Two conventions make that unambiguous, and they are load-bearing:
   later reader mistakes for evidence.
 
 Where a command's exact form depends on an operator choice, the shape is shown with the
-placeholder in place rather than guessed. An SES endpoint hostname embeds the region,
-so it appears as `feedback-smtp.<region>.amazonses.com` and not as a region someone
-picked while writing documentation.
+placeholder in place rather than guessed. A provider emits its own DKIM key and its own
+bounce-domain MX host, so those appear as `<dkim-public-key-as-generated-by-resend>` and
+`<priority-and-host-as-generated-by-resend>`, never as a value invented while writing
+documentation.
 
-### Email provider (SES)
+### Email provider (Resend SMTP)
 
-Covers PILOT-104 (region, domain identity, DKIM, custom MAIL FROM, DMARC, SMTP identity)
-and PILOT-105 (production access, sandbox exit, bounce and complaint feedback). **Not
-executed.** No AWS account, identity, IAM user, SNS topic, or DNS record described here
-exists yet.
+Covers PILOT-104 (account, sending domain, DKIM, SPF, DMARC alignment, SMTP credential)
+and PILOT-105 (the daily cap, bounce and complaint handling). **Not executed.** No Resend
+account exists, no domain is verified, no API key has been created, and not one of the
+DNS records below has been placed.
 
-#### Region choice
+Resend replaces SES here for one reason: the pilot has to send to arbitrary external
+mailboxes from its first day, and SES puts that behind a human-reviewed production-access
+request whose answer arrives when it arrives. Resend's free tier sends to any recipient
+the moment the domain verifies, and it publishes an SMTP relay, so the application keeps
+the provider-neutral `EMAIL_*` settings it already has. Nothing in `config/settings/prod.py`
+changes, `core.E013` keeps refusing an incomplete transport exactly as before, and the
+swap is a credential swap. The SES runsheet is kept verbatim at the end of this section as history. It is not a
+procedure to run.
+
+#### The free tier, and where it stops
+
+| Limit | Free tier |
+| --- | --- |
+| Messages per day | 100 |
+| Messages per calendar month | 3,000 |
+| Verified domains | 1 |
+| SMTP relay | included |
+
+Source: <https://resend.com/docs/knowledge-base/account-quotas-and-limits>, read while
+this runsheet was written. Re-read it at execution time and transcribe what the account
+itself reports into `.evidence/PILOT-104-operator.txt`. A published limit and an account's
+limit are two different claims, and only the second one bills.
+
+One domain is the constraint that bites first. `samaronefialho.dev` is that domain, which
+means there is no separately verified staging sender; anything sent while rehearsing comes
+out of the same 100 a day the pilot needs. The cap itself is handled under [when the daily
+cap is hit](#when-the-daily-cap-is-hit).
+
+#### Account and sending domain
+
+1. Create the Resend account on `<operator-mailbox>` and turn on MFA before anything else
+   goes in it. The API key that this account can mint is a sending credential for the
+   pilot's only domain.
+2. Add `samaronefialho.dev` as a domain.
+3. Keep Resend's default sending subdomain, `send.samaronefialho.dev`. That subdomain
+   carries the envelope sender, so bounce traffic and SPF authentication both land there
+   instead of on the apex. Leaving the apex alone is not a preference here, it is what
+   keeps Cloudflare Email Routing working.
+4. Resend then generates the verification records. Copy them out of the dashboard exactly
+   as shown; record their **names and types** in the operator artifact and leave the values
+   where they belong, in DNS.
+
+#### The records Resend generates, placed exactly as generated
+
+| Name | Type | Value |
+| --- | --- | --- |
+| `resend._domainkey.samaronefialho.dev` | TXT | `<dkim-public-key-as-generated-by-resend>` |
+| `send.samaronefialho.dev` | TXT | `<spf-value-as-generated-by-resend>` |
+| `send.samaronefialho.dev` | MX | `<priority-and-host-as-generated-by-resend>` |
+
+Three rules govern placing them:
+
+- **Copy, never retype.** A DKIM public key is a few hundred characters of base64 and a
+  single transposed character produces a record that exists, resolves, and fails to
+  verify. That failure mode reads as "DNS not propagated yet" for as long as you let it.
+- **DNS-only, grey cloud, all three.** A proxied record resolves to Cloudflare's edge, and
+  verification then runs against something that is present but not what Resend wrote.
+- **The selector is fixed.** Resend signs with the `resend` selector, one key per domain,
+  so there is no second selector to rotate through. Rotating the DKIM key means
+  re-verifying the domain, which is a planned maintenance step, not a quick fix during an
+  incident.
+
+#### What must not change at the apex
+
+Two apex records already exist and stay untouched:
+
+```text
+samaronefialho.dev  TXT  "v=spf1 include:_spf.mx.cloudflare.net ~all"
+samaronefialho.dev  MX   <cloudflare-email-routing-hosts-unchanged>
+```
+
+The apex SPF authorises Cloudflare, which is what handles mail for the domain. Resend's
+envelope sender lives on `send.samaronefialho.dev`, so a receiver checking SPF for Resend
+mail never reads the apex record at all. Adding an `include:` for the new provider to the
+apex would buy nothing, spend one of SPF's ten DNS lookups, and invite someone later to
+"clean up" the Cloudflare include. Publishing a second apex SPF TXT is worse: two SPF
+records on one name is a permanent error, and the result is that *every* SPF check on the
+domain fails, inbound routing included.
+
+The apex MX is Cloudflare Email Routing and is what makes addresses at the domain
+receivable. The new MX sits on `send.samaronefialho.dev`, a different name, so the two
+never compete.
+
+If any step, here or in a provider's setup wizard, asks you to edit the apex SPF or the
+apex MX, that step is wrong for this domain. Stop and record why.
+
+#### DMARC, and why relaxed alignment is enough
+
+```text
+_dmarc.samaronefialho.dev  TXT  "v=DMARC1; p=none; adkim=r; aspf=r; rua=mailto:<operator-mailbox>"
+```
+
+The alignment argument, in full, because this is the part that silently breaks when a
+provider changes:
+
+- The visible `From` is `nao-responda@samaronefialho.dev`, the apex, because
+  `DEFAULT_FROM_EMAIL` says so and all three send sites pass `from_email=None`.
+- The DKIM signature carries `d=samaronefialho.dev`: the selector record is
+  `resend._domainkey.samaronefialho.dev`, so the signing domain is the apex itself. DKIM
+  alignment is therefore exact, and would hold even under `adkim=s`.
+- SPF authenticates the **envelope** domain, `send.samaronefialho.dev`. That is a
+  subdomain of the `From` domain, not the same name, so strict SPF alignment would fail
+  and relaxed passes on the organisational-domain match. This is precisely why `aspf=r`
+  is written out rather than left to the default.
+
+DMARC passes when either mechanism aligns. Here both do under relaxed, and DKIM survives
+forwarding while SPF does not, so the pair is deliberate rather than redundant.
+
+`p=none` is the pilot's policy on purpose: it reports without quarantining, so a
+misconfiguration arrives as an aggregate report instead of as invitations that vanish.
+Tightening it needs report data that does not exist yet.
+
+#### Verify by effect, with a negative control
+
+Run the lookups **before** placing anything, to capture the red state, then again after.
+The last two lines are regression checks on records this work must not touch:
+
+```sh
+dig +short TXT resend._domainkey.samaronefialho.dev
+dig +short TXT send.samaronefialho.dev
+dig +short MX  send.samaronefialho.dev
+dig +short TXT _dmarc.samaronefialho.dev
+dig +short TXT samaronefialho.dev   # apex SPF: must still be the Cloudflare include
+dig +short MX  samaronefialho.dev   # apex MX: must still be Cloudflare Email Routing
+```
+
+Then one deliberately absent name, which must answer `NXDOMAIN`. Without it, a resolver
+that wildcards the zone makes every lookup above look successful:
+
+```sh
+dig +noall +comment <deliberately-absent-name>.samaronefialho.dev
+```
+
+Acceptance has two halves and needs both: the records resolve publicly from a machine
+that did not create them, and the Resend dashboard reports the domain verified. A
+dashboard that says verified while public DNS has not caught up is a race, not a result.
+
+#### The values that go into `.env.prod`, by name
+
+| Variable | Value |
+| --- | --- |
+| `EMAIL_HOST` | `smtp.resend.com` |
+| `EMAIL_PORT` | `587` |
+| `EMAIL_USE_TLS` | `true`, with `EMAIL_USE_SSL=false` (the shipped example writes `True`/`False`; either spelling parses) |
+| `EMAIL_HOST_USER` | `resend` |
+| `EMAIL_HOST_PASSWORD` | the Resend API key, scoped to sending on `samaronefialho.dev` |
+| `DEFAULT_FROM_EMAIL` | `nao-responda@samaronefialho.dev` |
+
+`EMAIL_HOST_USER` is the literal string `resend`, the same for every account. It reads
+like a placeholder somebody forgot to fill in, and it isn't one.
+
+`EMAIL_USE_TLS` and `EMAIL_USE_SSL` must disagree: `core.E013` refuses a configuration
+where both are true or both are false, so a copy-paste that sets SSL without clearing TLS
+fails at startup rather than at send time.
+
+The API key is created with sending permission for this domain only. A full-access key in
+`.env.prod` is readable by anything that can read the file and can also delete the domain
+it sends from. Record the key's **name** and creation date in the operator artifact and
+nothing else: no key material in the repository, in evidence files, or in a ticket.
+
+Rotation keeps the two-key discipline, because delete-then-create has a window in which
+the stack cannot send:
+
+1. Create a second API key with the same scope. Both are valid.
+2. Replace `EMAIL_HOST_PASSWORD` in `.env.prod` on the host and recreate the services that
+   read it: `web`, `worker`, `beat`.
+3. Prove the new key sends, with the smoke test below, to a mailbox the operator holds.
+4. Only then revoke the old key. Revoking before step 3 turns maintenance into an outage.
+
+#### The smoke test: swaks first, then Django
+
+Two probes, in this order, because they fail differently and the order is what localises
+the fault.
+
+```sh
+swaks --server smtp.resend.com:587 --tls \
+      --auth-user 'resend' --auth-password '<resend-api-key>' \
+      --from 'nao-responda@samaronefialho.dev' --to '<operator-mailbox>'
+```
+
+That exercises the credential, STARTTLS, and Resend's acceptance with none of the
+application in the path.
+
+```sh
+docker compose -f docker-compose.prod.yml exec web \
+  python manage.py sendtestemail <operator-mailbox>
+```
+
+That exercises what the container actually has: the `EMAIL_*` values in `.env.prod`, the
+TLS flags, `EMAIL_TIMEOUT`, and `DEFAULT_FROM_EMAIL` as the sender every send site
+inherits.
+
+Acceptance: the message arrives, and its headers show `DKIM=pass` with
+`d=samaronefialho.dev`, `SPF=pass` for `send.samaronefialho.dev`, and `DMARC=pass`. Paste
+the authentication-results header block into `.evidence/PILOT-104-happy.txt`. The API key
+never goes there.
+
+When swaks delivers and `sendtestemail` does not, the fault is in `.env.prod` or in the
+container that read it, not at the provider. The other way round means the credential or
+the domain, and re-running the app probe will not tell you which.
+
+#### Bounces and complaints: a dashboard and a human, no webhook
+
+This stack has no webhook receiver for delivery events and none is being added for the
+pilot. A receiver is application code, a new unauthenticated public route, and a signature
+check that has to be right the first time, all to automate a feed that will carry a
+handful of events a week at 100 messages a day. The dashboard plus a person is the honest
+trade at this volume, and it is written down here so nobody later reads the absence as an
+oversight.
+
+The procedure, then:
+
+- The operator reads the Resend dashboard's delivery log after every pilot journey and at
+  `<review-cadence>` otherwise. Bounced and complained addresses get written into
+  `.evidence/PILOT-105-operator.txt` with the date, the recipient, and the reason class.
+- Suppression is **manual**. An address that hard-bounced is not sent to again until the
+  operator has confirmed it out of band, through a channel that is not that address.
+  Re-sending to an address the receiving provider rejected re-earns the bounce and spends
+  domain reputation that a new sending domain does not have to spare.
+- Silent non-delivery is the symptom to know: the application reports success because the
+  provider accepted the message, and the recipient never sees it. Check that recipient in
+  the delivery log **before** declaring a PILOT-106 journey failed, so a suppressed
+  address is not misdiagnosed as a broken journey.
+
+Compared with the SES design this replaces, there is no SNS topic and no confirmed
+subscription pushing bounces at a mailbox nobody has to remember to open. That is a real
+downgrade, it is accepted for the pilot at this volume, and it is revisited if sending
+volume grows past what one person can read.
+
+**The anonymous DSR path is a monitored sender.** `POST /lgpd/dsr-submit` is reachable
+without authentication and its success path notifies the encarregado. An attacker, or an
+ordinary typo, can drive outbound mail from an unauthenticated endpoint, and a run of
+bounces originating there is the earliest signal that it is being abused. Whoever reads
+the delivery log must know this sender exists and what a burst from it means.
+`lgpd_renotify` retries the same notification for rows whose send failed, so a
+persistently bouncing encarregado address surfaces there too. See [Credential log
+hygiene](#credential-log-hygiene) for what must never appear in the logs those bursts
+generate.
+
+#### When the daily cap is hit
+
+100 messages a day is a hard ceiling, not a throttle with a queue behind it. Message 101
+is expected to be refused in-band, inside the SMTP transaction, rather than accepted and
+dropped, and that is the property the behaviour below rests on: the application learns
+about the cap at send time, on the send that hit it. Confirm it when the cap is first
+reached, and record what actually happened; an accepted-then-dropped message would be a
+much worse failure mode and would change this entry.
+
+Given an in-band refusal, what follows is unchanged by the provider swap:
+
+- **Invitations.** `send_mail` raises, `_mark_invitation_delivery_failure` in
+  `apps/accounts/views.py` calls `transaction.set_rollback(True)`, captures to Sentry, and
+  puts an error in front of the user. No invitation row survives and nobody is told a
+  message was sent.
+- **LGPD notifications.** `apps/lgpd/views.py` records `notification_last_error` and
+  leaves `encarregado_notified_at` NULL, so the row stays pending and `lgpd_renotify`
+  picks it up once sending works again.
+
+Those are the truthful-failure semantics PILOT-102 and PILOT-103 established, and the cap
+is the cheapest way the pilot will ever get to exercise them against a real provider.
+Record the refusal's SMTP response code and text as `<cap-refusal-response>` the first
+time it is observed; until then it is PENDING, and no code is guessed here. Do not assume
+the class: whether the provider answers 4xx or 5xx decides whether anything upstream would
+retry, and that is a measurement, not a preference.
+
+Capacity planning is short. The PILOT-106 journeys are a couple of dozen messages, and
+password resets and invitations during a pilot are tens per week. What eats 100 in a day
+is a loop or an abused DSR endpoint, so a burned cap is an incident signal first and a
+capacity signal second.
+
+#### Evidence
+
+| Artifact | Contents |
+| --- | --- |
+| `.evidence/PILOT-104-red.txt` | The six `dig` outputs before any record is placed, and the domain's unverified status |
+| `.evidence/PILOT-104-failure.txt` | The `NXDOMAIN` control, and a swaks run with a deliberately wrong API key refused at authentication |
+| `.evidence/PILOT-104-happy.txt` | The same six `dig` outputs after placement, the verified status, and the delivered smoke test's authentication-results headers |
+| `.evidence/PILOT-104-operator.txt` | Account mailbox, API key **name** and creation date, the quota figures the dashboard reports, PASS/FAIL per step. No key material |
+| `.evidence/PILOT-105-operator.txt` | The delivery-log review cadence, and every bounce or complaint with date, recipient, and reason class |
+| `.evidence/PILOT-105-failure.txt` | The cap refusal when first observed, with its SMTP response code, and the application-side behaviour it produced |
+
+#### Historical: the SES runsheet this replaced
+
+Everything from here to the end of this section is **history, not procedure.** It is the
+SES runsheet as it stood before the provider decision changed, kept because the reasoning
+about DKIM, custom MAIL FROM, alignment, and two-key rotation is why the Resend section
+above is shaped the way it is, and because a deleted runsheet looks like a decision nobody
+made. Do not execute any command below. The artifact names it references are reused by the
+Resend runsheet above, which is the live one.
+
+As written then, the SES runsheet said: it covers PILOT-104 (region, domain identity,
+DKIM, custom MAIL FROM, DMARC, SMTP identity) and PILOT-105 (production access, sandbox
+exit, bounce and complaint feedback). **Not executed.** No AWS account, identity, IAM
+user, SNS topic, or DNS record described there was ever created, and none exists now.
+
+##### Region choice
 
 The region is recorded once and then propagates into the MAIL FROM MX record, the SMTP
 endpoint, and every `aws sesv2` invocation below, so choosing it late means redoing DNS.
@@ -1130,7 +1426,7 @@ Pick for latency to Brazil and for SES availability, record it in the PILOT-104 
 artifact as `<region>`, and use that same string everywhere. Nothing in the repository
 pins a region and nothing should.
 
-#### Domain identity and Easy-DKIM
+##### Domain identity and Easy-DKIM
 
 Create a **domain** identity for `samaronefialho.dev` (not an email-address identity;
 address identities cannot carry DKIM or a custom MAIL FROM). Enable Easy-DKIM, which
@@ -1158,7 +1454,7 @@ Acceptance: three CNAMEs resolve publicly, and the identity reports verified wit
 signing enabled. Both halves are required. The console showing "verified" while public
 DNS has not propagated is a race, not a result.
 
-#### Custom MAIL FROM and SPF
+##### Custom MAIL FROM and SPF
 
 Set the custom MAIL FROM subdomain to `mail.samaronefialho.dev`. This is what makes SPF
 align with the visible sending domain instead of with an Amazon-owned bounce domain. Two
@@ -1174,7 +1470,7 @@ to **reject** rather than to fall back to the Amazon default: a silent fallback 
 alignment failure into mail that still sends and quietly loses its SPF alignment, which
 is the failure this record exists to prevent.
 
-#### DMARC
+##### DMARC
 
 ```text
 _dmarc.samaronefialho.dev  TXT  "v=DMARC1; p=none; rua=mailto:<operator-mailbox>"
@@ -1208,7 +1504,7 @@ Red-state and NXDOMAIN control go to `.evidence/PILOT-104-red.txt` and
 `.evidence/PILOT-104-failure.txt`; the post-placement outputs go to
 `.evidence/PILOT-104-happy.txt` with the console statuses in `-operator.txt`.
 
-#### A sending identity that can only send
+##### A sending identity that can only send
 
 Create a dedicated IAM user for SMTP. It exists to send raw mail and to do nothing else,
 so its policy names exactly one action:
@@ -1235,7 +1531,7 @@ secret or the SMTP password anywhere in the repository or in evidence files.** T
 into `.env.prod` as `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` on the host, and nowhere
 else.
 
-#### Rotation procedure
+##### Rotation procedure
 
 Rotation is two-key, never delete-then-create, because the second ordering has a window
 in which the stack cannot send at all:
@@ -1252,7 +1548,7 @@ in which the stack cannot send at all:
 Adding a key without removing the old one is not a rotation, and removing the old one
 before step 3 makes an outage out of a maintenance task.
 
-#### Production access and sandbox exit (PILOT-105)
+##### Production access and sandbox exit (PILOT-105)
 
 A fresh SES account is in the sandbox: it delivers only to verified recipients, which is
 precisely the state in which every external-mailbox journey in PILOT-106 would fail.
@@ -1281,7 +1577,7 @@ Acceptance: the JSON reports `"ProductionAccessEnabled": true`, and the granted
 it must now deliver, and the delivered message's headers must show `DKIM=pass`,
 `SPF=pass` for `mail.samaronefialho.dev`, and a `From` aligned with the domain identity.
 
-#### Bounce and complaint feedback reaches a human
+##### Bounce and complaint feedback reaches a human
 
 "Bounces go to the console" is not a mechanism, because nobody watches a console. Wire
 an SNS topic per identity with a confirmed email subscription to an operator mailbox,
@@ -1316,7 +1612,7 @@ rows whose send failed, so a persistently bouncing encarregado address surfaces 
 See [Credential log hygiene](#credential-log-hygiene) for what must never appear in the
 logs those bursts generate.
 
-#### Suppression list
+##### Suppression list
 
 SES keeps an account-level suppression list, and an address on it is silently not
 delivered to: a journey that "sent successfully" but never arrived is the symptom.
@@ -1339,10 +1635,10 @@ Covers PILOT-106. **Not executed.** No mailbox has received anything, no journey
 walked, no message-id exists, and no log window has been pulled. Every value below is a
 `<placeholder>` and every result is `PENDING`.
 
-This section depends on [Production access and sandbox
-exit](#production-access-and-sandbox-exit-pilot-105) having landed first. In the sandbox,
-every journey to an unverified external address fails, so running these checks before
-that gate measures the sandbox rather than the application.
+This section depends on [Email provider (Resend
+SMTP)](#email-provider-resend-smtp) having landed first: the domain verified, the SMTP
+credential in `.env.prod`, and the smoke test delivered. Until then a failed journey says
+nothing about the application, only that the sender is not configured yet.
 
 #### Two mailboxes, and why they are different people
 
@@ -1356,9 +1652,10 @@ The journeys split across two real, externally hosted mailboxes:
 They must be genuinely separate addresses at a provider the operator does not run, not
 two aliases folding into one inbox. An alias makes a cross-audience mis-send invisible:
 an invitation addressed to the portal user but rendered with the firm user's link would
-land in the same place and read as success. Neither may be an SES-verified identity once
-production access is granted, because a verified recipient would keep working even if the
-account silently fell back into the sandbox.
+land in the same place and read as success. Neither may be an address the operator can
+reach only through the pilot's own infrastructure: a mailbox that depends on the same
+Cloudflare routing the domain uses would keep working through a failure these journeys
+exist to catch.
 
 #### The journey matrix
 
@@ -1387,7 +1684,7 @@ with no stamp means `lgpd_renotify` will send it again.
 
 #### Check 7 runs in a scratch shell, never against the running stack
 
-The point of the negative control is that checks 1 through 6 succeeded because SES
+The point of the negative control is that checks 1 through 6 succeeded because Resend
 authenticated the sender, not because something in the path is an open relay that would
 have delivered regardless. Prove the credential is load-bearing by breaking it:
 
@@ -1517,8 +1814,8 @@ route was exercised without the artifact carrying a usable credential.
 | Token present in logs | PRESENT / ABSENT, from check 8's counts |
 
 The sent and received timestamps are both recorded because their difference is the only
-delivery-latency figure the pilot will have, and because a message that was accepted by
-SES and arrived forty minutes later is a different operational fact from one that arrived
+delivery-latency figure the pilot will have, and because a message that the provider
+accepted and that arrived forty minutes later is a different operational fact from one that arrived
 immediately.
 
 #### Evidence
@@ -1897,7 +2194,7 @@ runs.
 | Disk | 40 GiB | 40 GiB or more | The deploy preflight refuses to land an image pair with less than 3 GiB free under the docker data root, and the WAL archive accrues on the same filesystem |
 | OS | Ubuntu LTS | Ubuntu LTS | systemd units are shipped as-is; an image without systemd invalidates the bootstrap |
 | Network | 80, 443, SSH inbound | same | No provider-level firewall may block them; Caddy needs 80 and 443, CI needs SSH |
-| Region | acceptable latency to Brazil | same | Users and the SES region should not disagree by an ocean |
+| Region | acceptable latency to Brazil | same | Users and the host region should not disagree by an ocean |
 | Access | root or sudo-capable SSH | same | Bootstrap installs packages and writes `/etc/docker/daemon.json` and `/etc/systemd/system` |
 
 Swap deserves emphasis because it is the requirement a provider's marketing page will not
@@ -2577,7 +2874,7 @@ Executed only after `v0.2.0-rc1` exists and rows 1 through 6 are green.
 4. **Secrets rotated at cutover, names only.** Rotate rather than migrate: a credential
    that lived on a host being decommissioned should not be the credential guarding the
    new one. The list, recorded by name with values never written down here, is the deploy
-   SSH key, the SES SMTP credential (via the two-key procedure above), the Cloudflare API
+   SSH key, the Resend API key (via the two-key procedure above), the Cloudflare API
    token, the document-bucket credential, the off-host ops-bucket credential, and both
    Healthchecks ping URLs. Each rotation is verified by effect before the previous value
    is deleted.
