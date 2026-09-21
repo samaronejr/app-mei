@@ -28,8 +28,9 @@ claim that it has:
 - No UptimeRobot account and no monitors: M1a, M1b, M1c, M1d, the M1n negative control,
   M2, M3 and M4 are all uncreated.
 - No Healthchecks account, no check, and no `HC_URL` or `HC_VERIFY_URL` secret.
-- Amazon SES is not configured for production sending; the account is not out of
-  sandbox.
+- Resend is not configured for production sending: there is no account, no verified
+  `samaronefialho.dev` domain, and no API key. The runsheet is "Email provider (Resend
+  SMTP)" in `ops/README.md`.
 - There is no target VPS. Every `docker compose` command below presumes the production
   host that Wave 4 provisions.
 - No procedure in this file has been rehearsed. Restore rehearsal timings in
@@ -56,7 +57,6 @@ for a decision that was made.
 | `<encarregado-mailbox>` | The LGPD encarregado mailbox, per `docs/lgpd.md`. |
 | `<pilot-slug>` | The pilot firm's subdomain slug. |
 | `<production-host>` | The production host, once Wave 4 provisions it. |
-| `<region>` | The AWS region SES and the CLI commands run against. |
 | `<production-access-list>` | The named humans in the production access table. |
 
 ---
@@ -224,8 +224,8 @@ passwords.
   user. The invitation row is rolled back — nothing half-issued survives.
 - **Sentry, LGPD.** `apps/lgpd/views.py` captures notification failures through
   `_capture_exception_safely` and records `notification_last_error` on the row.
-- **User report.** "It says sent but nothing arrived." This is the SES suppression
-  symptom and produces no exception at all.
+- **User report.** "It says sent but nothing arrived." Resend accepted the message and
+  it never reached the inbox. This produces no exception at all.
 
 **First response** — determine which of the three you have. A silent non-delivery and
 a raised `SMTPException` have opposite causes and opposite fixes.
@@ -238,31 +238,38 @@ a raised `SMTPException` have opposite causes and opposite fixes.
    `tests/security/test_credential_log_hygiene.py`; if you see a raw token, key, or
    password in an event, that is a stop condition — see
    [incident-severity-ladder](#incident-severity-ladder).
-3. Check SES configuration and credentials against the SES section of `ops/README.md`.
+3. Check the Resend configuration and credentials against "Email provider (Resend
+   SMTP)" in `ops/README.md`. Two causes dominate: an expired or revoked API key in
+   `EMAIL_HOST_PASSWORD`, and the free tier's 100-messages-per-day cap, which surfaces
+   as a refused send rather than a silent drop. The dashboard's usage figure settles
+   which of the two it is.
 4. Reissue the invitation once the send path works. Reissue means **issue a new
    invitation**, not resend the old one — see [resend by reissue](#resend-by-reissue)
    below.
 
-### Silent non-delivery: SES suppression handling
+### Silent non-delivery: Resend delivery log and manual suppression
 
-SES keeps an account-level suppression list, and an address on it is silently not
-delivered to. The full procedure and its judgement call live in `ops/README.md` under
-the suppression heading; the commands are:
+There is no webhook and no bounce feed into a mailbox. The Resend dashboard's delivery
+log is the surface, and suppression is a human decision:
 
-```sh
-aws sesv2 get-suppressed-destination --email-address <address> --region <region>
-aws sesv2 list-suppressed-destinations --region <region>
-aws sesv2 delete-suppressed-destination --email-address <address> --region <region>
-```
+1. Find the recipient in the delivery log and read the event: delivered, bounced,
+   complained, or never accepted.
+2. Bounced or complained means **do not send again** until the address is confirmed
+   good through a channel that is not that address. Record the date, the recipient, and
+   the reason class in `.evidence/PILOT-105-operator.txt`.
+3. Delivered, with the recipient insisting nothing arrived, is a recipient-side filing
+   or spam-filter problem. Ask for the message-id and check their junk folder before
+   touching anything here.
 
-Removing an address the recipient's provider genuinely rejected re-earns the bounce
-and damages the domain's reputation. Removal is a judgement call and is recorded with
-a reason.
+Re-sending to an address the receiving provider genuinely rejected re-earns the bounce
+and spends domain reputation. The judgement call and its reason are written down.
 
 ### `lgpd_renotify` usage
 
 When an LGPD data-subject request was filed but the encarregado notification did not
-land, the pending rows are retried by:
+land, the pending rows are retried by the command below. Fix the send path first: if
+the encarregado address is bouncing at Resend, or the daily cap is spent, every retry
+fails the same way and writes the same error.
 
 ```sh
 docker compose -f docker-compose.prod.yml exec web \
@@ -876,7 +883,7 @@ pilot-specific operating facts.
 `<production-access-list>` — the operator fills this table in. Every row must name a
 real person; a row reading "the team" is not an access list.
 
-| Name | Role | Host SSH | Django admin (`is_staff`) | Object storage | Sentry | SES console |
+| Name | Role | Host SSH | Django admin (`is_staff`) | Object storage | Sentry | Resend dashboard |
 | --- | --- | --- | --- | --- | --- | --- |
 | `<operator-name>` | Owner | | | | | |
 | `<support-contact-name>` | Support | | | | | |
@@ -932,9 +939,9 @@ indistinguishable, later, from an intrusion.
 ## Related documents
 
 - `ops/README.md` — the exercised mechanisms: roles, RLS, rate limits, credential log
-  hygiene, backups, deploy, rollback, secrets, SES, object storage, host log rotation,
-  host requirements, the two-phase bootstrap, and decommissioning. It also carries the
-  operator runsheets prepared but not yet executed.
+  hygiene, backups, deploy, rollback, secrets, the email provider, object storage, host
+  log rotation, host requirements, the two-phase bootstrap, and decommissioning. It also
+  carries the operator runsheets prepared but not yet executed.
 - `ops/RESTORE.md` — database and object recovery, ownership-pinned.
 - `ops/PILOT-METRICS.md` — pilot metrics, their sources, and the stop conditions with
   their detection signals.
