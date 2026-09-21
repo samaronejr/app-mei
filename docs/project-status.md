@@ -11,7 +11,10 @@ That exclusion is deliberate: agent working state must not be committed, and it 
 not pollute Tailwind's source detection. Consequences worth stating plainly:
 
 - No plan file, notepad, or `boulder.json` is tracked. A clone of this repository
-  contains none of them.
+  contains none of them — except the six oldest `.omo` files (the phase-2a/2b
+  plans and drafts, plus `accounting-mei-saas`), which were committed before the
+  exclusion existed and stay tracked as frozen history. Every plan since,
+  including both pilot-readiness plans, is local-only.
 - An index placed inside `.omo/` could only ever be committed with `git add -f`.
   We do not do that. This document lives under `docs/` instead, which is why it is
   the index rather than a `.omo/plans/README.md`.
@@ -23,21 +26,36 @@ reader who will never see them.
 
 ## Current plan
 
-**`pilot-readiness-v1`** — in execution. It moves the product from "deployed and
-tested" to "safe to run a pilot with one accounting firm": production email,
-document-vault proof and recovery, monitoring that pages a human, a rehearsed
-disaster-recovery drill, a server migration ahead of an expiring cloud trial, a full
-pilot walkthrough, an operations manual, and a signed release candidate. 41 numbered
-todos across six waves, plus four final verification passes.
+**`pilot-readiness-v2`** — in execution. It supersedes `pilot-readiness-v1` and the
+Resend amendment, and it starts from what is actually true rather than what v1
+assumed: the latest code has never been deployed anywhere, the old OCI host still
+serves a month-old release, no email has ever been sent, and the live-verification
+workflow has been red for weeks. It ends with one accounting firm able to start a
+controlled pilot on the new Lightsail server, every safety claim proven by a real
+effect rather than asserted. 41 numbered rows across six waves, plus four final
+verification passes.
 
-Todo identifiers from this plan use the `PILOT-###` form, and they are the ids that
-appear in commit bodies and in evidence filenames.
+Row identifiers from this plan use the `PILOT2-###` form in commit bodies and
+evidence filenames. Rows carry a marker: `[E]` is an engineering row, `[O]` is an
+operator gate that no repository change can close, and `[A]` is an agent-executed
+external effect. Two owner decisions shape the whole plan: email goes through
+Resend's plain SMTP relay (no new email code), and the deploy target is the
+already-provisioned Lightsail instance `app-mei-pilot-sa-east-1` at 18.229.187.66,
+with the OCI host kept intact after cutover as the rollback anchor.
+
+Execution is mid-flight. Wave 0's truth-and-governance rows 1, 2, 4, 5, 6, 7, 8 and
+40 are closed. Row 17 — the deploy-pipeline cutover that retargets the push deploy
+to Lightsail — is authored as PR #21, open and green, and merges only after row 16
+(the operator-run Lightsail Phase B) closes, because merging it triggers the first
+deploy.
 
 ## Plan index
 
 | Plan | Status | Basis |
 | --- | --- | --- |
-| `pilot-readiness-v1` | **current** | In execution on `feat/pilot-w2-readiness` at `b4e2cbc`; 13 of 45 checkboxes fully closed, plus the repository half of four operator-gated todos (PILOT-207, 208, 301, 304) delivered while their acceptance stays open. See the note below. |
+| `pilot-readiness-v2` | **current** | In execution; its baseline was captured at `43a034d` and `main` has since advanced to `35fae71`. Wave 0 rows 1, 2, 4, 5, 6, 7, 8 and 40 are closed; row 17's PR #21 is open and green, merge-gated on row 16. |
+| `pilot-readiness-v1` | **superseded** | Replaced by `pilot-readiness-v2` on 2026-09-21. Its checkbox states are frozen and its evidence is kept, never rewritten; v2's legacy reconciliation ledger classifies every v1 row (13 verified-complete, 5 repo-complete with operator evidence open, 12 partial, 8 open-valid, 2 superseded, 2 invalid-premise, plus the four F-rows that never ran). |
+| `resend-smtp-pilot-provider-amendment` | **superseded** | Superseded by owner decision D-Q1: Resend is used through the existing provider-neutral SMTP settings, so the amendment's new email machinery is unneeded. Its branch `chore/pilot-resend-smtp-round3h` is frozen, unpushed, and never to be merged. |
 | `post-ui-ux-residual-hardening` | **closed** | All 24 todos checked. Its four pull requests merged; `main` is byte-identical to the final reviewed head. Its unfixed leftovers are written up in `docs/residual-risks.md`. |
 | `ui-ux-post-completion-followups` | **closed** | All 11 todos checked. Seven findings that survived the UI/UX plan, closed as separate work. |
 | `ui-ux-development-plan` | **closed** | All 39 todos checked; approved at a recorded head with the final verification wave accepted twice. The follow-ups plan above treats it as immutable and re-verifies its hash. |
@@ -50,20 +68,14 @@ appear in commit bodies and in evidence filenames.
 These statuses were assigned by reading each plan's own checkboxes and status
 headers. None is inferred from a filename.
 
-### Half-done is a real state, and the current plan is full of it
+### `open (needs …)` is a real state, and the current plan is full of it
 
-Most of `pilot-readiness-v1`'s remaining todos are not blocked and not done. They split
-cleanly into a repository half an agent can deliver and an operator half that needs a
-real host, a real mailbox, a real bucket, or a real account — and the two halves land at
-different times. Counting them as either "done" or "blocked" loses the distinction that
-matters most for scheduling.
-
-So the count above is deliberately two numbers. **13 todos are fully closed.** Four more
-(PILOT-207 monitoring, PILOT-208 backup dead-man, PILOT-301 off-host copy, PILOT-304
-restore-runbook gap closure) have shipped every line of code and documentation they own,
-and stay open because their acceptance names evidence only the operator can produce. The
-narrow remaining action is written down in each case; none of them is waiting on
-engineering.
+Most of `pilot-readiness-v2`'s remaining rows are not blocked and not done. The plan
+splits them by who can close them: `[E]` rows an agent can deliver, `[O]` rows that
+need a real host, a real mailbox, a real bucket, or a real account — and the two
+land at different times. An operator row reads `open (needs <account|host|mailbox|
+bucket|window>)` until its evidence artifact exists; it is never `blocked`, and an
+engineering row that only prepares a gate is never blocked by the gate being open.
 
 Nothing in this repository closes an operator gate. A workflow that would assert a live
 deploy is not a live deploy, a script that would copy to a bucket is not a copy, and a
@@ -80,10 +92,25 @@ it can never merge. Rebasing a stack onto `main` to unblock it re-runs everythin
 anyway, so the stack buys nothing. The accepted consequence is that a wave's work
 waits for the previous wave's pull request to merge before it opens.
 
+### Two jobs are expected red, and each names the row that turns it green
+
+- The push-deploy job in `ci.yml` — named `Deploy to staging` — still targets the
+  OCI host and is expected to fail its memory preflight on every push to `main`.
+  Row 17's PR #21 retargets it to Lightsail; the first push after that merge is the
+  shadow deploy (row 18).
+- `verify-live` is expected red until the DNS flip at cutover (row 29): it asserts
+  release parity with `main`, and the public name still resolves to the OCI host
+  serving the old release. Loosening it to make it green is explicitly out of
+  scope.
+
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. Counts recorded so far:
+implementation head. The `pilot-readiness-v2` baseline is **2024** passing, a clean
+serial run on merged `main` at `b19edf3` and later. Documentation-only commits must
+land on that number unchanged, which is the point of recording it.
+
+Counts recorded under `pilot-readiness-v1`, kept for provenance:
 
 - `main`: **1912** passing.
 - `chore/pilot-w0-governance`: **1918** passing (1912 plus two tests added by
@@ -92,9 +119,6 @@ implementation head. Counts recorded so far:
 - `feat/pilot-w2-readiness` at `b4e2cbc`: **1994** passing. The wave-2 delta is
   PILOT-201 (+14), PILOT-202 (+12), PILOT-203 (+2), PILOT-205 (+14), PILOT-206 (+5) and
   PILOT-207 (+1), which is 1946 + 48.
-
-Documentation-only commits must land on that last number unchanged, which is the point
-of recording it per branch rather than once.
 
 One consequence of the test setup is binding: there is a single shared PostgreSQL
 test database, so test runs are strictly sequential. Two concurrent runs collide.
@@ -115,86 +139,54 @@ so any file path or test module named in this directory has to resolve on disk.
 | `docs/frontend.md` | Front-end conventions. |
 | `ops/README.md`, `ops/RESTORE.md` | Operations and recovery procedures. |
 
-<!-- External deadlines: PILOT-009 appends its dated milestone table below this line. -->
-
 ## External deadlines
 
-Four external systems put a clock on this plan, and only one of them is under our
-control. This block is the checklist for PILOT-009. It is **prepared, not executed**:
-no checkpoint below has been met, no account exists, no request has been submitted,
-and no date has been read from any console. Nothing in this repository closes an
-operator gate, and this section is no exception.
+`pilot-readiness-v1` kept a checklist of seven dated checkpoints here, every one of
+them a formula over two operator-supplied dates. `pilot-readiness-v2` row 2 resolved
+them against the real consoles on 2026-09-21, and the resolved ledger below replaces
+the formulas. Only one external clock still binds the schedule, and it is not the
+OCI trial.
 
-### How to use this block
-
-Every date here is a formula over two operator-supplied values:
-
-| Symbol | Meaning | Value |
+| # | Checkpoint | Resolved state |
 | --- | --- | --- |
-| `D0` | Execution start date, the day Wave 0 begins. | `<D0>` |
-| `E` | OCI trial expiry date, read from the billing console. | `<E>` |
+| 1a | OCI trial expiry read from the billing console. | **Resolved.** The trial ended 2026-08-28 and the host is still alive: the account continues on the always-free tier, the instance is RUNNING, and no reclamation notice is pending. There is no OCI-driven cutover deadline. |
+| 1b | OCI storage disposition decided. | **Resolved: keep-oci.** The OCI documents bucket stays the document store — versioning enabled, a 30-day previous-versions lifecycle rule, and the free storage entitlement persists. There is no migration to AWS; v2's conditional move row (15) is skipped by this ruling. |
+| 2a, 2b | SES production access submitted, then reviewed. | **CLOSED-ABANDONED.** The appeal is closed by owner decision D-Q1: mail goes through Resend SMTP instead, and no SES checkpoint remains. |
+| 3 | UptimeRobot capability confirmed. | **Resolved, as keyword substring.** UptimeRobot cannot evaluate JSONPath; its only body-inspection primitive is a substring match, so the gate is keyword capability, not JSON assertion. Four keyword monitors plus the impossible-keyword negative control are configured per `ops/README.md` "External uptime monitoring". |
+| 4 | Healthchecks.io account and first check. | **Resolved.** The account exists and the backup dead-man checks are live with transitions proven; v2 adds target-scoped checks so the two hosts never share one. |
+| 5a | VPS ordered. | **Resolved.** The Lightsail instance `app-mei-pilot-sa-east-1` (18.229.187.66) is provisioned and running, static IP attached, firewall open on 80/443 and operator SSH. |
+| 5b | Base-host bootstrap, Phase A. | **Resolved.** Phase A ran on the Lightsail host (memory preflight passed, swap remediated) and the stack was then torn down ahead of Phase B, which is v2 row 16. |
+| 6a, 6b | Binding go/no-go at `E−5`; cutover by `E−3`. | **Superseded.** `E` has passed with the host alive, so both formulas are moot. The cutover window, freeze, and rollback deadline are set by v2 row 27 instead. |
+| 7 | Same-day escalation of any missed checkpoint. | **Standing.** Unchanged: a missed checkpoint reported late is two failures, not one. |
 
-Fill in `D0` and `E`, resolve each formula into a calendar date in the "Resolved"
-column, then work the table top-down. The formulas are the contract; the resolved
-dates are derived. If a resolved date lands on a non-working day, move it **earlier**,
-never later, because every window below is already the minimum.
-
-Two independent constraints govern the OCI row, and the binding one is whichever
-falls first. `D0+7` bounds how long we may deliberate. `E−7` bounds how late a
-decision can still be executed. A decision taken after `E−7` cannot run its own
-contingency: moving to a successor bucket needs a supervised copy, a checksum pass,
-and a re-proof, and that sequence needs at least five days. Deciding on `E−3` is not
-a late decision, it is a skipped one.
-
-### The seven checkpoints
-
-| # | Checkpoint | Due (formula) | Resolved | Acceptance | Escalation |
-| --- | --- | --- | --- | --- | --- |
-| 1a | OCI trial expiry `E` read from the billing console and recorded here. | `D0` | `<date>` | The console-reported expiry date is written into the `E` row above, sourced from the console, not from memory. | Not readable on `D0`: escalate the same day. Every other OCI date is unresolvable until `E` is known. |
-| 1b | OCI storage disposition **decided**: convert to pay-as-you-go, or move to a successor bucket. | `D0+7` **and** no later than `E−7`, whichever is earlier | `<date>` | A recorded decision with a named provider and a named owner. Not a shortlist, not a preference. | Missed: escalate to the user **that day** with the cause and the replan. Blocks PILOT-405. |
-| 2a | AWS SES production-access request **submitted**, with the submission timestamp and the support-case id recorded. | `D0` | `<date>` | Support case exists and its id is recorded in `.evidence/PILOT-009-operator.txt`. Grant verification is **not** this checkpoint; it stays with PILOT-105. | Not submitted on `D0`: escalate the same day. Every day of slip is a day of human-review lead time we do not get back. |
-| 2b | SES go/no-go review of the request's state. | `D0+5` | `<date>` | Access granted, or an explicit not-yet with the case id and the current status. | Not granted: escalate to the user with the support-case id. Blocks PILOT-104 and PILOT-105. |
-| 3 | UptimeRobot account created (free tier) and the **JSON-assertion capability confirmed** by a disposable monitor. | `D0+2` | `<date>` | Capability recorded as an explicit yes or no, proven by the negative control below. | **Capability = NO is a STOP-and-surface before Wave 2.** PILOT-207 has no reachability-only fallback; a monitor that cannot assert a JSON field does not satisfy the monitoring contract. Surface to the user and halt Wave 2 rather than substituting a weaker check. |
-| 4 | Healthchecks.io account created and one test check created. | `D0+2` | `<date>` | The check exists and its ping URL is held by the operator. Consumed later by PILOT-208. | Missed: escalate the same day. Blocks PILOT-208. |
-| 5a | VPS instance **ordered**. | `D0+2` | `<date>` | Provider, region, and instance specification recorded against the requirements sheet in `ops/README.md` (see "Host requirements" under "Operator runsheets: prepared, NOT executed"). | Missed: escalate the same day. This is the longest external lead time after `E` itself. |
-| 5b | PILOT-401 and PILOT-402 **Phase A** (base-host bootstrap) complete. | `D0+5` | `<date>` | Phase A's acceptance transcript recorded. Phase A is deliberately free of Wave-1 and Wave-2 dependencies; it runs in the **parallel operator lane**, not behind wave order. Phase B follows its own inputs and needs only to precede PILOT-403. | Missed: escalate the same day. A late base host compresses the cutover window against a fixed `E`. |
-| 6a | Binding go/no-go checkpoint: review every gate above before committing to cutover. | `E−5` | `<date>` | Each row above is marked met or missed, with a decision to proceed or to replan. | Any gate unmet at this point: escalate to the user the same day. This checkpoint is binding, not advisory. |
-| 6b | PILOT-404 (cutover) executed. | no later than `E−3` | `<date>` | Cutover complete, with the pre-flip verification passing on the target. | Not executed by `E−3`: escalate the same day. The two-day margin against `E` is the rollback window, not slack. |
-| 7 | Blanket escalation rule (standing, not a dated row). | continuous | n/a | Any missed checkpoint above (`D0+2`, `D0+5`, the OCI-disposition date, the SES go/no-go, `E−5`, `E−3`) is escalated to the user **the same day**, stating the miss, the cause, and the replan. | A missed checkpoint reported late is two failures, not one. |
+The one remaining external date is the Let's Encrypt certificate on the OCI host,
+which expires 2026-10-27. The cutover rows move the public name to Lightsail — where
+Caddy issues its own certificate — well inside that window, but it is the only date
+above that can still force the schedule if cutover slips.
 
 ### The UptimeRobot negative control
 
-Confirm checkpoint 3 with two runs against the same disposable monitor, in this
-order, recording both outcomes:
-
-1. **Wrong field first.** Point the monitor at any public JSON endpoint and assert a
-   field name that does not exist in the response. The assertion **must fail**.
-2. **Real field second.** Change only the field name to one that does exist, with the
-   expected value. The assertion **must pass**.
-
-Run 1 is not a formality. Without it, a monitor that silently never evaluates its
-assertion is indistinguishable from one that evaluates and passes, and the failure
-would only surface during a real incident, when the monitor stays green through an
-outage. If run 1 passes, the capability is **not** confirmed regardless of what run 2
-does, and checkpoint 3 is a NO.
-
-Delete the disposable monitor afterwards. That is the whole rollback for this todo.
+The capability proof is a monitor that must stay DOWN. It points at the same
+`https://samaronefialho.dev/healthz` URL on the same interval with the same
+alert-on-absence setting as the four real monitors, keyed on a keyword the endpoint
+can never render — `scheduler` only ever renders `alive`, `stale` or `unknown`, so
+the impossible-keyword string documented in `ops/README.md` cannot appear in any
+body. Acceptance is four UP and one DOWN, and the DOWN one is required: if the
+control ever reports UP, keyword evaluation is not happening and the four green
+monitors are asserting nothing.
 
 ### Where each procedure lives
 
-The runsheets are written and unexecuted. They live in the
-`Operator runsheets: prepared, NOT executed` block at the end of `ops/README.md`:
-
 | Checkpoint | Procedure |
 | --- | --- |
-| 2a, 2b (SES) | "Email provider (SES)", and specifically "Production access and sandbox exit (PILOT-105)". |
-| 1b (OCI storage) | "Object storage: versioning, lifecycle, probe". |
-| 5a (VPS order) | "Host requirements". |
-| 5b (bootstrap) | "New host bootstrap (two phases)", Phase A. |
-| 6b (cutover aftermath) | "Decommissioning the old host", and "Host log rotation" for the new host's retention. |
+| 2a, 2b (mail) | `ops/README.md`, "Email provider (Resend SMTP)" — the SES paragraphs are kept at the end of that section as history. |
+| 1b (OCI storage) | `ops/README.md`, "Object storage: versioning, lifecycle, probe". |
+| 5a (VPS order) | `ops/README.md`, "Host requirements". |
+| 5b (bootstrap) | `ops/README.md`, "New host bootstrap (two phases)". |
+| 6b (cutover aftermath) | `ops/README.md`, "Decommissioning the old host", and "Host log rotation" for the new host's retention. |
 | 3, 4 (monitoring) | `ops/PILOT-RUNBOOK.md`, [monitor-to-action mapping](../ops/PILOT-RUNBOOK.md#monitor-to-action). |
 | 1b, 6b (pilot exit) | `ops/PILOT-RUNBOOK.md`, [pilot exit and conversion](../ops/PILOT-RUNBOOK.md#pilot-exit-and-conversion). |
 
-Outcomes are recorded to `.evidence/PILOT-009-operator.txt` with ids, hostnames, and
-PASS/FAIL lines only, never secrets. The negative control's transcript goes to
-`.evidence/PILOT-009-failure.txt`.
+Operator outcomes are recorded to the execution worktree's `.evidence/` root as
+`PILOT2-###-operator.txt` files — ids, hostnames, and PASS/FAIL lines only, never
+secrets.
