@@ -645,6 +645,8 @@ on a larger one, which is backwards.
 
 ## Deploy
 
+After any stop longer than 15 minutes, `/healthz` is expected to return 503 until beat's first tick writes a scheduler heartbeat. The web service may report unhealthy for up to about 7 minutes; this is expected and self-heals.
+
 Staging deploys itself. A push that lands on `main` and passes both gates ships to the
 box with no human in the loop, and the job proves the deployment landed by observing
 its **effects** rather than by trusting that the containers came up. Everything below
