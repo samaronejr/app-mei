@@ -281,7 +281,7 @@ services:
       interval: 10s
       timeout: 15s
       retries: 30
-      start_period: 40s
+      start_period: 420s
     mem_limit: 400m
 
   worker:
@@ -333,8 +333,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # /healthz is 503 until a scheduler heartbeat exists; service_healthy would deadlock a cold stack.
+      # The heartbeat is written by apps.obligations.tasks.record_scheduler_heartbeat, scheduled by beat every 300s and executed by worker.
+      # Fresh/restored DBs and stops over 15m have no heartbeat, so start on process existence first.
       web:
-        condition: service_healthy
+        condition: service_started
     mem_limit: 256m
 
   caddy:
@@ -385,8 +388,10 @@ services:
       - "80:80"
       - "443:443"
     depends_on:
+      # /healthz asserts HTTP 200, but is 503 until beat's 300s heartbeat reaches worker.
+      # service_healthy deadlocks fresh/restored DBs and any stop over 15m; let Caddy start.
       web:
-        condition: service_healthy
+        condition: service_started
     # Targets Caddy's own :8080 responder, NOT the proxied site: a loopback request to
     # the real site arrives as `Host: 127.0.0.1`, which Django rejects with 400 because
     # it is absent from ALLOWED_HOSTS. Django's health is asserted by `web` already;
