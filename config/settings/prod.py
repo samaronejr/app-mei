@@ -32,6 +32,9 @@ type LogValue = (
 )
 
 SENTRY_REDACTION_MARKER: Final = "[Filtered]"
+SENTRY_DSN_ERROR: Final = (
+    "SENTRY_DSN is set but is not a DSN URL; unset it or provide the project DSN"
+)
 SENTRY_CREDENTIAL_FIELDS: Final = frozenset(
     {
         "code",
@@ -322,4 +325,13 @@ LOGGING.setdefault("filters", {})["credential_urls"] = {
 }
 LOGGING["handlers"]["console"]["filters"] = ["credential_urls"]
 if _sentry_dsn:
+    _parsed_sentry_dsn = urlsplit(_sentry_dsn)
+    if (
+        _parsed_sentry_dsn.scheme not in {"http", "https"}
+        or "@" not in _parsed_sentry_dsn.netloc
+        or not _parsed_sentry_dsn.path
+    ):
+        from django.core.exceptions import ImproperlyConfigured
+
+        raise ImproperlyConfigured(SENTRY_DSN_ERROR)
     sentry_sdk.init(dsn=_sentry_dsn, **SENTRY_OPTIONS)

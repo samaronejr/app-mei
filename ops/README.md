@@ -2590,6 +2590,9 @@ Executed only after `v0.2.0-rc1` exists and rows 1 through 6 are green.
 
 ### Alerting drills: Sentry, the degraded signal, and the missed ping
 
+The Sentry DSN comes from the row-11 Sentry project and is stored in the password manager.
+
+
 Covers PILOT-504. **Not executed.** No Sentry event has been raised deliberately, no
 service has been stopped to provoke an alert, no ping has been skipped, and no alert has
 been received. Every event id, timestamp, and elapsed value below is a `<placeholder>`.
