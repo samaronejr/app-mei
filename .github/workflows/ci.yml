@@ -440,6 +440,14 @@ jobs:
             git -C '$DEPLOY_PATH' rev-parse HEAD
           "
 
+      # Runs against the just-synced checkout, so the audit is the version this commit
+      # ships rather than whatever happened to be on the box. It prints key NAMES only
+      # on failure — never values — which is what makes it safe to run in a CI log.
+      - name: Audit .env.prod for leftover placeholders
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/ssh/dssh" "cd '$DEPLOY_PATH' && python3 ops/check_env_prod.py .env.prod .env.prod.example"
+
       # After the Sync, so the free space measured is what the load will actually find:
       # the checkout writes to the same filesystem the docker data root lives on.
       - name: Disk capacity preflight on the box

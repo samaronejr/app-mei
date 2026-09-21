@@ -1,0 +1,55 @@
+# Synthetic .env.prod for the check_env_prod audit tests. Every value below is
+# invented for the fixture and names no real host, credential, or account.
+# Keys on the script's allow-list are byte-identical to .env.prod.example;
+# every other key is deliberately changed.
+
+# Hosts and TLS
+SITE_ADDRESS=*.synthetic-fixture.test, synthetic-fixture.test
+TLS_DIRECTIVE=
+ACME_DNS_OPTION=acme_dns cloudflare {env.CF_API_TOKEN}
+CF_API_TOKEN=synthetic-cf-token-0000000000000000000000000000
+ACME_EMAIL=ops@synthetic-fixture.test
+ALLOWED_HOSTS=.synthetic-fixture.test
+# The real .env.prod keeps this empty; the fixture fills it so the audit's
+# identical-value rule is exercised on a non-empty value.
+CSRF_TRUSTED_ORIGINS=https://cross-origin.synthetic-fixture.test
+
+# Proxy hops
+TRUSTED_PROXY_COUNT=1
+
+# Django
+DJANGO_SETTINGS_MODULE=config.settings.prod
+SECRET_KEY=synthetic-sentinel-secret-7f3a9c1e
+PLATFORM_URL=https://synthetic-fixture.test
+LGPD_ENCARREGADO_EMAIL=privacidade@synthetic-fixture.test
+
+# Email delivery
+EMAIL_HOST=smtp.synthetic-fixture.test
+EMAIL_PORT=587
+EMAIL_HOST_USER=synthetic-smtp-user
+EMAIL_HOST_PASSWORD=synthetic-smtp-password-9b2d4f
+EMAIL_USE_TLS=True
+EMAIL_USE_SSL=False
+EMAIL_TIMEOUT=10
+DEFAULT_FROM_EMAIL=nao-responda@samaronefialho.dev
+
+# Sentry
+SENTRY_DSN=https://a1b2c3d4e5f6@o000000.ingest.sentry.io/0000000
+SENTRY_ENVIRONMENT=production
+SENTRY_TRACES_SAMPLE_RATE=0.0
+
+# Database and cache
+POSTGRES_DB=app_mei
+POSTGRES_USER=app_mei
+POSTGRES_PASSWORD=synthetic-postgres-password-4c8e1a
+APP_MIGRATOR_PASSWORD=synthetic-migrator-password-6d3f7b
+APP_RUNTIME_PASSWORD=synthetic-runtime-password-2e9a5c
+APP_TEST_PASSWORD=synthetic-test-password-8f1b6d
+REDIS_URL=redis://redis:6379/0
+
+# Object storage
+OCI_S3_BUCKET=synthetic-bucket-name
+OCI_S3_REGION=
+OCI_S3_ENDPOINT_URL=https://synthetic.compat.objectstorage.example.test
+OCI_S3_ACCESS_KEY_ID=synthetic-access-key-id-0a1b2c
+OCI_S3_SECRET_ACCESS_KEY=synthetic-secret-access-key-3d4e5f
