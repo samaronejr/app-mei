@@ -279,7 +279,7 @@ def test_the_probe_never_touches_the_filesystem(
 def test_the_fuse_fires_while_deploys_still_work_with_two_nights_to_act() -> None:
     # Given the deploy job's own hard floor, read out of the workflow it governs
     match = DEPLOY_FLOOR.search(WORKFLOW.read_text(encoding="utf-8"))
-    assert match is not None, "deploy-staging no longer declares MIN_FREE_KIB"
+    assert match is not None, "deploy-pilot no longer declares MIN_FREE_KIB"
     deploy_floor_kib = int(match.group(1))
 
     # When the fuse's floor is compared against it at the measured growth rate
@@ -311,7 +311,7 @@ def test_the_floor_is_absolute_rather_than_a_share_of_the_disk() -> None:
 def test_the_floor_is_derived_from_the_deploy_floor_and_the_archive_rate() -> None:
     # Given the deploy job's floor, read out of the workflow rather than copied
     match = DEPLOY_FLOOR.search(WORKFLOW.read_text(encoding="utf-8"))
-    assert match is not None, "deploy-staging no longer declares MIN_FREE_KIB"
+    assert match is not None, "deploy-pilot no longer declares MIN_FREE_KIB"
     deploy_floor_kib = int(match.group(1))
 
     # When the derivation is recomputed from its two inputs

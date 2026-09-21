@@ -92,16 +92,22 @@ it can never merge. Rebasing a stack onto `main` to unblock it re-runs everythin
 anyway, so the stack buys nothing. The accepted consequence is that a wave's work
 waits for the previous wave's pull request to merge before it opens.
 
-### Two jobs are expected red, and each names the row that turns it green
+## Deploy cutover state
 
-- The push-deploy job in `ci.yml` — named `Deploy to staging` — still targets the
-  OCI host and is expected to fail its memory preflight on every push to `main`.
-  Row 17's PR #21 retargets it to Lightsail; the first push after that merge is the
-  shadow deploy (row 18).
-- `verify-live` is expected red until the DNS flip at cutover (row 29): it asserts
-  release parity with `main`, and the public name still resolves to the OCI host
-  serving the old release. Loosening it to make it green is explicitly out of
-  scope.
+The push deploy in `ci.yml` (`deploy-pilot`) now targets the Lightsail pilot host
+through the OIDC just-in-time firewall; `deploy-lightsail.yml` is slimmed to the
+OIDC claim probe and the stale-rule cleanup, and the OCI-era `DEPLOY_*` secrets are
+retired. Two consequences are expected states, not failures:
+
+- **The first push to `main` after the cutover merge IS the shadow deploy.** It is
+  the first time the push path exercises the Lightsail host end to end; the
+  pilot-readiness-v2 row that owns observing it is the shadow-deploy row, not this
+  one.
+- **`verify-live` stays red until DNS flips.** It compares `/versionz` on the public
+  edge against the head of `main`, and the public edge is still the old OCI box
+  serving the pre-merge release. The red is the check working — the deployed release
+  genuinely is not the released one — and it clears only when DNS points at the
+  pilot host. Do not "fix" it by editing the check.
 
 ## Suite baseline
 
