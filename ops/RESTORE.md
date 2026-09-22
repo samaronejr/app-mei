@@ -10,10 +10,10 @@ desk check or a local simulation.
 
 | Result | Value | Command that produces it |
 | --- | --- | --- |
-| Track L physical/WAL start-to-verified RTO | **PENDING-REHEARSAL (PILOT-302)** | `pilot-302-track-l-start.epoch` commands below |
-| Track H off-host logical start-to-verified RTO | **PENDING-REHEARSAL (PILOT-302)** | `pilot-302-track-h-start.epoch` commands below |
-| Track H dump-age RPO at recovery start | **PENDING-REHEARSAL (PILOT-302)** | off-host `head-object` command below |
-| `_probe/` version recovery time | **PENDING-REHEARSAL (PILOT-303)** | Test B prints `object_recovery_seconds` |
+| Track L physical/WAL start-to-verified RTO | **6 min** (`rto_l_minutes=6`, 310 s) | `pilot-302-track-l-start.epoch` commands below; recorded in `.evidence/PILOT2-302L-operator.txt` |
+| Track H off-host logical start-to-verified RTO | **98 min** (`rto_minutes=98`) | `pilot-302-track-h-start.epoch` commands below; recorded in `.evidence/PILOT2-302H-operator.txt` |
+| Track H dump-age RPO at recovery start | **1.927500 h** (`rpo_hours=1.927500`) | off-host `head-object` command below; recorded in `.evidence/PILOT2-302H-operator.txt` |
+| `_probe/` version recovery time | **0 s** (`object_recovery_seconds=0`) | Test B prints `object_recovery_seconds`; measured by the PILOT2-405 probe in `.evidence/PILOT2-405-operator.txt` |
 
 Start only the track being rehearsed, immediately before its first destructive or
 host-loss-recovery action. For Track L:
@@ -467,9 +467,17 @@ compose exec -T -u postgres db \
   < ops/sql/roles.sql
 ```
 
-**PENDING-REHEARSAL (PILOT-302):** the commands in this host-loss path are the prepared
-runsheet. They are not yet evidence of a completed off-host recovery and carry no measured
-timing until the disposable rehearsal runs.
+**As executed (2026-09-22, PILOT2-302H):** this host-loss path ran end to end against
+the real off-host bucket. The dump was fetched with the independent recovery-reader
+credential from the password manager (`reader_credential_source=Proton Pass Production
+recovery restricted reader`), not the backup job's PutObject-only credential, and the
+corrupted-copy control behaved as designed: `pg_restore --list` on a truncated copy
+failed with exit 1. The restore stayed ownership-pinned, executed as
+`pg_restore --role=app_migrator --no-owner --no-privileges --exit-on-error`. Measured:
+`rto_minutes=98`, `rpo_hours=1.927500` against dump `20260922T060811Z`,
+`fetch_minutes=1`; the artifact's `readiness_timing_note` records that the clock
+includes the retained attempt-2 start, the user-CA import delay, and observer sign-off.
+Evidence: `.evidence/PILOT2-302H-operator.txt`.
 
 ---
 
@@ -665,16 +673,24 @@ printf 'track_%s_rto_seconds=%s\n' \
   "$RECOVERY_TRACK" "$((END_EPOCH - START_EPOCH))"
 ```
 
-**PENDING-REHEARSAL (PILOT-302):** record the direct query outputs and the final timing
-only when that disposable track has run. Both tracks must complete before the placeholders
-can be retired. No `tests/isolation` transcript may be cited as restore proof.
+**Executed (PILOT2-302L and PILOT2-302H):** both disposable tracks ran, and the direct
+query outputs above were recorded on each. Track L was ready at 2026-09-21T22:27:04Z
+(`rto_l_minutes=6`, 310 s); Track H at 2026-09-22T08:03:50Z (`rto_minutes=98`). On both
+tracks: `owner_catalog_rows=0`, `migrations_applied=99` with `migrations_pending=0`,
+`known_rows=t|t|t|t`, `rls_by_effect=t/t/t`, and a complete policy-inventory match of 18
+policies. The five `rls_gap_rows` equal the source's five and fall inside the
+owner-corrected exemption set (`non_exempt_rls_gap_rows=0`). Evidence:
+`.evidence/PILOT2-302L-operator.txt` and `.evidence/PILOT2-302H-operator.txt`. No
+`tests/isolation` transcript is cited as restore proof.
 
 ---
 
 ## Restored-environment identity and isolation checklist
 
-Covers PILOT-305. **Not executed.** No scratch environment has been stood up, no login
-has been attempted, and every result below is `PENDING`.
+Covers PILOT-305. **Executed 2026-09-22** inside the Track H scratch environment
+(`pilot2-rehearsal-a.scratch.invalid`): all six rows passed and both negative controls
+refused as designed. Per-row results, the surfaces row 5 covered, and the method
+deviations are in `.evidence/PILOT2-305-operator.txt`.
 
 The catalog and RLS-by-effect queries above prove the *database* came back with its
 policies. They do not prove a person can get in, or that the application layered on top
@@ -737,7 +753,8 @@ exist is [Test A](#test-a--restored-database-to-live-bucket) and is a separate c
 
 A checklist of six green rows proves the application lets the right people in. It does
 not prove it keeps anyone out, and a build with authorization removed entirely would pass
-all six. Both controls are required, and both go to `.evidence/PILOT-305-failure.txt`.
+all six. Both controls are required; the executed run recorded both in
+`.evidence/PILOT2-305-operator.txt`.
 
 **Control 1: the unassigned accountant is refused.** A staff accountant who exists, is
 authenticated, belongs to the same firm, and is simply not assigned to this client:
@@ -779,13 +796,15 @@ not a pass with a note.
 
 | Artifact | Contents |
 | --- | --- |
-| `.evidence/PILOT-305-happy.txt` | Rows 1 through 6 with PASS/FAIL, the surfaces covered by row 5, and the metadata fields compared in row 6 |
-| `.evidence/PILOT-305-failure.txt` | Both negative controls, with the observed status codes and the entitled-page check that makes control 1 attributable |
-| `.evidence/PILOT-305-operator.txt` | Scratch hostname, UTC timestamps, and PASS/FAIL per row. No passwords, no TOTP secrets or codes, no session cookies, no client ids |
+| `.evidence/PILOT2-305-operator.txt` | Scratch hostname, UTC timestamps, PASS/FAIL per row, the surfaces covered by row 5, the metadata fields compared in row 6, and both negative controls with their observed status codes and the entitled-page check that makes control 1 attributable. No passwords, no TOTP secrets or codes, no session cookies, no client ids |
 
-**PENDING-REHEARSAL (PILOT-305):** every row and both controls are `PENDING`. This
-checklist is a prepared procedure; it is not a record that the restored environment has
-been exercised.
+**Executed (PILOT2-305, 2026-09-22):** all six rows passed. Control 1's refusal was
+`404` with the entitled-page check at `200`, so the refusal is attributable to
+authorization; control 2's cross-tenant probe also answered `404`. Row 5 covered
+dashboard counts, the client picker, client list, client search, and client detail for
+the firm, assigned, unassigned, and second-tenant roles, plus the portal document list
+and forbidden document direct requests, with no foreign data observed. Evidence:
+`.evidence/PILOT2-305-operator.txt`.
 
 ---
 
@@ -816,15 +835,23 @@ address into evidence; record only PASS/FAIL and UTC timestamps:
 : "${APEX_DOMAIN:?set the recovered apex hostname}"
 : "${FIRM_HOST:?set a known firm hostname}"
 : "${PORTAL_HOST:?set its known portal hostname}"
+: "${TARGET_IP:?set the replacement-host address from the provider console}"
+# dig observes the resolver answer; --resolve pins each check to TARGET_IP so the
+# origin is verified even while the public record still points at the lost host.
 dig +short A "$APEX_DOMAIN" @1.1.1.1
 dig +short A "$FIRM_HOST" @1.1.1.1
-curl -fsS "https://${APEX_DOMAIN}/versionz"
-curl -fsS "https://${FIRM_HOST}/healthz"
-curl -fsS "https://${PORTAL_HOST}/healthz"
+dig +short A "$PORTAL_HOST" @1.1.1.1
+curl -fsS --resolve "${APEX_DOMAIN}:443:${TARGET_IP:?}" "https://${APEX_DOMAIN}/versionz"
+curl -fsS --resolve "${FIRM_HOST}:443:${TARGET_IP:?}" "https://${FIRM_HOST}/healthz"
+curl -fsS --resolve "${PORTAL_HOST}:443:${TARGET_IP:?}" "https://${PORTAL_HOST}/healthz"
 ```
 
-**PENDING-REHEARSAL (PILOT-302):** the secure record inventory and replacement-host DNS
-effects must be confirmed by the operator. No DNS value is recorded in repository QA.
+**Executed in scratch form (PILOT2-302H, 2026-09-22):** the scratch environment ran with
+`ALLOWED_HOSTS=.scratch.invalid`, and the firm and portal host checks passed
+(`firm_host_resolves=yes`, `portal_host_resolves=yes`, `firm_login_http=200`,
+`portal_http=302`). The secure record inventory and replacement-host DNS effects on the
+real zone still require operator confirmation at cutover. No DNS value is recorded in
+repository QA. Evidence: `.evidence/PILOT2-302H-operator.txt`.
 
 ## Object storage
 
@@ -986,10 +1013,18 @@ finally:
 PY
 ```
 
-**PENDING-REHEARSAL (PILOT-303):** neither test has contacted the live bucket. Record
-only PASS/FAIL, UTC timestamps, and the Test B elapsed value; never record credentials,
-bucket values, object keys, storage keys, or hashes. Bucket versioning remains a
-single-bucket control, not an independent offsite copy.
+**Executed (PILOT2-303 and PILOT2-405):** Test A ran against the live bucket from the
+Track H scratch stack under a read-only IAM identity (`app-documents-reader`); both
+canary documents returned `document_hash_match=yes`, and the reconciler reported
+`missing=0`, `hash_mismatches=0`, `reconcile_rows_without_object=0`,
+`reconcile_objects_without_row=0`, `reconcile_deleted=0` (as executed with
+`--hash-sample-size 5`). The object-loss leg ran as the PILOT2-405 probe with a recorded
+method deviation: `CopyObject` returned HTTP 400, so the prior version was downloaded
+and re-put as current; `object_recovery_seconds=0` and `restored_sha_equals_A=yes`.
+Application-path object-loss coverage is in `tests/portal/test_document_consistency.py`
+(14 tests passed). Bucket versioning remains a single-bucket control, not an independent
+offsite copy. Evidence: `.evidence/PILOT2-303-operator.txt` and
+`.evidence/PILOT2-405-operator.txt`.
 
 ### The backup directory can lose its owner while the container keeps running
 
