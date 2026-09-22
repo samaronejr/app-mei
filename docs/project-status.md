@@ -109,6 +109,17 @@ retired. Two consequences are expected states, not failures:
   genuinely is not the released one — and it clears only when DNS points at the
   pilot host. Do not "fix" it by editing the check.
 
+## Cutover record
+
+last_premerge_sha=c63326d4a2372609a12b7d34cfacd9f46fc7adc1
+window_utc=2026-09-23T14:00:00Z
+rollback_deadline=2026-09-23T18:00:00Z
+rollback_trigger=any step-7 check red OR any step-10 check red
+rollback_semantics=rollback to the old host restores data as of freeze_utc; any write accepted on the target after the flip is lost; therefore NO pilot-firm access before row 34 closes
+
+The authoritative 12-step cutover table is copied by reference from
+`ops/README.md:2109-2128`.
+
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final

@@ -2644,8 +2644,13 @@ aws s3 ls "s3://$OFFHOST_S3_BUCKET/pg/" --endpoint-url "$OFFHOST_S3_ENDPOINT"
 ```
 
 Transcribe both listings before and after, and record which entries were removed with
-their timestamps. An artifact whose timestamp falls between the PILOT-403 deploy and this
-step is target-made by construction.
+their provenance. Quarantine by provenance: an artifact is target-made only when its STAMP
+appears in the transferred set's provenance manifest, never merely because its timestamp
+falls in a time interval. Capture the target backup service journal in this step:
+
+```sh
+journalctl -u app-mei-backup.service
+```
 
 ##### 6. Restore on the target, then start only four services
 
@@ -2660,7 +2665,7 @@ carries the roles is safe.
 Bring up **four** services and no more:
 
 ```sh
-$compose up -d --no-build --wait db redis web caddy
+$compose up -d db redis web caddy
 $compose ps
 ```
 
@@ -2740,8 +2745,9 @@ target_ip="$(getent ahostsv4 <target-host> | awk 'NR==1{print $1}')"
 
    `jq -e` is what makes these bite: a 200 carrying the wrong body exits nonzero rather
    than scrolling past. Note `/healthz` will report `"backup": "stale"` here, because the
-   restored marker is the old box's and the target's timer is still disabled. That is
-   expected and does not change `status`; it clears after step 8's first timer run.
+   restored marker is the old box's and the target's timer is still disabled. The
+   `scheduler.*stale` state is expected and does not change `status`; it clears after
+   step 8's first timer run.
 
 Any failing check stops the cutover **before** anything public has changed. That is the
 entire point of doing all five here rather than after the flip: at this moment the old
