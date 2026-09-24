@@ -14,6 +14,7 @@ from django.template import engines
 from django.template.response import TemplateResponse
 from django.urls import path
 
+from apps.core.tenancy import current_tenant_id
 from apps.core.tests.models import ExampleTenantModel
 from apps.tenants.middleware import TenantHttpRequest
 
@@ -28,6 +29,19 @@ def guc(_request: HttpRequest) -> HttpResponse:
         )
         row = cursor.fetchone()
     return HttpResponse(row[0] if row else "")
+
+
+def context(request: TenantHttpRequest) -> HttpResponse:
+    """Report the resolved tenant, the granted tenant and the ContextVar.
+
+    The three are deliberately distinct: resolution is routing and answers which firm
+    the hostname names, while the granted tenant and `current_tenant_id` are
+    authorization and stay unset for a request that was never granted context.
+    """
+    resolved = request.resolved_tenant.slug if request.resolved_tenant else "-"
+    granted = request.tenant.slug if request.tenant else "-"
+    current = str(current_tenant_id.get() or "-")
+    return HttpResponse(f"resolved={resolved} granted={granted} current={current}")
 
 
 def lazy_template(request: HttpRequest) -> TemplateResponse:
@@ -85,6 +99,7 @@ def write_and_403(request: TenantHttpRequest) -> HttpResponse:
 
 urlpatterns = [
     path("guc/", guc, name="guc"),
+    path("context/", context, name="context"),
     path("lazy/", lazy_template, name="lazy"),
     path("streaming/", streaming, name="streaming"),
     path("write-ok/", write_and_succeed, name="write-ok"),

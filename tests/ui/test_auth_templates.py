@@ -33,7 +33,7 @@ guard to stop guarding.
 import re
 from http import HTTPStatus
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 from django.conf import settings
@@ -41,6 +41,9 @@ from django.test import Client
 from django.urls import get_resolver
 
 from apps.tenants.models import Tenant
+
+if TYPE_CHECKING:
+    from apps.tenants.middleware import TenantHttpRequest
 
 # The configured project template directory, read from settings rather than rebuilt from
 # `__file__`, so moving either tree cannot leave this scanning a path nobody serves.
@@ -79,6 +82,11 @@ FIRM_NAV_LABEL: Final = "Navegação principal".encode()
 # that means to look like this product. Stock allauth links no stylesheet at all, so
 # this byte string is present only when one of OUR layouts rendered the page.
 STYLE_MARKER: Final = b"css/app.css"
+
+# The text inside the page's single <h1>, which the layout owns. The walkthrough
+# contract (ops/walkthrough-pilot-v1.md, H-ENTRANCE) reads this element, so the
+# assertion below matches its contents rather than searching the whole body.
+H1_TEXT: Final = re.compile(r"<h1[^>]*>(.*?)</h1>", re.DOTALL)
 
 FIRM_SLUG: Final = "acme"
 FIRM_HOST: Final = f"{FIRM_SLUG}.localhost"
@@ -277,6 +285,14 @@ def test_the_login_page_renders_styled_on_the_portal_host(firm: Tenant) -> None:
     assert not FIRM_NAV.search(response.content), "firm nav rendered on the portal host"
     assert FIRM_NAV_LABEL not in response.content
 
+    # And the h1 is the portal's own, not the firm's name: a MEI owner signs in to
+    # their own area, not to their accountant's. This is the first of the three
+    # branches in the layout's heading expression, and the one a resolved-tenant
+    # lookup must never reach on this host.
+    heading = H1_TEXT.search(response.content.decode())
+    assert heading is not None, "the portal entrance page rendered no <h1> at all"
+    assert heading.group(1).strip() == "Portal do cliente"
+
 
 # ------------------------------------------------------------ (iv) the firm host, live
 
@@ -299,3 +315,26 @@ def test_the_login_page_stays_styled_on_the_firm_host(firm: Tenant) -> None:
     assert STYLE_MARKER in response.content, (
         f"firm login rendered without {STYLE_MARKER!r}: no layout of ours ran"
     )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_the_firm_host_heading_names_the_firm_for_an_anonymous_visitor(
+    firm: Tenant,
+) -> None:
+    # Given the firm's own subdomain and no authenticated user
+    assert firm.slug == FIRM_SLUG
+
+    # When an anonymous visitor opens the login page
+    response = Client().get(LOGIN_PATH, headers={"host": FIRM_HOST})
+
+    # Then the h1 names the firm — the walkthrough contract's H-ENTRANCE — even
+    # though the request was granted no tenant context: request.tenant is None and
+    # the page was branded from request.resolved_tenant, the display-only attribute
+    # TenantMiddleware sets from the hostname alone.
+    assert response.status_code == HTTPStatus.OK
+    heading = H1_TEXT.search(response.content.decode())
+    assert heading is not None, "the entrance page rendered no <h1> at all"
+    assert heading.group(1).strip() == firm.name
+    request = cast("TenantHttpRequest", response.wsgi_request)
+    assert request.tenant is None
+    assert request.resolved_tenant == firm

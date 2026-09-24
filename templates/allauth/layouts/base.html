@@ -28,10 +28,12 @@ under `account/` or `mfa/` overrides it, so offering the block here would only c
 a way for a future page to replace the skip link and the landmark along with the card.
 
 ZERO ORM, ZERO CAPABILITY RESOLUTION. The brand line below branches on two attribute
-reads. `request.urlconf` is set by `HostDispatchMiddleware` and `request.tenant` is an
-already-loaded instance, so reading its name issues no query. Anything that resolved a
-capability here would be denied on the portal host, where this page is anonymous and
-runs as `app_runtime` with both GUCs empty.
+reads. `request.urlconf` is set by `HostDispatchMiddleware` and
+`request.resolved_tenant` is an already-loaded instance, so reading its name issues no
+query. It is the RESOLVED tenant — the one the hostname names — not `request.tenant`,
+which is the GRANTED context and stays None for the anonymous visitors this shell
+exists for. Anything that resolved a capability here would be denied on the portal
+host, where this page is anonymous and runs as `app_runtime` with both GUCs empty.
 {% endcomment %}<!DOCTYPE html>
 <html lang="pt-br">
 <head>
@@ -69,7 +71,7 @@ runs as `app_runtime` with both GUCs empty.
       which has no firm at all.
     {% endcomment %}
     <h1 class="text-center text-xl font-semibold tracking-tight text-ink-900">
-      {% block heading %}{% if request.urlconf == 'apps.portal.urls' %}{% translate "Portal do cliente" %}{% elif request.tenant %}{{ request.tenant.name }}{% else %}{% translate "app-mei" %}{% endif %}{% endblock %}
+      {% block heading %}{% if request.urlconf == 'apps.portal.urls' %}{% translate "Portal do cliente" %}{% elif request.resolved_tenant %}{{ request.resolved_tenant.name }}{% else %}{% translate "app-mei" %}{% endif %}{% endblock %}
     </h1>
 
     <div class="card px-6 py-8">

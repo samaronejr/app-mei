@@ -146,6 +146,39 @@ def test_an_anonymous_request_carries_no_tenant(client: Client, alpha: Tenant) -
     assert alpha.slug == "alpha"
 
 
+def test_an_anonymous_request_resolves_the_tenant_without_being_granted_it(
+    client: Client,
+    alpha: Tenant,
+) -> None:
+    # Given no authenticated user, on a tenant subdomain
+    # When a view reads both tenant attributes and the ContextVar
+    response = client.get("/context/", headers={"host": ALPHA_HOST})
+
+    # Then the resolved tenant is attached for display — it is what lets the
+    # anonymous entrance pages name the firm — while the granted tenant and the
+    # ContextVar stay unset: resolution is routing, not authorization.
+    assert response.status_code == HTTPStatus.OK
+    assert response.content.decode() == "resolved=alpha granted=- current=-"
+
+
+def test_a_member_request_resolves_and_is_granted_the_same_tenant(
+    client: Client,
+    alpha: Tenant,
+    alpha_member: User,
+) -> None:
+    # Given a member of tenant Alpha on Alpha's subdomain
+    client.force_login(alpha_member)
+
+    # When a view reads both tenant attributes and the ContextVar
+    response = client.get("/context/", headers={"host": ALPHA_HOST})
+
+    # Then all three hold Alpha: the granted tenant IS the resolved one here.
+    assert response.status_code == HTTPStatus.OK
+    assert response.content.decode() == (
+        f"resolved=alpha granted=alpha current={alpha.id}"
+    )
+
+
 def test_an_anonymous_request_does_not_inherit_the_previous_tenant(
     client: Client,
     alpha_member: User,
