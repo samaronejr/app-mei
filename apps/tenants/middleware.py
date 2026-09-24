@@ -49,9 +49,10 @@ def slug_from_host(host: str) -> str | None:
 
 
 class TenantHttpRequest(HttpRequest):
-    """An `HttpRequest` after this middleware has attached the resolved tenant."""
+    """An `HttpRequest` after this middleware has attached the tenant attributes."""
 
     tenant: Tenant | None
+    resolved_tenant: Tenant | None
 
 
 class TenantMiddleware:
@@ -85,6 +86,13 @@ class TenantMiddleware:
             # the Phase-1 permissive policy would return zero rows in silence.
             return self.get_response(request)
         resolved = self._resolve_tenant(request)
+        # DISPLAY-ONLY branding: the tenant the hostname names, set whether or not the
+        # request is ever granted its context — an anonymous visitor on a firm host
+        # resolves the firm so the entrance pages can render its name, while
+        # request.tenant and current_tenant_id stay unset. Never scope a queryset or
+        # read current_tenant_id from this attribute: it is routing, not
+        # authorization, and holds a tenant the request has no right to operate as.
+        request.resolved_tenant = resolved
         granted = self._grant_context(request, resolved)
         return self._run_in_tenant_context(request, granted)
 
@@ -116,6 +124,10 @@ class TenantMiddleware:
         fail-closed answer the row-level-security policy would give.
         """
         request.tenant = None
+        # Resolution itself is a database read, so a database-free view gets no
+        # resolved tenant either — but the attribute is still bound, to None, so
+        # code reading it never meets a missing attribute on this path.
+        request.resolved_tenant = None
         token = current_tenant_id.set(None)
         try:
             return self.get_response(request)
