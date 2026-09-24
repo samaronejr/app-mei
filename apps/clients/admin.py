@@ -16,6 +16,7 @@ from django.http import HttpRequest
 
 from apps.audit.admin import TenantScopedAdminMixin
 from apps.clients.models import ClientCompany
+from apps.core.tenancy import current_tenant_id
 from apps.fiscal.formatting import format_cnpj
 from apps.fiscal.validators import CNPJ_ALPHABET, normalize_document
 
@@ -110,6 +111,31 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
             Q(cnpj__contains=normalized) | Q(cpf__contains=normalized),
         )
         return results | widened, True
+
+    def save_model(
+        self,
+        request: HttpRequest,
+        obj: ClientCompany,
+        form: forms.ModelForm[ClientCompany],
+        change: bool,
+    ) -> None:
+        """Stamp the ambient firm onto a new row, and never onto an existing one.
+
+        `ClientCompanyForm` omits `tenant` on purpose — an editable dropdown would be
+        a cross-tenant move primitive — so nothing else puts a firm on the INSERT.
+        Left NULL, the row-level-security predicate `tenant_id = app.tenant_id` is
+        `NULL = <uuid>`, which is never true, and the add dies on the policy.
+
+        On change the tenant is not touched: the form cannot move a row across firms
+        anyway, and re-stamping would only hide a context that had gone missing.
+        A missing context on add is likewise left alone rather than guessed at — the
+        write then fails closed on the policy, which is the designed refusal.
+        """
+        if not change:
+            tenant_id = current_tenant_id.get()
+            if tenant_id is not None:
+                obj.tenant_id = tenant_id
+        super().save_model(request, obj, form, change)
 
     def has_delete_permission(
         self,
