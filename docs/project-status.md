@@ -97,17 +97,15 @@ waits for the previous wave's pull request to merge before it opens.
 The push deploy in `ci.yml` (`deploy-pilot`) now targets the Lightsail pilot host
 through the OIDC just-in-time firewall; `deploy-lightsail.yml` is slimmed to the
 OIDC claim probe and the stale-rule cleanup, and the OCI-era `DEPLOY_*` secrets are
-retired. Two consequences are expected states, not failures:
+retired. Both states that were expected after the cutover merge have played out:
 
-- **The first push to `main` after the cutover merge IS the shadow deploy.** It is
-  the first time the push path exercises the Lightsail host end to end; the
-  pilot-readiness-v2 row that owns observing it is the shadow-deploy row, not this
-  one.
-- **`verify-live` stays red until DNS flips.** It compares `/versionz` on the public
-  edge against the head of `main`, and the public edge is still the old OCI box
-  serving the pre-merge release. The red is the check working — the deployed release
-  genuinely is not the released one — and it clears only when DNS points at the
-  pilot host. Do not "fix" it by editing the check.
+- **The shadow deploy happened.** The first push to `main` after the merge deployed
+  `c7afe36` to Lightsail. The first attempt failed assert 4 because no certificate had
+  been issued yet (the Cloudflare token was IP-restricted); after the token fix, the
+  re-run passed all six asserts and the storage probe (`.evidence/PILOT2-403-happy.txt`).
+- **`verify-live` is green.** It was red while the public edge still served the old
+  OCI release. DNS flipped to Lightsail on 2026-09-22, and the scheduled run of
+  2026-09-23 passed against the target (`.evidence/PILOT2-406-operator.txt`).
 
 ## Cutover record
 
@@ -116,9 +114,27 @@ window_utc=2026-09-23T14:00:00Z
 rollback_deadline=2026-09-23T18:00:00Z
 rollback_trigger=any step-7 check red OR any step-10 check red
 rollback_semantics=rollback to the old host restores data as of freeze_utc; any write accepted on the target after the flip is lost; therefore NO pilot-firm access before row 34 closes
+freeze_sha=aff146440f9f99f76df5a790146cbad8aada6174
+freeze_sha_source=.evidence/PILOT2-404E-happy.txt
+executed_window_utc=2026-09-22T13:15:00Z
+executed_rollback_deadline_utc=2026-09-22T17:15:00Z
+freeze_started_utc=2026-09-22T14:18:55Z
+dns_flip_completed_no_later_than_utc=2026-09-22T14:36:59Z
+rollback_invoked=no
+cutover_status=closed
+old_host_state=stopped-intact
+old_host_termination_not_before=v0.2.0-rc1 tag date + 7 days (tag not yet created)
 
-The authoritative 12-step cutover table is copied by reference from
-`ops/README.md:2109-2128`.
+`freeze_sha` is the merged row-27 commit, backfilled from `.evidence/PILOT2-404E-happy.txt`
+and repeated in `.evidence/PILOT2-404-operator.txt`. The `window_utc` and
+`rollback_deadline` lines are the plan as first recorded. The owner then moved the
+cutover forward a day, and the `executed_*` lines are what ran
+(`.evidence/PILOT2-404-operator.txt`, `.evidence/PILOT2-404O2-operator.txt`). The OCI
+host was stopped with its disk intact on 2026-09-23 (`.evidence/PILOT2-401-operator.txt`);
+its termination date gets fixed once the `v0.2.0-rc1` tag exists.
+
+The authoritative 12-step cutover table, with its as-executed record, is the ordered
+state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README.md`.
 
 ## Suite baseline
 

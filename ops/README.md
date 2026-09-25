@@ -1,10 +1,12 @@
 # Operations
 
 Most of this file describes mechanisms that exist and have been exercised. The last
-section, [Operator runsheets](#operator-runsheets-prepared-not-executed), is different:
-it is procedures written ahead of execution for the pilot migration, and nothing in it
-has been run. It is kept in the same file so the runsheets sit beside the mechanisms
-they configure, and it is fenced off by that heading so the distinction cannot be lost.
+section, [Operator runsheets](#operator-runsheets-procedures-and-as-executed-records), is
+different: it holds the procedures written ahead of the pilot host migration, and each
+one now opens with a dated record of how it actually ran. The migration was executed:
+the public name has served from the Lightsail host since 2026-09-22, and the old OCI
+compute instance is stopped with its disk intact. The runsheets stay beside the
+mechanisms they configure, so a re-run starts from the same text that was executed.
 
 ## Database roles
 
@@ -244,7 +246,7 @@ host log driver is also clean. The current disposition of every known sink is:
 | Django application logs | yes | **REDACTED AND MEASURED.** The production console handler replaces credentials resolved from the shared route registry before `django.request` formats handled 4xx or exception records. RESIDUAL-008 observed the redacted receipt and zero canary hits on success, refusal, rate-limit and safe-error paths. |
 | Gunicorn access log | yes | **SANITIZED.** The explicit production format retains remote address, timestamp, method, status, bytes, duration and user-agent. It omits the request line, path, query string and Referer. No request/correlation header exists in the repository, so none was invented for this change. |
 | Caddy access/error log | yes | **REDACTED AND MEASURED.** RESIDUAL-008 reproduced the former 502 leak as two URI-bearing error/access entries. Both the global error logger and the site access logger now delete `request.uri` and `request.headers.Referer` before serialization. Re-measurement found zero canary hits across success, refusal, rate-limit and safe-error paths; the 502 still produced two diagnostic receipts, each with no URI field. |
-| Docker/container log retention | partial | **CONTENT SANITIZED; RETENTION OPERATOR GATE.** The aggregate local container trace had zero canary hits across all four measured paths after the Django and Caddy filters. Neither Compose file contains a `logging:` block, so driver choice and rotation remain host-level state that the operator must configure and verify. The prepared, not-yet-executed procedure is [Host log rotation](#host-log-rotation). |
+| Docker/container log retention | partial | **CONTENT SANITIZED; RETENTION OPERATOR GATE.** The aggregate local container trace had zero canary hits across all four measured paths after the Django and Caddy filters. Neither Compose file contains a `logging:` block, so driver choice and rotation remain host-level state that the operator must configure and verify. Verified on the Lightsail target on 2026-09-21 (`.evidence/PILOT2-209-operator.txt`); the procedure and its record are in [Host log rotation](#host-log-rotation). |
 | Sentry events and transactions | yes | **SANITIZED.** The SDK denylist is extended recursively for the live password and code fields. Both send hooks scrub request and Referer URLs, request data, transaction names, breadcrumb URLs, span URLs and repeated credentials in stack-frame locals. |
 | CDN or load balancer | no deployed repository component | **NOT APPLICABLE.** Caddy is the only proxy represented in Git. Reclassify this row if another edge is introduced. |
 | Browser history | no | **RESIDUAL RISK.** The credential remains in the address bar and history by design; the rejected token-exchange redesign is not reopened here. |
@@ -272,8 +274,8 @@ entirely would break that fallback and is deliberately not used.
 archive. [`ops/RESTORE.md`](RESTORE.md) is the other half — how to get the data back.
 Its recovery entry points are:
 
-- [`Recovery timing status`](RESTORE.md#recovery-timing-status) — all PILOT-302/303
-  results remain explicitly pending until the disposable rehearsals run.
+- [`Recovery timing status`](RESTORE.md#recovery-timing-status) — the measured
+  PILOT2-302/303 recovery times, each with its evidence file.
 - [`Secrets and environment`](RESTORE.md#secrets-and-environment) — password-manager
   source location and safe `.env.prod` reconstruction.
 - [`Path A — physical restore with WAL replay`](RESTORE.md#path-a--physical-restore-with-wal-replay-rehearsed)
@@ -284,10 +286,10 @@ Its recovery entry points are:
 - [`Object storage`](RESTORE.md#object-storage) — restored-row/live-byte Test A and
   `_probe/` version-recovery Test B.
 
-The object-recovery layer those tests depend on is not armed yet. Bucket versioning and
-the previous-version prune rule are an operator step with a prepared, not-yet-executed
-procedure in [Object storage: versioning, lifecycle,
-probe](#object-storage-versioning-lifecycle-probe).
+The object-recovery layer those tests depend on is armed. Bucket versioning and the
+30-day previous-version prune rule were read back on the documents bucket on
+2026-09-21, and a prior version was restored byte for byte; the record is in [Object
+storage: versioning, lifecycle, probe](#object-storage-versioning-lifecycle-probe).
 
 ### Off-host copies are provider-neutral and activated only after the provider gate
 
@@ -302,9 +304,15 @@ the remote destination is healthy.
 The destination is not tied to any provider and must not be assumed to be the expiring
 OCI trial. The Wave-4 provider gate selects target-provider S3-compatible object storage,
 or post-trial OCI only if PILOT-405 proves that its entitlement persists. Until that gate,
-leave `OFFHOST_S3_BUCKET` absent; its presence is the script's activation switch. The
-authoritative production copy evidence is deferred to PILOT-406. Local MinIO rehearsals
-are only stand-ins and must never be described as production evidence.
+leave `OFFHOST_S3_BUCKET` absent; its presence is the script's activation switch. Local
+MinIO rehearsals are only stand-ins and must never be described as production evidence.
+
+The gate has passed. The copy was armed on the OCI host on 2026-09-21
+(`.evidence/PILOT2-301-operator.txt`: versioning and SSE verified, the reader identity
+refused listing, and the writer refused deletion), placed on the Lightsail target at
+Phase B (`.evidence/PILOT2-402-operator.txt`), and proven from the target by the
+scheduled nightly of 2026-09-24, read back by a separate reader credential with a
+matching SHA-256 (`.evidence/PILOT2-406-operator.txt`).
 
 The operator places these values in `/etc/app-mei/backup.env`; none belongs in git:
 
@@ -1129,7 +1137,8 @@ than linked.
 | `curl --resolve … /readyz` + `jq -e` ready/ok/ok | PILOT-403 shadow deploys, assert 5/6 |
 | `curl --resolve … /versionz` + `jq -e '.release == $GIT_SHA'` | PILOT-202 QA (endpoint and assertion shape); PILOT-403 shadow deploys, assert 6/6 |
 | `aws lightsail open/close-instance-public-ports` (runner /32 only) | PILOT-403 shadow deploys, Open/Close runner-rule steps |
-| `manage.py storage_probe` | PILOT-203 QA (`PILOT-203-happy`, against local storage). **Not yet run against the real bucket** — PILOT-204 owns that |
+| `manage.py storage_probe` | PILOT-203 QA (`PILOT-203-happy`, against local storage); the real OCI documents bucket from the OCI serving host (`.evidence/PILOT2-405-operator.txt`); the Lightsail target after its first push deploy (`.evidence/PILOT2-403-happy.txt`) and after the manual deploy of `76df579` (`.evidence/deploy-76df579-operator.txt`) |
+| Manual fallback plus all six assertions | The `76df579` deploy on 2026-09-24, run because GitHub Actions credits were unavailable. It was a host-side variant: the checkout was synced and both images were built on the Lightsail host itself instead of being shipped with `docker save`, after tagging `:previous` (`.evidence/deploy-76df579-operator.txt`: six of six asserts, storage probe pass) |
 | `docker image ls --filter reference="app-mei*"` | todo 6 QA, `FIX-06-happy` (live, against the box) |
 | `docker image prune -f` | CI run 30643246807, Reclaim step |
 | `gh secret set` / `gh secret list` | todo 4 QA, `FIX-04-happy`; todo 6 QA, `FIX-06-happy` |
@@ -1143,16 +1152,23 @@ costs 154 MB and `docker image prune -f` will not touch it because it is tagged.
 it (`docker rmi app-mei-caddy:latest`) or leave it. Recorded so that its presence is not
 mistaken for a live tag during a rollback.
 
-## Operator runsheets: prepared, NOT executed
+## Operator runsheets: procedures and as-executed records
 
-Everything under this heading is a **procedure to execute**, not a record of execution.
-No step below has been run, no account below exists yet, and no value below has been
-observed. The sections were written by the executor so the operator has exact commands
-and exact acceptance evidence to work from; the as-executed transcripts land in the QA
-evidence artifacts named in each section, and only then does anything here become a
-statement about reality.
+These runsheets were written before the pilot host migration and then executed during
+`pilot-readiness-v2`, between 2026-09-21 and 2026-09-25. Each section now opens with a
+"Recorded as executed on <date>" block: what ran, what it proved, and the departures
+from the text below it that matter for a re-run. The procedure text is kept as the procedure,
+because the next host move or a re-run starts from it, and where a run showed the text
+to be wrong the text was corrected and the record says so.
 
-Two conventions make that unambiguous, and they are load-bearing:
+The records cite operator artifacts as `.evidence/PILOT2-###-operator.txt` (and a few
+older `PILOT-###` files). `.evidence/` is the execution worktree's local evidence root,
+ignored by git, so these are names rather than links. The artifacts hold ids,
+timestamps and PASS/FAIL lines, never secrets. The evidence tables at the end of each
+procedure name the artifacts the procedure was written to produce; the v2 execution
+recorded into the `PILOT2-*` files cited in the records instead.
+
+Two conventions govern the procedure text, and they are load-bearing:
 
 - Any value only the operator can supply is written as an angle-bracket
   `<placeholder>`: regions, bucket names, IAM ARNs, instance IPs, DNS record values,
@@ -1171,9 +1187,42 @@ documentation.
 ### Email provider (Resend SMTP)
 
 Covers PILOT-104 (account, sending domain, DKIM, SPF, DMARC alignment, SMTP credential)
-and PILOT-105 (the daily cap, bounce and complaint handling). **Not executed.** No Resend
-account exists, no domain is verified, no API key has been created, and not one of the
-DNS records below has been placed.
+and PILOT-105 (the daily cap, bounce and complaint handling).
+
+#### Recorded as executed on 2026-09-21
+
+- **Domain and DNS** (`.evidence/PILOT2-104-operator.txt`). The Resend domain status is
+  Verified in region `sa-east-1` with `send` as the return path. Public lookups from a
+  resolver that did not create the records show the DKIM TXT on
+  `resend._domainkey.samaronefialho.dev` and the MX and SPF on `send.samaronefialho.dev`.
+  The apex SPF, apex MX and DMARC records are unchanged.
+- **Deviation, record layout.** Resend now generates the DKIM TXT plus two DNS-only
+  CNAMEs for the `send` subdomain, not the MX and TXT pair the table below shows. The
+  CNAMEs resolve to that MX and SPF, so the table still describes what a resolver sees.
+- **Deviation, NXDOMAIN control.** A random name under the apex answers NOERROR with no
+  data, because the zone has a wildcard. The control that does answer `NXDOMAIN` is a
+  nonexistent child of `resend._domainkey`, which the wildcard cannot synthesize.
+- **Deviation, DMARC.** The published record is
+  `v=DMARC1; p=none; adkim=r; aspf=r; pct=100`, with no `rua=` tag. Aggregate reports
+  aren't being collected yet.
+- **Credential smoke from outside the app** (`.evidence/PILOT2-105-operator.txt`). The
+  stdlib `smtplib` in a throwaway container stood in for swaks: authentication `235`,
+  message accepted `250`, and a wrong password refused with `535`. The received message
+  shows SPF, DKIM (`samaronefialho.dev`) and DMARC all `pass`. It landed in the spam
+  folder, so authentication is proven and inbox placement is not. The API key is
+  restricted to sending on this domain and kept in the password manager. The account
+  reports the free tier's 100 per day and 3,000 per month.
+- **Send from the target, before the flip** (`.evidence/PILOT2-106-operator.txt`,
+  Lightsail at `c7afe36`). `sendtestemail` from the web container exited 0 and arrived
+  with SPF, DKIM and DMARC `pass`, again in spam. A wrong password raised
+  `SMTPAuthenticationError` and delivered nothing. The receiver's `Received` header
+  names Amazon SES's `sa-east-1` outbound relay, not `smtp.resend.com`: Resend relays
+  through SES, and no header was invented to match the sheet.
+- **Bounces.** A provider bounce-simulator address produced a permanent `550 5.1.1`
+  bounce on 2026-09-22, handled by the manual suppression procedure below with no
+  repeat sends (`.evidence/PILOT2-106O-operator.txt`).
+- **Still open.** The daily cap has not been reached, so `<cap-refusal-response>` in
+  [When the daily cap is hit](#when-the-daily-cap-is-hit) remains unobserved.
 
 Resend replaces SES here for one reason: the pilot has to send to arbitrary external
 mailboxes from its first day, and SES puts that behind a human-reviewed production-access
@@ -1683,9 +1732,45 @@ reason.
 
 ### Mailbox journeys and the log hygiene sweep
 
-Covers PILOT-106. **Not executed.** No mailbox has received anything, no journey has been
-walked, no message-id exists, and no log window has been pulled. Every value below is a
-`<placeholder>` and every result is `PENDING`.
+Covers PILOT-106.
+
+#### Recorded as executed on 2026-09-22
+
+Run on the live Lightsail target at `aff1464`, inside an owner-authorized window with no
+pilot users, against a synthetic rehearsal tenant (`.evidence/PILOT2-106O-operator.txt`).
+The two mailboxes were distinct external inboxes, and the encarregado address was a real
+external mailbox, not localhost.
+
+| # | Journey as run | Result |
+| --- | --- | --- |
+| 1 | Firm invitation, TOTP enrolment, fresh login with MFA | PASS, delivered in 1 s |
+| 2 | Portal invitation, TOTP enrolment, fresh login with MFA | PASS, delivered in 2 s |
+| 3 | Address verification, confirmed by POST | PASS on the second attempt, delivered in 1 s |
+| 4 | Password reset, new password then MFA | PASS, delivered in 1 s |
+| 5 | LGPD DSR notification, `encarregado_notified_at` stamped | PASS, delivered in 1 s |
+| 6 | Revoke an invitation, reissue it; the old link answers 410 | PASS, delivered in under 1 s |
+
+Every delivered message showed SPF, DKIM and DMARC `pass`. The run also covered a
+wrong-password login (no mail sent over a 728 s window), the bounce control, and the
+hygiene sweep: seven 12-character fragments, one per credential link class, searched in
+Docker logs, Caddy logs and Sentry, with zero hits everywhere and a nonzero positive
+control in each place.
+
+Deviations, each recorded in the artifact:
+
+- **Journey order.** The run followed the revised six-journey sheet above, not the
+  matrix below. TOTP enrolment was folded into journeys 1 and 2, and the revoke and
+  reissue journey was added.
+- **Journey 3's first attempt failed.** Redeeming an invitation already marks the
+  invited address verified (`apps/accounts/invites.py`), so the confirmation link for
+  that address was invalid. The pass used an owner-approved secondary alias of mailbox
+  A, with MFA disabled for the change and re-enrolled immediately after.
+- **Check 7 also ran against the live stack.** The scratch-shell form below ran on
+  2026-09-21 (`.evidence/PILOT2-106-operator.txt`). On 2026-09-22 the owner also
+  authorized breaking `EMAIL_HOST_PASSWORD` on the running stack for 55 s under a
+  host-local restore timer, to observe the application's side: a truthful UI error, zero
+  invitation rows created, and an `SMTPAuthenticationError` event in Sentry. The
+  original line was verified restored. Don't repeat that form once pilot users exist.
 
 This section depends on [Email provider (Resend
 SMTP)](#email-provider-resend-smtp) having landed first: the domain verified, the SMTP
@@ -1881,9 +1966,38 @@ immediately.
 
 ### Object storage: versioning, lifecycle, probe
 
-Covers PILOT-204. **Not executed.** Versioning state, lifecycle rules, bucket name, and
-the probe run below are all `PENDING`; the probe has so far run only against local
-storage in PILOT-203, never against the real bucket.
+Covers PILOT-204.
+
+#### Recorded as executed on 2026-09-21
+
+- **Provider ruling: keep OCI.** The OCI account continues on the always-free tier after
+  the trial, the documents bucket shows no reclamation notice, and the free storage
+  entitlement persists (`.evidence/PILOT2-000-operator.txt`). The documents stay in the
+  OCI bucket. The conditional move to another provider was skipped
+  (`.evidence/PILOT2-405M-operator.txt`), so **no storage variable was renamed**: the
+  target's `.env.prod` still uses the `OCI_S3_*` names from `.env.prod.example`.
+- **Versioning and lifecycle** (`.evidence/PILOT2-405-operator.txt`,
+  `.evidence/PILOT2-000-operator.txt`). Versioning is `Enabled`. The lifecycle rule
+  deletes previous versions after 30 days, is enabled, and expires no current object. No
+  retention rule exists.
+- **Deviation, lifecycle readback.** OCI's S3-compatible API answers
+  `get-bucket-lifecycle-configuration` with 404 `NoSuchLifecycleConfiguration` even with
+  the rule in place, because OCI keeps lifecycle policy in its native API. The rule was
+  read back in the native OCI console instead.
+- **The probe against the real bucket**, run from the OCI serving host: write,
+  authenticated read, anonymous direct refusal, storage-URL anonymous refusal, and
+  delete-and-confirm-gone all PASS. The wrong-credential control exited 1, failing at
+  the write step, so it had nothing to leave behind.
+- **The versioning drill.** Two version ids were seen. After a delete, `head` returned
+  404, and the restored bytes' SHA-256 equalled the original's.
+- **Deviation, restore method.** `CopyObject` from a prior version returned HTTP 400
+  `InvalidArgument` on OCI. The restore that worked is the one below: download the
+  exact prior version, then put it back as current.
+- **From the target.** The same probe passed on Lightsail after its first push deploy
+  (`.evidence/PILOT2-403-happy.txt`) and after the manual `76df579` deploy
+  (`.evidence/deploy-76df579-operator.txt`). Restored-row hashes
+  were matched against live bucket bytes for two tenants with a report-only reconcile
+  on 2026-09-22 (`.evidence/PILOT2-303-operator.txt`).
 
 #### Red state first
 
@@ -1975,8 +2089,35 @@ credential, and nothing here applies to it.
 
 ### External uptime monitoring: four keyword monitors and a negative control
 
-Covers PILOT-207's external half. **Not executed.** No UptimeRobot account exists, no
-monitor has been created, and no alert has been received.
+Covers PILOT-207's external half.
+
+#### Recorded as executed on 2026-09-22
+
+The monitor inventory was read from the authenticated UptimeRobot console after the flip
+(`.evidence/PILOT2-406-operator.txt`): M1a to M1d UP against the target and the M1n
+negative control DOWN, as required. Three more keyword monitors were added the same
+day, all alert-on-absence, case-sensitive, on a five-minute interval, and mailing the
+operator contact:
+
+| Monitor | URL | Keyword |
+| --- | --- | --- |
+| M2 | `https://samaronefialho.dev/readyz` | `"database": "ok", "redis": "ok"` |
+| M3 | `https://samaronefialho.dev/versionz` | `"release": "<deployed-sha>"`, the full 40-character SHA |
+| M4 | the portal host's `/healthz` | all four healthy fields as one literal string |
+
+Each of M2 to M4 matches one contiguous literal, so a change in field order or JSON
+formatting also alerts. Two owner-approved deviations come with them:
+
+- **M3 pins a literal SHA**, so every legitimate release also alerts until the keyword
+  is updated. After each deploy, edit M3's keyword to the new `/versionz` value. It was
+  refreshed to `76df579` and then to `699f764` on 2026-09-24, and read back UP both
+  times.
+- **M4 watches a placeholder portal host** until the real pilot tenant exists. Repoint
+  it at that tenant's portal host when the tenant is created.
+
+The beat drills of 2026-09-23 and 2026-09-24 are what proved alert delivery; their
+record is under [Alerting drills](#alerting-drills-sentry-the-degraded-signal-and-the-missed-ping).
+The first of them also corrected check 5 below.
 
 **UptimeRobot cannot evaluate JSONPath.** The operator's capability proof established
 that its only body-inspection primitive is a plain **substring** match over the raw
@@ -2084,14 +2225,14 @@ not delivered, and a permanently-alerting monitor that pages nobody is the point
 | 2 | M1n against the same deployment | DOWN, with notifications suppressed |
 | 3 | M1b during the [beat-stopped drill](#b-the-degraded-signal-drill-stop-beat) | transitions to DOWN, alert delivered to `<alert-recipient>` |
 | 4 | M1a and **M1d** during the same drill | both transition to DOWN, at the same 15-minute mark as M1b |
-| 5 | M1c during the same drill | stays UP |
+| 5 | M1c during the same drill | goes DOWN on the HTTP 503, although its keyword is still in the body (see below) |
 
 Check 3 is the only one that proves delivery, and it is already scheduled: it is row 5 of
 the [beat-stopped drill](#b-the-degraded-signal-drill-stop-beat), which is where the
 elapsed interval from `<beat-stopped-utc>` is recorded. Checks 4 and 5 are read from the
 same window at no extra cost.
 
-**Three monitors go red from one cause, and M1d is the one that surprises people.** A
+**Four monitors go red from one cause, and M1d is the one that surprises people.** A
 stopped beat flips `status` to `degraded`, so M1a follows M1b immediately — that part is
 obvious. `disk` is the one that is not: the reading is taken and stamped by the scheduler,
 so a stalled writer can no longer vouch for the number it last wrote, and `_headroom`
@@ -2100,12 +2241,18 @@ comfortable value nobody is refreshing (see [The disk
 fuse](#the-disk-fuse-healthz-reports-headroom-and-does-not-503)). `DISK_STALE_AFTER`
 equals `HEARTBEAT_STALE_AFTER`, so M1b and M1d flip together at fifteen minutes.
 
-Only M1c stays UP, because the nightly marker is written by a host systemd timer that a
-stopped beat container does not touch. **Read three simultaneous reds as one fault, not
-three.** Chasing M1d as a capacity incident during a scheduler outage is the specific
-mistake this note exists to prevent, and it is the same class of confusion as the web
-container going `unhealthy` while web is serving perfectly. Both are asserted in
-`tests/test_healthz_keyword_monitors.py`.
+M1c's keyword survives: the body still says `"backup": "fresh"`, because the nightly
+marker is written by a host systemd timer that a stopped beat container does not touch,
+and `tests/test_healthz_keyword_monitors.py` asserts that about the body. The monitor
+goes DOWN anyway. A stale scheduler makes `/healthz` answer 503, and UptimeRobot counts
+the 503 as down before it looks for any keyword. The text here used to say M1c stays UP;
+the drill of 2026-09-23 showed otherwise (`.evidence/PILOT2-504-aff1464-operator.txt`,
+incident reason `503 Service Unavailable`), and the owner amended the acceptance before
+the re-run. **Read four simultaneous reds as one fault, not four.** Chasing M1d as a
+capacity incident during a scheduler outage is the specific mistake this note exists to
+prevent, and it is the same class of confusion as the web container going `unhealthy`
+while web is serving perfectly. A stale backup on its own still leaves `/healthz` at 200,
+so M1c alone going red keeps its meaning.
 
 Record monitor ids and the alert recipient in `.evidence/PILOT-207-operator.txt`; the UP
 and DOWN states go to `.evidence/PILOT-207-happy.txt`, and check 2's required DOWN plus
@@ -2114,8 +2261,33 @@ URL in any of them.
 
 ### Host log rotation
 
-Covers PILOT-209. **Not executed.** `/etc/docker/daemon.json` has not been written, no
-rolling restart has happened, and the flood test below has not been run.
+Covers PILOT-209.
+
+#### Recorded as executed on 2026-09-21
+
+On the Lightsail target, before the flip (`.evidence/PILOT2-209-operator.txt`). Phase A
+had already written `daemon.json` with `json-file`, `50m` and `5` on 2026-08-16
+(`.evidence/PILOT-402-happy.txt`), and Phase B re-read it
+(`.evidence/PILOT2-402-operator.txt`).
+
+- **Every application container** (six checked) reports `max-size=50m` and
+  `max-file=5`.
+- **The flood test** pushed 300 MiB through a throwaway container that inherited the
+  daemon defaults. Rotation left five files, the largest 50,000,134 bytes, with
+  210,671,760 bytes retained in total. The container was removed afterwards.
+- **journald** uses 71 MiB against `SystemMaxUse=500M`. Deviation: the effective cap comes
+  from the drop-in `/etc/systemd/journald.conf.d/app-mei.conf`, so the `grep` of the main
+  `journald.conf` below finds nothing. Read the drop-in as well.
+- **The invalid-config control** was rejected with exit 1 naming the unknown key. The
+  live daemon config was unchanged and no production service restarted.
+- **The canary check.** A marker sent as a user agent was found once (the positive
+  control) and an absent marker zero times. The credential sweep used the exact values
+  of the ten configured secrets, held in memory only, across current and rotated logs
+  of all six containers: zero matches. The token-fragment sweep from the mailbox
+  journeys ran on 2026-09-22 with zero hits (`.evidence/PILOT2-106O-operator.txt`).
+
+Rotation was never verified on the OCI host. It's stopped now, so its log retention no
+longer bears on the pilot.
 
 This is **retention**, not redaction. Content redaction is a separate, already-measured
 property covered by [Credential log hygiene](#credential-log-hygiene); nothing here
@@ -2232,8 +2404,19 @@ Phase B for the re-verification.
 
 ### Host requirements
 
-Covers PILOT-401. **Not executed.** No provider has been chosen, no instance ordered, and
-no shape below has been measured against a real host.
+Covers PILOT-401.
+
+#### Recorded as executed on 2026-08-11
+
+The operator chose AWS Lightsail in `sa-east-1`. Measured over SSH rather than taken
+from the plan page (`.evidence/PILOT-401-operator.txt`): Ubuntu 24.04.4 LTS, 2 vCPU,
+3.7 GiB of usable RAM, 77 GB of disk, systemd running, static IP attached. Every row
+below was met except swap. The image ships with none, which the procedure counts as
+UNMET, so the bootstrap stayed blocked until Phase A added swap. The host reported
+2,047 MiB of swap before Phase B and 2,111 MiB after it (`.evidence/PILOT2-402-operator.txt`).
+The instance firewall allows 80 and 443 from anywhere and SSH only from the operator's
+address and Lightsail's browser SSH (`.evidence/PILOT2-000-operator.txt`); the deploy
+job opens SSH to its runner just in time.
 
 The move is like-for-like. Nothing here selects managed Kubernetes or a PaaS, and nothing
 here changes the architecture; the target runs the same compose stack the current box
@@ -2273,10 +2456,45 @@ cutover window, which is the worst possible time to discover it.
 
 ### New host bootstrap (two phases)
 
-Covers PILOT-402. **This section is the runsheet, pre-execution.** No host has been
-bootstrapped. Once the procedure has actually been executed end to end, this section is
-replaced by the as-executed version written from the resulting transcripts; until then
-every step below is a proposal that has never met a real machine.
+Covers PILOT-402.
+
+#### Recorded as executed on 2026-08-16 (Phase A) and 2026-09-21 (Phase B)
+
+**Phase A** ran on the Lightsail host on 2026-08-16 (`.evidence/PILOT-402-happy.txt`,
+`.evidence/PILOT-402-operator.txt`). Docker and the compose plugin came from Docker's
+official repository. The deploy user ran `hello-world`, and a read-only repository deploy
+key gave the checkout a noninteractive fetch. `daemon.json` was validated, with its
+invalid-key control rejected, and a throwaway flood stayed inside 50m x 5. The units
+were copied and validated but never enabled, `install.sh` was not run, and no
+application container or volume existed afterwards.
+
+**Phase B** ran on 2026-09-21, from 19:55 to 20:13 UTC
+(`.evidence/PILOT2-402-operator.txt`):
+
+- The checkout fast-forwarded cleanly to `origin/main` at `16bce80`. The units were
+  re-copied, `systemd-analyze verify` passed, and the timer stayed `disabled` and
+  `inactive` with an empty service journal.
+- `ops/check_env_prod.py` printed OK for 35 keys. Run against the example file itself it
+  failed, as designed. `docker compose config` passed.
+- Deviation, failure path: rather than omit a variable, the run overrode `SECRET_KEY`
+  to empty for one process with the real env file, and compose refused with exit 1.
+- `.env.prod` is owned by the deploy user, mode 0600. `/etc/app-mei/backup.env` holds
+  eight keys, `root:root` mode 0600. The off-host AWS CLI config is in place.
+- The existing application credentials were carried over from the OCI host. Resend
+  and Sentry came from the password manager, and both Healthchecks checks are new and
+  scoped to this host. That carry-over is why
+  [decommissioning](#decommissioning-the-old-host) rotates the OCI-era secrets.
+- Log rotation, the journald cap, swap and AWS CLI v2 were re-verified. The stack was
+  not started, and the temporary SSH rule was removed afterwards.
+
+**Correction found after the flip.** The first scheduled nightly on the target, on
+2026-09-23, took the local backup and then failed the off-host copy with exit 5
+(`.evidence/PILOT2-406-operator.txt`). The backup service runs as the deploy user, and
+the root-owned `/etc/app-mei` at mode 0700 kept that user from reading the non-secret
+AWS CLI config. The fix was `root:<deploy-user>` mode 0710 on the directory and 0640 on
+the config file, and step 5 below now says so. `backup.env` stays `root:root` 0600,
+because systemd reads it before dropping privileges. The next scheduled nightly, on
+2026-09-24, succeeded end to end.
 
 The split into two phases exists because the deadline lane needs a base host early, and
 the finalizing values do not exist until later waves land. Phase A depends on
@@ -2398,7 +2616,11 @@ Run after PILOT-106, 208, 209, and 301, and before PILOT-403.
    [Off-host copies](#off-host-copies-are-provider-neutral-and-activated-only-after-the-provider-gate).
    Confirm the path matches the refreshed unit's `EnvironmentFile=` line; the leading `-`
    makes the file optional, which protects the backup from a missing monitoring secret but
-   equally means a **wrong path fails silently**. Root-owned, mode 0600.
+   equally means a **wrong path fails silently**. Root-owned, mode 0600. The non-secret
+   AWS CLI config beside it is different: the backup service runs as the deploy user,
+   so `/etc/app-mei` must be `root:<deploy-user>` mode 0710 and that file
+   `root:<deploy-user>` mode 0640. Mode 0700 on the directory fails the off-host copy on
+   the first night, as it did on 2026-09-23.
 
 6. **Re-run the PILOT-209 verification** on this host: `LogConfig` on every container
    that exists, and the journald cap.
@@ -2416,9 +2638,47 @@ Transcript to `.evidence/PILOT-402-failure.txt`; the per-step transcripts go to
 
 ### Cutover: data freeze, restore, and DNS flip
 
-Covers PILOT-404. **Not executed.** No target host holds production data, no DNS record
-has been changed, no freeze window has been scheduled, and every measured value below is
-a `<placeholder>`.
+Covers PILOT-404.
+
+#### Recorded as executed on 2026-09-22
+
+The freeze SHA was `aff1464`, the merged cutover-preparation commit
+(`.evidence/PILOT2-404E-happy.txt`). The window opened at 13:15 UTC with a rollback
+deadline of 17:15 UTC. The tracked plan had set it for 2026-09-23; the owner moved it
+forward to the same day. Steps 1 to 8 are in `.evidence/PILOT2-404-operator.txt`, and
+steps 9 to 12 with both controls in `.evidence/PILOT2-404O2-operator.txt`.
+
+| # | As executed |
+| --- | --- |
+| 1 | Apex and wildcard `A` were already at 300 s, DNS-only, with no `AAAA`; nothing to lower |
+| 2 | Freeze started 14:18:55 UTC in the order caddy, beat, drain, worker. `active`, `reserved` and `scheduled` were empty, and `llen celery` was 0 |
+| 3 | The final backup exited 0 and both Healthchecks checks went green. After the WAL switch there were zero `.ready` files, and `failed_count` read 0 before and after |
+| 4 | Base, logical dump and WAL archive went host to host with agent-forwarded `rsync` and `scp`. SHA-256 matched three of three |
+| 5 | The three volumes were removed and both Caddy volumes kept. Quarantine found zero target-made artifacts, locally or off-host |
+| 6 | Restore reached the final archived segment, roles took two bootstrap passes, and `worker` and `beat` were absent |
+| 7 | 99 migrations applied with none pending, RLS held by effect, row counts matched three of three with equal hashes, and the canary document's SHA-256 matched. `/readyz` was ready, `/versionz` was `aff1464`, and `/healthz` was 503 with a stale scheduler, as expected (see the corrected check 5 below) |
+| 8 | `worker` and `beat` started and the timer was enabled. `/healthz` read `ok` 13 s later |
+| 9 | Apex and wildcard `A` repointed to the target, DNS-only at 5 minutes, complete by 14:36:59 UTC |
+| 10 | At 14:53 UTC, unpinned, from a workstation with no proxy and no hosts override: both names resolved to the target, the TLS connection landed there, the certificate came from Let's Encrypt, `/versionz` was `aff1464`, `/readyz` was ready and `/healthz` was ok |
+| 11 | Old box: all five volumes present, caddy, web, worker and beat exited, db and redis running |
+| 12 | The pre-window TTL was already 300 s, so nothing needed restoring. The console read back 300 |
+
+Both controls passed. Control 2's altered count failed with exit 1 on the `documents`
+line, and the restored file's hash matched the original. Control 1 needed two
+corrections, both recorded:
+
+- It ran behind the old host's security list, narrowed to the operator's address. An
+  independent host was refused, and the old host's HTTP and HTTPS ingress rules were
+  removed afterwards. It checked `/versionz` and `/readyz` rather than `/healthz`, which
+  can't read `ok` while the old box's beat is stopped.
+- The first two attempts failed. The first answered 502 before web was ready. The
+  second served the wrong release, because `up` recreated the old web container from a
+  stale `app-mei:prod` tag. The passing run used the retained immutable image whose
+  embedded `RELEASE` is `c588669`, started with Gunicorn only and no migration command.
+  **Any rollback to the old box must use that image, not the `:prod` tag.**
+
+No rollback was invoked. The target has served the public name since the flip
+(`.evidence/PILOT2-406-operator.txt`).
 
 This is the most dangerous procedure in the pilot, and the reason is not that it is
 complicated. It is that its two principal failure modes produce a system that looks
@@ -2456,8 +2716,8 @@ control below exists.
   constraint costs nothing.
 - **MUST NOT lower the DNS TTL below 300s permanently.** 300s for the window only,
   restored in step 12.
-- **MUST NOT destroy old-box data.** It is the rollback anchor until `v0.2.0-rc1` exists.
-  See [Decommissioning the old host](#decommissioning-the-old-host).
+- **MUST NOT destroy old-box data.** It is the rollback anchor until seven days after
+  the `v0.2.0-rc1` tag. See [Decommissioning the old host](#decommissioning-the-old-host).
 
 #### The ordered state machine
 
@@ -2736,18 +2996,25 @@ target_ip="$(getent ahostsv4 <target-host> | awk 'NR==1{print $1}')"
 
    ```sh
    curl -fsS --max-time 30 --resolve "samaronefialho.dev:443:$target_ip" \
-     "https://samaronefialho.dev/healthz?cb=<window-id>" | jq -e '.status == "ok"'
+     "https://samaronefialho.dev/readyz?cb=<window-id>" \
+     | jq -e '.status == "ready" and .database == "ok" and .redis == "ok"'
 
    curl -fsS --resolve "samaronefialho.dev:443:$target_ip" \
      "https://samaronefialho.dev/versionz?cb=<window-id>" \
      | jq -e --arg SHA "<main-head-sha>" '.release == $SHA'
+
+   # Expected 503 here: beat is not running yet. Recorded, not asserted green.
+   curl -sS --max-time 30 --resolve "samaronefialho.dev:443:$target_ip" \
+     "https://samaronefialho.dev/healthz?cb=<window-id>"
    ```
 
    `jq -e` is what makes these bite: a 200 carrying the wrong body exits nonzero rather
-   than scrolling past. Note `/healthz` will report `"backup": "stale"` here, because the
-   restored marker is the old box's and the target's timer is still disabled. The
-   `scheduler.*stale` state is expected and does not change `status`; it clears after
-   step 8's first timer run.
+   than scrolling past. `/healthz` is not a pass condition at this step. Beat stays
+   stopped until step 8, a stale scheduler is the one state that makes `/healthz` answer
+   503, and on 2026-09-22 it answered 503 with `"scheduler": "stale"` exactly as
+   expected. An earlier version of this step asserted `.status == "ok"`, which can't pass
+   before step 8. `/healthz` must reach `"status": "ok"` after step 8, and on the day it
+   did so within 13 seconds.
 
 Any failing check stops the cutover **before** anything public has changed. That is the
 entire point of doing all five here rather than after the flip: at this moment the old
@@ -2889,73 +3156,163 @@ mismatch, so the naming is part of the acceptance and not incidental.
 
 ### Decommissioning the old host
 
-Covers PILOT-406. **Not executed.** Nothing has been re-verified from a target host, and
-no host has been decommissioned.
+Covers PILOT-406 and the old host's disposition.
 
-**The old box is the deep-rollback anchor and must not be decommissioned before
-`v0.2.0-rc1` exists.** Every check below is about earning the right to stop it, not about
-stopping it.
+**The old OCI compute instance is the deep-rollback anchor. It stays stopped and intact
+until the `v0.2.0-rc1` tag exists and seven days have passed, rc1 + 7 days, and only then
+is it terminated.** That schedule is owner decision D-Q3. The OCI account itself stays:
+the documents bucket lives there under the keep-oci ruling, and it's never part of this
+decommission.
 
-#### Re-verification checklist, all from the target
+#### Re-verification from the target, recorded as executed on 2026-09-21 to 2026-09-25
 
-Everything proven on the old box is proven again from the new one, because evidence
+Everything proven on the old box was proven again from the new one, because evidence
 gathered on a host that is about to be switched off is evidence about the wrong machine.
 
-| # | Check | Acceptance |
-| --- | --- | --- |
-| 1 | One email journey per type: firm invite, address verification, password reset, LGPD DSR notification | Each delivered to a real external mailbox, message-ids recorded, DKIM and SPF pass, `From` aligned |
-| 2 | Backup timer fires once end to end | Local base and logical artifacts present with a fresh marker, off-host copy landed under `pg/<UTC-timestamp>/`, both Healthchecks checks green. This is the **authoritative** off-host evidence; the local MinIO rehearsal never was |
-| 3 | `verify-live` workflow green against the target | Scheduled or dispatched run passes, with `/versionz` release equal to `main` |
-| 4 | UptimeRobot | M1a–M1d UP against the target, and the M1n negative control DOWN. Four UP with no DOWN control does not satisfy this row — see [External uptime monitoring](#external-uptime-monitoring-four-keyword-monitors-and-a-negative-control) |
-| 5 | Log rotation on the target | The [Host log rotation](#host-log-rotation) checks re-run: `LogConfig` on every container, journald cap recorded |
-| 6 | Sentry receives a target-origin event | The event's `release` field equals the deployed SHA |
+| # | Check | Acceptance | As executed |
+| --- | --- | --- | --- |
+| 1 | One email journey per type: firm invite, address verification, password reset, LGPD DSR notification | Each delivered to a real external mailbox, message-ids recorded, DKIM and SPF pass, `From` aligned | PASS on 2026-09-22, six journeys, all with SPF, DKIM and DMARC `pass` (`.evidence/PILOT2-106O-operator.txt`) |
+| 2 | Backup timer fires once end to end | Local base and logical artifacts present with a fresh marker, off-host copy landed under `pg/<UTC-timestamp>/`, both Healthchecks checks green. This is the **authoritative** off-host evidence; the local MinIO rehearsal never was | FAIL on 2026-09-23, then PASS on 2026-09-24. The first scheduled nightly failed its off-host copy on a permissions fault ([bootstrap record](#new-host-bootstrap-two-phases)). An operator-started recovery run passed that morning but doesn't count as scheduled. The next scheduled nightly succeeded locally and off-host, both checks were UP, and a separate reader matched the SHA-256 (`.evidence/PILOT2-406-operator.txt`) |
+| 3 | `verify-live` workflow green against the target | Scheduled or dispatched run passes, with `/versionz` release equal to `main` | PASS on 2026-09-23. The scheduled run succeeded, sent its success ping, and its Healthchecks check read UP (`.evidence/PILOT2-406-operator.txt`) |
+| 4 | UptimeRobot | M1a-M1d UP against the target, and the M1n negative control DOWN. Four UP with no DOWN control does not satisfy this row, see [External uptime monitoring](#external-uptime-monitoring-four-keyword-monitors-and-a-negative-control) | PASS on 2026-09-22 (`.evidence/PILOT2-406-operator.txt`) |
+| 5 | Log rotation on the target | The [Host log rotation](#host-log-rotation) checks re-run: `LogConfig` on every container, journald cap recorded | PASS on 2026-09-21 (`.evidence/PILOT2-209-operator.txt`) |
+| 6 | Sentry receives a target-origin event | The event's `release` field equals the deployed SHA | PASS on 2026-09-21 at `c7afe36` (`.evidence/PILOT2-107T-operator.txt`), and again on 2026-09-24 at `699f764` (`.evidence/PILOT2-504-699f764-operator.txt`) |
 
-Any failing row blocks Wave 5 and its remediation is recorded in
-`.evidence/PILOT-406-failure.txt` rather than retried until it passes without explanation.
-Row 2 in particular is the one that has never had authoritative evidence.
+The push deploy was green on the target too. The CI run for `aff1464` passed all three
+jobs, including the Lightsail deploy (`.evidence/PILOT2-406-operator.txt`).
 
-The off-host copy check has an independent verification half worth stating explicitly: a
-**separate read credential** downloads both artifacts and compares byte count and SHA-256
-against the local sources. The backup identity is PutObject-only by design and cannot
-list or read, so it cannot verify its own work.
+Row 2 is the one that failed, and it shows why the rule exists: a failing row gets its
+remediation recorded, not a quiet retry until it passes. The off-host check also has an
+independent verification half. A **separate read credential** downloads the artifact
+and compares byte count and SHA-256 against the local source. The backup identity is
+PutObject-only by design and cannot list or read, so it cannot verify its own work.
 
-#### Decommission plan
+#### The old host now, recorded as executed on 2026-09-23
 
-Executed only after `v0.2.0-rc1` exists and rows 1 through 6 are green.
+From `.evidence/PILOT2-401-operator.txt`:
 
-1. **What leaves the old box, and when.** Stop `caddy` first so the old box cannot serve
-   the public edge even if DNS regresses, then the remaining services. Leave the docker
-   volumes intact. Record the stop timestamp as `<old-box-stop-utc>`.
-2. **Data retained.** Postgres data, the WAL archive, and the local backup artifacts stay
-   on the old box for `<retention-days>` after RC, then the instance is destroyed. The
-   retention window is a decision recorded in the operator artifact, not a default.
-3. **Evidence retained.** The final backup taken during the
-   [cutover freeze](#cutover-data-freeze-restore-and-dns-flip), its off-host
-   copy, and the cutover window log are kept independently of the instance's lifetime,
-   because they outlive the machine that produced them.
-4. **Secrets rotated at cutover, names only.** Rotate rather than migrate: a credential
-   that lived on a host being decommissioned should not be the credential guarding the
-   new one. The list, recorded by name with values never written down here, is the deploy
-   SSH key, the Resend API key (via the two-key procedure above), the Cloudflare API
-   token, the document-bucket credential, the off-host ops-bucket credential, and both
-   Healthchecks ping URLs. Each rotation is verified by effect before the previous value
-   is deleted.
-5. **Rollback stays available until the last moment.** While the old box exists with its
-   volumes intact, the deep rollback is repointing DNS and restarting its Caddy. Destroying
-   the instance is the step that ends that option, so it is deliberately the last one and
-   it is dated.
+- The instance was stopped gracefully, not force-stopped, on the owner's instruction
+  once the OCI missed-run drill had closed. The console read `Stopped` at 10:34 UTC.
+- Its 47 GB boot volume is still attached, and no block volumes are listed. Nothing was
+  deleted.
+- The public IP is unassigned. The last public ingress rules (two SSH, one ICMP) were
+  removed, leaving only ICMP from the private network, and egress is unchanged. The HTTP
+  and HTTPS rules had already gone after the cutover's control 1.
+- The documents bucket was not touched. Termination has not happened.
+
+While the instance stays in this state, rollback is still possible, but it's no longer
+cheap, and the order matters:
+
+1. Get incident approval, then freeze and drain writes on the target.
+2. Reconcile data. The old host holds data as of the 2026-09-22 freeze, so any write the
+   target accepted after the flip is lost unless it's carried back.
+3. Reassign a public address and restore administrative ingress, because nothing can
+   reach the stopped host without them.
+4. Start the old web from the retained immutable image through its protected override,
+   never from the stale `app-mei:prod` tag (see the [cutover
+   record](#cutover-data-freeze-restore-and-dns-flip)). Validate readiness under
+   restricted ingress.
+5. Only then change DNS, services or public ingress.
+
+#### Decommission schedule (D-Q3)
+
+Termination waits for all three preconditions:
+
+1. The `v0.2.0-rc1` tag exists. As of this record it doesn't; see
+   [`RELEASES.md`](RELEASES.md).
+2. The tag's date is recorded in the release row's operator artifact.
+3. At least seven days have passed since that date. The earliest termination date is the
+   tag date plus seven days, and it gets written down once the tag exists.
+
+Then, in this order:
+
+1. **Terminate the compute instance** and delete its boot volume and any block volumes.
+2. **Delete OCI-era snapshots and custom images.** Keep the final cutover backup, its
+   off-host copy and the cutover evidence. They outlive the machine that made them.
+3. **Rotate the OCI-era credentials, by name.** Values never go in this file or in an
+   evidence artifact. Each replacement is proven working before the old value is
+   revoked, because revoking first turns maintenance into an outage.
+   - **The OCI deploy SSH key.** Revoke it. Offered to the Lightsail host, it must be
+     refused.
+   - **The OCI `.env.prod` secrets.** These were carried to the target at Phase B:
+     `POSTGRES_PASSWORD`, `APP_MIGRATOR_PASSWORD`, `APP_RUNTIME_PASSWORD`,
+     `APP_TEST_PASSWORD`, `OCI_S3_ACCESS_KEY_ID` with `OCI_S3_SECRET_ACCESS_KEY`, and
+     `CF_API_TOKEN`. The document-bucket key pair is still in live use, so create its
+     replacement and pass `storage_probe` with it before revoking the old pair.
+   - **The OCI API keys.** Revoke them. A call signed with an old key must answer 401.
+   - `SECRET_KEY` and `EMAIL_HOST_PASSWORD` are deliberately left out of this rotation
+     (`.evidence/PILOT2-401-operator.txt`, part 2 step 5).
+   - The off-host writer credential in `/etc/app-mei/backup.env` also served on the OCI
+     host, where the copy was first armed (`.evidence/PILOT2-301-operator.txt`), and the
+     sheet doesn't list it. Rotate it with the others, or record why not.
+4. **Record the result.** Append the termination time, the volume deletion, both refusal
+   results, and the rotated credential names to the operator artifact, only after they
+   happen. Media erasure rests on the provider's assurance. The provider's deletion
+   receipt is kept privately, and no provider identifier goes into evidence.
+5. **Never delete the OCI documents bucket.** It is the live document store.
 
 ### Alerting drills: Sentry, the degraded signal, and the missed ping
 
 The Sentry DSN comes from the row-11 Sentry project and is stored in the password manager.
 
+Covers PILOT-504.
 
-Covers PILOT-504. **Not executed.** No Sentry event has been raised deliberately, no
-service has been stopped to provoke an alert, no ping has been skipped, and no alert has
-been received. Every event id, timestamp, and elapsed value below is a `<placeholder>`.
+#### Recorded as executed on 2026-09-21 to 2026-09-25
 
-Three monitoring surfaces are configured by earlier todos and none of them has ever
-fired. A configured alert that has never been received is a belief about a delivery chain
+**(a) Sentry.** The project and its alert rule were set up on 2026-09-21: a new issue
+mails the owner, filtered to `environment` equal to `production`
+(`.evidence/PILOT2-107-operator.txt`). The same day, on Lightsail at `c7afe36`, a
+`RuntimeError` raised and caught in a `manage.py` shell arrived with `release` equal
+to the deployed SHA and `environment` set to `production`. It carried two traceback
+frames, no frame locals, and no trace of a local canary. An empty DSN sent nothing
+(`.evidence/PILOT2-107T-operator.txt`). Deviation: the event's `server_name` is the web
+container's hostname, not the host's, so its origin was confirmed with `docker inspect`.
+No worker-origin event was available. On 2026-09-24 at `699f764`, a synthetic event
+arrived with `release` equal to `699f764` and its password field shown as `Filtered`
+(`.evidence/PILOT2-504-699f764-operator.txt`).
+
+**(b) Stop beat.** Run twice on the target.
+
+| | 2026-09-23 at `aff1464` | 2026-09-24 at `699f764` |
+| --- | --- | --- |
+| Beat stopped (UTC) | 10:34:17 | 22:50:28 |
+| `/healthz` 503, `"scheduler": "stale"` | 10:44:35, 15 min after the last heartbeat | 23:05:06, 15 min after the last heartbeat |
+| M1b alert received | 10:46:58 | 23:09:30 |
+| Monitors DOWN | M1a, M1b, M1d, **and M1c** | M1a, M1b, M1c, M1d |
+| Firm page during the outage | 200 | 200 |
+| `web` | `unhealthy`, `StartedAt` unchanged | `unhealthy`, `StartedAt` unchanged |
+| `start beat`, then `/healthz` 200 | 10:49:56, then 10:50:26 | 23:13:20, then 23:13:26 |
+| Acknowledged by the owner on call | 10:49:08 | 23:16:11, after beat was restarted to keep the outage short |
+| Result | FAIL on M1c, which went DOWN on the 503 | PASS under the amended check 5 |
+
+The first run is what corrected the M1c expectation in [External uptime
+monitoring](#external-uptime-monitoring-four-keyword-monitors-and-a-negative-control)
+and in row 5 of part (b) below (`.evidence/PILOT2-504-aff1464-operator.txt`). Recovery
+mails arrived both times, and every monitor read UP again afterwards. A bounded re-check
+on 2026-09-25 stopped beat once more and confirmed that an authenticated firm page
+still rendered on `699f764` while `/healthz` answered 503.
+
+**(c) The missed ping.** Deviation: both runs used the real backup checks, not a
+rehearsal check, because no pilot users existed yet. Once the pilot starts, use the
+rehearsal-check form below.
+
+- **OCI host, 2026-09-22 to 2026-09-23** (`.evidence/PILOT2-208-operator.txt`). A
+  deliberately wrong off-host credential sent the off-host check DOWN with status 5
+  while the local check stayed green. A manual run with the correct credential restored
+  brought it back UP.
+  For the missed run, the timer was disabled under a host-local persistent recovery
+  timer. Both checks went DOWN at 08:00 UTC, and the DOWN mail was received at 08:00:04.
+  Re-enabling the timer started a `Persistent=` catch-up run that exited 0, and both
+  checks were UP again by 08:02:51.
+- **Lightsail target, 2026-09-24 to 2026-09-25**
+  (`.evidence/PILOT2-504-699f764-operator.txt`). The timer was disabled at 23:26:53 UTC
+  under the same kind of recovery guard, and no run happened in the expected window.
+  Both checks were DOWN with a notification by 08:04:08. The backup ran again from
+  08:04:19 to 08:04:35, off-host copy included, both checks read UP at 08:05:00, and the
+  timer is back to `enabled`. The owner acknowledged at 08:05:44, after the recovery.
+
+Three monitoring surfaces are configured by earlier todos. Before these drills none of
+them had ever fired. A configured alert that has never been received is a belief about a delivery chain
 with at least four independent links in it: the condition, the detector, the notifier,
 and the recipient's mail. This section fires each one on purpose and records what
 arrived, because the first real incident is the wrong time to discover that the alert
@@ -3044,7 +3401,7 @@ Then wait, and record what happens in this order:
 | 2 | — | Compose marks `web` **unhealthy** — and does **not** restart it | `$compose ps` |
 | 3 | — | Caddy stays healthy and keeps proxying | `$compose ps`, and a real page fetch |
 | 4 | — | A firm page still answers **200** | `curl -o /dev/null -w '%{http_code}' https://<firm-host>/` |
-| 5 | after the alert | UptimeRobot **M1b** (`"scheduler": "alive"`) alert delivered to `<alert-recipient>`, with **M1a** and **M1d** also DOWN and **M1c** still UP | the recipient mailbox and the monitor list |
+| 5 | after the alert | UptimeRobot **M1b** (`"scheduler": "alive"`) alert delivered to `<alert-recipient>`, with **M1a**, **M1c** and **M1d** also DOWN, M1c on the 503 status alone | the recipient mailbox and the monitor list |
 | 6 | 10 min of restart | `/healthz` back to 200, `"scheduler": "alive"`, `web` healthy again | `$compose ps` and the probe |
 
 **Why 20 minutes.** The scheduler stamps its heartbeat every 5 minutes and the probe
