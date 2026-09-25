@@ -27,13 +27,13 @@ fragments so that the document's own placeholder count stays at exactly two.
 
 | Field | Value | Command that produces it |
 | --- | --- | --- |
-| **Source SHA** | `PENDING-DEPLOY`, the final reviewed HEAD after the PR-5 merge | `git rev-parse main` |
+| **Source SHA** | `92cf94ae24bcdd962afb3b9bd5d5d27e520d3b1b`, the reviewed HEAD: `origin/main` when these fields were filled on 2026-09-25, and the release `/versionz` served that day (`.evidence/PILOT2-505-happy.txt`) | `git rev-parse main` |
 | **Deployed SHA** | PENDING-F-WAVE, the live release observed the same day as the tag | `curl -fsS https://samaronefialho.dev/versionz` |
-| **Migration state** | `PENDING-DEPLOY`, applied-migration count from the PR-5 deploy | `docker compose -f docker-compose.prod.yml exec -T web python manage.py showmigrations --plan \| grep -c '^\[X\]'` |
-| **Backup timestamp** | `PENDING-REHEARSAL`, the local backup completion marker from the target host | the freshness marker written by `ops/backup.sh` |
-| **Off-host timestamp** | `PENDING-REHEARSAL`, the authoritative off-host object timestamp re-produced post-cutover in PILOT-406 | `aws s3api head-object --bucket "$OFFHOST_S3_BUCKET" --key "pg/<stamp>/logical.dump" --query LastModified --output text` |
-| **Restore rehearsal date** | `PENDING-REHEARSAL`, the PILOT-302 disposable rehearsal date | recorded in `ops/RESTORE.md`, "Recovery timing status" |
-| **Restore RTO** | `PENDING-REHEARSAL`, Track L and Track H start-to-verified times | `ops/RESTORE.md` timing commands, `pilot-302-track-l-start.epoch` and `pilot-302-track-h-start.epoch` |
+| **Migration state** | 99 applied, 0 pending, from deploy assert 2/6 on 2026-09-24 (`.evidence/deploy-76df579-operator.txt`). `76df579..92cf94a` adds no migration files, so the count holds at the reviewed HEAD | `docker compose -f docker-compose.prod.yml exec -T web python manage.py showmigrations --plan \| grep -c '^\[X\]'` |
+| **Backup timestamp** | `20260924T060702Z` (`pg/20260924T060702Z/`), the first clean scheduled nightly on the target host after cutover; service exit 0 at 2026-09-24T06:07:16Z (`.evidence/PILOT2-406-operator.txt`) | the freshness marker written by `ops/backup.sh` |
+| **Off-host timestamp** | 2026-09-24T06:07Z, off-host success for `pg/20260924T060702Z/logical.dump`. A separate reader ran `head-object` and a download at 2026-09-24T14:22:47Z; SHA-256 matched the local dump. Minute precision comes from the off-host success ping, since `LastModified` wasn't transcribed (`.evidence/PILOT2-406-operator.txt`) | `aws s3api head-object --bucket "$OFFHOST_S3_BUCKET" --key "pg/<stamp>/logical.dump" --query LastModified --output text` |
+| **Restore rehearsal date** | 2026-09-21 (Track L) and 2026-09-22 (Track H), disposable workstation scratch at `c7afe36` (`.evidence/PILOT2-302L-operator.txt`, `.evidence/PILOT2-302H-operator.txt`) | recorded in `ops/RESTORE.md`, "Recovery timing status" |
+| **Restore RTO** | Track L 6 min (310 s). Track H 98 min, with RPO 1.9275 h of dump age at recovery start | `ops/RESTORE.md` timing commands, `pilot-302-track-l-start.epoch` and `pilot-302-track-h-start.epoch` |
 | **Rollback target** | image tag `app-mei:previous` plus `app-mei-caddy:previous`, with the restore procedure in `ops/RESTORE.md` | `docker image ls --filter reference="app-mei*:previous"` |
 | **Runbook path** | `ops/PILOT-RUNBOOK.md` | `test -f ops/PILOT-RUNBOOK.md` |
 | **Owner approval** | PENDING-F-WAVE, the date the owner records approval to tag | recorded in the release discussion and in `ops/PILOT-RUNBOOK.md`; the date is transcribed into `.evidence/PILOT-505-operator.txt` |
