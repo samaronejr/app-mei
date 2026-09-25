@@ -171,6 +171,7 @@ so any file path or test module named in this directory has to resolve on disk.
 | `docs/regulatory-watch.md`, `docs/fiscal/` | Fiscal parameters and what to watch. |
 | `docs/frontend.md` | Front-end conventions. |
 | `ops/README.md`, `ops/RESTORE.md` | Operations and recovery procedures. |
+| `ops/PILOT-GO-NO-GO.md` | The pilot go/no-go ledger: one row per `pilot-readiness-v2` Success-criteria line (S1-S21). `ops/check_go_no_go.py` checks it against the untracked evidence and the final capture; exit 0 is the precondition for the F-wave. |
 
 ## External deadlines
 
