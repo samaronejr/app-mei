@@ -274,8 +274,10 @@ jobs:
           from django.utils import timezone
           from apps.audit.models import AccessLog, AuditAction, PlatformEvent
 
-          window_start = timezone.make_aware(datetime.datetime(2026, 9, 25, 0, 0, 0))
-          window_end = timezone.make_aware(datetime.datetime(2026, 9, 26, 0, 0, 0))
+          # True UTC bounds: datetime.timezone.utc, NOT make_aware (which would
+          # bind to TIME_ZONE=America/Sao_Paulo and drop the early refusals).
+          window_start = datetime.datetime(2026, 9, 25, 0, 0, 0, tzinfo=datetime.timezone.utc)
+          window_end = datetime.datetime(2026, 9, 26, 0, 0, 0, tzinfo=datetime.timezone.utc)
           print('window_start_utc=%s' % window_start.isoformat())
           print('window_end_utc=%s' % window_end.isoformat())
           logs = AccessLog.objects.filter(
@@ -283,6 +285,22 @@ jobs:
           print('accesslog_window_total=%d' % logs.count())
           for code in (200, 302, 403, 404, 410):
               print('status=%d count=%d' % (code, logs.filter(status_code=code).count()))
+          # Per-negative attribution: count the expected refusal status within a
+          # +-60 s window around each timestamped row-34 negative. Negatives 23
+          # and 26 carry no recorded timestamp, so they are corroborated by the
+          # day-window counts above rather than a named window.
+          negatives = [
+              ('negative21', datetime.datetime(2026, 9, 25, 1, 41, 23, tzinfo=datetime.timezone.utc), 302),
+              ('negative22', datetime.datetime(2026, 9, 25, 2, 1, 40, tzinfo=datetime.timezone.utc), 404),
+              ('csrf_negative', datetime.datetime(2026, 9, 25, 3, 7, 4, tzinfo=datetime.timezone.utc), 403),
+              ('write_negative', datetime.datetime(2026, 9, 25, 3, 9, 29, tzinfo=datetime.timezone.utc), 404),
+          ]
+          for label, ts, expected in negatives:
+              lo = ts - datetime.timedelta(seconds=60)
+              hi = ts + datetime.timedelta(seconds=60)
+              n = logs.filter(created_at__gte=lo, created_at__lte=hi,
+                              status_code=expected).count()
+              print('%s_window=+-60s expected_status=%d count=%d' % (label, expected, n))
           events = PlatformEvent.objects.filter(
               created_at__gte=window_start, created_at__lt=window_end)
           print('platformevent_window_total=%d' % events.count())
