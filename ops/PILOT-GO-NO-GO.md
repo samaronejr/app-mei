@@ -133,7 +133,7 @@ WALK=$(sed -n 's/^head_sha=//p' "$EVR/PILOT2-501-699f764-operator.txt")
   then echo "ci_push_storage_probe=PASS"; else echo "ci_push_storage_probe=FAIL"; fi
   gh run list --workflow verify-live.yml --event schedule --limit 1 --json headSha,conclusion \
     --jq '.[0] | "verify_live_head_sha=\(.headSha)\nverify_live_last=\(.conclusion)"'
-  if [ -z "$(git diff --stat "$WALK..$FINAL" -- . ':!docs' ':!ops/*.md' ':!tests' ':!ops/check_go_no_go.py')" ]
+  if [ -z "$(git diff --stat "$WALK..$FINAL" -- . ':!docs' ':!ops/*.md' ':!tests' ':!ops/check_go_no_go.py' ':!.github')" ]
   then echo "walkthrough_code_diff=empty"; else echo "walkthrough_code_diff=changed"; fi
   if uv run pytest tests/ops/test_pilot_runbook_structure.py -q >/dev/null 2>&1
   then echo "runbook_structure=pass"; else echo "runbook_structure=fail"; fi
@@ -148,10 +148,11 @@ WALK=$(sed -n 's/^head_sha=//p' "$EVR/PILOT2-501-699f764-operator.txt")
 Then add one line by hand: `hc_verify_state=Up` or `hc_verify_state=Down`, read from
 the `verify-live` check page in Healthchecks. Nothing else gets typed.
 
-The walkthrough diff skips `tests` and `ops/check_go_no_go.py` along with the docs,
-because neither is imported by the served process. The pathspec in the plan text would
-count them, and a test module already landed after the walkthrough, so that stricter
-form could never go green without a re-run that proves nothing new.
+The walkthrough diff skips `tests`, `ops/check_go_no_go.py` and `.github` along with
+the docs, because none of them is imported by the served process — `.github` is CI
+plumbing, not served code. The pathspec in the plan text would count them, and a
+test module already landed after the walkthrough, so that stricter form could never
+go green without a re-run that proves nothing new.
 
 ## After exit 0
 

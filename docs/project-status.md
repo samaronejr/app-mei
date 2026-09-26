@@ -43,17 +43,18 @@ Resend's plain SMTP relay (no new email code), and the deploy target is the
 already-provisioned Lightsail instance `app-mei-pilot-sa-east-1` at 18.229.187.66,
 with the OCI host kept intact after cutover as the rollback anchor.
 
-Execution is mid-flight. Wave 0's truth-and-governance rows 1, 2, 4, 5, 6, 7, 8 and
-40 are closed. Row 17 — the deploy-pipeline cutover that retargets the push deploy
-to Lightsail — is authored as PR #21, open and green, and merges only after row 16
-(the operator-run Lightsail Phase B) closes, because merging it triggers the first
-deploy.
+All 41 rows are closed, including the operator-run Lightsail Phase B (row 16) and
+the deploy-pipeline cutover (row 17, merged as PR #21, which triggered the first
+deploy to Lightsail). The go/no-go ledger reports every S-line GO on the final
+capture. What remains is the F1-F4 final-verification wave and, after it, the
+owner's authorization of the pilot start; the `v0.2.0-rc1` tag and release follow
+that authorization per `ops/RELEASES.md` Phase B.
 
 ## Plan index
 
 | Plan | Status | Basis |
 | --- | --- | --- |
-| `pilot-readiness-v2` | **current** | In execution; its baseline was captured at `43a034d` and `main` has since advanced to `35fae71`. Wave 0 rows 1, 2, 4, 5, 6, 7, 8 and 40 are closed; row 17's PR #21 is open and green, merge-gated on row 16. |
+| `pilot-readiness-v2` | **current** | Execution complete: all 41 rows closed and `ops/check_go_no_go.py` exits 0 against the evidence directory, every S-line GO on the final capture. Only the F1-F4 audits and the owner's authorization remain. |
 | `pilot-readiness-v1` | **superseded** | Replaced by `pilot-readiness-v2` on 2026-09-21. Its checkbox states are frozen and its evidence is kept, never rewritten; v2's legacy reconciliation ledger classifies every v1 row (13 verified-complete, 5 repo-complete with operator evidence open, 12 partial, 8 open-valid, 2 superseded, 2 invalid-premise, plus the four F-rows that never ran). |
 | `resend-smtp-pilot-provider-amendment` | **superseded** | Superseded by owner decision D-Q1: Resend is used through the existing provider-neutral SMTP settings, so the amendment's new email machinery is unneeded. Its branch `chore/pilot-resend-smtp-round3h` is frozen, unpushed, and never to be merged. |
 | `post-ui-ux-residual-hardening` | **closed** | All 24 todos checked. Its four pull requests merged; `main` is byte-identical to the final reviewed head. Its unfixed leftovers are written up in `docs/residual-risks.md`. |
@@ -68,9 +69,10 @@ deploy.
 These statuses were assigned by reading each plan's own checkboxes and status
 headers. None is inferred from a filename.
 
-### `open (needs …)` is a real state, and the current plan is full of it
+### `open (needs …)` is a real state, and the plan ran on it
 
-Most of `pilot-readiness-v2`'s remaining rows are not blocked and not done. The plan
+While `pilot-readiness-v2` was in flight, most of its rows were neither blocked nor
+done. The plan
 splits them by who can close them: `[E]` rows an agent can deliver, `[O]` rows that
 need a real host, a real mailbox, a real bucket, or a real account — and the two
 land at different times. An operator row reads `open (needs <account|host|mailbox|
@@ -178,25 +180,25 @@ so any file path or test module named in this directory has to resolve on disk.
 `pilot-readiness-v1` kept a checklist of seven dated checkpoints here, every one of
 them a formula over two operator-supplied dates. `pilot-readiness-v2` row 2 resolved
 them against the real consoles on 2026-09-21, and the resolved ledger below replaces
-the formulas. Only one external clock still binds the schedule, and it is not the
-OCI trial.
+the formulas. No external clock still binds the schedule; the OCI trial mooted
+itself.
 
 | # | Checkpoint | Resolved state |
 | --- | --- | --- |
-| 1a | OCI trial expiry read from the billing console. | **Resolved.** The trial ended 2026-08-28 and the host is still alive: the account continues on the always-free tier, the instance is RUNNING, and no reclamation notice is pending. There is no OCI-driven cutover deadline. |
+| 1a | OCI trial expiry read from the billing console. | **Resolved.** The trial ended 2026-08-28 and the host survived on the always-free tier. The instance was stopped on 2026-09-23 with its volumes intact; its termination date is set by the `v0.2.0-rc1` tag decommission window, and no reclamation notice is pending. |
 | 1b | OCI storage disposition decided. | **Resolved: keep-oci.** The OCI documents bucket stays the document store — versioning enabled, a 30-day previous-versions lifecycle rule, and the free storage entitlement persists. There is no migration to AWS; v2's conditional move row (15) is skipped by this ruling. |
 | 2a, 2b | SES production access submitted, then reviewed. | **CLOSED-ABANDONED.** The appeal is closed by owner decision D-Q1: mail goes through Resend SMTP instead, and no SES checkpoint remains. |
 | 3 | UptimeRobot capability confirmed. | **Resolved, as keyword substring.** UptimeRobot cannot evaluate JSONPath; its only body-inspection primitive is a substring match, so the gate is keyword capability, not JSON assertion. Four keyword monitors plus the impossible-keyword negative control are configured per `ops/README.md` "External uptime monitoring". |
 | 4 | Healthchecks.io account and first check. | **Resolved.** The account exists and the backup dead-man checks are live with transitions proven; v2 adds target-scoped checks so the two hosts never share one. |
 | 5a | VPS ordered. | **Resolved.** The Lightsail instance `app-mei-pilot-sa-east-1` (18.229.187.66) is provisioned and running, static IP attached, firewall open on 80/443 and operator SSH. |
-| 5b | Base-host bootstrap, Phase A. | **Resolved.** Phase A ran on the Lightsail host (memory preflight passed, swap remediated) and the stack was then torn down ahead of Phase B, which is v2 row 16. |
+| 5b | Base-host bootstrap, Phase A. | **Resolved.** Phase A ran on the Lightsail host (memory preflight passed, swap remediated) and the stack was then torn down ahead of Phase B, which is v2 row 16 and has since closed. |
 | 6a, 6b | Binding go/no-go at `E−5`; cutover by `E−3`. | **Superseded.** `E` has passed with the host alive, so both formulas are moot. The cutover window, freeze, and rollback deadline are set by v2 row 27 instead. |
 | 7 | Same-day escalation of any missed checkpoint. | **Standing.** Unchanged: a missed checkpoint reported late is two failures, not one. |
 
-The one remaining external date is the Let's Encrypt certificate on the OCI host,
-which expires 2026-10-27. The cutover rows move the public name to Lightsail — where
-Caddy issues its own certificate — well inside that window, but it is the only date
-above that can still force the schedule if cutover slips.
+The Let's Encrypt certificate on the OCI host expires 2026-10-27. The cutover ran
+on 2026-09-22, well inside that window, and the public name is now served by
+Lightsail, where Caddy issues its own certificate. The date stays only as
+provenance for this ledger.
 
 ### The UptimeRobot negative control
 
