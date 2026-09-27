@@ -83,9 +83,8 @@ PRODUCT_SHELL_FLAG: Final = "cycles_r1"
 NAV_R1: Final[tuple[NavItem, ...]] = (
     NavItem(_("Hoje"), "dashboard", "clients.view_assigned"),
     NavItem(_("Clientes"), "clients-list", "clients.view_assigned"),
-    # Playbooks join the shell here, before Gestão: it is the first working
-    # destination under the gestão umbrella, gated on the same capability until
-    # T4's `playbooks.manage` lands (see apps.cycles.capabilities).
+    # Playbooks join the shell here, before Gestão: the first working
+    # destination under the gestão umbrella, gated on playbooks.manage.
     NavItem(_("Playbooks"), "playbook-list", PLAYBOOK_GATE),
     NavItem(_("Gestão"), "team", "users.create"),
 )

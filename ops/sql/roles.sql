@@ -122,6 +122,12 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 
 -- PORTAL_NONE: clients_importbatch
 -- PORTAL_NONE: clients_importrow
+-- PORTAL_NONE: cycles_playbook
+-- PORTAL_NONE: cycles_playbookversion
+-- PORTAL_NONE: cycles_playbookstep
+-- Firm-internal playbook definitions (todo 8): no portal grant. Each table
+-- carries a DenyPortalAccess restrictive policy from cycles.0001_initial, so a
+-- grant added by mistake would still read nothing.
 -- Firm-internal import history (todo 7): no portal grant. The batch has no client
 -- and carries DenyPortalAccess; the row carries the client-anchored portal policy,
 -- so a grant added by mistake would still be confined to one client.
@@ -131,9 +137,6 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the
 -- portal coverage meta-test inspects. Naming the tables closes every future table
 -- by default.
---
--- Portal-NONE tables are declared above as `-- PORTAL_NONE:` lines; the
--- cycles_* tables join that list a commit later in this branch.
 --
 -- to_regclass-guarded because this file runs from the init hook against an EMPTY data
 -- directory under ON_ERROR_STOP=1: an unguarded GRANT on a table that does not exist

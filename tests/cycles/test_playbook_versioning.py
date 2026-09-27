@@ -28,7 +28,13 @@ from apps.cycles.packs import COLETA_MENSAL, MEI_MENSAL, install_system_packs
 from apps.cycles.rules import StepSpec
 from apps.cycles.services import playbooks
 from tests.isolation.rolecheck import assert_isolated_role
-from tests.ui.factories import Firm, add_client, client_base, make_firm
+from tests.ui.factories import (
+    Firm,
+    add_client,
+    add_member,
+    client_base,
+    make_firm,
+)
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -666,8 +672,8 @@ def test_an_unprivileged_member_is_denied_inside_the_lock(flagged: Firm) -> None
             name="Deny",
             steps=[_spec("a")],
         )
-        # staff_accountant holds users.create = NONE (and playbooks.manage =
-        # NONE in S8.1): the service refuses, and nothing was written.
+        # staff_accountant holds playbooks.manage = NONE (S8.1): the service
+        # refuses, and nothing was written.
         with pytest.raises(PermissionDenied):
             playbooks.update_draft(
                 actor=flagged.accountant,
@@ -692,3 +698,14 @@ def test_the_editor_is_capability_gated(flagged: Firm) -> None:
     session = flagged.as_accountant()
     response = session.get(reverse("playbook-list"))
     assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+def test_an_operations_admin_holds_playbooks_manage_and_is_allowed(
+    flagged: Firm,
+) -> None:
+    """The positive side of the gate: playbooks.manage is FULL for ops admins."""
+    ops = add_member(
+        flagged.tenant, f"ops@{flagged.tenant.slug}.example.com", "operations_admin"
+    )
+    response = flagged.sign_in(ops).get(reverse("playbook-list"))
+    assert response.status_code == HTTPStatus.OK

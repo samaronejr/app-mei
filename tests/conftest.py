@@ -32,6 +32,11 @@ PORTAL_DENIED_TABLES = (
     "authz_usercapabilitygrant",
     "clients_importbatch",
     "clients_importrow",
+    # Playbook definitions are firm-internal editor content (todo 8): no portal
+    # grant, and each table carries a DenyPortalAccess policy from its migration.
+    "cycles_playbook",
+    "cycles_playbookversion",
+    "cycles_playbookstep",
 )
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so
