@@ -11,11 +11,14 @@ from typing import Any, ClassVar
 
 from django import forms
 from django.contrib import admin
+from django.core.exceptions import PermissionDenied
 from django.db.models import Q, QuerySet
 from django.http import HttpRequest
 
+from apps.accounts.models import User
 from apps.audit.admin import TenantScopedAdminMixin
 from apps.clients.models import ClientCompany
+from apps.clients.services import sync_profile_flag
 from apps.core.tenancy import current_tenant_id
 from apps.fiscal.formatting import format_cnpj
 from apps.fiscal.validators import CNPJ_ALPHABET, normalize_document
@@ -136,6 +139,16 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
             if tenant_id is not None:
                 obj.tenant_id = tenant_id
         super().save_model(request, obj, form, change)
+        # Dual-write: the same claim lands on the effective-dated timeline, through
+        # the same service that audits and capability-checks deliberate
+        # corrections. Sits after the save because the service reads and locks the
+        # row it amends; ATOMIC_REQUESTS makes a denial roll back the pair together
+        # rather than letting the flag and the profile diverge.
+        actor = request.user
+        if not isinstance(actor, User):
+            msg = "the tax-timeline dual-write needs an actor"
+            raise PermissionDenied(msg)
+        sync_profile_flag(actor=actor, client=obj, created=not change)
 
     def has_delete_permission(
         self,

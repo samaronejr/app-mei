@@ -48,7 +48,8 @@ RUNTIME_ROLE = "app_runtime"
 # the portal reads its own capability answers from the stash, never this table.
 # clients_{clientcontact,engagement,taxprofile} (todo 5) are the three client
 # spine tables — portal-NONE for contacts, READ for the other two.
-EXPECTED_TENANT_TABLE_COUNT = 19
+# obligations_sourceobservation (todo 6) adds one client-isolated READ table.
+EXPECTED_TENANT_TABLE_COUNT = 20
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -366,6 +367,7 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "clients_taxprofile",
         "obligations_monthlyrevenue",
         "obligations_obligation",
+        "obligations_sourceobservation",
     },
 )
 

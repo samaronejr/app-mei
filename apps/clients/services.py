@@ -11,7 +11,9 @@ current rows it overlaps, restates their uncovered slices, and writes one event 
 never an UPDATE that rewrites what the firm believed.
 """
 
+from collections.abc import Iterable
 from datetime import date
+from uuid import UUID
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
@@ -32,6 +34,7 @@ from apps.clients.models import (
     OnboardingItemTemplate,
     ProfileConfidence,
     TaxProfile,
+    TaxRegime,
 )
 
 OBJECT_TYPE = "clients.ClientAssignment"
@@ -131,6 +134,33 @@ def _open_or_ends_after(on: date) -> Q:
     return Q(valid_to__isnull=True) | Q(valid_to__gt=on)
 
 
+def claim_at(
+    rows: Iterable[TaxProfile],
+    on: date,
+) -> TaxProfile | None:
+    """Pick the current claim covering `on` from rows already in memory.
+
+    The in-memory half of `profile_at`: the exclusion constraint guarantees at most
+    one *current* row covers any day, so "latest start among the covering rows" is
+    a selection rule, never arbitration. Superseded rows are skipped rather than
+    trusted to be absent, because callers fetch with a broad filter and history is
+    precisely what `superseded_at` leaves behind.
+
+    The half-open rule mirrors `_open_or_ends_after`: `valid_to` NULL means
+    open-ended, and the boundary day belongs to the successor, never to both.
+    """
+    covering = [
+        row
+        for row in rows
+        if row.superseded_at is None
+        and row.valid_from <= on
+        and (row.valid_to is None or row.valid_to > on)
+    ]
+    if not covering:
+        return None
+    return max(covering, key=lambda row: row.valid_from)
+
+
 def profile_at(client: ClientCompany, on: date) -> TaxProfile | None:
     """Answer what the system currently believes the client's regime was `on`.
 
@@ -138,16 +168,95 @@ def profile_at(client: ClientCompany, on: date) -> TaxProfile | None:
     timeline is the honest answer the exclusion constraint exists to make
     representable: the day before a client's earliest claim is *unknown*, and
     surfacing it is what keeps a correction from quietly inventing history.
+
+    Resolved through `claim_at` so the half-open rule is written once and the
+    per-client path can never drift from the batched one below.
     """
-    return (
-        TaxProfile.objects.filter(
-            client_id=client.id,
-            superseded_at__isnull=True,
-            valid_from__lte=on,
-        )
-        .filter(_open_or_ends_after(on))
-        .order_by("-valid_from")
-        .first()
+    return claim_at(
+        TaxProfile.objects.filter(client_id=client.id),
+        on,
+    )
+
+
+def current_profiles(clients: Iterable[ClientCompany]) -> dict[UUID, list[TaxProfile]]:
+    """Fetch every tax profile of the given clients in one query, keyed by client.
+
+    The batched half of the timeline: a portfolio sweep or queue that called
+    `profile_at` per client would read this table once per client, which is the N+1
+    the queue budgets exist to forbid. Rows are grouped and sorted newest-first so
+    `claim_at` answers the same way `profile_at` does. A client with no rows maps
+    to no key — the caller reads `.get(client.id, [])`, and the empty list is the
+    honest "nobody has ever claimed a regime for this company".
+    """
+    ids = [client.pk for client in clients]
+    if not ids:
+        return {}
+    grouped: dict[UUID, list[TaxProfile]] = {}
+    for row in (
+        TaxProfile.objects.filter(client_id__in=ids)
+        .order_by("client_id", "-valid_from")
+        .iterator()
+    ):
+        grouped.setdefault(row.client_id, []).append(row)
+    return grouped
+
+
+def sync_profile_flag(
+    *,
+    actor: User,
+    client: ClientCompany,
+    created: bool,
+    today: date | None = None,
+) -> TaxProfile | None:
+    """Write the profile row the legacy `is_mei`/`mei_category` fields now claim.
+
+    The dual-write half of the flag's retirement: callers keep writing `is_mei` and
+    `mei_category` exactly as before, and this service carries the same claim into
+    the effective-dated timeline. On creation the claim opens at the earlier of the
+    client's opening date and today — matching what `backfill_v1` asserted for the
+    rows it migrated — and on edit it opens today, because a flag change asserts
+    the regime the client is under NOW; history before it stays with the claims
+    that were already believed.
+
+    The edit path goes through `correct_tax_profile`, so superseding, audit and the
+    capability check are the same machinery a deliberate correction uses. A save
+    whose derived claim equals today's adds no row: dual-write is an invariant over
+    content, not a write-per-save ritual.
+    """
+    today = today or timezone.localdate()
+    regime = TaxRegime.MEI if client.is_mei else TaxRegime.UNKNOWN
+    category = client.mei_category if client.is_mei else None
+
+    if not created:
+        current = profile_at(client, today)
+        if (
+            current is not None
+            and current.regime == regime
+            and current.mei_category == category
+        ):
+            return None
+        valid_from = today
+    else:
+        valid_from = min(client.opened_on or today, today)
+
+    return correct_tax_profile(
+        client=client,
+        regime=regime,
+        valid_from=valid_from,
+        actor=actor,
+        recorded_by=actor,
+        provenance="dual_write",
+        confidence=ProfileConfidence.STAFF_RECORDED,
+        note=(
+            "Asserted by the client registry's dual-write of the legacy "
+            "is_mei/mei_category fields."
+        ),
+        mei_category=category,
+        # The caller hands in the object it just loaded or saved, so the revision
+        # it carries IS the fresh snapshot the correction expects; a concurrent
+        # write in between makes the service refuse rather than supersede on a
+        # stale read.
+        expected_revision=client.tax_profile_revision,
     )
 
 
@@ -342,8 +451,11 @@ def correct_tax_profile(  # noqa: PLR0913
 __all__ = [
     "TaxProfileConflictError",
     "assign_client",
+    "claim_at",
     "correct_tax_profile",
     "create_default_checklist",
+    "current_profiles",
     "profile_at",
+    "sync_profile_flag",
     "unassign_client",
 ]

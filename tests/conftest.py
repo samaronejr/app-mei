@@ -31,7 +31,11 @@ PORTAL_DENIED_TABLES = ("authz_usercapabilitygrant",)
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so
 # that a new append-only table which forgets its revoke is a visible omission.
-APPEND_ONLY_TABLES = ("audit_event", "audit_platformevent")
+APPEND_ONLY_TABLES = (
+    "audit_event",
+    "audit_platformevent",
+    "obligations_sourceobservation",
+)
 
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
 # rather than blanket so every other table — accounts_user, mfa_authenticator,
@@ -47,6 +51,7 @@ PORTAL_TABLES = (
     "obligations_obligation",
     "obligations_monthlyrevenue",
     "obligations_document",
+    "obligations_sourceobservation",
 )
 
 # app_portal's WRITE allow-list, mirroring the second DO block in ops/sql/roles.sql. A

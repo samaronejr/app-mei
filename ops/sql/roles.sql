@@ -144,7 +144,11 @@ BEGIN
         'clients_taxprofile',
         'obligations_obligation',
         'obligations_monthlyrevenue',
-        'obligations_document'
+        'obligations_document',
+        -- S8.2: the payments page labels paid rows from the newest payment
+        -- observation. SELECT only; the append-only trigger and the missing
+        -- INSERT grant together keep the portal from writing or rewriting any.
+        'obligations_sourceobservation'
     ]
     LOOP
         IF to_regclass('public.' || portal_table) IS NOT NULL THEN

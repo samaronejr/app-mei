@@ -17,7 +17,7 @@ rather than `request.tenant`.
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from http import HTTPStatus
 from typing import Any, Final
@@ -39,7 +39,14 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.models import User
 from apps.authz.services import require_can
 from apps.clients.models import ClientCompany
-from apps.obligations.models import Document, Obligation
+from apps.core.flags import tenant_has
+from apps.obligations.models import (
+    Document,
+    Obligation,
+    ObservationKind,
+    ObservationSubjectKind,
+    SourceObservation,
+)
 from apps.obligations.queries import SETTLED
 from apps.portal.middleware import PortalHttpRequest
 
@@ -119,6 +126,12 @@ class Payment:
 
     `status` is the raw column. The pt-BR word beside it and the sentence explaining
     what it costs are presentation, and the template owns both.
+
+    `payment_source` is the `source_kind` of the newest payment observation on the
+    row, or `None` when the tenant's `cycles_r1` flag is off or nothing has been
+    observed. The raw value is passed down — never a translated label — because the
+    same rule that keeps `obligation_type` labels in the template keeps source
+    words there: the view hands over scalars and the page owns the pt-BR.
     """
 
     type_code: str
@@ -127,6 +140,7 @@ class Payment:
     due_date: date
     rolled: bool
     status: str
+    payment_source: str | None = None
 
 
 def _situation(today: date) -> tuple[int, int]:
@@ -255,6 +269,33 @@ def _payment(row: Mapping[str, Any]) -> Payment:
     )
 
 
+def _latest_payment_source(
+    obligations: list[Mapping[str, Any]],
+) -> dict[Any, str]:
+    """Return each obligation id's newest payment-observation `source_kind`.
+
+    One query for the whole page rather than one per card — the per-row pattern is
+    the N+1 the page's query budget exists to forbid. "Newest" is the last row in
+    `observed_at` order with `pk` breaking ties, matching the table's own ordering:
+    superseding writes a NEW row (the table is append-only), so the latest
+    assertion is the current belief and there is nothing to join against.
+    """
+    subject_ids = [row["id"] for row in obligations]
+    if not subject_ids:
+        return {}
+    observations = (
+        SourceObservation.objects.filter(
+            subject_kind=ObservationSubjectKind.OBLIGATION,
+            kind=ObservationKind.PAYMENT,
+            subject_ref_id__in=subject_ids,
+        )
+        .order_by("observed_at", "pk")
+        .values_list("subject_ref_id", "source_kind")
+    )
+    # Ascending order, later keys win: each newer assertion replaces the earlier.
+    return dict(observations)
+
+
 @require_http_methods(["GET"])
 @login_required
 def portal_payments(request: HttpRequest) -> HttpResponse:
@@ -284,8 +325,16 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
     `pk` breaks ties after the competence month, so a client with two obligations in one
     month reads them in the same order on every request rather than alternating between
     renders and between pages.
+
+    Payment labels come from `obligations_sourceobservation` — one more table on the
+    portal's SELECT allow-list — but ONLY for tenants carrying `cycles_r1`. The flag
+    is answered from the portal stash rather than queried: `tenants_tenant` is
+    denied to `app_portal` inside this transaction, and `tenant_has` resolves it
+    without a query for exactly that reason. Unflagged tenants get today's
+    rendering, byte for byte, because the read below is skipped entirely.
     """
     rows = Obligation.objects.order_by("-competence_month", "pk").values(
+        "id",
         "obligation_type_id",
         "competence_month",
         "nominal_due_date",
@@ -293,12 +342,25 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
         "status",
     )
     page = _payments_page(rows, request)
+    tenant = getattr(request, "tenant", None)
+    sources = (
+        _latest_payment_source(list(page.object_list))
+        if tenant is not None and tenant_has(tenant.pk, "cycles_r1")
+        else {}
+    )
+    payments = []
+    for row in page.object_list:
+        payment = _payment(row)
+        source = sources.get(row["id"])
+        if source is not None:
+            payment = replace(payment, payment_source=source)
+        payments.append(payment)
     return render(
         request,
         "portal/payments.html",
         {
             "page": page,
-            "payments": [_payment(row) for row in page.object_list],
+            "payments": payments,
         },
     )
 

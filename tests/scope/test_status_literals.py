@@ -142,6 +142,24 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         "unreadable, not a client gov.br tier."
     ),
     LiteralPin(
+        "apps/obligations/models/observations.py",
+        "unknown",
+        'UNKNOWN = "unknown", _("unknown")',
+        count=2,
+    ): (
+        "ObservationVerificationStatus is a data-provenance enum — 'unknown' is the "
+        "honest default for unverified legacy writes — not a watched render status; "
+        "both the value and its translation msgid are declared on this pinned line."
+    ),
+    LiteralPin(
+        "apps/obligations/models/observations.py",
+        "not_applicable",
+        'NOT_APPLICABLE = "not_applicable", _("not applicable")',
+    ): (
+        "ObservationVerificationStatus marks observations that cannot carry a "
+        "verification outcome; the declaration is not a render-status branch."
+    ),
+    LiteralPin(
         "apps/fiscal/capabilities.py",
         "unknown",
         'UNKNOWN = "unknown", _("unknown")',
