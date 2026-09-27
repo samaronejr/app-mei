@@ -84,7 +84,7 @@ def test_a_flagged_firm_gets_the_product_shell_named_by_the_setting(
     assert '<body class="min-h-screen shell-r1">' in body
     assert LEGACY_DISCLOSURE not in body
     assert ">Nome Provisório</a>" in body
-    assert _nav_labels(body) == ["Hoje", "Clientes", "Gestão"]
+    assert _nav_labels(body) == ["Hoje", "Clientes", "Playbooks", "Gestão"]
     assert re.search(
         r'<a class="shell-link" href="/" aria-current="page">Hoje</a>', body
     )

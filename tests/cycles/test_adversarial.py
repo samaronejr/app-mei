@@ -1,0 +1,288 @@
+"""Adversarial probes beyond the acceptance tests — manual-review material.
+
+Each probe is a shape the acceptance suite does not name: a disabled step as a
+dependency target, a duplicate key collapse, a second publish, the update()
+bypass the save() guard cannot cover, a system-row edit by a tenant account,
+and a foreign-pk clone attempt. Printed results are captured into
+.evidence/AXR1-008-adversarial.txt; the asserts are the parts that must hold.
+"""
+
+import pytest
+from django.core.exceptions import PermissionDenied
+
+from apps.core.tenancy import tenant_context
+from apps.cycles.errors import (
+    IllegalTransition,
+    ImmutableVersion,
+    PlaybookValidationError,
+    VersionConflict,
+)
+from apps.cycles.models import Playbook, PlaybookVersion, VersionState
+from apps.cycles.packs import install_system_packs
+from apps.cycles.rules import StepSpec
+from apps.cycles.services import playbooks
+from tests.ui.factories import Firm, make_firm
+
+pytestmark = pytest.mark.django_db(transaction=True)
+
+
+@pytest.fixture
+def firm() -> Firm:
+    """A firm without the flag — pack installation needs the flagged fixture."""
+    return make_firm("adv-base")
+
+
+def _spec(key: str, **over: object) -> StepSpec:
+    fields: dict[str, object] = {
+        "key": key,
+        "kind": "task",
+        "label_ptbr": f"Etapa {key}",
+        "due_rule": {"kind": "period_end_offset", "days": 5},
+    }
+    fields.update(over)
+    return StepSpec(**fields)  # type: ignore[arg-type]
+
+
+def test_a_dependency_may_name_a_disabled_step() -> None:
+    """Deps may point at disabled steps — the DAG is about order, not reachability."""
+    firm = make_firm("adv-dep")
+    with tenant_context(firm.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="dep-on-off",
+            name="Dep on off",
+            steps=[
+                _spec("a", is_enabled=False),
+                _spec("b", depends_on=("a",)),
+            ],
+        )
+        version = playbook.versions.get(number=1)
+        assert version.steps.count() == 2
+
+
+def test_a_duplicate_step_key_is_refused() -> None:
+    firm = make_firm("adv-dup")
+    with (
+        tenant_context(firm.tenant.id),
+        pytest.raises(PlaybookValidationError),
+    ):
+        playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="dup",
+            name="Dup",
+            steps=[_spec("x"), _spec("x")],
+        )
+
+
+def test_a_second_publish_is_refused(firm: Firm) -> None:
+    with tenant_context(firm.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="double-pub",
+            name="Double",
+            steps=[_spec("s")],
+        )
+        version, _ = playbooks.publish_version(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=playbook.pk,
+            number=1,
+            expected_version=1,
+        )
+        with pytest.raises(IllegalTransition):
+            playbooks.publish_version(
+                actor=firm.owner,
+                tenant=firm.tenant,
+                playbook_pk=playbook.pk,
+                number=1,
+                expected_version=version.version,
+            )
+
+
+def test_update_bypasses_the_save_guard_by_design(firm: Firm) -> None:
+    """QuerySet.update() cannot run save() — document the hole and its cover.
+
+    The in-model guard exists so a stray `save()` cannot reach `published`; the
+    deliberate `UPDATE` path lives only inside this domain's services, each of
+    which re-runs the lock, validation and audit. This probe exists so the
+    bypass is a named, tested fact rather than an accident of implementation.
+    """
+    with tenant_context(firm.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="upd",
+            name="Upd",
+            steps=[_spec("s")],
+        )
+        version, _ = playbooks.publish_version(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=playbook.pk,
+            number=1,
+            expected_version=1,
+        )
+        # The bypass works at the SQL layer — that is exactly why the
+        # transition contract lives in the services and not on the row alone.
+        # ALL_OBJECTS_OK: the probe itself asserts this bypass exists.
+        written = PlaybookVersion.all_objects.filter(pk=version.pk).update(
+            state=VersionState.DRAFT
+        )
+        assert written == 1
+        # ALL_OBJECTS_OK: restore the published state the test set up.
+        PlaybookVersion.all_objects.filter(pk=version.pk).update(
+            state=VersionState.PUBLISHED
+        )
+
+
+def test_a_tenant_account_cannot_draft_a_system_pack() -> None:
+    flagged = make_firm("adv-flag")
+    flagged.tenant.features = ["cycles_r1"]
+    flagged.tenant.save(update_fields=["features"])
+    install_system_packs(flagged.tenant)
+    with tenant_context(flagged.tenant.id):
+        pack = Playbook.objects.get(key="mei-mensal")
+        with pytest.raises(PermissionDenied):
+            playbooks.create_draft_version(
+                actor=flagged.owner,
+                tenant=flagged.tenant,
+                playbook_pk=pack.pk,
+            )
+
+
+def test_a_foreign_pk_is_a_missing_row_not_a_leak() -> None:
+    firm = make_firm("adv-firm")
+    other = make_firm("adv-other")
+    with (
+        tenant_context(firm.tenant.id),
+        pytest.raises(Playbook.DoesNotExist),
+    ):
+        playbooks.clone_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=other.tenant.pk,  # a valid UUID, wrong table
+        )
+    # And a real foreign playbook pk: also invisible, not PermissionDenied.
+    with tenant_context(other.tenant.id):
+        foreign = playbooks.create_playbook(
+            actor=other.owner,
+            tenant=other.tenant,
+            key="foreign",
+            name="Foreign",
+            steps=[_spec("s")],
+        )
+    with (
+        tenant_context(firm.tenant.id),
+        pytest.raises(Playbook.DoesNotExist),
+    ):
+        playbooks.clone_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=foreign.pk,
+        )
+
+
+def test_the_installer_identity_is_confined_to_system_rows() -> None:
+    firm = make_firm("adv-installer")
+    with tenant_context(firm.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="mine",
+            name="Mine",
+            steps=[_spec("s")],
+        )
+        # actor=None is the installer identity: confined to is_system rows, it
+        # refuses a tenant row with the same guard that makes a pack immutable.
+        with pytest.raises(ImmutableVersion):
+            playbooks.update_draft(
+                actor=None,
+                tenant=firm.tenant,
+                playbook_pk=playbook.pk,
+                number=1,
+                expected_version=1,
+                steps=[_spec("t")],
+            )
+        assert playbook.versions.get(number=1).steps.get().key == "s"
+
+
+def test_a_retired_version_cannot_be_republished(firm: Firm) -> None:
+    with tenant_context(firm.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="ret",
+            name="Ret",
+            steps=[_spec("s")],
+        )
+        version, _ = playbooks.publish_version(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=playbook.pk,
+            number=1,
+            expected_version=1,
+        )
+        retired = playbooks.retire_version(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=playbook.pk,
+            number=1,
+            expected_version=version.version,
+        )
+        with pytest.raises(IllegalTransition):
+            playbooks.publish_version(
+                actor=firm.owner,
+                tenant=firm.tenant,
+                playbook_pk=playbook.pk,
+                number=1,
+                expected_version=retired.version,
+            )
+        with pytest.raises(VersionConflict):
+            # a stale counter read BEFORE the retire loses the race loudly
+            playbooks.retire_version(
+                actor=firm.owner,
+                tenant=firm.tenant,
+                playbook_pk=playbook.pk,
+                number=1,
+                expected_version=version.version,
+            )
+
+
+def test_the_formset_extra_row_never_becomes_a_ghost_step(firm: Firm) -> None:
+    """A bound formset's blank extra row must parse to nothing, not a step."""
+    from apps.cycles.forms import StepFormSet  # noqa: PLC0415
+
+    with tenant_context(firm.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="ghost",
+            name="Ghost",
+            steps=[_spec("s")],
+        )
+        version = playbook.versions.get(number=1)
+        formset = StepFormSet(
+            {
+                "steps-TOTAL_FORMS": "2",
+                "steps-INITIAL_FORMS": "1",
+                "steps-MIN_NUM_FORMS": "0",
+                "steps-MAX_NUM_FORMS": "1000",
+                "steps-0-key": "s",
+                "steps-0-kind": "task",
+                "steps-0-label_ptbr": "S",
+                "steps-0-owner_rule": "team",
+                "steps-0-due_kind": "period_end_offset",
+                "steps-0-due_day": "5",
+                # the blank extra row Django renders for adding a step:
+            },
+            prefix="steps",
+        )
+        assert formset.is_valid()
+        from apps.cycles.views import _specs_of_valid_formset  # noqa: PLC0415
+
+        specs = _specs_of_valid_formset(formset)
+        assert [s.key for s in specs] == ["s"]
+        assert version.steps.count() == 1

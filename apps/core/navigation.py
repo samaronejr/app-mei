@@ -22,6 +22,7 @@ from django.utils.translation import pgettext_lazy
 from apps.authz.models import GrantLevel
 from apps.authz.services import Actor, granted_levels
 from apps.core.flags import tenant_has
+from apps.cycles.capabilities import PLAYBOOK_GATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +83,10 @@ PRODUCT_SHELL_FLAG: Final = "cycles_r1"
 NAV_R1: Final[tuple[NavItem, ...]] = (
     NavItem(_("Hoje"), "dashboard", "clients.view_assigned"),
     NavItem(_("Clientes"), "clients-list", "clients.view_assigned"),
+    # Playbooks join the shell here, before Gestão: it is the first working
+    # destination under the gestão umbrella, gated on the same capability until
+    # T4's `playbooks.manage` lands (see apps.cycles.capabilities).
+    NavItem(_("Playbooks"), "playbook-list", PLAYBOOK_GATE),
     NavItem(_("Gestão"), "team", "users.create"),
 )
 

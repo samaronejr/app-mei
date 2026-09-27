@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.clients",
+    "apps.cycles",
     "apps.fiscal",
     "apps.lgpd",
     "apps.obligations",
@@ -304,6 +305,18 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
     "client-import-errors": (
         "AXR1-007. The <uuid:batch_pk> is a tenant-scoped import batch id behind "
         "RLS and the firm-wide import gate; it is not a bearer credential."
+    ),
+    "playbook-detail": (
+        "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer "
+        "credential."
+    ),
+    "playbook-editor": (
+        "The <uuid:pk>/<int:number> pair is a tenant-scoped playbook version, "
+        "not a bearer credential."
+    ),
+    "playbook-retire": (
+        "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer "
+        "credential."
     ),
     "portal-document-download": (
         "apps/obligations/models/documents.py:13 says storage_key carries no "

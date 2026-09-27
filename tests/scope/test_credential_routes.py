@@ -49,6 +49,9 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "client-import-rollback",
         "client-import-errors",
         "portal-document-download",
+        "playbook-detail",
+        "playbook-editor",
+        "playbook-retire",
         "admin:*",
     },
 )
