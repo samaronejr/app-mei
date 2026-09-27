@@ -1,8 +1,8 @@
 """The portfolio import wizard (M2-I): upload, map, dry run, commit, roll back.
 
 Behind the `import_r1` flag, resolved firm first (`require_tenant`), and gated on the
-S8.1 `clients.import` set — owner and operations admin — expressed until AXR1-004 as
-`clients.create` plus a firm-wide portfolio (`importing.may_import`).
+S8.1 `clients.import` capability — owner and operations admin — plus a firm-wide
+portfolio (`importing.may_import`).
 
 Nothing here streams. The error report is built in memory and returned as a plain
 `HttpResponse`, because `TenantMiddleware` refuses a streaming response (the iterator

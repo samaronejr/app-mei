@@ -52,6 +52,7 @@ from apps.audit.services import ObjectRef, record_event
 from apps.authz.portfolio import PortfolioScope, portfolio_scope
 from apps.authz.services import can
 from apps.clients.exports import defuse_formula
+from apps.clients.maintenance import open_initial_claim
 from apps.clients.models import (
     ClientAssignment,
     ClientCompany,
@@ -86,10 +87,14 @@ MAX_XLSX_RATIO: Final = 200
 XLSX_MAGIC: Final = b"PK\x03\x04"
 CSV_SNIFF_BYTES: Final = 8192
 
-# The S8.1 row is `clients.import` (owner and operations admin only). Until AXR1-004
-# seeds it, the same set is expressed as `clients.create` held by a firm-wide
-# portfolio role: staff accountants hold `clients.create` but not the whole firm.
-IMPORT_CAPABILITY: Final = "clients.create"
+# S8.1 `clients.import` (owner and operations admin). The firm-wide portfolio is
+# required as well: an import creates clients nobody is assigned to, and its
+# rollback must see every one of them, so a per-user grant of the capability to an
+# assigned-only account would create clients it could neither see nor undo.
+IMPORT_CAPABILITY: Final = "clients.import"
+# Provenance of the initial timeline claim an import opens for each client; the
+# rollback dependents registry ignores these rows, which belong to the import.
+IMPORT_CLAIM_PROVENANCE: Final = "import"
 IMPORT_PROVENANCE_OBJECT: Final = "clients.ImportBatch"
 
 ROW_LIMIT_MESSAGE: Final = gettext_lazy(
@@ -310,7 +315,7 @@ def _registered_by_this_module() -> None:
         lambda tenant_id, ids: TaxProfile.objects.filter(
             tenant_id=tenant_id,
             client_id__in=ids,
-        ),
+        ).exclude(provenance=IMPORT_CLAIM_PROVENANCE),
     )
     register_rollback_dependent(
         "clients.onboarding_progress",
@@ -995,6 +1000,13 @@ def _create_client(batch: ImportBatch, row: ImportRow) -> ClientCompany:
     client.full_clean(exclude=["tenant", "import_batch"], validate_unique=False)
     with transaction.atomic():
         client.save()
+        # The flag and the timeline agree from the first instant (T6 invariant);
+        # the claim is attributed to whoever planned the import.
+        open_initial_claim(
+            client=client,
+            recorded_by=batch.created_by,
+            provenance=IMPORT_CLAIM_PROVENANCE,
+        )
     return client
 
 

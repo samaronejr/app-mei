@@ -7,10 +7,15 @@ lock, the version the caller read is compared and a stale one raises a typed con
 before anything is written, and one audit event records the change with references
 only.
 
-Capabilities, until the R1 rows of the S8.1 matrix exist (AXR1-004 lands them):
-`clients.create` stands in for `clients.manage` (identical FULL/NONE row for every
-firm role) and `users.create` for assignment changes, which S8.1 keeps on that
-existing capability anyway.
+Capabilities are the S8.1 rows AXR1-004 seeded: `clients.manage` for clients,
+engagements and contacts, and `users.create` for assignment changes and portal
+invitations, which S8.1 keeps on that existing capability.
+
+The legacy `is_mei`/`mei_category` fields and the tax timeline must agree
+(`tests/clients/test_legacy_flag_agreement.py`). A client created here or by an
+import opens its timeline with the claim the flag makes (`open_initial_claim`), and
+a timeline edit from the onboarding page brings the flag back in line with today's
+claim under the same lock (`set_tax_profile`).
 """
 
 import hashlib
@@ -29,6 +34,7 @@ from apps.accounts.invites import issue_client_invite
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, Origin, record_event, record_platform_event
+from apps.authz.objects import load_visible_client
 from apps.authz.portfolio import PortfolioScope, portfolio_scope, visible_clients
 from apps.authz.services import can
 from apps.clients.models import (
@@ -37,12 +43,15 @@ from apps.clients.models import (
     ClientCompany,
     ClientContact,
     Engagement,
+    ProfileConfidence,
     TaxProfile,
+    TaxRegime,
 )
 from apps.clients.services import (
     TaxProfileConflictError,
     assign_client,
     correct_tax_profile,
+    profile_at,
     unassign_client,
 )
 from apps.fiscal.validators import normalize_document
@@ -51,8 +60,7 @@ from apps.tenants.models import Invite, Membership, Tenant
 if TYPE_CHECKING:
     from django.db.models import QuerySet
 
-# S8.1 `clients.manage` until AXR1-004 seeds it; same FULL/NONE row per firm role.
-MANAGE_CAPABILITY: Final = "clients.create"
+MANAGE_CAPABILITY: Final = "clients.manage"
 # S8.1: "Assignment changes additionally require users.create (existing)".
 ASSIGN_CAPABILITY: Final = "users.create"
 
@@ -93,17 +101,52 @@ def load_client(
 ) -> ClientCompany:
     """Return the client if the actor's portfolio holds it, else raise Http404.
 
-    The one loader every onboarding view and service uses, so AXR1-004's
-    `load_visible_client` replaces exactly this body. 404, never 403: the id in
-    the URL must not confirm that a client exists outside the caller's book.
+    Unlocked reads go through AXR1-004's `load_visible_client`. A locking read keeps
+    the visibility filter INSIDE the locked query (the `correct_tax_profile`
+    pattern), so the row is resolved through the portfolio and locked in one
+    statement. 404, never 403: the id must not confirm a client outside the book.
     """
+    if not lock:
+        return load_visible_client(actor, client_id, tenant_id=tenant_id)
     queryset: QuerySet[ClientCompany] = visible_clients(actor, tenant_id=tenant_id)
-    if lock:
-        queryset = queryset.select_for_update()
-    client = queryset.filter(pk=client_id).first()
+    client = queryset.select_for_update().filter(pk=client_id).first()
     if client is None:
         raise Http404
     return client
+
+
+def open_initial_claim(
+    *,
+    client: ClientCompany,
+    recorded_by: User | None,
+    provenance: str,
+    today: date | None = None,
+) -> TaxProfile:
+    """Open a brand-new client's timeline with the claim its legacy flag makes.
+
+    The creation half of the dual-write, for a client that has no timeline yet:
+    there is nothing to supersede, so this inserts the one row that makes `is_mei`
+    and `profile_at(today)` agree, from the earlier of the opening date and today
+    (as `sync_profile_flag` and `backfill_v1` do). Marked
+    `asserted_by_legacy_flag` because nobody verified the regime — the flag's
+    default did — and the setup page labels it unverified. Not routed through
+    `correct_tax_profile`: its `clients.edit_tax_profile` check is LIMITED for an
+    operations admin on an unassigned client, which would forbid a role holding
+    `clients.manage`/`clients.import` from registering clients at all. Edits of
+    the timeline afterwards do go through `correct_tax_profile`.
+    """
+    today = today or timezone.localdate()
+    return TaxProfile.objects.create(
+        tenant_id=client.tenant_id,
+        client_id=client.pk,
+        regime=TaxRegime.MEI if client.is_mei else TaxRegime.UNKNOWN,
+        mei_category=client.mei_category if client.is_mei else None,
+        valid_from=min(client.opened_on or today, today),
+        provenance=provenance,
+        confidence=ProfileConfidence.ASSERTED_BY_LEGACY_FLAG,
+        recorded_by=recorded_by,
+        note="Aberto pelo cadastro a partir do campo MEI; não verificado.",
+    )
 
 
 def _require(actor: User, capability: str, tenant_id: UUID) -> None:
@@ -194,6 +237,7 @@ def create_client(*, actor: User, tenant_id: UUID, data: ClientData) -> ClientCo
             raise DuplicateClientError(
                 {"cnpj": _("Este CNPJ já está cadastrado neste escritório.")},
             ) from error
+        open_initial_claim(client=client, recorded_by=actor, provenance="dual_write")
         if portfolio_scope(actor, tenant_id=tenant_id) is PortfolioScope.ASSIGNED:
             assign_client(actor=actor, client=client, user=actor)
         _event(
@@ -367,7 +411,12 @@ def set_tax_profile(  # noqa: PLR0913 - the correction contract, keyword-only
     mei_category: str | None = None,
     note: str = "",
 ) -> TaxProfile:
-    """Record a tax-profile claim through `correct_tax_profile`.
+    """Record a tax-profile claim through `correct_tax_profile`, flag kept in step.
+
+    After the correction, still inside the transaction that holds the client lock,
+    the legacy `is_mei`/`mei_category` fields are set from the claim that covers
+    today, so the flag and the timeline never disagree (the reverse direction of
+    T6's dual-write, for an edit that starts on the timeline).
 
     A RETRO edit — one that restates a past period the firm already held a belief
     about — requires a note, because it rewrites what the firm acted on. Filling a
@@ -392,18 +441,31 @@ def set_tax_profile(  # noqa: PLR0913 - the correction contract, keyword-only
             },
         )
     try:
-        return correct_tax_profile(
-            client=client,
-            regime=regime,
-            valid_from=valid_from,
-            valid_to=valid_to,
-            actor=actor,
-            mei_category=mei_category,
-            note=note.strip(),
-            expected_revision=expected_revision,
-        )
+        with transaction.atomic():
+            created = correct_tax_profile(
+                client=client,
+                regime=regime,
+                valid_from=valid_from,
+                valid_to=valid_to,
+                actor=actor,
+                mei_category=mei_category,
+                note=note.strip(),
+                expected_revision=expected_revision,
+            )
+            _align_legacy_flag(client, today)
+            return created
     except TaxProfileConflictError as error:
         raise ConflictError(str(error)) from error
+
+
+def _align_legacy_flag(client: ClientCompany, today: date) -> None:
+    """Set `is_mei`/`mei_category` from today's claim (row already locked)."""
+    current = profile_at(client, today)
+    is_mei = current is not None and current.regime == TaxRegime.MEI
+    updates: dict[str, object] = {"is_mei": is_mei}
+    if is_mei and current is not None and current.mei_category:
+        updates["mei_category"] = current.mei_category
+    ClientCompany.objects.filter(pk=client.pk).update(**updates)
 
 
 @dataclass(frozen=True)
@@ -704,6 +766,7 @@ __all__ = [
     "invite_contact",
     "load_client",
     "load_contact",
+    "open_initial_claim",
     "remove_assignment",
     "save_contact",
     "save_engagement",
