@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "apps.accounts",
     "apps.clients",
     "apps.cycles",
+    "apps.delivery",
     "apps.fiscal",
     "apps.lgpd",
     "apps.obligations",
@@ -532,7 +533,15 @@ AXORIM_DISABLED_FEATURES = env.list("AXORIM_DISABLED_FEATURES", default=[])
 # customer-facing screen can adopt a name ahead of that decision.
 PRODUCT_NAME = env.str("PRODUCT_NAME", default="app-mei")
 
+# Closed until the operator verifies the real SMTP route and journal storage.
+DELIVERY_PAUSED = env.bool("DELIVERY_PAUSED", default=True)
+DELIVERY_DAILY_CAP = env.int("DELIVERY_DAILY_CAP", default=100)
+
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
+    "dispatch-outbox": {
+        "task": "apps.delivery.tasks.dispatch_outbox",
+        "schedule": 60.0,
+    },
     "generate-cycles": {
         "task": "apps.cycles.tasks.generate_monthly_cycles",
         "schedule": crontab(day_of_month=1, hour=5, minute=0),

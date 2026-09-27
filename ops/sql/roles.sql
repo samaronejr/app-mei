@@ -149,6 +149,27 @@ $$;
 -- PORTAL_NONE: cycles_exception
 -- T9 has no portal event writer and exposes no internal work or exception text.
 
+-- PORTAL_NONE: delivery_outboundmessage
+-- PORTAL_NONE: delivery_deliveryattempt
+-- PORTAL_NONE: delivery_deliveryeffect
+-- PORTAL_NONE: delivery_automationpause
+-- Message contents, SMTP receipts and operational controls are firm-private.
+DO $$
+DECLARE
+    receipt_table text;
+BEGIN
+    FOREACH receipt_table IN ARRAY ARRAY[
+        'delivery_deliveryattempt', 'delivery_deliveryeffect'
+    ]
+    LOOP
+        IF to_regclass('public.' || receipt_table) IS NOT NULL THEN
+            EXECUTE format('REVOKE ALL ON %I FROM app_runtime', receipt_table);
+            EXECUTE format('GRANT SELECT, INSERT ON %I TO app_runtime', receipt_table);
+        END IF;
+    END LOOP;
+END
+$$;
+
 -- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
 -- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
 -- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the

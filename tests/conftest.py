@@ -42,6 +42,10 @@ PORTAL_DENIED_TABLES = (
     "cycles_cycleevent",
     "cycles_internalnote",
     "cycles_exception",
+    "delivery_outboundmessage",
+    "delivery_deliveryattempt",
+    "delivery_deliveryeffect",
+    "delivery_automationpause",
 )
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so
@@ -51,6 +55,8 @@ APPEND_ONLY_TABLES = (
     "audit_platformevent",
     "obligations_sourceobservation",
     "cycles_cycleevent",
+    "delivery_deliveryattempt",
+    "delivery_deliveryeffect",
 )
 
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated

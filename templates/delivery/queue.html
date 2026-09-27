@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Comunicação{% endblock %}
+{% block heading %}Comunicação{% endblock %}
+{% block content %}
+<p class="mb-4 text-ink-600">Acompanhe a fila e os retornos do servidor de e-mail. Aceitação pelo servidor não confirma a leitura.</p>
+{% if error %}<div role="alert" class="ui-panel mb-4 p-4">{{ error }}</div>{% endif %}
+<section class="ui-panel mb-4 p-4" aria-label="Controles de envio">
+  <p>Reservas disponíveis hoje: {{ quota }}. Cada tentativa consome uma reserva.</p>
+  {% if control.paused %}<p>Os envios deste escritório estão pausados.</p>{% endif %}
+  {% if can_pause %}
+  <form method="post" class="mt-3">{% csrf_token %}
+    <input type="hidden" name="expected_version" value="{{ control.version|default:1 }}">
+    {% if control.paused %}<button class="ui-btn ui-btn-quiet" name="action" value="unpause">Retomar envios do escritório</button>{% else %}<button class="ui-btn ui-btn-quiet" name="action" value="pause">Pausar envios do escritório</button>{% endif %}
+  </form>
+  {% endif %}
+  <p class="mt-2 text-sm text-ink-600">O bloqueio global do operador, quando ativo, prevalece sobre este controle.</p>
+</section>
+<form method="get" class="ui-panel mb-4 flex flex-wrap items-end gap-3 p-4" aria-label="Filtrar mensagens">
+  <div class="ui-field"><label for="estado" class="ui-field-label">Estado do envio</label><select id="estado" name="estado" class="ui-field-input"><option value="">Todos</option>{% for value,label in states %}<option value="{{ value }}"{% if selected == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+  <button class="ui-btn ui-btn-primary" type="submit">Filtrar</button>
+</form>
+<div class="space-y-4">
+{% for message in page %}
+<article class="ui-panel p-4" aria-labelledby="message-{{ message.pk }}">
+  <h2 class="font-semibold" id="message-{{ message.pk }}">{{ message.client.legal_name }}</h2>
+  <p>{{ message.subject }}</p>
+  <p class="mt-2 font-medium" data-state="{{ message.state }}">{{ message.get_state_display }}</p>
+  <p class="text-sm text-ink-600">{{ message.created_at|date:'d/m/Y H:i' }} · Tentativas: {{ message.attempts }}</p>
+  {% if message.last_error_code %}<p class="text-sm">Código: {{ message.last_error_code }}</p>{% endif %}
+  {% if message.decision_note %}<p class="mt-2">Nota da equipe: {{ message.decision_note }}</p>{% endif %}
+  {% if can_decide %}
+  {% if message.state == 'resultado_incerto' %}
+  <p class="mt-3">O envio pode ter ocorrido. Verifique antes de decidir. Uma informação da equipe não comprova aceitação pelo servidor e não dispara um novo envio.</p>
+  <form method="post" class="mt-3 space-y-3">{% csrf_token %}
+    <input type="hidden" name="message_id" value="{{ message.pk }}"><input type="hidden" name="expected_version" value="{{ message.version }}">
+    <div class="ui-field"><label class="ui-field-label" for="note-{{ message.pk }}">Nota da decisão</label><textarea class="ui-field-input" id="note-{{ message.pk }}" name="note" required maxlength="10000"></textarea></div>
+    <div class="flex flex-wrap gap-3"><button class="ui-btn ui-btn-quiet" name="action" value="sent">Confirmar que foi enviado</button><button class="ui-btn ui-btn-quiet" name="action" value="not_sent">Confirmar que não foi enviado</button></div>
+  </form>
+  {% elif message.state == 'na_fila' or message.state == 'falhou_temporario' %}
+  <form method="post" class="mt-3">{% csrf_token %}<input type="hidden" name="message_id" value="{{ message.pk }}"><input type="hidden" name="expected_version" value="{{ message.version }}"><button class="ui-btn ui-btn-quiet" name="action" value="cancel">Cancelar envio</button></form>
+  {% endif %}
+  {% endif %}
+</article>
+{% empty %}<div class="ui-panel p-6"><h2 class="font-semibold">Nenhuma mensagem nestes filtros</h2><p>Os avisos dos ciclos aparecerão aqui quando forem colocados na fila.</p></div>{% endfor %}
+</div>
+<nav class="mt-4 flex gap-4" aria-label="Páginas de mensagens">{% if page.has_previous %}<a class="ui-link" href="?estado={{ selected|urlencode }}&amp;pagina={{ page.previous_page_number }}">Anterior</a>{% endif %}{% if page.has_next %}<a class="ui-link" href="?estado={{ selected|urlencode }}&amp;pagina={{ page.next_page_number }}">Próxima</a>{% endif %}</nav>
+{% endblock %}

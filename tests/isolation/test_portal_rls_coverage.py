@@ -54,7 +54,8 @@ RUNTIME_ROLE = "app_runtime"
 # cycles_{playbook,playbookversion,playbookstep} (todo 8) are firm-internal
 # playbook definitions — portal-NONE, each carrying a DenyPortalAccess policy.
 # Six client-scoped cycle aggregate/history tables (todo 9) extend that union.
-EXPECTED_TENANT_TABLE_COUNT = 31
+# Four firm-private delivery/control tables (todo 10) extend that union.
+EXPECTED_TENANT_TABLE_COUNT = 35
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -381,6 +382,10 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_cycleevent",
         "cycles_internalnote",
         "cycles_exception",
+        "delivery_outboundmessage",
+        "delivery_deliveryattempt",
+        "delivery_deliveryeffect",
+        "delivery_automationpause",
         "obligations_monthlyrevenue",
         "obligations_obligation",
         "obligations_sourceobservation",

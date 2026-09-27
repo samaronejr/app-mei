@@ -10,7 +10,13 @@ from django.db import transaction
 from apps.accounts.models import User
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.models import Exception as CycleException
-from apps.cycles.services.cycle import check_version, emit, load_cycle, require_actor
+from apps.cycles.models import ServiceCycle
+from apps.cycles.services.cycle import (
+    check_version,
+    emit,
+    load_cycle,
+    require_actor,
+)
 from apps.tenants.models import Membership
 
 
@@ -37,7 +43,7 @@ def open_exception(  # noqa: PLR0913 - the registered-opener contract carries sc
     reason_code: str,
     subject_ref: UUID,
     *,
-    actor: User,
+    actor: User | None,
     cycle_id: UUID,
     expected_version: int,
     owner: User,
@@ -51,8 +57,14 @@ def open_exception(  # noqa: PLR0913 - the registered-opener contract carries sc
         raise ValidationError(msg)
     reason = _REASONS[reason_code]
     with transaction.atomic():
-        cycle = load_cycle(actor, cycle_id, lock=True)
-        require_actor(actor, CYCLES_OPERATE)
+        if actor is None:
+            # Trusted deterministic openers (delivery/scanning) record failures
+            # even after access/flags change or during restore replay.
+            # RLS still scopes them; this path never authorizes a new effect.
+            cycle = ServiceCycle.objects.select_for_update().get(pk=cycle_id)
+        else:
+            cycle = load_cycle(actor, cycle_id, lock=True)
+            require_actor(actor, CYCLES_OPERATE)
         existing = CycleException.objects.filter(
             cycle=cycle,
             reason_code=reason_code,
@@ -65,7 +77,10 @@ def open_exception(  # noqa: PLR0913 - the registered-opener contract carries sc
         # PLATFORM_QUERY_OK: scope is the locked, portfolio-authorized cycle's
         # tenant, and this is an owner roster validation, not member enumeration.
         if not Membership.objects.filter(
-            tenant_id=cycle.tenant_id, user=owner, is_active=True, client__isnull=True
+            tenant_id=cycle.tenant_id,
+            user=owner,
+            client__isnull=True,
+            **({"is_active": True} if actor is not None else {}),
         ).exists():
             msg = "O responsável deve pertencer à equipe ativa."
             raise ValidationError(msg)

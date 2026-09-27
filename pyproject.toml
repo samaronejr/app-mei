@@ -35,6 +35,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "aiosmtpd>=1.4.6",
   # Browser + accessibility harness (tests/browser, run with `-m browser`). Pinned
   # exactly: the axe rule set ships inside this package, so an unpinned upgrade can
   # redden or silence an accessibility check without a line of ours changing.

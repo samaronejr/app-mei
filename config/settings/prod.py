@@ -14,6 +14,7 @@ from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
 from sentry_sdk.types import Event, Hint
 
 from apps.core.release import UNKNOWN_RELEASE, current_release
+from apps.delivery.privacy import sensitive_values
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING, env
 
@@ -46,6 +47,17 @@ SENTRY_CREDENTIAL_FIELDS: Final = frozenset(
         "password2",
         "recovery-code",
         "recovery_code",
+        "recipient",
+        "recipients",
+        "recipients_json",
+        "to",
+        "cc",
+        "bcc",
+        "body",
+        "body_ref",
+        "subject",
+        "email_body",
+        "decision_note",
     }
 )
 _RESET_FROM_KEY_URL_NAME: Final = "account_reset_password_from_key"
@@ -138,7 +150,7 @@ def _replace_sentry_credentials(
 
 
 def scrub_sentry_event(event: Event, _hint: Hint) -> Event:
-    credentials: set[str] = set()
+    credentials: set[str] = set(sensitive_values.get())
     scrubbed = _scrub_sentry_urls(cast("SentryValue", event), credentials)
     return cast("Event", _replace_sentry_credentials(scrubbed, credentials))
 
@@ -190,7 +202,7 @@ class CredentialURLLogFilter(logging.Filter):
     """Remove registered URL credentials before console record serialization."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        credentials = _request_credentials(record)
+        credentials = _request_credentials(record) | set(sensitive_values.get())
         if not credentials:
             return True
         record.msg = _replace_log_credentials(
