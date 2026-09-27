@@ -348,22 +348,40 @@ def test_reparenting_a_published_step_is_refused(firm: Firm) -> None:
 def test_concurrent_pack_installs_do_not_duplicate_or_crash() -> None:
     """Two installers on one tenant must converge: one inserts, one re-reads.
 
-    The barrier makes the race real — both calls enter the create path before
-    either commits, so the loser provably exercises the IntegrityError re-fetch
-    rather than winning the lock before the winner started.
+    The barrier sits INSIDE `Playbook.objects.create` — the narrowest critical
+    section — so both transactions hold an uncommitted intent to insert the same
+    pack key at the same moment; the loser then provably walks the
+    IntegrityError re-fetch instead of merely racing a wider window. A barrier
+    timeout is swallowed: if the winner committed before the loser even
+    filtered, the serialized path is already correct and nothing was forced.
     """
+    import contextlib  # noqa: PLC0415
     import threading  # noqa: PLC0415
-    from threading import Barrier  # noqa: PLC0415
+    from threading import Barrier, BrokenBarrierError  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415
 
     from tests.support_threads import run_in_thread_as_runtime  # noqa: PLC0415
 
     flagged = make_firm("adv-race")
-    flagged.tenant.features = ["cycles_r1"]
-    flagged.tenant.save(update_fields=["features"])
+    # update() bypasses post_save: the packs are NOT installed yet, so both
+    # threads race to create them rather than finding finished rows.
+    flagged.tenant.__class__.objects.filter(pk=flagged.tenant.pk).update(
+        features=["cycles_r1"]
+    )
+    flagged.tenant.refresh_from_db()
     barrier = Barrier(2)
+    real_create = Playbook.objects.create
+
+    def gated_create(*args: object, **kwargs: object) -> Playbook:
+        # Gate only the FIRST pack's create — the barrier is for the racing
+        # partner, and a second pack from the same thread would trip it alone.
+        if kwargs.get("key") == "mei-mensal":
+            # partner may serialize before reaching create — nothing to race
+            with contextlib.suppress(BrokenBarrierError):
+                barrier.wait(timeout=8)
+        return real_create(*args, **kwargs)
 
     def install() -> int:
-        barrier.wait(timeout=10)
         return len(install_system_packs(flagged.tenant))
 
     # The helper joins its worker, so it cannot be the main thread's half of the
@@ -377,9 +395,10 @@ def test_concurrent_pack_installs_do_not_duplicate_or_crash() -> None:
             box["error"] = exc
 
     racing = threading.Thread(target=worker, name="installer-b", daemon=True)
-    racing.start()
-    mine = install()
-    racing.join(timeout=30)
+    with patch.object(Playbook.objects, "create", side_effect=gated_create):
+        racing.start()
+        mine = install()
+        racing.join(timeout=60)
     assert not racing.is_alive(), "the racing installer never finished"
     if "error" in box:
         raise box["error"]  # type: ignore[misc]
