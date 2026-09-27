@@ -9,7 +9,8 @@ from apps.clients.importing import (
     plan_import,
     rollback_import,
 )
-from apps.clients.models import ClientCompany, Engagement, ImportBatch, TaxProfile
+from apps.clients.models import ClientCompany, Engagement, ImportBatch, TaxRegime
+from apps.clients.services import correct_tax_profile
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import ServiceCycle
 from apps.cycles.services.cycle import open_cycle
@@ -42,12 +43,14 @@ def test_import_rollback_refuses_and_lists_service_cycle() -> None:
             starts_on=PERIOD,
             provenance="staff_entry",
         )
-        TaxProfile.objects.create(
-            tenant=setup.tenant,
+        # Final T7 opens the initial profile during import; correct that timeline
+        # instead of inserting an overlapping second current assertion.
+        correct_tax_profile(
             client=client,
-            regime="mei",
+            actor=setup.actor,
+            regime=TaxRegime.MEI,
             valid_from=PERIOD,
-            provenance="staff_entry",
+            expected_revision=client.tax_profile_revision,
         )
         ref = open_cycle(
             setup.actor,
