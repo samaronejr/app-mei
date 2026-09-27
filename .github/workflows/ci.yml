@@ -241,6 +241,101 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  browser:
+    name: Browser + accessibility (Chromium, axe-core)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    # The browser suite drives a real Chromium against a live server, so it needs
+    # the same database and roles as the test job -- and the live server must run
+    # as app_runtime, which tests/browser/conftest.py enforces and asserts on every
+    # request. Deselected from the test job by `addopts = -m "not browser"`, so
+    # that job never needs a browser; this one selects it with `-m browser`.
+    #
+    # The service containers, the env block and every database bootstrap step
+    # below mirror the test job. Keep them in step: a bootstrap step added there
+    # and not here reddens this job for a reason unrelated to the browser.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: app_mei
+          POSTGRES_USER: app_mei
+          POSTGRES_PASSWORD: ephemeral-ci-superuser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app_mei -d app_mei"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DJANGO_ENV_FILE: /nonexistent
+      SECRET_KEY: ephemeral-ci-secret-key-not-used-outside-this-runner-0000000000
+
+      APP_MIGRATOR_PASSWORD: ephemeral-ci-app-migrator
+      APP_RUNTIME_PASSWORD: ephemeral-ci-app-runtime
+      APP_TEST_PASSWORD: ephemeral-ci-app-test
+
+      SUPERUSER_DATABASE_URL: postgres://app_mei:ephemeral-ci-superuser@localhost:5432/app_mei
+
+      DATABASE_URL: postgres://app_runtime:ephemeral-ci-app-runtime@localhost:5432/app_mei
+      DATABASE_MIGRATION_URL: postgres://app_migrator:ephemeral-ci-app-migrator@localhost:5432/app_mei
+      TEST_DB_USER: app_test
+      TEST_DB_PASSWORD: ephemeral-ci-app-test
+      CONN_MAX_AGE: "0"
+
+      REDIS_URL: redis://localhost:6379/0
+      ALLOWED_HOSTS: localhost,127.0.0.1,.localhost
+      CSRF_TRUSTED_ORIGINS: http://localhost:8000,http://127.0.0.1:8000
+
+      # Full-page screenshots of the shell and the component kit at both viewports,
+      # uploaded below so a reviewer can see what the assertions saw.
+      BROWSER_SCREENSHOT_DIR: browser-screenshots
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Same reason and same position as in the test job: service containers start
+      # before checkout, so the roles are created here, ahead of any database step.
+      - name: Bootstrap database roles
+        run: psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+
+      # Needs the runner's network to reach the Playwright CDN. If that is ever
+      # blocked, the suite still runs locally and the gap is recorded (plan todo 3).
+      - name: Browser suite (Chromium + axe-core)
+        run: uv run playwright install --with-deps chromium && uv run pytest -m browser
+
+      - name: Upload screenshots
+        if: always() && hashFiles('browser-screenshots/*.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-screenshots-${{ github.run_id }}
+          path: browser-screenshots/
+          if-no-files-found: error
+          retention-days: 7
+
   container-smoke:
     name: Container smoke (/healthz from inside the stack)
     runs-on: ubuntu-24.04
@@ -331,7 +426,7 @@ jobs:
   deploy-pilot:
     name: Deploy to the pilot host (main only, after the gates above)
     runs-on: ubuntu-24.04
-    needs: [test, container-smoke]
+    needs: [test, container-smoke, browser]
     # Both halves are load-bearing. `push` excludes pull_request runs, whose head is a
     # synthetic merge commit that exists on no branch and therefore cannot be checked
     # out on the box. The ref check excludes any branch a future trigger might add.

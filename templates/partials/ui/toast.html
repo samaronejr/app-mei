@@ -1,0 +1,28 @@
+{% load i18n %}{% comment %}
+One toast: a short, dismissable confirmation of something that just happened.
+
+Context:
+  message -- the pt-BR sentence. Say what the system knows and no more (S5.1
+             principle 5): "Mensagem aceita pelo servidor de e-mail", never
+             "entregue".
+  variant -- success | info | error. Anything else renders as info.
+  oob     -- truthy wraps the toast for an HTMX out-of-band swap appended to the
+             shell's `#toasts` region. For any strategy other than outerHTML, HTMX
+             inserts the CHILDREN of the out-of-band element, hence the wrapper.
+
+The live region is the shell's `#toasts`, which exists from page load. A region
+created together with its message announces nothing, so a toast never carries a
+live region of its own. A toast never times out either (WCAG 2.2.1): it stays
+until the reader dismisses it or leaves the page.
+
+The dismiss control starts `hidden` and is revealed by the `dismissable`
+component. Without script it would be a button that does nothing, and a dead
+control is worse than no control.
+
+A failure that blocks the reader's work is not a toast: render `state_error.html`
+where the missing content would have been.
+{% endcomment %}{% if oob %}<div hx-swap-oob="beforeend:#toasts">{% endif %}<div class="toast {% if variant == 'success' %}toast-success{% elif variant == 'error' %}toast-error{% else %}toast-info{% endif %}" x-data="dismissable" data-toast>
+  {% if variant == 'success' %}{% include "partials/pure/icons/check-circle.html" %}{% elif variant == 'error' %}{% include "partials/pure/icons/x-circle.html" %}{% else %}{% include "partials/pure/icons/info.html" %}{% endif %}
+  <p class="flex-1">{{ message }}</p>
+  <button type="button" class="ui-icon-btn" hidden x-bind:hidden="controlHidden" x-on:click="dismiss">{% include "partials/pure/icons/x.html" %}<span class="visually-hidden">{% translate "Dispensar aviso" %}</span></button>
+</div>{% if oob %}</div>{% endif %}

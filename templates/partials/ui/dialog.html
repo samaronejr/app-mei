@@ -1,0 +1,37 @@
+{% load i18n %}{% comment %}
+A modal dialog on the native `<dialog>` element, driven by the `dialog` component.
+
+Context:
+  dialog_id      -- required, unique on the page; the title id derives from it.
+  title          -- the pt-BR title, and the dialog's accessible name.
+  body_template  -- the template rendered inside. Actions that change anything are
+                    ordinary POST forms inside it; the dialog adds no request
+                    vocabulary of its own.
+  trigger_label  -- optional; renders the button that opens the dialog.
+  open_on_load   -- truthy renders the dialog already open. With script it is
+                    upgraded to modal on load; without script it still shows,
+                    in the flow of the page. This is how a drawer reached by URL
+                    (`hx-push-url`, S5.6) comes back after a reload or Back.
+  variant        -- `drawer` for the side-sheet shape; see `drawer.html`.
+
+Why native: `showModal()` puts the dialog in the top layer, makes the rest of the
+page inert, and closes on Escape. Those are the three things a hand-built modal
+gets wrong, and the browser does all three with no code here.
+
+Focus: `showModal()` moves focus into the dialog. On close the component returns
+focus to the control that opened it, if that control still exists -- the reader
+continues from where they left off rather than from the top of the page.
+
+The trigger and the close button start `hidden` and are revealed by the
+component: both need script to act, and a control that cannot act must not be
+offered.
+{% endcomment %}<div x-data="dialog" class="contents">
+  {% if trigger_label %}<button type="button" class="ui-btn ui-btn-quiet" hidden x-bind:hidden="controlHidden" aria-haspopup="dialog" aria-controls="{{ dialog_id }}" x-on:click="show">{{ trigger_label }}</button>{% endif %}
+  <dialog id="{{ dialog_id }}" class="{% if variant == 'drawer' %}ui-drawer{% else %}ui-dialog{% endif %}" aria-labelledby="{{ dialog_id }}-title" x-ref="dialog" x-on:close="restoreFocus"{% if open_on_load %} open{% endif %}>
+    <div class="overlay-head">
+      <h2 id="{{ dialog_id }}-title" class="overlay-title">{{ title }}</h2>
+      <button type="button" class="ui-icon-btn" hidden x-bind:hidden="controlHidden" x-on:click="close">{% include "partials/pure/icons/x.html" %}<span class="visually-hidden">{% translate "Fechar" %}</span></button>
+    </div>
+    <div class="overlay-body">{% include body_template %}</div>
+  </dialog>
+</div>

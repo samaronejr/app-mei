@@ -1,0 +1,18 @@
+{% load i18n %}{% comment %}
+A failure state with its recovery path.
+
+Context:
+  title       -- what failed, in pt-BR. Defaults to "Não foi possível carregar."
+  message     -- optional detail a person can act on. Never a stack trace, never
+                 an internal identifier.
+  retry_url   -- where "Tentar novamente" leads. A plain GET, so it works when
+                 the script that failed is the thing that is broken.
+  retry_label -- optional; defaults to "Tentar novamente".
+
+`role="alert"`: this replaces content the reader was waiting for, and a failure
+they are not told about is a failure they wait on.
+{% endcomment %}<div class="ui-state ui-state-error" role="alert" data-ui-state="error">
+  <p class="ui-state-title">{% include "partials/pure/icons/x-circle.html" %}<span>{% if title %}{{ title }}{% else %}{% translate "Não foi possível carregar." %}{% endif %}</span></p>
+  {% if message %}<p>{{ message }}</p>{% endif %}
+  {% if retry_url %}<a class="ui-btn ui-btn-quiet" href="{{ retry_url }}">{% if retry_label %}{{ retry_label }}{% else %}{% translate "Tentar novamente" %}{% endif %}</a>{% endif %}
+</div>

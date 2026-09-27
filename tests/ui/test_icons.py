@@ -42,10 +42,13 @@ ICONS: Final[Path] = (
 EXPECTED_ICONS: Final[frozenset[str]] = frozenset(
     {
         "alert-triangle",
+        "ban",
         "building-2",
         "calendar-clock",
         "check-circle",
         "chevron-right",
+        "circle-question-mark",
+        "clock-fading",
         "download",
         "file-text",
         "folder",
@@ -56,6 +59,7 @@ EXPECTED_ICONS: Final[frozenset[str]] = frozenset(
         "user-round",
         "users",
         "wallet",
+        "x",
         "x-circle",
     },
 )

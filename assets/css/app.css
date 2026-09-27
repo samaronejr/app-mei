@@ -96,6 +96,87 @@
     oklch(0.19 0.017 250 / 0.06);
   --shadow-raised: 0 4px 12px oklch(0.19 0.017 250 / 0.08), 0 1px 3px
     oklch(0.19 0.017 250 / 0.06);
+
+  /* ---------------------------------------------------------------------------
+   * The R1 product system: the shell and `templates/partials/ui/`.
+   *
+   * Strictly additive. Nothing declared above this line changes, and Tailwind v4
+   * emits a theme variable only where something uses it, so a tenant without the
+   * `cycles_r1` flag is served exactly the rules it was served before.
+   *
+   * The neutral slate scale is the `ink` ramp above. A second grey ramp would
+   * drift from the first within a release, so the product shell reuses it.
+   * ------------------------------------------------------------------------- */
+
+  /* 4px grid. Tailwind's default already, declared so the grid is a decision on
+   * record rather than an inherited accident. */
+  --spacing: 0.25rem;
+
+  /* One brand ink. Deep teal at hue 200, bluer than the MEI-era accent so the two
+   * shells are distinct in review, still clear of government blue. 700 is the
+   * brand ink itself. Measured (sRGB, WCAG 2.x): 700 on white 8.04:1, 700 on 50
+   * 7.51:1, 600 on white 5.78:1. */
+  --color-brand-50: oklch(0.975 0.012 200);
+  --color-brand-100: oklch(0.945 0.025 200);
+  --color-brand-200: oklch(0.89 0.04 200);
+  --color-brand-600: oklch(0.5 0.08 200);
+  --color-brand-700: oklch(0.42 0.08 200);
+  --color-brand-800: oklch(0.35 0.07 200);
+
+  /* Evidence states. Seven words that must never be confused for one another
+   * (S5.1 principle 4), so each is a hue AND an icon AND a pt-BR label — the
+   * status badge refuses to render one without the other two. Green is spent on
+   * `confirmed` alone: nothing positively unverified may look like it.
+   *
+   * The bare name is the ink; `-soft` the fill; `-line` the border. Measured ink
+   * contrast, on its own soft / on white: confirmed 6.66 / 7.39, manual 6.73 /
+   * 7.58, pending 6.28 / 7.01, unknown 6.75 / 7.43, stale 6.54 / 7.25, blocked
+   * 5.92 / 6.94, danger 6.28 / 7.46. */
+  --color-state-confirmed: oklch(0.44 0.1 155);
+  --color-state-confirmed-soft: oklch(0.96 0.035 155);
+  --color-state-confirmed-line: oklch(0.84 0.07 155);
+
+  --color-state-manual: oklch(0.45 0.12 265);
+  --color-state-manual-soft: oklch(0.96 0.025 265);
+  --color-state-manual-line: oklch(0.85 0.05 265);
+
+  --color-state-pending: oklch(0.47 0.1 65);
+  --color-state-pending-soft: oklch(0.965 0.05 85);
+  --color-state-pending-line: oklch(0.86 0.09 85);
+
+  --color-state-unknown: oklch(0.45 0.016 250);
+  --color-state-unknown-soft: oklch(0.967 0.003 250);
+  --color-state-unknown-line: oklch(0.86 0.008 250);
+
+  --color-state-stale: oklch(0.46 0.06 60);
+  --color-state-stale-soft: oklch(0.965 0.015 70);
+  --color-state-stale-line: oklch(0.84 0.04 70);
+
+  --color-state-blocked: oklch(0.48 0.14 45);
+  --color-state-blocked-soft: oklch(0.955 0.04 50);
+  --color-state-blocked-line: oklch(0.86 0.08 50);
+
+  --color-state-danger: oklch(0.47 0.17 25);
+  --color-state-danger-soft: oklch(0.95 0.035 20);
+  --color-state-danger-line: oklch(0.85 0.08 20);
+
+  /* Type scale 12 / 13 / 14 / 16 / 20 / 24. Five of the six are Tailwind's own
+   * steps (xs, sm, base, xl, 2xl); 13px is the dense-table step it lacks. */
+  --text-dense: 0.8125rem;
+  --text-dense--line-height: 1.25rem;
+
+  /* Radius 4 / 6: controls, then surfaces. No pill except the legacy badge. */
+  --radius-field: 0.25rem;
+  --radius-panel: 0.375rem;
+
+  /* The single elevation: anything that floats above the page (drawer, dialog,
+   * toast). Flat surfaces take a border, never a shadow. */
+  --shadow-overlay: 0 12px 32px oklch(0.19 0.017 250 / 0.16), 0 2px 6px
+    oklch(0.19 0.017 250 / 0.08);
+
+  /* Motion is at most 150ms and always decelerating; the reduced-motion block at
+   * the end of this file removes it entirely. */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
 }
 
 @layer base {
@@ -122,6 +203,15 @@
   th,
   td {
     text-align: left;
+  }
+
+  /* The product shell holds every text colour to WCAG AA on every neutral
+   * surface. `ink-500` measures 4.46:1 on white -- under AA, and axe says so --
+   * and the MEI-era screens use it for labels and help text. Retuning the token
+   * itself would change what a flag-off firm sees, so the shell lowers it for
+   * its own pages only: 5.50:1 on white, 5.00:1 on ink-100. Goes with the flag. */
+  .shell-r1 {
+    --color-ink-500: oklch(0.52 0.014 250);
   }
 
   /* Money and dates line up column-wise only with fixed-width figures. */
@@ -548,6 +638,404 @@
 
   .crumbs [aria-current="page"] {
     @apply font-medium text-ink-700;
+  }
+
+  /* =========================================================================
+   * R1 product system. Drawn only by the `cycles_r1` shell and by the partials
+   * under `templates/partials/ui/`; nothing the MEI-era screens render uses a
+   * class below, which is what keeps a flag-off tenant's page unchanged.
+   *
+   * State is encoded as a wash of one ink, a glyph and a word. Never a coloured
+   * side stripe: the only coloured edge in this family is the focus ring.
+   * ======================================================================= */
+
+  /* ---- Shell. Same native-disclosure contract as `.nav-disclosure` above: the
+   * browser owns open and closed, so the bar survives a bundle that never loads. */
+  .shell-header {
+    @apply border-b border-ink-200 bg-surface;
+  }
+
+  .shell-bar {
+    @apply mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-1 px-6 py-2;
+  }
+
+  .shell-brand {
+    @apply flex min-w-0 items-baseline gap-3;
+  }
+
+  .shell-wordmark {
+    @apply rounded-field text-base font-semibold tracking-tight text-brand-700;
+  }
+
+  .shell-tenant {
+    @apply truncate border-l border-ink-200 pl-3 text-dense text-ink-600;
+  }
+
+  /* Below `md` the disclosure takes a row of its own under the brand, so the
+   * account controls stay on the first line where a thumb expects them. */
+  .shell-disclosure {
+    @apply order-last w-full text-sm md:order-none md:w-auto;
+  }
+
+  .shell-summary {
+    @apply inline-flex min-h-10 cursor-pointer list-none items-center gap-2
+      rounded-field px-3 font-medium text-ink-700 transition-colors duration-150
+      ease-standard;
+  }
+
+  .shell-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  /* Hover only where a pointer can hover: on a touch screen the tapped summary
+   * would otherwise keep the hover wash. The open state carries it instead. */
+  @media (hover: hover) {
+    .shell-summary:hover {
+      @apply bg-ink-100 text-ink-900;
+    }
+  }
+
+  .shell-disclosure[open] > .shell-summary {
+    @apply bg-ink-100 text-ink-900;
+  }
+
+  .shell-nav {
+    @apply flex flex-col gap-1 pb-2 pt-1;
+  }
+
+  .shell-link {
+    @apply flex min-h-10 items-center rounded-field px-3 text-sm font-medium
+      text-ink-600 transition-colors duration-150 ease-standard;
+  }
+
+  .shell-link:hover {
+    @apply bg-ink-100 text-ink-900;
+  }
+
+  .shell-link[aria-current="page"] {
+    @apply bg-brand-50 font-semibold text-brand-700;
+  }
+
+  @supports selector(::details-content) {
+    @media (width >= theme(--breakpoint-md)) {
+      .shell-disclosure::details-content {
+        content-visibility: visible;
+        block-size: auto;
+      }
+
+      .shell-summary {
+        display: none;
+      }
+
+      .shell-nav {
+        @apply flex-row items-center py-0;
+      }
+    }
+  }
+
+  .shell-account {
+    @apply ml-auto flex min-w-0 items-center gap-3 text-dense text-ink-600;
+  }
+
+  /* ---- Controls in the R1 radius. The MEI-era `.btn` keeps its own. */
+  .ui-btn {
+    @apply inline-flex min-h-9 items-center justify-center gap-2 rounded-field px-3
+      text-sm font-medium transition-colors duration-150 ease-standard;
+  }
+
+  .ui-btn:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  .ui-btn-primary {
+    @apply bg-brand-700 text-white;
+  }
+
+  .ui-btn-primary:hover {
+    @apply bg-brand-800;
+  }
+
+  .ui-btn-quiet {
+    @apply border border-ink-200 bg-surface text-ink-700;
+  }
+
+  .ui-btn-quiet:hover {
+    @apply bg-ink-50 text-ink-900;
+  }
+
+  /* 24x24 minimum (WCAG 2.5.8) for the one control that is only a glyph. */
+  .ui-icon-btn {
+    @apply inline-flex size-8 shrink-0 items-center justify-center rounded-field
+      text-ink-500 transition-colors duration-150 ease-standard;
+  }
+
+  .ui-icon-btn:hover {
+    @apply bg-ink-100 text-ink-900;
+  }
+
+  .ui-panel {
+    @apply min-w-0 rounded-panel border border-ink-200 bg-surface;
+  }
+
+  .ui-panel-heading {
+    @apply border-b border-ink-200 px-4 py-2.5 text-sm font-semibold text-ink-800;
+  }
+
+  /* `.link` in the brand ink: underlined at rest for the same WCAG 1.4.1 reason. */
+  .ui-link {
+    @apply rounded-field font-medium text-brand-700 underline decoration-ink-300
+      underline-offset-2 transition-colors duration-150 ease-standard;
+  }
+
+  .ui-link:hover {
+    @apply text-brand-800 decoration-brand-600;
+  }
+
+  /* ---- Status badge: hue + glyph + word, all three, always. */
+  .status-badge {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-field border
+      px-1.5 py-0.5 text-xs font-medium;
+  }
+
+  .status-confirmed {
+    @apply border-state-confirmed-line bg-state-confirmed-soft text-state-confirmed;
+  }
+
+  .status-manual {
+    @apply border-state-manual-line bg-state-manual-soft text-state-manual;
+  }
+
+  .status-pending {
+    @apply border-state-pending-line bg-state-pending-soft text-state-pending;
+  }
+
+  .status-unknown {
+    @apply border-state-unknown-line bg-state-unknown-soft text-state-unknown;
+  }
+
+  /* Dashed as well as tinted: "stale" is a statement about age, and the broken
+   * edge separates it from `unknown` for a reader who does not separate hues. */
+  .status-stale {
+    @apply border-dashed border-state-stale-line bg-state-stale-soft text-state-stale;
+  }
+
+  .status-blocked {
+    @apply border-state-blocked-line bg-state-blocked-soft text-state-blocked;
+  }
+
+  .status-danger {
+    @apply border-state-danger-line bg-state-danger-soft text-state-danger;
+  }
+
+  /* ---- Table. Dense by default for staff (S5.1 principle 8). The header sticks
+   * to the top of its own scroll container, which is `.table-wrap`. */
+  .ui-table {
+    @apply w-full border-collapse text-dense;
+  }
+
+  .ui-table caption {
+    @apply px-3 pb-2 text-left text-sm font-semibold text-ink-800;
+  }
+
+  /* Cells do not wrap: a dense row reads across, and on a phone the table scrolls
+   * inside its own container rather than folding a name over four lines. A cell
+   * that must shorten a long value truncates it and carries the full text in its
+   * title and accessible name (S5.5). */
+  .ui-table th {
+    @apply sticky top-0 z-10 whitespace-nowrap border-b border-ink-200
+      bg-surface-sunken px-3 py-2 text-xs font-semibold text-ink-600;
+  }
+
+  .ui-table td {
+    @apply whitespace-nowrap border-b border-ink-100 px-3 py-1.5 align-middle
+      text-ink-800;
+  }
+
+  .ui-table-comfortable td {
+    @apply py-3;
+  }
+
+  .ui-table tbody tr:hover td {
+    @apply bg-ink-50;
+  }
+
+  .ui-table .numeric {
+    @apply text-right tabular-nums;
+  }
+
+  .ui-sort {
+    @apply inline-flex items-center gap-1 rounded-field hover:text-ink-900;
+  }
+
+  /* ---- Filter bar: a plain GET form. A caller wanting a swap wraps it in its
+   * own boosted element, as `partials/pure/pagination.html` explains. */
+  .filter-bar {
+    @apply flex flex-wrap items-end gap-3 rounded-panel border border-ink-200
+      bg-surface px-3 py-3;
+  }
+
+  .filter-bar > .ui-field {
+    @apply min-w-40 flex-1 sm:flex-none;
+  }
+
+  .filter-actions {
+    @apply flex items-center gap-2;
+  }
+
+  /* ---- Field from plain data. Same contract as `partials/pure/field.html`. */
+  .ui-field {
+    @apply flex flex-col gap-1;
+  }
+
+  .ui-field-label {
+    @apply text-dense font-medium text-ink-700;
+  }
+
+  .ui-field-input {
+    @apply min-h-9 w-full rounded-field border border-ink-300 bg-surface px-2.5
+      text-sm text-ink-900 transition-colors duration-150 ease-standard;
+  }
+
+  .ui-field-input:hover {
+    @apply border-ink-400;
+  }
+
+  textarea.ui-field-input {
+    @apply py-2;
+  }
+
+  .ui-field-input[aria-invalid="true"] {
+    @apply border-state-danger;
+  }
+
+  /* ---- Overlays: the single elevation. Native <dialog> for both, so the top
+   * layer, the inert page behind it and Escape are the browser's, not ours. */
+  .ui-dialog {
+    @apply m-auto w-[min(32rem,calc(100vw-2rem))] rounded-panel border border-ink-200
+      bg-surface p-0 text-ink-800 shadow-overlay;
+  }
+
+  .ui-drawer {
+    @apply my-0 ml-auto mr-0 h-dvh max-h-dvh w-[min(28rem,100vw)] border-l
+      border-ink-200 bg-surface p-0 text-ink-800 shadow-overlay;
+  }
+
+  .ui-dialog::backdrop,
+  .ui-drawer::backdrop {
+    background-color: oklch(0.19 0.017 250 / 0.32);
+  }
+
+  .overlay-head {
+    @apply flex items-center justify-between gap-3 border-b border-ink-200 px-4 py-2;
+  }
+
+  .overlay-title {
+    @apply text-base font-semibold text-ink-900;
+  }
+
+  .overlay-body {
+    @apply px-4 py-4 text-sm;
+  }
+
+  .overlay-actions {
+    @apply flex flex-wrap justify-end gap-2 border-t border-ink-200 px-4 py-3;
+  }
+
+  /* ---- Upload list. */
+  .upload-list {
+    @apply flex flex-col divide-y divide-ink-100 rounded-panel border border-ink-200
+      bg-surface;
+  }
+
+  .upload-item {
+    @apply flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm;
+  }
+
+  .upload-name {
+    @apply min-w-0 flex-1 truncate font-medium text-ink-800;
+  }
+
+  .upload-meta {
+    @apply text-xs text-ink-600 tabular-nums;
+  }
+
+  /* ---- Approval effects: what WILL happen, stated before anyone approves it. */
+  .effects-list {
+    @apply flex flex-col divide-y divide-ink-100;
+  }
+
+  .effect {
+    @apply flex gap-3 px-4 py-3 text-sm;
+  }
+
+  .effect-label {
+    @apply font-medium text-ink-900;
+  }
+
+  .effect-detail {
+    @apply text-ink-600;
+  }
+
+  /* ---- Timeline. The rail is a neutral hairline; state lives in the badge. */
+  .timeline {
+    @apply flex flex-col;
+  }
+
+  .timeline-item {
+    @apply relative flex gap-3 pb-4 pl-5 text-sm before:absolute before:bottom-0
+      before:left-1.5 before:top-2 before:w-px before:bg-ink-200 last:before:hidden;
+  }
+
+  .timeline-dot {
+    @apply absolute left-0 top-1.5 size-3 rounded-full border-2 border-ink-300
+      bg-surface;
+  }
+
+  /* ---- Empty / error / stale. Each owes the reader a next step. */
+  .ui-state {
+    @apply flex flex-col items-start gap-2 rounded-panel border px-4 py-4 text-sm;
+  }
+
+  .ui-state-empty {
+    @apply border-dashed border-ink-300 bg-surface text-ink-700;
+  }
+
+  .ui-state-error {
+    @apply border-state-danger-line bg-state-danger-soft text-state-danger;
+  }
+
+  .ui-state-stale {
+    @apply border-dashed border-state-stale-line bg-state-stale-soft
+      text-state-stale;
+  }
+
+  .ui-state-title {
+    @apply flex items-center gap-2 font-semibold;
+  }
+
+  /* ---- Toasts. The region is permanent (a live region announces changes, not
+   * arrivals); a toast stays until dismissed — no timer decides how long a
+   * person gets to read (WCAG 2.2.1). */
+  .toast-region {
+    @apply pointer-events-none fixed inset-x-4 bottom-4 z-50 flex flex-col items-end
+      gap-2 sm:left-auto;
+  }
+
+  .toast {
+    @apply pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-panel
+      border border-ink-200 bg-surface px-4 py-3 text-sm text-ink-800 shadow-overlay;
+  }
+
+  .toast-success > .icon {
+    @apply text-state-confirmed;
+  }
+
+  .toast-info > .icon {
+    @apply text-brand-700;
+  }
+
+  .toast-error > .icon {
+    @apply text-state-danger;
   }
 }
 

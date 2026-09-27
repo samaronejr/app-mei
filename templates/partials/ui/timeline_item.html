@@ -1,0 +1,24 @@
+{% load i18n ptbr %}{% comment %}
+One entry in a client or cycle timeline. The caller owns the list element, an
+ordered list carrying the timeline class, because order is the meaning.
+
+Context:
+  when        -- aware datetime; rendered in BRT by `data_hora`, with a
+                 machine-readable `datetime` attribute.
+  summary     -- what happened, in pt-BR.
+  actor       -- optional: who or what did it ("Ana", "Lembrete automático").
+  state       -- optional evidence state, drawn by `status_badge.html`.
+  state_label -- optional pt-BR word for that state.
+  href        -- optional link to the evidence behind the entry.
+  href_label  -- its pt-BR label; required when `href` is given.
+
+The rail and the dot are neutral on purpose: the state of an entry is carried by
+its badge, which has a glyph and a word, never by the colour of a dot.
+{% endcomment %}<li class="timeline-item">
+  <span class="timeline-dot" aria-hidden="true"></span>
+  <div class="flex min-w-0 flex-col gap-1">
+    <p class="flex flex-wrap items-center gap-x-2 gap-y-1"><span class="font-medium text-ink-900">{{ summary }}</span>{% if state %}{% include "partials/ui/status_badge.html" with state=state label=state_label only %}{% endif %}</p>
+    <p class="text-xs text-ink-600"><time datetime="{{ when|date:'c' }}">{{ when|data_hora }}</time>{% if actor %} · {{ actor }}{% endif %}</p>
+    {% if href %}<a class="ui-link self-start text-xs" href="{{ href }}">{{ href_label }}</a>{% endif %}
+  </div>
+</li>

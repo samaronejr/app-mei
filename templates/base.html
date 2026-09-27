@@ -1,4 +1,4 @@
-{% load i18n navigation static %}<!DOCTYPE html>
+{% load i18n navigation static %}{% product_shell request as r1_shell %}<!DOCTYPE html>
 <html lang="pt-br">
 <head>
   <meta charset="utf-8">
@@ -19,20 +19,30 @@
     and so the policy can name no external script origin at all.
   {% endcomment %}
   <script src="{% static 'js/htmx.min.js' %}" defer></script>
-  <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>
+  {% if not r1_shell %}<script src="{% static 'js/alpine-csp.min.js' %}" defer></script>{% endif %}
   {% comment %}
-    First-party, and last of the three: deferred scripts run in document order, so
-    this one is guaranteed both bundles above it have already been evaluated.
+    First-party, and -- for a flag-off firm -- last of the three: deferred scripts
+    run in document order, so this one is guaranteed both bundles above it have
+    already been evaluated.
 
     Loaded here and nowhere else. The MEI client portal renders from its own
     standalone layout under a database role holding SELECT on seven tables, and it
     ships no JavaScript at all — a shared script is a shared attack surface across
     the one boundary in this product that RLS is enforcing.
+
+    Under the product shell (`cycles_r1`) Alpine loads AFTER this file instead.
+    `app.js` registers the `Alpine.data` components on `alpine:init`, and the CSP
+    build starts itself in the microtask after its own script runs — so a
+    component registered by a later script is registered too late, and every
+    `x-data` naming it fails. The MEI-era order is kept for flag-off firms, whose
+    pages carry no Alpine component, so their document is unchanged byte for
+    byte; the branch goes when the flag is retired.
   {% endcomment %}
-  <script src="{% static 'js/app.js' %}" defer></script>
+  <script src="{% static 'js/app.js' %}" defer></script>{% if r1_shell %}
+  <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>{% endif %}
   {% block head %}{% endblock %}
 </head>
-<body class="min-h-screen">
+<body class="min-h-screen{% if r1_shell %} shell-r1{% endif %}">
   {% comment %}
     The first focusable element on every page. It jumps past the header and the nav to
     the start of the content, which is the difference between one keystroke and thirty
@@ -40,7 +50,7 @@
   {% endcomment %}
   <a class="skip-link" href="#conteudo">{% translate "Pular para o conteúdo" %}</a>
 
-  <header class="border-b border-ink-200 bg-surface">
+  {% if r1_shell %}{% include "partials/ui/shell_header.html" %}{% else %}<header class="border-b border-ink-200 bg-surface">
     <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-6 py-3">
       <span class="text-sm font-semibold tracking-tight text-ink-900">
         {% if request.tenant %}{{ request.tenant.name }}{% else %}{% translate "app-mei" %}{% endif %}
@@ -89,7 +99,7 @@
         </div>
       {% endif %}
     </div>
-  </header>
+  </header>{% endif %}
 
   {% comment %}
     The one place static/js/app.js writes swap announcements. Deliberately outside

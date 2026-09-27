@@ -2,7 +2,7 @@
  * Firm-side interface behaviour. Loaded by templates/base.html and by nothing else:
  * the RLS-isolated client portal ships no JavaScript at all.
  *
- * Three jobs. The first two exist because an HTMX swap is not a navigation. The
+ * Four jobs. The first two exist because an HTMX swap is not a navigation. The
  * browser moves focus and announces a page on navigation; it does neither when a
  * fragment is replaced in place, so a keyboard user is left with focus on an element
  * that no longer exists and a screen reader user is told nothing happened.
@@ -11,6 +11,11 @@
  * gap between the click and the new document is exactly where a second click lands.
  * It is presentation only — server-side Post/Redirect/Get is what makes the second
  * request harmless, and it holds with this file deleted.
+ *
+ * The fourth is the product shell's Alpine components (`dialog`, `uploadList`,
+ * `unsavedGuard`, `dismissable`), registered on `alpine:init`. That event fires once,
+ * when Alpine starts, so under the product shell `templates/base.html` loads Alpine
+ * after this file; see the note there.
  *
  * Everything here is written against a Content-Security-Policy of `script-src 'self'`
  * with no 'unsafe-eval' (apps/security/csp.py), and against `allowEval: false` in the
@@ -112,17 +117,53 @@
    * focusable to assistive technology for the whole life of the page, when it is only
    * meant to receive focus for the instant after a swap. It is removed again on blur,
    * so the attribute exists exactly as long as the focus does.
+   *
+   * An element that is focusable already -- a button, a link, anything carrying its
+   * own tabindex -- is focused as it is. Borrowing its tabindex would take it out of
+   * the tab order, and removing it on blur would erase a value the template set.
    */
   function focusSwapped(element) {
-    element.setAttribute("tabindex", "-1");
-    element.addEventListener(
-      "blur",
-      function () {
-        element.removeAttribute("tabindex");
-      },
-      { once: true }
-    );
+    if (element.tabIndex < 0 && !element.hasAttribute("tabindex")) {
+      element.setAttribute("tabindex", "-1");
+      element.addEventListener(
+        "blur",
+        function () {
+          element.removeAttribute("tabindex");
+        },
+        { once: true }
+      );
+    }
     element.focus({ preventScroll: true });
+  }
+
+  /*
+   * A swap may name where focus belongs next: the first field of a form that came
+   * back with errors, the row that was just updated, the control that continues the
+   * task. The server marks it with data-focus-after-swap, because only the server
+   * knows which one it is. Unmarked, focus lands on the swapped region itself, as
+   * it always has.
+   *
+   * The marker is consumed when it is honoured. Left in place it would pull focus
+   * back to the same element on the next, unrelated swap anywhere on the page.
+   *
+   * Looked up in the document as a last resort because an outerHTML swap replaces
+   * the target: the element the event names is detached, and the marker is in its
+   * replacement.
+   */
+  var FOCUS_AFTER_SWAP = "[data-focus-after-swap]";
+
+  function focusDestination(target) {
+    if (target.matches(FOCUS_AFTER_SWAP)) {
+      return target;
+    }
+    var inside = target.querySelector(FOCUS_AFTER_SWAP);
+    if (inside) {
+      return inside;
+    }
+    if (!target.isConnected) {
+      return document.querySelector(FOCUS_AFTER_SWAP);
+    }
+    return null;
   }
 
   function onAfterSwap(event) {
@@ -131,7 +172,13 @@
       return;
     }
     hideFallback();
-    focusSwapped(target);
+    var marked = focusDestination(target);
+    if (marked) {
+      marked.removeAttribute("data-focus-after-swap");
+      focusSwapped(marked);
+    } else {
+      focusSwapped(target);
+    }
     announce(nameOf(target));
   }
 
@@ -205,4 +252,238 @@
   }
 
   window.addEventListener("pageshow", onPageShow);
+
+  /*
+   * Alpine components. The CSP build of Alpine evaluates only references in x-*
+   * attributes, so all behaviour lives here, in plain methods, and templates name
+   * a component and its methods and never write an expression.
+   *
+   * Values a component needs from the server arrive through data-* attributes read
+   * with dataset, never through the expression itself (docs/frontend.md).
+   */
+
+  /*
+   * controlHidden is false once a component is running. A control that needs script
+   * to act ships with the hidden attribute and binds it to this, so it appears only
+   * when it can work: without script there is no dead button to press.
+   */
+  function dialog() {
+    return {
+      controlHidden: false,
+      opener: null,
+
+      /*
+       * A dialog rendered open by the server -- a drawer reached by its own URL --
+       * arrives as a plain open dialog, which is what a script-less reader gets.
+       * Here it is closed and reopened modal, so it gains the inert background and
+       * Escape like one opened by a click.
+       */
+      init: function () {
+        var element = this.$refs.dialog;
+        if (element.open) {
+          element.close();
+          element.showModal();
+        }
+      },
+
+      show: function () {
+        this.opener = document.activeElement;
+        this.$refs.dialog.showModal();
+      },
+
+      close: function () {
+        this.$refs.dialog.close();
+      },
+
+      /*
+       * Bound to the dialog's own close event, so it runs however the dialog was
+       * closed -- the close button, Escape, or a form inside it. Focus goes back
+       * to the control that opened it, if that control still exists.
+       */
+      restoreFocus: function () {
+        var opener = this.opener;
+        this.opener = null;
+        if (opener && opener.isConnected && typeof opener.focus === "function") {
+          opener.focus();
+        }
+      },
+    };
+  }
+
+  function dismissable() {
+    return {
+      controlHidden: false,
+
+      dismiss: function () {
+        this.$root.remove();
+      },
+    };
+  }
+
+  /*
+   * Warn before leaving a form with edits nobody saved. Attach with
+   * x-data="unsavedGuard" on the form. Any input or change marks it dirty; its own
+   * submit marks it clean, so saving never triggers the warning.
+   *
+   * beforeunload is the only warning a browser permits here, and it shows the
+   * browser's own wording: a page may ask, it may not choose the sentence.
+   */
+  function unsavedGuard() {
+    return {
+      dirty: false,
+      handler: null,
+
+      init: function () {
+        var state = this;
+        this.handler = function (event) {
+          if (state.dirty) {
+            event.preventDefault();
+            event.returnValue = "";
+          }
+        };
+        window.addEventListener("beforeunload", this.handler);
+        this.$el.addEventListener("input", function () {
+          state.dirty = true;
+        });
+        this.$el.addEventListener("change", function () {
+          state.dirty = true;
+        });
+        this.$el.addEventListener("submit", function () {
+          state.dirty = false;
+        });
+      },
+
+      destroy: function () {
+        window.removeEventListener("beforeunload", this.handler);
+      },
+    };
+  }
+
+  var BYTES_PER_KB = 1024;
+  var BYTES_PER_MB = 1024 * 1024;
+  var WRONG_TYPE = "Tipo de arquivo não aceito.";
+
+  function sizeLabel(bytes) {
+    if (bytes >= BYTES_PER_MB) {
+      return (
+        (bytes / BYTES_PER_MB).toLocaleString("pt-BR", {
+          maximumFractionDigits: 1,
+        }) + " MB"
+      );
+    }
+    return Math.max(1, Math.round(bytes / BYTES_PER_KB)) + " KB";
+  }
+
+  /*
+   * The accept list as the browser reads it: ".pdf" is an extension, "image/*" a
+   * family of types, anything else one exact type. Empty accepts everything.
+   */
+  function accepts(acceptList, file) {
+    var tokens = (acceptList || "")
+      .split(",")
+      .map(function (token) {
+        return token.trim().toLowerCase();
+      })
+      .filter(Boolean);
+    if (tokens.length === 0) {
+      return true;
+    }
+    var name = file.name.toLowerCase();
+    var type = (file.type || "").toLowerCase();
+    return tokens.some(function (token) {
+      if (token.charAt(0) === ".") {
+        return name.slice(-token.length) === token;
+      }
+      if (token.slice(-2) === "/*") {
+        return type.indexOf(token.slice(0, -1)) === 0;
+      }
+      return type === token;
+    });
+  }
+
+  /*
+   * Show every chosen file before it is sent, and drop the ones this page already
+   * knows the server will refuse. Refused files stay in the list with the reason,
+   * but are removed from the input, so they are never uploaded. The server checks
+   * again and is the authority; this is the courtesy of saying so early.
+   */
+  function uploadList() {
+    return {
+      items: [],
+      counter: 0,
+
+      get isEmpty() {
+        return this.items.length === 0;
+      },
+
+      get summary() {
+        var ready = this.items.filter(function (item) {
+          return item.ready;
+        }).length;
+        if (ready === 0) {
+          return "";
+        }
+        return ready === 1
+          ? "1 arquivo pronto para enviar."
+          : ready + " arquivos prontos para enviar.";
+      },
+
+      refresh: function () {
+        var data = this.$root.dataset;
+        var ceiling = parseInt(data.maxBytes, 10);
+        var tooLarge = "Arquivo acima do limite" +
+          (data.maxLabel ? " de " + data.maxLabel : "") + ".";
+        var files = Array.prototype.slice.call(this.$refs.input.files);
+        var counter = this.counter;
+        var items = files.map(function (file) {
+          var error = "";
+          if (!accepts(data.accept, file)) {
+            error = WRONG_TYPE;
+          } else if (ceiling > 0 && file.size > ceiling) {
+            error = tooLarge;
+          }
+          counter += 1;
+          return {
+            key: String(counter),
+            file: file,
+            name: file.name,
+            size: sizeLabel(file.size),
+            error: error,
+            ready: error === "",
+            refused: error !== "",
+            state: error === "" ? "ready" : "refused",
+          };
+        });
+        this.counter = counter;
+        this.items = items;
+        this.sync();
+      },
+
+      remove: function (event) {
+        var key = event.currentTarget.dataset.key;
+        this.items = this.items.filter(function (item) {
+          return item.key !== key;
+        });
+        this.sync();
+      },
+
+      /* The input carries exactly the files still listed as ready. */
+      sync: function () {
+        var transfer = new DataTransfer();
+        this.items.forEach(function (item) {
+          if (item.ready) {
+            transfer.items.add(item.file);
+          }
+        });
+        this.$refs.input.files = transfer.files;
+      },
+    };
+  }
+
+  document.addEventListener("alpine:init", function () {
+    window.Alpine.data("dialog", dialog);
+    window.Alpine.data("dismissable", dismissable);
+    window.Alpine.data("unsavedGuard", unsavedGuard);
+    window.Alpine.data("uploadList", uploadList);
+  });
 })();

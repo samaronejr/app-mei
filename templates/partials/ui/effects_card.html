@@ -1,0 +1,35 @@
+{% load i18n %}{% comment %}
+The exact effects of an approval, stated before anyone approves them.
+
+Context:
+  card_id   -- required, unique on the page; the heading id derives from it.
+  title     -- defaults to "O que acontece ao aprovar".
+  effects   -- list of {label, detail}: each thing that WILL happen, in the words
+               the approver needs ("Enviar e-mail para ana@cliente.com.br",
+               "3 anexos, 1,2 MB"). Every effect is listed; none is summarised
+               away (S5.1 principle 9).
+  evidence  -- optional list of {label, url}: what the approver should look at.
+  note      -- optional; defaults to the revalidation sentence below.
+
+Approval is exact and revalidated at execution (plan IS-4): the note says so on
+the card itself, so nobody reads an approval as a promise that stale data will
+be sent anyway.
+{% endcomment %}<section class="ui-panel" aria-labelledby="{{ card_id }}-title" data-effects-card>
+  <h2 id="{{ card_id }}-title" class="ui-panel-heading">{% if title %}{{ title }}{% else %}{% translate "O que acontece ao aprovar" %}{% endif %}</h2>
+  <ul class="effects-list">
+    {% for effect in effects %}<li class="effect">
+      <span class="pt-0.5 text-brand-700">{% include "partials/pure/icons/chevron-right.html" %}</span>
+      <div class="flex min-w-0 flex-col gap-0.5">
+        <p class="effect-label">{{ effect.label }}</p>
+        {% if effect.detail %}<p class="effect-detail">{{ effect.detail }}</p>{% endif %}
+      </div>
+    </li>{% endfor %}
+  </ul>
+  {% if evidence %}<div class="border-t border-ink-200 px-4 py-3">
+    <p class="text-xs font-semibold text-ink-600">{% translate "Evidências" %}</p>
+    <ul class="mt-1 flex flex-col gap-1 text-sm">
+      {% for item in evidence %}<li><a class="ui-link" href="{{ item.url }}">{{ item.label }}</a></li>{% endfor %}
+    </ul>
+  </div>{% endif %}
+  <p class="border-t border-ink-200 px-4 py-3 text-xs text-ink-600">{% if note %}{{ note }}{% else %}{% translate "Tudo é conferido de novo no momento da execução. Se algo tiver mudado, a aprovação perde a validade e nada é enviado." %}{% endif %}</p>
+</section>

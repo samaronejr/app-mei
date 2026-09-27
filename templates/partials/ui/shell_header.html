@@ -1,0 +1,47 @@
+{% load i18n %}{% comment %}
+The product shell's header, drawn by `templates/base.html` in place of the
+MEI-era header when the firm carries the `cycles_r1` flag.
+
+Context (from base.html, not from a view):
+  r1_shell -- an `apps.core.navigation.ProductShell`: the wordmark, the firm's
+              name and the destinations this account may reach, already
+              capability-filtered by `visible_nav_items`.
+  request  -- for the active-item marker and the signed-in address.
+
+The wordmark is `settings.PRODUCT_NAME`, never a literal: the customer-facing
+name stays "app-mei" until the name is cleared (plan OD-01), and flipping it is
+a setting, not a template edit.
+
+The navigation holds the MEI-era bar's contract (tests/ui/test_shell.py): one
+native disclosure that the browser opens and closes, one nav landmark inside
+it, and the current page marked -- so it still works when no bundle loads. At
+`md` the disclosure is held open by the stylesheet and reads as a row.
+
+The toast region lives here, permanent and empty at load, because a live region
+announces changes made after it exists; see `partials/ui/toast.html`.
+{% endcomment %}<header class="shell-header" data-shell="r1">
+    <div class="shell-bar">
+      <p class="shell-brand">
+        <a class="shell-wordmark" href="{% url 'dashboard' %}">{{ r1_shell.product_name }}</a>
+        <span class="shell-tenant" title="{{ r1_shell.tenant_name }}">{{ r1_shell.tenant_name }}</span>
+      </p>
+      {% if r1_shell.items %}<details class="shell-disclosure">
+        <summary class="shell-summary">
+          {% include "partials/pure/icons/menu.html" %}
+          <span>{% translate "Menu" %}</span>
+        </summary>
+        <nav aria-label="{% translate 'Navegação principal' %}" class="shell-nav">
+          {% for item in r1_shell.items %}<a class="shell-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
+          {% endfor %}
+        </nav>
+      </details>{% endif %}
+      <div class="shell-account">
+        <span class="hidden truncate sm:inline">{{ request.user.email }}</span>
+        <form method="post" action="{% url 'account_logout' %}">
+          {% csrf_token %}
+          <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Sair" %}</button>
+        </form>
+      </div>
+    </div>
+  </header>
+  <div id="toasts" class="toast-region" role="status" aria-live="polite"></div>

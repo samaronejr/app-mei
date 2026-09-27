@@ -434,6 +434,11 @@ PORTAL_UPLOAD_MAX_BYTES = PORTAL_DOCUMENT_MAX_BYTES
 # apps.core.flags.FEATURES; an unknown slug disables nothing, which fails safe.
 AXORIM_DISABLED_FEATURES = env.list("AXORIM_DISABLED_FEATURES", default=[])
 
+# The name the product shell shows a customer. "app-mei" until the new name is
+# cleared for public use; the switch is this setting, never a template edit, so no
+# customer-facing screen can adopt a name ahead of that decision.
+PRODUCT_NAME = env.str("PRODUCT_NAME", default="app-mei")
+
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "purge-access-logs": {
         "task": "apps.audit.tasks.purge_access_logs",

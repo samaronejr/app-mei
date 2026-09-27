@@ -33,6 +33,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  # Browser + accessibility harness (tests/browser, run with `-m browser`). Pinned
+  # exactly: the axe rule set ships inside this package, so an unpinned upgrade can
+  # redden or silence an accessibility check without a line of ours changing.
+  "axe-playwright-python==0.1.8",
   "django-stubs",
   "hypothesis",
   "model-bakery",
@@ -41,6 +45,7 @@ dev = [
   "pytest",
   "pytest-cov",
   "pytest-django",
+  "pytest-playwright==0.9.0",
   "ruff",
 ]
 
@@ -126,6 +131,13 @@ ignore_missing_imports = true
 module = ["django_ratelimit", "django_ratelimit.*"]
 ignore_missing_imports = true
 
+# axe-playwright-python ships no py.typed marker. It is used in one place, the
+# `axe_check` helper in tests/browser/harness.py, which annotates what it reads from
+# the result dict -- so the untyped surface ends at that function.
+[[tool.mypy.overrides]]
+module = ["axe_playwright_python", "axe_playwright_python.*"]
+ignore_missing_imports = true
+
 # botocore ships no py.typed marker. Its only use in this codebase is Config, built once
 # in prod.py to hand django-storages a client configuration -- so the untyped surface is
 # a single constructor call, and every value passed to it is a literal.
@@ -135,7 +147,13 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = ["-ra", "--strict-config", "--strict-markers"]
+# Browser tests need a Chromium binary (`uv run playwright install chromium`) and are
+# deselected here, so a plain `uv run pytest` never requires one; CI runs them in the
+# separate `browser` job with `uv run pytest -m browser`, whose `-m` overrides this.
+addopts = ["-ra", "--strict-config", "--strict-markers", "-m", "not browser"]
+markers = [
+  "browser: drives a real Chromium against a live server (tests/browser); deselected by default",
+]
 filterwarnings = ["error"]
 pythonpath = ["."]
 testpaths = ["tests"]

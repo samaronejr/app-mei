@@ -1,0 +1,53 @@
+{% load i18n %}{% comment %}
+A multi-file picker that shows what is about to be sent, and what already arrived.
+
+Context:
+  input_name  -- the submitted field name.
+  input_id    -- the input's id; help and status ids derive from it.
+  label       -- visible pt-BR label.
+  accept      -- the browser `accept` list (".pdf,.xml,image/*"); empty accepts all.
+  max_bytes   -- per-file ceiling in bytes; empty means no client-side ceiling.
+  max_label   -- that ceiling in words ("10 MB"), used in the refusal message.
+  help_text   -- guidance under the picker: what to send, and the limits.
+  received    -- optional list of {name, size_label, state, state_label} for files
+                 the server already holds, each drawn with `status_badge.html`.
+
+The `uploadList` component reads the limits from data attributes rather than an
+expression: `x-*` values are evaluated after the browser decodes entities, so the
+project interpolates nothing into them (tests/ui/test_csp.py). It lists every
+chosen file with its size, refuses the ones over the ceiling or of a type not
+accepted -- dropping them from the input so they are never sent -- and lets the
+reader remove any file before submitting. The status line is a polite live
+region, so each change is announced once.
+
+The browser check is a courtesy. The server re-checks size and type and remains
+the authority; a file this list accepted can still be refused there.
+
+Without script the input is an ordinary multi-file input and the form still
+submits; only the preview list is missing.
+{% endcomment %}<div class="ui-field" x-data="uploadList" data-max-bytes="{{ max_bytes }}" data-max-label="{{ max_label }}" data-accept="{{ accept }}">
+  <label class="ui-field-label" for="{{ input_id }}">{{ label }}</label>
+  <input type="file" multiple name="{{ input_name }}" id="{{ input_id }}"{% if accept %} accept="{{ accept }}"{% endif %} class="ui-field-input py-1.5" x-ref="input" x-on:change="refresh" aria-describedby="{% if help_text %}{{ input_id }}_help {% endif %}{{ input_id }}_status">
+  {% if help_text %}<p id="{{ input_id }}_help" class="text-xs text-ink-600">{{ help_text }}</p>{% endif %}
+  <p id="{{ input_id }}_status" class="text-xs text-ink-600" aria-live="polite" x-text="summary"></p>
+  <ul class="upload-list" hidden x-bind:hidden="isEmpty" aria-label="{% translate 'Arquivos escolhidos' %}">
+    <template x-for="item in items" x-bind:key="item.key">
+      <li class="upload-item" x-bind:data-upload-state="item.state">
+        {% include "partials/pure/icons/file-text.html" %}
+        <span class="upload-name" x-text="item.name" x-bind:title="item.name"></span>
+        <span class="upload-meta" x-text="item.size"></span>
+        <span class="status-badge status-pending" x-show="item.ready">{% include "partials/pure/icons/calendar-clock.html" %}<span>{% translate "Pronto para enviar" %}</span></span>
+        <span class="status-badge status-danger" x-show="item.refused">{% include "partials/pure/icons/alert-triangle.html" %}<span x-text="item.error"></span></span>
+        <button type="button" class="ui-btn ui-btn-quiet" x-bind:data-key="item.key" x-on:click="remove">{% translate "Remover" %}<span class="visually-hidden" x-text="item.name"></span></button>
+      </li>
+    </template>
+  </ul>
+  {% if received %}<ul class="upload-list" aria-label="{% translate 'Arquivos recebidos' %}">
+    {% for file in received %}<li class="upload-item">
+      {% include "partials/pure/icons/file-text.html" %}
+      <span class="upload-name" title="{{ file.name }}">{{ file.name }}</span>
+      <span class="upload-meta">{{ file.size_label }}</span>
+      {% include "partials/ui/status_badge.html" with state=file.state label=file.state_label only %}
+    </li>{% endfor %}
+  </ul>{% endif %}
+</div>

@@ -61,9 +61,68 @@ name them; a hard-coded hex in a template resolves to nothing. Status colours ar
 named after the domain (`ok`, `warn`, `over`, `late`) rather than after hues, so
 retuning the palette cannot make a badge lie.
 
+## The R1 product system
+
+The shell and screens behind the `cycles_r1` flag use a second, strictly additive
+layer of the same design system. Nothing declared for the MEI-era screens changes,
+and Tailwind v4 emits a theme variable only where something uses it, so a flag-off
+firm is served the page it was served before.
+
+### Tokens (`assets/css/app.css`, second half of `@theme`)
+
+| Token | Values | Rule |
+| --- | --- | --- |
+| Neutral | the existing `ink` ramp | One grey scale, not two. The shell raises `ink-500` to AA (5.5:1 on white) for its own pages through `.shell-r1`. |
+| Brand ink | `brand-50..800`, ink `brand-700` = `oklch(0.42 0.08 200)` | 8.04:1 on white. Wordmark, primary action, active nav wash. |
+| Evidence states | `state-{confirmed,manual,pending,unknown,stale,blocked,danger}` plus `-soft` and `-line` | Every ink is at least 5.9:1 on its own soft fill. Green is `confirmed` only. |
+| Type | Tailwind `xs/sm/base/xl/2xl` plus `text-dense` (13px) | 12/13/14/16/20/24. Tabular numerals for money and dates. |
+| Spacing | `--spacing: 0.25rem` | The 4px grid, stated. |
+| Radius | `rounded-field` 4px, `rounded-panel` 6px | Controls, then surfaces. |
+| Elevation | `shadow-overlay` | The only shadow: drawer, dialog, toast. Flat surfaces take a border. |
+| Motion | `ease-standard`, at most 150ms | The reduced-motion block removes it. |
+
+State is never colour alone: the status badge draws a hue, a glyph and a pt-BR word,
+and the only coloured edge in the family is the keyboard focus ring.
+
+### Partials (`templates/partials/ui/`)
+
+`table`, `filter_bar`, `status_badge`, `drawer`, `dialog`, `field`, `upload_list`,
+`effects_card`, `timeline_item`, `state_empty`, `state_error`, `state_stale`, `toast`,
+plus `shell_header` for the flagged shell. Each documents its context in its own
+header comment and renders from that context alone. `tests/ui/test_ui_partials.py`
+pins the markup contracts; `tests/browser/test_components.py` drives the behaviour.
+
+### Alpine components
+
+`dialog` (native `<dialog>`, focus returned to the opener), `uploadList`
+(preview, size and type refusals, removal), `unsavedGuard` (the browser's own
+leave-page prompt) and `dismissable` (toasts) live in `static/js/app.js` and register
+on `alpine:init`. That event fires once, when Alpine starts, so under the product
+shell `base.html` loads Alpine *after* `app.js`; flag-off pages keep the old order and
+carry no component. A control that needs script to act ships `hidden` and is revealed
+by its component, so a page without script offers no dead button.
+
+After any HTMX swap, focus moves to the element the server marked with
+`data-focus-after-swap` (then the marker is removed), or to the swapped region when
+nothing is marked.
+
+### Browser tests
+
+```sh
+uv run playwright install chromium   # once; CI adds --with-deps
+uv run pytest -m browser             # plain `uv run pytest` deselects these
+BROWSER_SCREENSHOT_DIR=/tmp/shots uv run pytest -m browser   # also save screenshots
+```
+
+Every test runs at 1440x900 and 390x844 against a live server that runs as
+`app_runtime`: `tests/browser/conftest.py` switches every off-main-thread
+connection and a test-only middleware asserts `current_user` on every request.
+`axe_check` fails on serious and critical violations; its positive control is a
+planted control with no accessible name.
+
 ## Icons
 
-Sixteen Lucide glyphs are committed as inline-SVG partials under
+Twenty Lucide glyphs are committed as inline-SVG partials under
 `templates/partials/pure/icons/`, one file per glyph. Nothing is installed and nothing
 is fetched: an inline `<svg>` is markup the parser has already consumed, so it needs no
 CSP allowance, no widened `img-src`, and no entry in the vendored-JS manifest — which
@@ -76,9 +135,14 @@ stays JS-only, because `test_vendored_bundles_are_committed` resolves every entr
 | Version | `1.28.0` — git tag, published 2026-07-30. Every glyph comes from this one release. |
 | Licence | ISC, plus MIT for the Feather-derived glyphs — `static/icons/LICENSE-lucide.txt` |
 
-Six of the sixteen (`alert-triangle`, `chevron-right`, `download`, `info`, `upload`,
-`x-circle`) are Feather-derived, so the MIT notice covers them as well as the ISC
-licence. Both are reproduced in full; shipping only the ISC half would under-attribute.
+Six of the first sixteen (`alert-triangle`, `chevron-right`, `download`, `info`,
+`upload`, `x-circle`) are Feather-derived, so the MIT notice covers them as well as the
+ISC licence. Both are reproduced in full; shipping only the ISC half would
+under-attribute.
+
+The four added for the R1 status badge and overlays -- `ban`, `circle-question-mark`,
+`clock-fading` and `x` -- carry their Lucide 1.28.0 names. Upstream metadata credits
+Feather's author on all four, so the MIT notice is taken to cover them too.
 
 Four names here are names Lucide retired before its 1.0 release, so searching upstream
 for them finds nothing. Same glyph, two names:
