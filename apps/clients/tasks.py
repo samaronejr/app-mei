@@ -14,8 +14,11 @@ from celery import shared_task
 from django.db import transaction
 
 from apps.accounts.models import User
-from apps.clients.importing import ImportConflictError, commit_import
-from apps.clients.models import ImportBatch, ImportStatus
+from apps.clients.importing import (
+    ImportConflictError,
+    commit_import,
+    release_failed_commit,
+)
 from apps.core.tasks import TenantTask
 
 logger = logging.getLogger(__name__)
@@ -55,22 +58,16 @@ def commit_import_task(
             extra={"batch_id": batch_id},
         )
         return {"batch_id": batch_id, "status": "conflict"}
-    except Exception:
+    except Exception as error:
         logger.exception("client import commit failed", extra={"batch_id": batch_id})
-        sentry_sdk.capture_exception()
-        with transaction.atomic():
-            batch = (
-                ImportBatch.objects.select_for_update()
-                .filter(pk=batch_id, status=ImportStatus.QUEUED)
-                .first()
-            )
-            if batch is not None:
-                # A retry of a partial batch keeps its committed rows; hand it back
-                # as partial so it can still be rolled back.
-                already = batch.rows.filter(client__isnull=False).exists()
-                batch.status = ImportStatus.PARTIAL if already else ImportStatus.PLANNED
-                batch.version += 1
-                batch.save(update_fields=["status", "version"])
+        sentry_sdk.capture_exception(error)
+        # Audited, version-checked hand-back (partial if earlier rows committed).
+        release_failed_commit(
+            actor,
+            UUID(batch_id),
+            expected_version=expected_version,
+            error=type(error).__name__,
+        )
         return {"batch_id": batch_id, "status": "failed"}
     return {
         "batch_id": batch_id,

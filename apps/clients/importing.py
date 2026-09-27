@@ -916,9 +916,66 @@ def queue_commit(actor: User, batch_id: UUID, *, expected_version: int) -> Impor
             expected_version,
             (ImportStatus.PLANNED, ImportStatus.PARTIAL),
         )
+        previous = str(batch.status)
         batch.status = ImportStatus.QUEUED
         batch.version += 1
         batch.save(update_fields=["status", "version"])
+        record_event(
+            action=AuditAction.IMPORT_QUEUED,
+            tenant_id=tenant_id,
+            actor=actor,
+            obj=ObjectRef(type=IMPORT_PROVENANCE_OBJECT, id=str(batch.pk)),
+            metadata={"from": previous, "version": batch.version},
+        )
+        return batch
+
+
+def release_failed_commit(
+    actor: User,
+    batch_id: UUID,
+    *,
+    expected_version: int,
+    error: str,
+) -> ImportBatch | None:
+    """Hand a queued batch whose commit crashed back to the person importing.
+
+    Called by the commit task after `commit_import` raised something other than a
+    conflict; that commit's savepoint already undid every row it wrote. Under the
+    batch lock, and only while the batch is still the QUEUED version the task was
+    given (a redelivered or late task finds a newer version and changes nothing),
+    the batch returns to `partial` when earlier rows were already committed and to
+    `planned` otherwise, its version advances, and one event records the failure.
+
+    No capability re-check, deliberately: this grants nothing and undoes nothing a
+    person did; it only stops a batch from sitting in a queue that will never drain,
+    and it must succeed even if the requester lost the import capability meanwhile.
+    The event is attributed to the requester whose commit failed.
+    """
+    tenant_id = _tenant()
+    with transaction.atomic():
+        batch = ImportBatch.objects.select_for_update().filter(pk=batch_id).first()
+        if (
+            batch is None
+            or batch.status != ImportStatus.QUEUED
+            or batch.version != expected_version
+        ):
+            return None
+        committed = batch.rows.filter(client__isnull=False).exists()
+        batch.status = ImportStatus.PARTIAL if committed else ImportStatus.PLANNED
+        batch.version += 1
+        batch.save(update_fields=["status", "version"])
+        record_event(
+            action=AuditAction.IMPORT_COMMIT_FAILED,
+            tenant_id=tenant_id,
+            actor=actor,
+            obj=ObjectRef(type=IMPORT_PROVENANCE_OBJECT, id=str(batch.pk)),
+            metadata={
+                "from": str(ImportStatus.QUEUED),
+                "to": str(batch.status),
+                "version": batch.version,
+                "error": error,
+            },
+        )
         return batch
 
 
@@ -1137,6 +1194,7 @@ __all__ = [
     "read_upload",
     "register_rollback_dependent",
     "registered_dependents",
+    "release_failed_commit",
     "resolve_mapping",
     "rollback_import",
 ]

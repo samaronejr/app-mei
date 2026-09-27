@@ -92,6 +92,8 @@ class AuditAction(models.TextChoices):
     ENGAGEMENT_CHANGED = "engagement_changed", _("engagement changed")
     CONTACT_CHANGED = "contact_changed", _("contact changed")
     IMPORT_PLANNED = "import_planned", _("client import planned")
+    IMPORT_QUEUED = "import_queued", _("client import queued")
+    IMPORT_COMMIT_FAILED = "import_commit_failed", _("client import commit failed")
     IMPORT_COMMITTED = "import_committed", _("client import committed")
     IMPORT_ROLLED_BACK = "import_rolled_back", _("client import rolled back")
 

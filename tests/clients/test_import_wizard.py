@@ -310,6 +310,54 @@ def test_a_crashed_commit_task_writes_nothing_and_hands_the_batch_back(
     assert len(_imported(tenant, planned.batch_id)) == 17
 
 
+def test_queueing_a_commit_is_an_audited_state_change(
+    tenant: Tenant,
+    owner: User,
+    planned: importing.ImportPlan,
+) -> None:
+    with tenant_context(tenant.id):
+        before = Event.objects.count()
+        queued = queue_commit(owner, planned.batch_id, expected_version=planned.version)
+        events = list(Event.objects.order_by("created_at")[before:])
+    assert (queued.status, queued.version) == (ImportStatus.QUEUED, 2)
+    assert [(e.action, e.object_id) for e in events] == [
+        ("import_queued", str(planned.batch_id)),
+    ]
+    assert events[0].metadata == {"from": "planned", "version": 2}
+
+
+def test_handing_back_a_crashed_commit_is_an_audited_state_change(
+    tenant: Tenant,
+    owner: User,
+    planned: importing.ImportPlan,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def crash(batch: ImportBatch, row: ImportRow) -> ClientCompany:
+        msg = "worker lost mid-commit"
+        raise RuntimeError(msg)
+
+    with tenant_context(tenant.id):
+        queued = queue_commit(owner, planned.batch_id, expected_version=planned.version)
+    monkeypatch.setattr(importing, "_create_client", crash)
+    args = [str(tenant.id), str(planned.batch_id), str(owner.pk), queued.version]
+
+    assert commit_import_task.apply(args=args).get()["status"] == "failed"
+
+    with tenant_context(tenant.id):
+        failed = list(Event.objects.filter(action="import_commit_failed"))
+        batch = ImportBatch.objects.get(pk=planned.batch_id)
+    assert batch.status == ImportStatus.PLANNED
+    assert [(e.object_id, e.actor_id) for e in failed] == [
+        (str(planned.batch_id), owner.pk),
+    ]
+    assert failed[0].metadata == {
+        "from": "queued",
+        "to": "planned",
+        "version": batch.version,
+        "error": "RuntimeError",
+    }
+
+
 def test_a_cnpj_registered_after_the_plan_is_skipped_at_commit(
     tenant: Tenant,
     owner: User,
