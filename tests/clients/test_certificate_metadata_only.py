@@ -5,11 +5,12 @@ import re
 from django.apps import apps
 from django.db import models
 
-CERTIFICATE_NAME = re.compile(
-    r"(?:cert|certificado|pfx|p12|private_key|chave_privada)",
+CERTIFICATE_NAME = re.compile(r"(?:cert|certificado|certificate)", re.IGNORECASE)
+MATERIAL_NAME = re.compile(
+    r"(?:password|senha|pem|key|chave|pfx|p12|blob|file|arquivo|der|private)",
     re.IGNORECASE,
 )
-SECRET_NAME = re.compile(
+STANDALONE_SECRET_NAME = re.compile(
     r"(?:private_key|chave_privada|pfx|p12|cert_password|senha_certificado)",
     re.IGNORECASE,
 )
@@ -23,9 +24,13 @@ def _forbidden_fields() -> list[str]:
             if not hasattr(field, "name"):
                 continue
             name = field.name
-            if SECRET_NAME.search(name) or (
-                CERTIFICATE_NAME.search(name)
-                and isinstance(field, BINARY_OR_FILE_FIELDS)
+            if (
+                STANDALONE_SECRET_NAME.search(name)
+                or (CERTIFICATE_NAME.search(name) and MATERIAL_NAME.search(name))
+                or (
+                    CERTIFICATE_NAME.search(name)
+                    and isinstance(field, BINARY_OR_FILE_FIELDS)
+                )
             ):
                 offenders.append(f"{model._meta.label}.{name}")
     return offenders

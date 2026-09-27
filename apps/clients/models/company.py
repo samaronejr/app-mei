@@ -134,11 +134,10 @@ class ClientCompany(TenantScopedModel):
         choices=GovBrTrustLevel.choices,
         default=GovBrTrustLevel.UNKNOWN,
     )
-    # Certificate METADATA only; tests/clients/test_certificate_metadata_only.py
-    # enforces that boundary rather than relying on discipline: custody of a client's
-    # A1 certificate would make this product a
-    # holder of signing keys for every firm on it, which the anchor forbids in v1.
-    # There is deliberately no field here that could hold the certificate itself.
+    # Certificate metadata only; see
+    # tests/clients/test_certificate_metadata_only.py. An A1 certificate would
+    # make this product a holder of signing keys for firms. The anchor forbids that;
+    # there is no field here that could hold the certificate itself.
     has_digital_certificate = models.BooleanField(
         _("has digital certificate"),
         default=False,
