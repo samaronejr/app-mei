@@ -91,7 +91,14 @@ S8.1 capabilities and per-user capability grants; `tests/authz/test_r1_capabilit
 `-happy.txt`, `-failure.txt`, `-gates.txt`, and `-adversarial.txt`) and `AXR1-030`
 (certificate metadata-only guard; `tests/clients/test_certificate_metadata_only.py`;
 `.evidence/AXR1-030-happy.txt`, `-failure.txt`, `-gates.txt`, and `-adversarial.txt`) are
-recorded. Todos 5 to 29 and the final verification wave are open.
+recorded. `AXR1-005` (the client spine: `Engagement`, the effective-dated
+`TaxProfile` and `ClientContact` with the provenance-marked backfill;
+`tests/clients/test_tax_profile_transition.py` and
+`tests/clients/test_backfill_v1.py`; `.evidence/AXR1-005-red.txt`, `-happy.txt`,
+`-failure.txt`, `-failure-ext.txt`, `-failure-template1.txt`, `-plan.txt`,
+`-adversarial.txt`, `-gates.txt`, and `-baseline.txt`) is recorded, with OG-10 —
+the pilot database's one-time `CREATE EXTENSION` step — still open. Todos 6 to
+29 and the final verification wave are open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -192,10 +199,9 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default suite contains **2228** tests: the
-**2213** pre-repair T4 baseline plus fifteen gate-review regressions (twelve grant
-revision/state cases, one populated migration round trip, two portal NONE checks).
-Committed-head gate evidence belongs in `.evidence/AXR1-004-fix-gates.txt`.
+implementation head. The current default suite contains **2266** tests: the
+**2228** post-repair T4 baseline plus thirty-eight net-new tests from `AXR1-005`
+(the client spine and its gate-review fixes).
 
 The pre-repair baseline is **2213** passing, reproduced at `9995488` on 2026-09-27
 (`.evidence/AXR1-004-fix-baseline.txt`). Originally recorded at `c428733` by
@@ -203,7 +209,9 @@ The pre-repair baseline is **2213** passing, reproduced at `9995488` on 2026-09-
 thirteen new tests: seventy-nine parametrized matrix cells, eleven positive
 resolution tests, fifteen grant tests, six manager-wiring cases and three
 RLS-coverage cases for `authz_usercapabilitygrant`, minus one replaced
-cell-count sentinel.
+cell-count sentinel. `AXR1-004` gate repairs (`2f4cf92`) carried it to **2228**
+with fifteen gate-review regressions; committed-head gate evidence for that
+repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
