@@ -209,30 +209,12 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         "is unrelated to every presentation enum."
     ),
     LiteralPin(
-        "apps/cycles/rules.py",
-        "unknown",
-        '"unknown",',
-    ): (
-        "One entry in REGIMES — the tax-regime literal the version's applies_to "
-        "accepts, spelled as data rather than quoted as a status: cycles' TaxRegime "
-        "lands with T5 on a sibling branch, and the value set must exist here before "
-        "it can be referenced there."
-    ),
-    LiteralPin(
         "apps/cycles/forms.py",
         "unknown",
         '"unknown": "Desconhecido",',
     ): (
         "The pt-BR label for the same applies_to literal — a dictionary value, not a "
         "status the render policy covers."
-    ),
-    LiteralPin(
-        "apps/cycles/targeting.py",
-        "unknown",
-        'REGIME_UNKNOWN: Final = "unknown"',
-    ): (
-        "The regime name the fallback reader assigns a client no TaxProfile covers — "
-        "the literal the REGIMES tuple declares, used as data."
     ),
     LiteralPin(
         "apps/tenants/models.py",
