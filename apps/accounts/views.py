@@ -57,11 +57,12 @@ from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.grants import (
+    GrantConflictError,
     GrantNotPermittedError,
     GrantSeatError,
-    active_reviewer_user_ids,
     reviewer_eligible,
     set_review_capability,
+    with_reviewer_state,
 )
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
@@ -488,10 +489,9 @@ def _team_context(
     # template's own iteration happens after the response leaves the view — outside
     # the rolled-back block. The column then renders empty on that error page.
     if with_reviewers:
-        reviewers = active_reviewer_user_ids()
+        memberships = with_reviewer_state(memberships)
         for member in memberships:  # evaluated here, inside a healthy transaction
             setattr(member, "reviewer_eligible", reviewer_eligible(member))  # noqa: B010
-            setattr(member, "reviewer_active", member.user_id in reviewers)  # noqa: B010
     return {"memberships": memberships, "pending_invites": pending, "form": form}
 
 
@@ -717,9 +717,8 @@ def member_review_toggle_view(
     """Give or take a staff accountant's `actions.approve` reviewer grant.
 
     Gated on the same `users.create` as the roster's other edits, and deliberately
-    a POST with an explicit `enabled` rather than a blind toggle: a double-click or
-    a retry must converge on the asked-for state, not land wherever the
-    interleaving leaves it.
+    a POST with an explicit `enabled` and the displayed revision. A delayed retry
+    must not overwrite a newer roster decision.
 
     Anything the toggle cannot act on answers 404, matching `_visible_membership`'s
     contract — for a row this control does not exist on (an owner or ops row, a
@@ -732,10 +731,33 @@ def member_review_toggle_view(
     if enabled not in {"0", "1"}:
         raise Http404
     try:
+        expected_version = int(request.POST.get("expected_version", ""))
+    except ValueError as invalid:
+        raise Http404 from invalid
+    if not 0 <= expected_version <= 2**63 - 1:
+        raise Http404
+    try:
         set_review_capability(
             actor=request.user,
             membership=membership,
             enabled=enabled == "1",
+            expected_version=expected_version,
+        )
+    except GrantConflictError:
+        messages.error(
+            request,
+            _(
+                "A permissão de revisão mudou. "
+                "Confira o estado atual antes de tentar novamente."
+            ),
+        )
+        return render(
+            request,
+            "accounts/team.html",
+            _team_context(
+                request, membership.tenant, InviteIssueForm(), with_reviewers=True
+            ),
+            status=HTTPStatus.CONFLICT,
         )
     except GrantNotPermittedError as refused:
         raise PermissionDenied(str(refused)) from refused

@@ -66,6 +66,11 @@ def unseed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor) -> None:
     names these rows.
     """
     capability_model = apps.get_model("authz", "Capability")
+    grant_model = apps.get_model("authz", "UserCapabilityGrant")
+    # CROSS_TENANT_OK: rollback retires only grants for the R1 capabilities in
+    # every tenant, including revoked rows protected by the capability FK.
+    # Append-only audit events keep their ids and metadata; non-R1 grants survive.
+    grant_model.objects.filter(capability__slug__in=SLUGS).delete()
     capability_model.objects.filter(slug__in=SLUGS).delete()
 
 

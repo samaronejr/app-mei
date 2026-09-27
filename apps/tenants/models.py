@@ -200,6 +200,8 @@ class Membership(UUIDv7PrimaryKeyModel):
     )
     role = models.CharField(_("role"), max_length=32, choices=TenantRole.choices)
     is_active = models.BooleanField(_("active"), default=True)
+    # The seat survives revocation and re-granting; an individual grant row does not.
+    review_grant_version = models.PositiveBigIntegerField(default=0, editable=False)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
     objects = PlatformScopedManager["Membership"]()

@@ -143,9 +143,7 @@ def _enable_r1(tenant: Tenant) -> None:
     tenant.save(update_fields=["features"])
 
 
-def _approve(cast: Cast, user: User) -> int:
-    http = Client()
-    http.force_login(user)
+def _approve(cast: Cast, http: Client) -> int:
     return http.get(
         reverse(APPROVE_ROUTE),
         headers={"host": f"{cast.tenant.slug}.localhost"},
@@ -285,14 +283,16 @@ def test_a_grant_in_another_tenant_is_invisible_to_this_one(cast: Cast) -> None:
 def test_a_revoked_grant_fails_at_the_next_request(cast: Cast) -> None:
     # Given the accountant CAN reach the gated endpoint while the grant is live
     _enable_r1(cast.tenant)
+    http = cast.firm.as_accountant()
     membership = _membership(cast, cast.accountant)
     with tenant_context(cast.tenant.id):
         _grants().set_review_capability(
             actor=cast.firm.owner,
             membership=membership,
             enabled=True,
+            expected_version=0,
         )
-    assert _approve(cast, cast.accountant) == HTTPStatus.OK, (
+    assert _approve(cast, http) == HTTPStatus.OK, (
         "the grant did not reach the endpoint — a revoke test against a 403 would "
         "prove nothing"
     )
@@ -303,8 +303,9 @@ def test_a_revoked_grant_fails_at_the_next_request(cast: Cast) -> None:
             actor=cast.firm.owner,
             membership=membership,
             enabled=False,
+            expected_version=1,
         )
-    status = _approve(cast, cast.accountant)
+    status = _approve(cast, http)
 
     # Then the answer is the role's own: no stash, cache or session carries the old
     # grant into the next request
@@ -361,6 +362,7 @@ def test_a_grant_written_onto_a_client_role_changes_nothing(cast: Cast) -> None:
                 client__isnull=False,
             ),
             enabled=True,
+            expected_version=0,
         )
 
 
@@ -393,7 +395,9 @@ def test_the_owner_turns_review_on_and_off_with_audit_rows(cast: Cast) -> None:
     http = cast.firm.as_owner()
 
     # When the owner grants review
-    response = http.post(_toggle_url(membership), {"enabled": "1"})
+    response = http.post(
+        _toggle_url(membership), {"enabled": "1", "expected_version": "0"}
+    )
 
     # Then the accountant holds an active FULL grant, audited once
     assert response.status_code == HTTPStatus.FOUND
@@ -404,7 +408,9 @@ def test_the_owner_turns_review_on_and_off_with_audit_rows(cast: Cast) -> None:
     assert _audit_rows(cast, granted) == 1
 
     # And when the owner takes it back
-    response = http.post(_toggle_url(membership), {"enabled": "0"})
+    response = http.post(
+        _toggle_url(membership), {"enabled": "0", "expected_version": "1"}
+    )
 
     # Then no active grant remains, the row still records who had it, and the
     # revocation is its own audit event
@@ -419,11 +425,14 @@ def test_the_toggle_is_idempotent_under_repeated_posts(cast: Cast) -> None:
     # Given an already-granted accountant
     membership = _membership(cast, cast.accountant)
     http = cast.firm.as_owner()
-    http.post(_toggle_url(membership), {"enabled": "1"})
+    http.post(_toggle_url(membership), {"enabled": "1", "expected_version": "0"})
     assert _audit_rows(cast, _new_action(GRANTED)) == 1
 
-    # When the same instruction arrives again — a double-click, a retry
-    response = http.post(_toggle_url(membership), {"enabled": "1"})
+    # A repeated desired state with the CURRENT revision is a no-op. Stale
+    # retries instead return 409, covered by the two-caller conflict regression.
+    response = http.post(
+        _toggle_url(membership), {"enabled": "1", "expected_version": "1"}
+    )
 
     # Then one active row exists and no second event was written: a retry must not
     # become a second fact
@@ -448,7 +457,9 @@ def test_a_staff_accountant_cannot_toggle_review_for_anyone(cast: Cast) -> None:
         _membership(cast, cast.colleague),
         _membership(cast, cast.accountant),
     ):
-        response = http.post(_toggle_url(target), {"enabled": "1"})
+        response = http.post(
+            _toggle_url(target), {"enabled": "1", "expected_version": "0"}
+        )
         assert response.status_code == HTTPStatus.FORBIDDEN
 
     # Then nobody holds a grant
@@ -472,7 +483,9 @@ def test_the_toggle_only_exists_for_staff_rows(cast: Cast, member: str) -> None:
     http = cast.firm.as_owner()
 
     # When its pk is posted to the toggle
-    response = http.post(_toggle_url(membership), {"enabled": "1"})
+    response = http.post(
+        _toggle_url(membership), {"enabled": "1", "expected_version": "0"}
+    )
 
     # Then the answer is 404, matching `_visible_membership`'s contract: a control
     # that does not exist for a row answers as if the route did not exist for it,
@@ -487,7 +500,9 @@ def test_the_toggle_cannot_reach_another_firms_membership(cast: Cast) -> None:
     http = cast.firm.as_owner()
 
     # When this firm's owner posts its pk
-    response = http.post(_toggle_url(stranger), {"enabled": "1"})
+    response = http.post(
+        _toggle_url(stranger), {"enabled": "1", "expected_version": "0"}
+    )
 
     # Then it is not found — `for_user` is the only scoping these rows have
     assert response.status_code == HTTPStatus.NOT_FOUND
@@ -509,4 +524,5 @@ def test_the_service_refuses_the_grant_without_the_capability(cast: Cast) -> Non
             actor=cast.accountant,
             membership=membership,
             enabled=True,
+            expected_version=0,
         )

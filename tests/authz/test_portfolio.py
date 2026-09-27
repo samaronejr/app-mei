@@ -177,9 +177,7 @@ def test_the_separate_resolution_query_count_is_explicit_on_every_branch(
             elevated = granted_levels(superuser, actions)
         with django_assert_num_queries(2):
             missing = granted_levels(outsider, actions)
-        # 4 + 1: the firm-role branch also reads authz_usercapabilitygrant, which is
-        # the whole point of T4 — skipping it would leave grants invisible here.
-        with django_assert_num_queries(5):
+        with django_assert_num_queries(4):
             widest = granted_levels(alpha.owner, actions)
             separate_role = role_of(alpha.owner)
 
@@ -219,9 +217,7 @@ def test_role_and_levels_share_one_live_resolution_on_every_branch(
             elevated = granted_levels_with_role(superuser, actions)
         with django_assert_num_queries(2):
             missing = granted_levels_with_role(outsider, actions)
-        # 3 + 1: same user-grant read as `granted_levels`, so the two resolvers
-        # cannot disagree about the table's existence.
-        with django_assert_num_queries(4):
+        with django_assert_num_queries(3):
             widest = granted_levels_with_role(alpha.owner, actions)
 
     assert stashed == (

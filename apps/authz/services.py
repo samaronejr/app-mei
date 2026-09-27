@@ -114,6 +114,8 @@ def resolve_level(
         return GrantLevel.NONE
     grant = RoleGrant.objects.filter(role=role, capability=capability).first()
     role_level = grant.level if grant is not None else GrantLevel.NONE
+    if role_level == GrantLevel.FULL:
+        return role_level
     user_level = _user_grant_level(user, action, role, tenant_id)
     return _max_level(role_level, user_level)
 
@@ -237,7 +239,10 @@ def _resolve_levels_and_role(
             capability__slug__in=slugs,
         ).values_list("capability__slug", "level"),
     )
-    user_levels = _user_grant_levels(user, slugs, role, tenant_id)
+    non_full = tuple(slug for slug in slugs if resolved.get(slug) != GrantLevel.FULL)
+    user_levels = (
+        _user_grant_levels(user, non_full, role, tenant_id) if non_full else {}
+    )
     return role, {
         slug: _max_level(
             resolved.get(slug, GrantLevel.NONE),

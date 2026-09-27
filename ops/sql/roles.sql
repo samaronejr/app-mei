@@ -103,6 +103,10 @@ ALTER DEFAULT PRIVILEGES FOR ROLE app_test IN SCHEMA public
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_runtime;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 
+-- PORTAL_NONE: authz_usercapabilitygrant
+-- Firm-only reviewer authority: no portal grant. DenyPortalAccess supplies the
+-- restrictive false policy as well. Mirrored by PORTAL_DENIED_TABLES in tests/conftest.py.
+
 -- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
 -- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
 -- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the

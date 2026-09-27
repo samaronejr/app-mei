@@ -2,10 +2,11 @@
 
 `resolve_level` READS grants; this module WRITES them, and the split is the point.
 A grant is a change to what an account may do, so minting or revoking one takes the
-same three things every firm-side state change in this codebase takes: a `can()`
+same controls every firm-side state change in this codebase takes: a `can()`
 re-check inside the function (the view's decorator is not reachable from a
 management command or a future API), a row lock so two clicks or two requests
-cannot interleave into a duplicated or phantom grant, and an audit event.
+cannot interleave into a duplicated or phantom grant, an expected revision checked
+under that lock, and an audit event.
 
 The capability it administers is pinned to `actions.approve` — the S8.1
 "reviewer" capability — and the seat it may land on is pinned to an active,
@@ -17,10 +18,11 @@ that only knows how to make reviewers cannot produce either shape.
 """
 
 import logging
-from typing import Final
+from typing import TYPE_CHECKING, Final, TypedDict
 from uuid import UUID
 
 from django.db import transaction
+from django.db.models import Exists, OuterRef, QuerySet
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -30,6 +32,9 @@ from apps.authz.models import GrantLevel, UserCapabilityGrant
 from apps.authz.services import can
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Membership, TenantRole
+
+if TYPE_CHECKING:
+    from django_stubs_ext import WithAnnotations
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,10 @@ class CapabilityGrantError(Exception):
 
 class GrantNotPermittedError(CapabilityGrantError):
     """The actor holds no authority over this firm's capability grants."""
+
+
+class GrantConflictError(CapabilityGrantError):
+    """A roster decision was made after the caller read the grant state."""
 
 
 class GrantSeatError(CapabilityGrantError):
@@ -76,20 +85,24 @@ def reviewer_eligible(membership: Membership) -> bool:
     )
 
 
-def active_reviewer_user_ids() -> set[UUID]:
-    """Return the user ids holding a live reviewer grant in the ambient tenant.
+class ReviewerState(TypedDict):
+    """Grant state annotated onto the versioned membership row."""
 
-    For the team page, which annotates one row per membership — one query total,
-    not one per row.
-    """
-    # The team view runs inside the request's tenant context, so .objects is the
-    # right scope. Callers without an ambient tenant get the empty set — the same
-    # fail-closed answer the manager returns rather than a cross-tenant read.
-    return set(
-        UserCapabilityGrant.objects.filter(
-            capability__slug=REVIEWER_CAPABILITY,
-            revoked_at__isnull=True,
-        ).values_list("user_id", flat=True)
+    reviewer_active: bool
+
+
+def with_reviewer_state(
+    memberships: QuerySet[Membership],
+) -> "QuerySet[WithAnnotations[Membership, ReviewerState]]":
+    """Read the ambient tenant's state and revision in one SQL snapshot."""
+    return memberships.annotate(
+        reviewer_active=Exists(
+            UserCapabilityGrant.objects.filter(
+                user_id=OuterRef("user_id"),
+                capability__slug=REVIEWER_CAPABILITY,
+                revoked_at__isnull=True,
+            )
+        )
     )
 
 
@@ -99,13 +112,13 @@ def set_review_capability(
     actor: User,
     membership: Membership,
     enabled: bool,
+    expected_version: int,
 ) -> UserCapabilityGrant | None:
-    """Grant or revoke `actions.approve` for one staff membership, once.
+    """Apply a decision only to the revision the caller actually read.
 
-    Idempotent by `enabled`, never a blind flip: a double-click, a retry or two
-    racing POSTs converge on the asked-for state instead of landing wherever the
-    interleaving leaves them. Repeating the current state is a no-op that writes
-    no second audit row — a retry must not become a second fact.
+    A stale retry conflicts even if its desired state currently matches. A fresh
+    request for the current state is a no-op; real transitions advance the seat's
+    revision atomically with the grant and audit event.
     """
     # Re-read under a row lock. `revoke_invite` takes the same lock for the same
     # reason: two requests racing the same seat must serialise on something, and
@@ -123,6 +136,9 @@ def set_review_capability(
         if not can(actor, ROSTER_CAPABILITY, tenant_id=locked.tenant_id):
             msg = "This role may not administer the firm's roster."
             raise GrantNotPermittedError(msg)
+        if locked.review_grant_version != expected_version:
+            msg = "The reviewer grant changed; reload the team before trying again."
+            raise GrantConflictError(msg)
         existing = UserCapabilityGrant.objects.filter(
             user_id=locked.user_id,
             capability__slug=REVIEWER_CAPABILITY,
@@ -132,6 +148,8 @@ def set_review_capability(
         if enabled:
             if existing is not None:
                 return existing
+            locked.review_grant_version += 1
+            locked.save(update_fields=["review_grant_version"])
             grant = UserCapabilityGrant.objects.create(
                 tenant_id=locked.tenant_id,
                 user_id=locked.user_id,
@@ -155,6 +173,8 @@ def set_review_capability(
 
         if existing is None:
             return None
+        locked.review_grant_version += 1
+        locked.save(update_fields=["review_grant_version"])
         # `update_fields` names the one column, which keeps this a MARK: a bare
         # save() would rewrite every column from the pre-lock instance.
         existing.revoked_at = timezone.now()
@@ -211,9 +231,10 @@ def _record(
 __all__ = [
     "REVIEWER_CAPABILITY",
     "CapabilityGrantError",
+    "GrantConflictError",
     "GrantNotPermittedError",
     "GrantSeatError",
-    "active_reviewer_user_ids",
     "reviewer_eligible",
     "set_review_capability",
+    "with_reviewer_state",
 ]

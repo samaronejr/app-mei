@@ -25,6 +25,10 @@ from pytest_django import DjangoDbBlocker
 RUNTIME_ROLE = "app_runtime"
 PORTAL_ROLE = "app_portal"
 
+# Explicit NONE decisions, mirroring the PORTAL_NONE declarations in roles.sql.
+# No grant is issued; the migration also installs DenyPortalAccess.
+PORTAL_DENIED_TABLES = ("authz_usercapabilitygrant",)
+
 # Tables whose migrations revoke write access. Listed here rather than discovered so
 # that a new append-only table which forgets its revoke is a visible omission.
 APPEND_ONLY_TABLES = ("audit_event", "audit_platformevent")

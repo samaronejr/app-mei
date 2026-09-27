@@ -22,9 +22,9 @@ pytestmark = pytest.mark.django_db
 
 ALL_SLUGS = [row.slug for row in MATRIX]
 # One capability existence check, one membership read, one role-grant read, one
-# user-grant read. The last is T4's: `UserCapabilityGrant` is consulted on every
-# firm-side resolution, and dropping the read would make this budget pass while
-# `resolve_level` silently disagreed — exactly the drift this test exists to catch.
+# user-grant read. Unlike the owner navigation/portfolio subset (already FULL),
+# the WHOLE matrix includes non-FULL owner levels, so T4 adds one batched grant
+# lookup here. Keep the 3 -> 4 registration; no cross-request cache is involved.
 BULK_QUERY_BUDGET = 4
 
 
