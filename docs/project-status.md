@@ -76,7 +76,9 @@ until the name is cleared.
   tenant only behind its flag, and only after that authorization.
 
 Progress: `AXR1-001` (the pivot records) lands with the commit that adds this
-section. Todos 2 to 29 and the final verification wave are open.
+section. `AXR1-030` (certificate metadata-only guard; `tests/clients/test_certificate_metadata_only.py`;
+`.evidence/AXR1-030-happy.txt`, `-failure.txt`, `-gates.txt`, and `-adversarial.txt`) is
+recorded. Todos 2 to 29 and the final verification wave are open.
 
 ## Plan index
 
@@ -170,9 +172,8 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current baseline is **2053** passing, a clean serial run
-at `a962173` on 2026-09-27, recorded by `AXR1-001` before and after its
-documentation-only change.
+implementation head. The current baseline is **2054** passing, a clean serial run
+at `b21c88b` on 2026-09-27, recorded by `AXR1-030` as 2053 plus one new test.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
 leave the latest recorded count unchanged. A change that adds tests raises it by
