@@ -150,7 +150,10 @@ def test_flipping_the_flag_supersedes_the_claim_from_today(
         client = ClientCompany.objects.get(cnpj=VALID_CNPJ)
         pk = client.pk
 
-    response = http.post(CHANGE_URL.format(pk=pk), _base_form())
+    response = http.post(
+        CHANGE_URL.format(pk=pk),
+        _base_form(tax_profile_revision=client.tax_profile_revision),
+    )
 
     assert response.status_code == HTTPStatus.FOUND
     with tenant_context(tenant.id):
@@ -175,11 +178,16 @@ def test_an_edit_that_changes_nothing_writes_no_row(
 
     http.post(ADD_URL, _base_form(is_mei="on"))
     with tenant_context(tenant.id):
-        pk = ClientCompany.objects.get(cnpj=VALID_CNPJ).pk
+        client = ClientCompany.objects.get(cnpj=VALID_CNPJ)
+        pk = client.pk
 
     response = http.post(
         CHANGE_URL.format(pk=pk),
-        _base_form(is_mei="on", legal_name="Padaria do Ze MEI Renomeada"),
+        _base_form(
+            is_mei="on",
+            legal_name="Padaria do Ze MEI Renomeada",
+            tax_profile_revision=client.tax_profile_revision,
+        ),
     )
 
     assert response.status_code == HTTPStatus.FOUND

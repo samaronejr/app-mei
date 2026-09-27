@@ -155,7 +155,7 @@ def test_an_unflagged_tenant_renders_the_paid_row_exactly_as_before() -> None:
     assert FORBIDDEN_WORD not in body.casefold()
 
 
-def test_a_flagged_tenant_with_a_nonlegacy_source_keeps_the_plain_label() -> None:
+def test_a_flagged_tenant_with_a_nonlegacy_manual_source_stays_unverified() -> None:
     # Given a flagged tenant whose paid row is observed by a NON-legacy source:
     # staff recorded it, which is informed-but-not-legacy
     tenant, client, owner = _firm("staff-obs", features=["cycles_r1"])
@@ -177,6 +177,9 @@ def test_a_flagged_tenant_with_a_nonlegacy_source_keeps_the_plain_label() -> Non
     body = _payments(tenant, owner)
 
     # Then the legacy wording is absent: the label belongs to legacy_status alone,
-    # and a staff-recorded payment does not borrow its parenthesis
+    # and a staff-recorded payment does not borrow its parenthesis or paid certainty.
     assert LEGACY_LABEL not in body
-    assert OLD_PAID_COPY in body
+    assert OLD_PAID_COPY not in body
+    assert 'data-payment-state="manual"' in body
+    assert 'class="badge badge-ok"' not in body
+    assert FORBIDDEN_WORD not in body.casefold()

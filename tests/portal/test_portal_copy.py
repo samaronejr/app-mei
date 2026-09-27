@@ -210,6 +210,7 @@ EXPECTED_TEMPLATES: Final = frozenset(
         "account.html",
         "upload_error.html",
         "partials/nav.html",
+        "partials/payment_observation.html",
         "partials/upload_form.html",
     },
 )

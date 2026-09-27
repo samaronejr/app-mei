@@ -66,27 +66,11 @@ instead, which is the fact a client most often gets wrong.
             <p class="text-xs text-ink-500">{% blocktranslate with origem=row.nominal_due_date|data %}A data original caiu em fim de semana ou feriado: adiada de {{ origem }} para o vencimento acima, que é a data que vale.{% endblocktranslate %}</p>
           {% endif %}
 
-          {% if row.status == 'paid' %}
-            {% comment %}
-            Two paid states, and the distinction is load-bearing (S6.4). A row whose
-            newest payment observation came off the legacy status column is INFORMED,
-            not verified: the badge is neutral rather than ok, and the sentence says
-            exactly who asserted it and that nothing official has checked. Reaching
-            this branch requires the tenant's cycles_r1 flag; unflagged tenants get
-            the same document as before, and the vocabulary never says "confirmado"
-            for a claim nobody verified (S5.7).
-            {% endcomment %}
-            {% if row.payment_source == 'legacy_status' %}
-              <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
-                <span class="badge badge-neutral">{% translate "Paga" %}</span>
-                {% translate "Pagamento registrado manualmente (legado). Ainda não verificamos junto à Receita." %}
-              </p>
-            {% else %}
-              <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
-                <span class="badge badge-ok">{% translate "Paga" %}</span>
-                {% translate "Nada a fazer. O pagamento já foi registrado pela sua contadora." %}
-              </p>
-            {% endif %}
+          {% if cycles_r1 %}{% include 'portal/partials/payment_observation.html' with row=row only %}{% elif row.status == 'paid' %}
+            <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
+              <span class="badge badge-ok">{% translate "Paga" %}</span>
+              {% translate "Nada a fazer. O pagamento já foi registrado pela sua contadora." %}
+            </p>
           {% elif row.status == 'overdue' %}
             <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700">
               <span class="badge badge-late">{% translate "Em atraso" %}</span>

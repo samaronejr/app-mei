@@ -1,0 +1,34 @@
+{% load i18n %}{% comment %}Payment evidence only. Work status must never select this badge.{% endcomment %}
+{% if row.payment_source == 'legacy_status' or row.payment_source == 'staff_recorded' or row.payment_source == 'client_submitted' %}
+  <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="manual">
+    <span class="badge badge-neutral">{% translate "Pagamento informado" %}</span>
+    {% if row.payment_source == 'legacy_status' %}{% translate "Pagamento registrado manualmente (legado). Ainda não verificamos junto à Receita." %}{% else %}{% translate "Registro manual, aguardando conferência. Ainda não verificamos junto à Receita." %}{% endif %}
+  </p>
+{% elif row.payment_source == 'official_api' or row.payment_source == 'official_file_import' %}
+  {% if row.payment_verification == 'verified' %}
+    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="verified">
+      <span class="badge badge-ok">{% translate "Pagamento verificado" %}</span>
+      {% translate "Pagamento verificado na fonte oficial." %}
+    </p>
+  {% elif row.payment_verification == 'stale' %}
+    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="stale">
+      <span class="badge badge-neutral">{% translate "Desatualizado" %}</span>
+      {% translate "A última verificação está desatualizada. Peça uma nova conferência à sua contadora." %}
+    </p>
+  {% elif row.payment_verification == 'not_applicable' %}
+    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="not_applicable">
+      <span class="badge badge-neutral">{% translate "Não se aplica" %}</span>
+      {% translate "Esta fonte não cobre o pagamento desta obrigação." %}
+    </p>
+  {% else %}
+    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="unknown">
+      <span class="badge badge-neutral">{% translate "Sem informação" %}</span>
+      {% translate "Não temos uma verificação do pagamento nesta fonte." %}
+    </p>
+  {% endif %}
+{% else %}
+  <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="unknown">
+    <span class="badge badge-neutral">{% translate "Sem informação" %}</span>
+    {% translate "Não verificamos o pagamento desta obrigação: nenhuma fonte oficial verificada." %}
+  </p>
+{% endif %}

@@ -41,7 +41,7 @@ from django.db import migrations, models
 from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
 import apps.core.identifiers
-from apps.audit.appendonly import make_append_only
+from apps.audit.appendonly import CREATE_REJECT_FUNCTION, append_only_sql
 from apps.core.migrations._composite_fk import (
     add_client_composite_fk,
     add_tenant_composite_fk,
@@ -321,6 +321,15 @@ class Migration(migrations.Migration):
         # app_runtime keeps only SELECT and INSERT. Invariant 10 lives here —
         # "manual stays manual" is enforced by supersede-never-update being the
         # only write path that exists.
-        *make_append_only(OBSERVATION_TABLE),
+        # The function is shared with audit_event and audit_platformevent. This
+        # migration owns only its own trigger, never the shared function's lifetime.
+        migrations.RunSQL(CREATE_REJECT_FUNCTION, reverse_sql=migrations.RunSQL.noop),
+        migrations.RunSQL(
+            append_only_sql(OBSERVATION_TABLE),
+            reverse_sql=(
+                f"DROP TRIGGER IF EXISTS {OBSERVATION_TABLE}_append_only "
+                f"ON {OBSERVATION_TABLE}"
+            ),
+        ),
         migrations.RunPython(backfill_paid_observations, migrations.RunPython.noop),
     ]

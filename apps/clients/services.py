@@ -201,6 +201,46 @@ def current_profiles(clients: Iterable[ClientCompany]) -> dict[UUID, list[TaxPro
     return grouped
 
 
+def lock_tax_profile_client(
+    *, actor: User, client: ClientCompany, expected_revision: int
+) -> ClientCompany:
+    """Authorize a snapshot under the row lock; callers hold the transaction open."""
+    locked = (
+        visible_clients(actor, tenant_id=client.tenant_id)
+        .select_for_update()
+        .filter(pk=client.pk)
+        .first()
+    )
+    if locked is None:
+        raise Http404
+    if not can(actor, "clients.edit_tax_profile", locked):
+        msg = f"{actor} lacks clients.edit_tax_profile on client {client.pk}"
+        raise PermissionDenied(msg)
+    if locked.tax_profile_revision != expected_revision:
+        msg = (
+            f"client {client.pk} tax timeline is at revision "
+            f"{locked.tax_profile_revision}, not {expected_revision}"
+        )
+        raise TaxProfileConflictError(msg)
+    return locked
+
+
+@transaction.atomic
+def save_client_registry(*, actor: User, client: ClientCompany, created: bool) -> None:
+    """Save legacy fields and their claim only after checking the locked revision."""
+    if created:
+        if not can(actor, "clients.edit_tax_profile", client):
+            raise PermissionDenied
+    else:
+        lock_tax_profile_client(
+            actor=actor, client=client, expected_revision=client.tax_profile_revision
+        )
+    client.save()
+    sync_profile_flag(actor=actor, client=client, created=created)
+    client.refresh_from_db(fields=["tax_profile_revision"])
+
+
+@transaction.atomic
 def sync_profile_flag(
     *,
     actor: User,
@@ -223,6 +263,9 @@ def sync_profile_flag(
     whose derived claim equals today's adds no row: dual-write is an invariant over
     content, not a write-per-save ritual.
     """
+    lock_tax_profile_client(
+        actor=actor, client=client, expected_revision=client.tax_profile_revision
+    )
     today = today or timezone.localdate()
     regime = TaxRegime.MEI if client.is_mei else TaxRegime.UNKNOWN
     category = client.mei_category if client.is_mei else None
@@ -252,10 +295,6 @@ def sync_profile_flag(
             "is_mei/mei_category fields."
         ),
         mei_category=category,
-        # The caller hands in the object it just loaded or saved, so the revision
-        # it carries IS the fresh snapshot the correction expects; a concurrent
-        # write in between makes the service refuse rather than supersede on a
-        # stale read.
         expected_revision=client.tax_profile_revision,
     )
 
@@ -307,42 +346,9 @@ def correct_tax_profile(  # noqa: PLR0913
         raise ValueError(msg)
 
     with transaction.atomic():
-        # Resolve through the actor's portfolio AND lock in one statement: the row
-        # is selected by the same visibility rule the views use
-        # (visible_clients: firm-wide roles see the firm, staff see assignments,
-        # nobody sees outside the tenant), and select_for_update holds it until
-        # commit. An invisible pk answers Http404 rather than a denial — 404
-        # refuses to confirm the row exists at all.
-        locked_client = (
-            visible_clients(actor, tenant_id=client.tenant_id)
-            .select_for_update()
-            .filter(pk=client.pk)
-            .first()
+        locked_client = lock_tax_profile_client(
+            actor=actor, client=client, expected_revision=expected_revision
         )
-        if locked_client is None:
-            raise Http404
-        # The capability re-check sits INSIDE the lock: the row it protects and the
-        # permission it requires are settled in the same instant, so a revoked
-        # assignment cannot outrun the check.
-        if not can(actor, "clients.edit_tax_profile", locked_client):
-            msg = (
-                f"{actor} lacks clients.edit_tax_profile on client {client.pk}: "
-                "a tax-timeline correction needs the capability, not only a view."
-            )
-            raise PermissionDenied(msg)
-        # The version check — the third thing a domain service owes its caller
-        # besides the lock and the capability. Read under the row lock it is
-        # checked under, so a concurrent correction cannot slip between the
-        # compare and the bump. A stale snapshot is refused before a single
-        # profile row is touched, and nothing — not even an event — is written.
-        if locked_client.tax_profile_revision != expected_revision:
-            msg = (
-                f"client {client.pk} tax timeline is at revision "
-                f"{locked_client.tax_profile_revision}, not {expected_revision}: "
-                "the snapshot this correction was built from is stale — re-read "
-                "the timeline and correct again."
-            )
-            raise TaxProfileConflictError(msg)
 
         now = timezone.now()
         # Half-open overlap: a row's range [valid_from, valid_to) meets the
@@ -455,7 +461,9 @@ __all__ = [
     "correct_tax_profile",
     "create_default_checklist",
     "current_profiles",
+    "lock_tax_profile_client",
     "profile_at",
+    "save_client_registry",
     "sync_profile_flag",
     "unassign_client",
 ]

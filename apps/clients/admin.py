@@ -7,7 +7,7 @@ compares the raw term against the raw column, so an operator pasting a masked
 The term is normalized the same way the column was before it is compared.
 """
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from django import forms
 from django.contrib import admin
@@ -18,7 +18,11 @@ from django.http import HttpRequest
 from apps.accounts.models import User
 from apps.audit.admin import TenantScopedAdminMixin
 from apps.clients.models import ClientCompany
-from apps.clients.services import sync_profile_flag
+from apps.clients.services import (
+    TaxProfileConflictError,
+    lock_tax_profile_client,
+    save_client_registry,
+)
 from apps.core.tenancy import current_tenant_id
 from apps.fiscal.formatting import format_cnpj
 from apps.fiscal.validators import CNPJ_ALPHABET, normalize_document
@@ -36,6 +40,10 @@ class ClientCompanyForm(forms.ModelForm[ClientCompany]):
 
     cnpj = forms.CharField(label="CNPJ", max_length=_MASKED_CNPJ_LENGTH)
     cpf = forms.CharField(label="CPF", max_length=_MASKED_CPF_LENGTH, required=False)
+    tax_profile_revision = forms.IntegerField(
+        widget=forms.HiddenInput, required=False, min_value=1
+    )
+    actor: User | None = None
 
     class Meta:
         """Form metadata.
@@ -64,7 +72,35 @@ class ClientCompanyForm(forms.ModelForm[ClientCompany]):
             "has_digital_certificate",
             "certificate_expires_on",
             "has_employee",
+            "tax_profile_revision",
         ]
+
+    def clean_tax_profile_revision(self) -> int:
+        """Require the revision the operator actually opened on edits."""
+        revision = self.cleaned_data.get("tax_profile_revision")
+        if self.instance.created_at is None:
+            return 1
+        if revision is None:
+            msg = "Reabra o cadastro antes de salvar."
+            raise forms.ValidationError(msg, code="required")
+        return int(revision)
+
+    def clean(self) -> dict[str, Any] | None:
+        """Hold the row lock through both writes in the admin's POST transaction."""
+        data = super().clean()
+        if self.actor is not None and self.instance.created_at is not None:
+            revision = self.cleaned_data.get("tax_profile_revision")
+            if revision is not None:
+                try:
+                    lock_tax_profile_client(
+                        actor=self.actor,
+                        client=self.instance,
+                        expected_revision=revision,
+                    )
+                except TaxProfileConflictError as exc:
+                    msg = "O perfil fiscal mudou. Reabra o cadastro antes de salvar."
+                    raise forms.ValidationError(msg, code="stale_tax_profile") from exc
+        return data
 
     def clean_cnpj(self) -> str:
         """Normalize before the model's check-digit validator sees the value."""
@@ -84,6 +120,22 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
     list_filter = ("status", "is_mei", "state")
     search_fields = ("legal_name", "trade_name", "cnpj", "cpf")
     readonly_fields: ClassVar[tuple[str, ...]] = ("created_at", "updated_at")
+
+    def get_form(
+        self,
+        request: HttpRequest,
+        obj: ClientCompany | None = None,
+        change: bool = False,
+        **kwargs: object,
+    ) -> type[ClientCompanyForm]:
+        """Bind the actor to Django's freshly generated per-request form class."""
+        form = cast(
+            "type[ClientCompanyForm]", super().get_form(request, obj, change, **kwargs)
+        )
+        if not isinstance(request.user, User):
+            raise PermissionDenied
+        form.actor = request.user
+        return form
 
     @admin.display(description="CNPJ", ordering="cnpj")
     def masked_cnpj_column(self, obj: ClientCompany) -> str:
@@ -119,7 +171,7 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
         self,
         request: HttpRequest,
         obj: ClientCompany,
-        form: forms.ModelForm[ClientCompany],
+        _form: forms.ModelForm[ClientCompany],
         change: bool,
     ) -> None:
         """Stamp the ambient firm onto a new row, and never onto an existing one.
@@ -138,17 +190,11 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
             tenant_id = current_tenant_id.get()
             if tenant_id is not None:
                 obj.tenant_id = tenant_id
-        super().save_model(request, obj, form, change)
-        # Dual-write: the same claim lands on the effective-dated timeline, through
-        # the same service that audits and capability-checks deliberate
-        # corrections. Sits after the save because the service reads and locks the
-        # row it amends; ATOMIC_REQUESTS makes a denial roll back the pair together
-        # rather than letting the flag and the profile diverge.
         actor = request.user
         if not isinstance(actor, User):
             msg = "the tax-timeline dual-write needs an actor"
             raise PermissionDenied(msg)
-        sync_profile_flag(actor=actor, client=obj, created=not change)
+        save_client_registry(actor=actor, client=obj, created=not change)
 
     def has_delete_permission(
         self,

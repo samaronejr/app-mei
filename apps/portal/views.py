@@ -21,6 +21,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from http import HTTPStatus
 from typing import Any, Final
+from uuid import UUID
 
 import sentry_sdk
 from django.conf import settings
@@ -141,6 +142,7 @@ class Payment:
     rolled: bool
     status: str
     payment_source: str | None = None
+    payment_verification: str | None = None
 
 
 def _situation(today: date) -> tuple[int, int]:
@@ -271,8 +273,8 @@ def _payment(row: Mapping[str, Any]) -> Payment:
 
 def _latest_payment_source(
     obligations: list[Mapping[str, Any]],
-) -> dict[Any, str]:
-    """Return each obligation id's newest payment-observation `source_kind`.
+) -> dict[UUID, tuple[str, str]]:
+    """Return each obligation's newest payment source and verification together.
 
     One query for the whole page rather than one per card — the per-row pattern is
     the N+1 the page's query budget exists to forbid. "Newest" is the last row in
@@ -290,10 +292,13 @@ def _latest_payment_source(
             subject_ref_id__in=subject_ids,
         )
         .order_by("observed_at", "pk")
-        .values_list("subject_ref_id", "source_kind")
+        .values_list("subject_ref_id", "source_kind", "verification_status")
     )
     # Ascending order, later keys win: each newer assertion replaces the earlier.
-    return dict(observations)
+    return {
+        subject: (source, verification)
+        for subject, source, verification in observations
+    }
 
 
 @require_http_methods(["GET"])
@@ -343,17 +348,16 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
     )
     page = _payments_page(rows, request)
     tenant = getattr(request, "tenant", None)
-    sources = (
-        _latest_payment_source(list(page.object_list))
-        if tenant is not None and tenant_has(tenant.pk, "cycles_r1")
-        else {}
-    )
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
+    sources = _latest_payment_source(list(page.object_list)) if cycles_r1 else {}
     payments = []
     for row in page.object_list:
         payment = _payment(row)
         source = sources.get(row["id"])
         if source is not None:
-            payment = replace(payment, payment_source=source)
+            payment = replace(
+                payment, payment_source=source[0], payment_verification=source[1]
+            )
         payments.append(payment)
     return render(
         request,
@@ -361,6 +365,7 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
         {
             "page": page,
             "payments": payments,
+            "cycles_r1": cycles_r1,
         },
     )
 
