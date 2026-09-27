@@ -108,11 +108,16 @@ jobs:
           # that exist only in app_mei never reach the suite. btree_gist in
           # particular is asserted by the clients migration that needs it, and a
           # test database without it fails there, not here.
-          psql "$SUPERUSER_DATABASE_URL" -d template1 -v ON_ERROR_STOP=1 \
+          #
+          # The URL's own database component is swapped to template1 rather than
+          # overridden with -d: psql parses a positional URI first, so URL + -d
+          # leaves the positional argument to be read as the USERNAME and the
+          # connection fails before the SQL runs.
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
             -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;'
-          psql "$SUPERUSER_DATABASE_URL" -d template1 -v ON_ERROR_STOP=1 \
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
             -c 'CREATE EXTENSION IF NOT EXISTS unaccent;'
-          psql "$SUPERUSER_DATABASE_URL" -d template1 -v ON_ERROR_STOP=1 \
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
             -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 
       - name: Lint (ruff check)

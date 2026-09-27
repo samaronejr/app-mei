@@ -47,19 +47,27 @@ superuser against the live pilot database. The pilot database predates the
 extension block, so it will not have them otherwise.
 
 ```sh
-psql "$SUPERUSER_DATABASE_URL" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+psql "${SUPERUSER_DATABASE_URL%/*}/$POSTGRES_DB" -v ON_ERROR_STOP=1 \
   -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;' \
   -c 'CREATE EXTENSION IF NOT EXISTS unaccent;' \
   -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 ```
 
+The database is named inside the URL, not with `-d`: psql parses a positional
+URI before options, so a URL plus `-d` makes psql read the URL as the
+*username* and the connection fails before the SQL runs. Swapping the URL's
+database component for `$POSTGRES_DB` keeps the runbook working even when the
+superuser URL happens to point at the `postgres` maintenance database.
+
 Test databases never see these statements at all: `pytest-django` clones them
 from `template1`, not from `app_mei`. The same three extensions therefore go into
 `template1` at init — `ops/sql/02-template1-extensions.sh` under Compose, and the
-`Bootstrap database roles` step in `.github/workflows/ci.yml` on a runner. The CI
-job's step doubles as documentation of the operator shape: run the extension
-creation against both `template1` (so future test databases work) and the app
-database (so the application schema can migrate).
+`Bootstrap database roles` step in `.github/workflows/ci.yml` on a runner, which
+connects with a URL whose database component is swapped to `template1`
+(`"${SUPERUSER_DATABASE_URL%/*}/template1"`). The CI job's step doubles as
+documentation of the operator shape: run the extension creation against both
+`template1` (so future test databases work) and the app database (so the
+application schema can migrate).
 
 ### The portal grants do not survive a new migration, so `migrate` re-issues them
 
