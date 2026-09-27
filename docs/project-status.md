@@ -93,6 +93,13 @@ S8.1 capabilities and per-user capability grants; `tests/authz/test_r1_capabilit
 `.evidence/AXR1-030-happy.txt`, `-failure.txt`, `-gates.txt`, and `-adversarial.txt`) are
 recorded. Todos 5 to 29 and the final verification wave are open.
 
+`AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
+409 conflict feedback, restore the original owner query budgets, and mirror the
+portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
+revoked), retaining audit history and non-R1 data; reapplying does not restore
+removed authority. Evidence: `.evidence/AXR1-004-fix-1.txt` through `-fix-5.txt`,
+`-fix-repeat.txt`, `-fix-mutations.txt`, `-fix-browser.txt`, and `-fix-gates.txt`.
+
 ## Plan index
 
 | Plan | Status | Basis |
@@ -185,8 +192,14 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current baseline is **2213** passing, a clean serial run
-at `c428733` on 2026-09-27, recorded by `AXR1-004` as 2100 plus one hundred
+implementation head. The current default suite contains **2228** tests: the
+**2213** pre-repair T4 baseline plus fifteen gate-review regressions (twelve grant
+revision/state cases, one populated migration round trip, two portal NONE checks).
+Committed-head gate evidence belongs in `.evidence/AXR1-004-fix-gates.txt`.
+
+The pre-repair baseline is **2213** passing, reproduced at `9995488` on 2026-09-27
+(`.evidence/AXR1-004-fix-baseline.txt`). Originally recorded at `c428733` by
+`AXR1-004`, it comprises the T3 baseline of 2100 plus one hundred
 thirteen new tests: seventy-nine parametrized matrix cells, eleven positive
 resolution tests, fifteen grant tests, six manager-wiring cases and three
 RLS-coverage cases for `authz_usercapabilitygrant`, minus one replaced
@@ -195,7 +208,8 @@ cell-count sentinel.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. That suite is **24** passing at `bff2bb2`: every test in
+`browser` job. The suite now contains **26** cases: the **24** passing at the T3
+commit `bff2bb2`, plus the two-viewport reviewer-conflict regression. Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
