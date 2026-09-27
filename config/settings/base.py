@@ -239,6 +239,72 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
     "client-detail": (
         "The <uuid:pk> is a tenant-scoped client object id, not a bearer credential."
     ),
+    "client-edit": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-setup": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-engagement-create": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-engagement-edit": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-tax-profile": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-contact-create": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-contact-edit": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-contact-invite": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-assignment-add": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-assignment-remove": (
+        "AXR1-007. Every <uuid:...> here is a tenant-scoped object id (client, and "
+        "engagement/contact/assignment of that client) resolved through the actor's "
+        "portfolio and 404 otherwise; none is a bearer credential."
+    ),
+    "client-import-batch": (
+        "AXR1-007. The <uuid:batch_pk> is a tenant-scoped import batch id behind "
+        "RLS and the firm-wide import gate; it is not a bearer credential."
+    ),
+    "client-import-commit": (
+        "AXR1-007. The <uuid:batch_pk> is a tenant-scoped import batch id behind "
+        "RLS and the firm-wide import gate; it is not a bearer credential."
+    ),
+    "client-import-rollback": (
+        "AXR1-007. The <uuid:batch_pk> is a tenant-scoped import batch id behind "
+        "RLS and the firm-wide import gate; it is not a bearer credential."
+    ),
+    "client-import-errors": (
+        "AXR1-007. The <uuid:batch_pk> is a tenant-scoped import batch id behind "
+        "RLS and the firm-wide import gate; it is not a bearer credential."
+    ),
     "portal-document-download": (
         "apps/obligations/models/documents.py:13 says storage_key carries no "
         "authorization meaning; apps/portal/views.py:513 requires login, a capability "

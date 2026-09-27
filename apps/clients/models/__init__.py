@@ -16,6 +16,13 @@ from apps.clients.models.company import (
 )
 from apps.clients.models.contact import ClientContact
 from apps.clients.models.engagement import Engagement, ServiceKind
+from apps.clients.models.importing import (
+    ImportBatch,
+    ImportFormat,
+    ImportRow,
+    ImportStatus,
+    RowOutcome,
+)
 from apps.clients.models.onboarding import (
     OnboardingItem,
     OnboardingItemTemplate,
@@ -41,10 +48,15 @@ __all__ = [
     "ClientTag",
     "Engagement",
     "GovBrTrustLevel",
+    "ImportBatch",
+    "ImportFormat",
+    "ImportRow",
+    "ImportStatus",
     "OnboardingItem",
     "OnboardingItemTemplate",
     "OnboardingStatus",
     "ProfileConfidence",
+    "RowOutcome",
     "ServiceKind",
     "Tag",
     "TaxProfile",

@@ -26,8 +26,13 @@ RUNTIME_ROLE = "app_runtime"
 PORTAL_ROLE = "app_portal"
 
 # Explicit NONE decisions, mirroring the PORTAL_NONE declarations in roles.sql.
-# No grant is issued; the migration also installs DenyPortalAccess.
-PORTAL_DENIED_TABLES = ("authz_usercapabilitygrant",)
+# No grant is issued; each migration also installs a restrictive portal policy
+# (DenyPortalAccess, or the client-anchored one on a table carrying client_id).
+PORTAL_DENIED_TABLES = (
+    "authz_usercapabilitygrant",
+    "clients_importbatch",
+    "clients_importrow",
+)
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so
 # that a new append-only table which forgets its revoke is a visible omission.
@@ -40,7 +45,7 @@ APPEND_ONLY_TABLES = (
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
 # rather than blanket so every other table — accounts_user, mfa_authenticator,
 # django_session, and clients_clientcontact, which is portal-NONE in R1 — stays
-# unreadable by the portal role.
+# unreadable by the portal role (the import tables are in PORTAL_DENIED_TABLES).
 PORTAL_TABLES = (
     "clients_clientcompany",
     "clients_clientassignment",

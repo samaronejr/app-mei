@@ -1,0 +1,92 @@
+{% extends "base.html" %}{% load i18n ptbr %}
+{% block title %}{% translate "Importação de clientes" %}{% endblock %}
+{% block head %}{% if in_progress %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block heading %}{% translate "Importação de clientes" %}{% endblock %}
+{% block content %}
+  {% comment %}
+    Wizard steps 5-9 (M2-I): the dry run's per-row outcome, the commit (queued as
+    a background task; this page refreshes itself while it runs, with no script),
+    retry of rows that failed to write, and rollback. A refused rollback answers
+    409 and lists what blocks it, per client.
+  {% endcomment %}
+  <p class="mb-4 text-sm"><a class="link" href="{% url 'client-import' %}">{% translate "Voltar para Importar clientes" %}</a></p>
+
+  <section class="card mb-8 p-5" aria-labelledby="resumo">
+    <h2 id="resumo" class="mb-3 text-sm font-semibold text-ink-700">{{ batch.filename }} — {{ status_label }}</h2>
+    <dl class="grid gap-4 sm:grid-cols-4" data-plan>
+      <div><dt class="text-xs font-medium text-ink-500">{% translate "Linhas lidas" %}</dt><dd class="text-lg tabular" data-count="total">{{ batch.total_rows }}</dd></div>
+      <div><dt class="text-xs font-medium text-ink-500">{% if is_planned %}{% translate "Serão criados" %}{% else %}{% translate "Clientes criados" %}{% endif %}</dt><dd class="text-lg tabular" data-count="created">{% if is_planned %}{{ batch.planned_created }}{% else %}{{ batch.committed_count }}{% endif %}</dd></div>
+      <div><dt class="text-xs font-medium text-ink-500">{% translate "Inválidas" %}</dt><dd class="text-lg tabular" data-count="invalid">{{ batch.planned_invalid }}</dd></div>
+      <div><dt class="text-xs font-medium text-ink-500">{% translate "Duplicadas (ignoradas)" %}</dt><dd class="text-lg tabular" data-count="duplicate">{{ batch.planned_duplicate }}</dd></div>
+    </dl>
+    {% if in_progress %}
+      <div class="mt-4">{% translate "A importação está em andamento. Esta página se atualiza sozinha." as msg %}{% include "partials/pure/notice.html" with message=msg variant="info" only %}</div>
+    {% endif %}
+    {% if batch.failed_count %}
+      <div class="mt-4">{% blocktranslate count total=batch.failed_count asvar msg %}1 linha não pôde ser gravada. Você pode tentar de novo.{% plural %}{{ total }} linhas não puderam ser gravadas. Você pode tentar de novo.{% endblocktranslate %}{% include "partials/pure/notice.html" with message=msg variant="warn" only %}</div>
+    {% endif %}
+    <div class="mt-4 flex flex-wrap gap-3">
+      {% if may_commit %}
+        <form method="post" action="{% url 'client-import-commit' batch.pk %}">
+          {% csrf_token %}
+          <input type="hidden" name="version" value="{{ batch.version }}">
+          <button type="submit" class="btn btn-primary">{% if is_partial %}{% translate "Tentar de novo as linhas com falha" %}{% else %}{% blocktranslate count total=batch.planned_created %}Importar 1 cliente{% plural %}Importar {{ total }} clientes{% endblocktranslate %}{% endif %}</button>
+        </form>
+      {% endif %}
+      {% if may_rollback %}
+        <form method="post" action="{% url 'client-import-rollback' batch.pk %}">
+          {% csrf_token %}
+          <input type="hidden" name="version" value="{{ batch.version }}">
+          <button type="submit" class="btn btn-quiet">{% translate "Desfazer esta importação" %}</button>
+        </form>
+      {% endif %}
+      {% if has_problems %}
+        <a class="btn btn-quiet" href="{% url 'client-import-errors' batch.pk %}">{% translate "Baixar relatório de erros (CSV)" %}</a>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if blocking %}
+    <section class="card mb-8 p-5" aria-labelledby="bloqueios">
+      <h2 id="bloqueios" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Não é possível desfazer" %}</h2>
+      {% translate "Estes clientes já têm registros ligados a eles. Nada foi apagado." as msg %}{% include "partials/pure/notice.html" with message=msg variant="error" only %}
+      <ul class="mt-3 list-disc space-y-1 pl-5 text-sm" data-blocking>
+        {% for item in blocking %}
+          <li>{{ item.client_name }}: {{ item.dependent.count }} {{ item.dependent.label }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section class="card p-5" aria-labelledby="linhas">
+    <h2 id="linhas" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Linhas com problema" %}</h2>
+    <div class="table-wrap">
+      <table class="data-table row-stack">
+        <caption class="visually-hidden">{% translate "Linhas inválidas, duplicadas ou com falha" %}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{% translate "Linha" %}</th>
+            <th scope="col">{% translate "CNPJ" %}</th>
+            <th scope="col">{% translate "Razão social" %}</th>
+            <th scope="col">{% translate "Resultado" %}</th>
+            <th scope="col">{% translate "Motivo" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in problem_rows %}
+            <tr>
+              <td data-label="{% translate 'Linha' %}" class="tabular">{{ item.row.row_number }}</td>
+              <td data-label="{% translate 'CNPJ' %}" class="tabular">{{ item.row.cnpj|default:"—" }}</td>
+              <td data-label="{% translate 'Razão social' %}">{{ item.row.values.legal_name|default:"—" }}</td>
+              <td data-label="{% translate 'Resultado' %}">{{ item.label }}</td>
+              <td data-label="{% translate 'Motivo' %}">{{ item.reasons|join:" " }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="empty-state">{% translate "Todas as linhas são válidas." %}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if rows_truncated %}<p class="mt-3 text-xs text-ink-500">{% translate "Mostrando as primeiras 200 linhas. O relatório CSV traz todas." %}</p>{% endif %}
+  </section>
+{% endblock %}

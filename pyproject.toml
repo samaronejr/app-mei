@@ -21,6 +21,8 @@ dependencies = [
   # its own verify-by-effect step against the real bucket.
   "django-storages[s3]",
   "gunicorn",
+  # The client import wizard reads XLSX in read-only mode (apps/clients/importing.py).
+  "openpyxl>=3.1.5",
   "psycopg[binary]>=3.2",
   "redis",
   "sentry-sdk[django]",
@@ -47,6 +49,7 @@ dev = [
   "pytest-django",
   "pytest-playwright==0.9.0",
   "ruff",
+  "types-openpyxl>=3.1.5.20260827",
 ]
 
 [tool.uv]

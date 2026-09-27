@@ -86,6 +86,14 @@ class AuditAction(models.TextChoices):
     # A correction is one event even when it splits a row into three: the trail
     # asks "who restated the timeline" before it asks how many rows moved.
     TAX_PROFILE_CORRECTED = "tax_profile_corrected", _("tax profile corrected")
+    # In-product portfolio maintenance (AXR1-007). References only in metadata.
+    CLIENT_CREATED = "client_created", _("client created")
+    CLIENT_UPDATED = "client_updated", _("client updated")
+    ENGAGEMENT_CHANGED = "engagement_changed", _("engagement changed")
+    CONTACT_CHANGED = "contact_changed", _("contact changed")
+    IMPORT_PLANNED = "import_planned", _("client import planned")
+    IMPORT_COMMITTED = "import_committed", _("client import committed")
+    IMPORT_ROLLED_BACK = "import_rolled_back", _("client import rolled back")
 
 
 class Event(TenantScopedModel):
