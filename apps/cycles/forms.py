@@ -101,9 +101,12 @@ class StepForm(forms.Form):
         max_length=64,
         help_text=_("Identificador estável, minúsculo, usado nas dependências."),
     )
+    # A real empty option keeps the browser's untouched extra row equal to
+    # its empty initial data. Django then skips it via empty_permitted; any
+    # entered value still makes the row changed and subject to validation.
     kind = forms.ChoiceField(
         label=_("Tipo"),
-        choices=StepKind.choices,
+        choices=[("", "---------"), *StepKind.choices],
     )
     label_ptbr = forms.CharField(
         label=_("Etapa"),
@@ -121,11 +124,11 @@ class StepForm(forms.Form):
     )
     owner_rule = forms.ChoiceField(
         label=_("Responsável"),
-        choices=OwnerRule.choices,
+        choices=[("", "---------"), *OwnerRule.choices],
     )
     due_kind = forms.ChoiceField(
         label=_("Prazo"),
-        choices=DUE_KIND_CHOICES,
+        choices=[("", "---------"), *DUE_KIND_CHOICES],
     )
     due_day = forms.IntegerField(
         label=_("Dia / dias"),

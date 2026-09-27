@@ -179,7 +179,7 @@ def _preview_token(version: PlaybookVersion) -> str:
 
 
 def _preview_token_ok(version: PlaybookVersion, token: str) -> bool:
-    """Report whether the token names this version's CURRENT stored revision."""
+    """Verify the loaded revision; publication must re-check it under the lock."""
     try:
         unsigned = _SIGNER.unsign(token)
     except (BadSignature, SignatureExpired):
@@ -281,7 +281,16 @@ def _list_post(request: AuthenticatedRequest, tenant: Tenant) -> HttpResponse | 
 @require_can(PLAYBOOK_GATE)
 def playbook_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     """Show one playbook: its versions and the entry into the editor."""
-    playbook = _playbook_or_404(pk)
+    return _detail_response(request, _playbook_or_404(pk))
+
+
+def _detail_response(
+    request: AuthenticatedRequest,
+    playbook: Playbook,
+    *,
+    status: int = HTTPStatus.OK,
+) -> HttpResponse:
+    """Render version history for a GET or a refused retirement POST."""
     versions = playbook.versions.order_by("-number")
     draft = next((v for v in versions if v.state == VersionState.DRAFT), None)
     return render(
@@ -298,6 +307,7 @@ def playbook_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpRespons
                 {"label": _("Ações")},
             ],
         },
+        status=status,
     )
 
 
@@ -474,7 +484,7 @@ def _publish_post(
     again. The service re-validates the locked draft either way.
     """
     token = str(request.POST.get("preview_token") or "")
-    if not _preview_token_ok(version, token):
+    if not _preview_token_ok(version, token) or expected != version.version:
         return _editor_errors(
             request,
             context,
@@ -491,7 +501,9 @@ def _publish_post(
         tenant=_tenant_of(request),
         playbook_pk=playbook.pk,
         number=version.number,
-        expected_version=expected,
+        # This revision was verified against the signed token, not supplied
+        # independently by the POST. The service compares it under the lock.
+        expected_version=version.version,
     )
     messages.success(
         request,
@@ -531,7 +543,7 @@ def playbook_retire_view(
                 "tente de novo."
             ),
         )
-        return redirect("playbook-detail", pk=playbook.pk)
+        return _detail_response(request, playbook, status=HTTPStatus.CONFLICT)
     try:
         playbooks.retire_version(
             actor=request.user,
@@ -540,7 +552,10 @@ def playbook_retire_view(
             number=number,
             expected_version=expected,
         )
-    except (VersionConflict, IllegalTransition) as exc:
+    except VersionConflict as exc:
+        messages.error(request, str(exc))
+        return _detail_response(request, playbook, status=HTTPStatus.CONFLICT)
+    except IllegalTransition as exc:
         messages.error(request, str(exc))
     except PlaybookVersion.DoesNotExist as exc:
         raise Http404 from exc
