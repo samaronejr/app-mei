@@ -1,10 +1,18 @@
 {% extends "base.html" %}{% load ptbr %}
-{% block title %}Ciclo · {{ cycle.period_start|date:'m/Y' }}{% endblock %}
-{% block heading %}Ciclo · {{ cycle.period_start|date:'m/Y' }}{% endblock %}
+{% block title %}{{ cycle.client.legal_name }} · {{ cycle.period_start|date:'m/Y' }}{% endblock %}
+{% block heading %}{{ cycle.client.legal_name }} · {{ cycle.period_start|date:'m/Y' }}{% endblock %}
 {% block content %}
 <a class="ui-link" href="{% url 'client-detail' cycle.client_id %}?periodo={{ cycle.period_start|date:'Y-m' }}">Voltar ao espaço do cliente</a>
 {% if error %}<div role="alert" class="ui-panel p-4 my-4">{{ error }}</div>{% endif %}
-<section class="ui-panel p-4 mt-4" aria-labelledby="cycle-summary"><h2 id="cycle-summary" class="ui-panel-heading">{{ cycle.playbook.name }} · {{ cycle.get_state_display }}</h2><p>Versão fixada: {{ cycle.playbook_version.number }} · revisão {{ cycle.version }}{% if cycle.amendment %} · emenda {{ cycle.amendment }}{% endif %}</p><p class="text-sm text-ink-600">Estado do trabalho interno. Não comprova pagamento, entrega ou protocolo oficial.</p>
+<section class="ui-panel p-4 mt-4" aria-labelledby="cycle-summary">
+<header id="cycle-context" class="mb-4">
+  <p class="font-semibold text-ink-900">{{ cycle.client.legal_name }}</p>
+  <p class="text-sm text-ink-600">CNPJ {{ cycle.client.cnpj|cnpj_mask }}</p>
+  <p class="mt-2" data-engagement-id="{{ cycle.engagement_id }}">{{ service_label }} · serviço desde {{ cycle.engagement.starts_on|date:'d/m/Y' }}</p>
+  <p class="text-sm text-ink-600">Competência {{ cycle.period_start|date:'m/Y' }}</p>
+  <h2 id="cycle-summary" class="ui-panel-heading">{{ cycle.playbook.name }} · {{ cycle.get_state_display }}</h2>
+</header>
+<p>Versão fixada: {{ cycle.playbook_version.number }} · revisão {{ cycle.version }}{% if cycle.amendment %} · emenda {{ cycle.amendment }}{% endif %}</p><p class="text-sm text-ink-600">Estado do trabalho interno. Não comprova pagamento, entrega ou protocolo oficial.</p>
 {% if actions %}<form method="post" class="mt-4 grid gap-3">{% csrf_token %}<input type="hidden" name="action" value="transition"><input type="hidden" name="expected_version" value="{{ cycle.version }}"><div><label class="ui-field-label" for="target">Próximo estado</label><select class="ui-field-input" name="to_state" id="target" required><option value="">Escolha um estado</option>{% for value,label in actions %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div><div><label class="ui-field-label" for="reason">Motivo (obrigatório para bloquear ou encerrar com pendências)</label><textarea class="ui-field-input" id="reason" name="reason" maxlength="10000"></textarea></div><div><button class="ui-btn ui-btn-primary" type="submit">Alterar estado</button></div></form>{% endif %}
 </section>
 <section class="ui-panel p-4 mt-6" aria-labelledby="graph-title"><h2 id="graph-title" class="ui-panel-heading">Tarefas da versão fixada</h2><ul class="grid gap-4 mt-4">{% for row in tasks %}<li class="border-t pt-3"><h3 class="font-semibold">{{ row.step.label_ptbr }}</h3><p>{{ row.task.get_state_display }} · {{ row.task.owner|default:'Fila da equipe' }}</p><p>Prazo interno: {{ row.task.due_on|date:'d/m/Y'|default:'Não definido' }}{% if row.task.statutory_due_on %} · Prazo legal: {{ row.task.statutory_due_on|date:'d/m/Y' }}{% endif %}</p>{% if row.step.depends_on %}<p class="text-sm">Dependências: {{ row.step.depends_on|join:', ' }}</p>{% endif %}

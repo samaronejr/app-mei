@@ -20,6 +20,7 @@ from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.errors import IllegalTransition, VersionConflict
+from apps.cycles.forms import SERVICE_KIND_CHOICES
 from apps.cycles.models import (
     CycleState,
     ServiceCycle,
@@ -177,7 +178,11 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                 error, status = str(exc), HTTPStatus.CONFLICT
             except (IllegalTransition, ValidationError) as exc:
                 error, status = str(exc), HTTPStatus.UNPROCESSABLE_CONTENT
-    cycle.refresh_from_db()
+    # Refresh state after a refused POST and fetch the visible context together,
+    # rather than adding a client/engagement query for every header field.
+    cycle = ServiceCycle.objects.select_related(
+        "client", "engagement", "playbook", "playbook_version"
+    ).get(pk=cycle.pk)
     steps = {step.key: step for step in cycle.playbook_version.steps.all()}
     tasks = [
         {
@@ -199,6 +204,7 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
         "cycles/cycle_detail.html",
         {
             "cycle": cycle,
+            "service_label": dict(SERVICE_KIND_CHOICES)[cycle.engagement.service_kind],
             "tasks": tasks,
             "actions": [
                 (value, CycleState(value).label)
