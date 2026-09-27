@@ -1,4 +1,8 @@
-"""The database key, not a pre-count, arbitrates concurrent generation."""
+"""Concurrent generation yields one cycle and one creator.
+
+The client-row lock serializes these callers. The unique-key fallback for a stale
+miss is proven separately in test_cycle_replay_fast_path.py.
+"""
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier

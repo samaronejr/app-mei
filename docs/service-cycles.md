@@ -5,11 +5,13 @@ context. Firm callers are resolved through the portfolio, then the aggregate is
 locked, its rendered revision is compared, authorization is checked again, and
 the event is inserted in the same transaction. Conflicts write nothing.
 
-Generation is an INSERT with `ON CONFLICT DO NOTHING RETURNING id`, not a pre-count.
-The natural key is `(tenant, client, engagement, playbook, period_start)`; the
-caller key is hashed for correlation only. The current fiscal-profile row and
-published playbook version are pinned at creation. Replaying with a newer
-published version returns the existing cycle without replacing its tasks.
+After portfolio and capability checks, generation first reads the natural key
+`(tenant, client, engagement, playbook, period_start)` under a row lock. An
+existing cycle returns `created=False` without current profile or scope checks.
+Only a miss applies creation eligibility, then inserts in a savepoint. If another
+writer wins that unique constraint, the savepoint rolls back and the winner is
+re-read. The caller key is hashed for correlation only. The current profile row
+and published version are pinned only at creation; replays never replace tasks.
 
 The scheduler runs on the first day at 05:00 America/Sao_Paulo. It visits enabled
 firms through `TenantTask`, and stamps `generate_cycles` only after the sweep

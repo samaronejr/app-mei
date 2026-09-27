@@ -1,4 +1,4 @@
-"""Locked, versioned cycle writes. INSERT RETURNING is the generation arbiter."""
+"""Locked, versioned writes with read-only replays and unique-key creation."""
 
 import calendar
 import hashlib
@@ -9,8 +9,9 @@ from typing import Final
 from uuid import UUID
 
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import connection, transaction
+from django.db import IntegrityError, transaction
 from django.http import Http404
+from psycopg.errors import UniqueViolation
 
 from apps.accounts.models import User
 from apps.authz.services import can
@@ -75,7 +76,7 @@ EFFECT_GUARDS: dict[str, Callable[[ServiceCycle], bool]] = {}
 
 @dataclass(frozen=True, slots=True)
 class CycleRef:
-    """The result distinguishes insertion from replay without a racy pre-count."""
+    """The result distinguishes insertion from replay; the unique key settles races."""
 
     id: UUID
     version: int
@@ -234,24 +235,37 @@ def open_cycle(
     *,
     idempotency_key: str,
 ) -> CycleRef:
-    """Create from a published definition or return the already pinned cycle.
+    """Return an authorized existing case, or create an eligible new one.
 
-    The natural key is the idempotency boundary. The caller key is hashed for
-    correlation, not used as a second key that could regenerate the same period.
+    Replay is read-only and never re-runs creation eligibility. On a miss, current
+    eligibility applies, then the natural-key constraint arbitrates concurrent
+    inserts. The caller key is hashed for correlation, not used as a second key.
     """
-    end = _period_end(period)
     require_enabled()
     with transaction.atomic():
         engagement = _engagement(actor, engagement_id)
         definition = PlaybookVersion.objects.filter(pk=playbook_version_id).first()
         if definition is None:
             raise Http404
+        existing_cycles = ServiceCycle.objects.select_for_update().filter(
+            client_id=engagement.client_id,
+            engagement=engagement,
+            playbook_id=definition.playbook_id,
+            period_start=period,
+        )
+        existing = existing_cycles.first()
+        if existing is not None:
+            return CycleRef(existing.pk, existing.version, existing.state)
+
+        # Only a genuinely new case consults today's creation eligibility.
+        end = _period_end(period)
+        if definition.state != VersionState.PUBLISHED:
+            raise Http404
         profile = profile_at(engagement.client, period)
         scope = AppliesTo.parse(definition.applies_to_json)
         regime = profile.regime if profile else TaxRegime.UNKNOWN
         if (
-            definition.state != VersionState.PUBLISHED
-            or engagement.client.status != ClientStatus.ACTIVE
+            engagement.client.status != ClientStatus.ACTIVE
             or engagement.starts_on > period
             or (engagement.ends_on is not None and engagement.ends_on <= period)
             or (
@@ -260,23 +274,6 @@ def open_cycle(
             )
             or (scope.regimes and regime not in scope.regimes)
         ):
-            # Lifecycle changes constrain creation, not replay of an authorized
-            # case. Keep eligible attempts on INSERT RETURNING so the natural
-            # key remains the creation arbiter, rather than a racy pre-count.
-            existing = (
-                ServiceCycle.objects.select_for_update()
-                .filter(
-                    client_id=engagement.client_id,
-                    engagement=engagement,
-                    playbook_id=definition.playbook_id,
-                    period_start=period,
-                )
-                .first()
-            )
-            if existing is not None:
-                return CycleRef(existing.pk, existing.version, existing.state)
-            if definition.state != VersionState.PUBLISHED:
-                raise Http404
             msg = (
                 "O serviço e o perfil fiscal não correspondem "
                 "a esta competência e playbook."
@@ -293,58 +290,32 @@ def open_cycle(
             period_end=end,
             owner_id=engagement.responsible_id,
         )
-        # Explicit INSERT RETURNING: bulk_create(ignore_conflicts) cannot tell
-        # inserted from existing. No pre-read, so the unique key is load-bearing.
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """INSERT INTO cycles_servicecycle
-                (id, tenant_id, client_id, engagement_id, playbook_id,
-                 playbook_version_id, tax_profile_id, period_start, period_end,
-                 state, owner_id, reviewer_id, version, amendment, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT DO NOTHING RETURNING id""",
-                [
-                    candidate.pk,
-                    candidate.tenant_id,
-                    candidate.client_id,
-                    candidate.engagement_id,
-                    candidate.playbook_id,
-                    candidate.playbook_version_id,
-                    candidate.tax_profile_id,
-                    period,
-                    end,
-                    candidate.state,
-                    candidate.owner_id,
-                    None,
-                    candidate.version,
-                    candidate.amendment,
-                    candidate.created_at,
-                ],
-            )
-            inserted = cursor.fetchone()
-        if inserted:
-            _instantiate(candidate)
-            emit(
-                candidate,
-                actor,
-                "cycle.opened",
-                payload={
-                    "playbook_version_id": str(definition.pk),
-                    "idempotency_hash": hashlib.sha256(
-                        idempotency_key.encode()
-                    ).hexdigest(),
-                },
-            )
-            return CycleRef(
-                candidate.pk, candidate.version, candidate.state, created=True
-            )
-        existing = ServiceCycle.objects.get(
-            client_id=engagement.client_id,
-            engagement=engagement,
-            playbook_id=definition.playbook_id,
-            period_start=period,
+        try:
+            # A missed read does not prove uniqueness. Roll back only this INSERT
+            # if another writer wins, leaving the transaction usable to re-read.
+            with transaction.atomic():
+                candidate.save(force_insert=True)
+        except IntegrityError as error:
+            if (
+                not isinstance(error.__cause__, UniqueViolation)
+                or error.__cause__.diag.constraint_name != "servicecycle_period_uniq"
+            ):
+                raise
+            existing = existing_cycles.get()
+            return CycleRef(existing.pk, existing.version, existing.state)
+        _instantiate(candidate)
+        emit(
+            candidate,
+            actor,
+            "cycle.opened",
+            payload={
+                "playbook_version_id": str(definition.pk),
+                "idempotency_hash": hashlib.sha256(
+                    idempotency_key.encode()
+                ).hexdigest(),
+            },
         )
-        return CycleRef(existing.pk, existing.version, existing.state)
+        return CycleRef(candidate.pk, candidate.version, candidate.state, created=True)
 
 
 def completion_unmet(cycle: ServiceCycle) -> list[str]:
