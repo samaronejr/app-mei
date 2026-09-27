@@ -20,6 +20,7 @@ step keys, and reordering a list in a form must not silently rewrite the graph.
 
 from collections.abc import Iterable
 from typing import ClassVar
+from uuid import UUID
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -328,23 +329,46 @@ class PlaybookStep(TenantScopedModel):
             ),
         ]
 
-    def _stored_version_state(self) -> str | None:
-        """Read the parent's state as the database holds it.
+    def _version_state(self, version_id: UUID | None) -> str | None:
+        """Read a version's state as the database holds it.
 
         `self.version.state` would answer from whatever instance was fetched
         with the step — the point of the guard is what is stored, not what a
         caller last loaded.
         """
-        if self.version_id is None:
+        if version_id is None:
             return None
         stored = (
             # ALL_OBJECTS_OK: pk-scoped guard read — the same reason
             # PlaybookVersion._stored_state uses the unscoped manager.
-            PlaybookVersion.all_objects.filter(pk=self.version_id)
+            PlaybookVersion.all_objects.filter(pk=version_id)
             .values_list("state", flat=True)
             .first()
         )
         return str(stored) if stored is not None else None
+
+    def _stored_version_state(self) -> str | None:
+        """Return the state of the parent this in-memory object names."""
+        return self._version_state(self.version_id)
+
+    def _persisted_parent_state(self) -> str | None:
+        """Return the state of the parent the STORED row names — different thing.
+
+        On an update, `self.version_id` is where the step is being written TO;
+        the row already in the table names where it comes FROM. A published
+        version's membership cannot shrink because a caller repointed the FK —
+        the source parent's state is checked before the target's.
+        """
+        if self.pk is None:
+            return None
+        stored_parent = (
+            # ALL_OBJECTS_OK: pk-scoped guard read — ambient context must not
+            # decide whether a write is legal (see _stored_state).
+            PlaybookStep.all_objects.filter(pk=self.pk)
+            .values_list("version_id", flat=True)
+            .first()
+        )
+        return self._version_state(stored_parent)
 
     def save(  # type: ignore[override]
         self,
@@ -353,7 +377,21 @@ class PlaybookStep(TenantScopedModel):
         using: str | None = None,
         update_fields: Iterable[str] | None = None,
     ) -> None:
-        """Refuse writes under a non-draft version, whatever the field is."""
+        """Refuse writes under a non-draft version, whatever the field is.
+
+        Both ends of a reparent are guarded: the version this step is stored
+        under cannot lose it, and a non-draft version cannot gain it. A draft
+        step moved into another DRAFT version is still legal — drafts are
+        mutable by definition.
+        """
+        persisted = self._persisted_parent_state()
+        if persisted is not None and persisted != VersionState.DRAFT:
+            msg = (
+                "A step belonging to a published or retired version cannot be "
+                "rewritten, reparented or removed — clone or publish a new "
+                "version instead."
+            )
+            raise ImmutableVersion(msg)
         if self._stored_version_state() != VersionState.DRAFT:
             msg = (
                 "Steps of a published or retired version are immutable; clone or "
@@ -370,7 +408,13 @@ class PlaybookStep(TenantScopedModel):
     def delete(
         self, using: str | None = None, keep_parents: bool = False
     ) -> tuple[int, dict[str, int]]:
-        """Refuse deletion under a non-draft version."""
+        """Refuse deletion under a non-draft version — the stored parent decides."""
+        persisted = self._persisted_parent_state()
+        if persisted is not None and persisted != VersionState.DRAFT:
+            msg = (
+                "A step belonging to a published or retired version cannot be deleted."
+            )
+            raise ImmutableVersion(msg)
         if self._stored_version_state() != VersionState.DRAFT:
             msg = "Steps of a published or retired version cannot be deleted."
             raise ImmutableVersion(msg)

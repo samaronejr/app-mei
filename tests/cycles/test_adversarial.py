@@ -286,3 +286,58 @@ def test_the_formset_extra_row_never_becomes_a_ghost_step(firm: Firm) -> None:
         specs = _specs_of_valid_formset(formset)
         assert [s.key for s in specs] == ["s"]
         assert version.steps.count() == 1
+
+
+def test_reparenting_a_published_step_is_refused(firm: Firm) -> None:
+    """B1: a step's PERSISTED parent, not the in-memory FK, decides legality.
+
+    Before the guard this save() succeeded and silently removed the step from
+    the published version — the immutability contract broken through the FK.
+    """
+    from apps.cycles.errors import ImmutableVersion  # noqa: PLC0415
+
+    with tenant_context(firm.tenant.id):
+        source = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="reparent-src",
+            name="Source",
+            steps=[_spec("a"), _spec("b")],
+        )
+        playbooks.publish_version(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=source.pk,
+            number=1,
+            expected_version=1,
+        )
+        target = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="reparent-dst",
+            name="Target",
+            steps=[_spec("c")],
+        )
+        published = source.versions.get(number=1)
+        draft = target.versions.get(number=1)
+        assert published.steps.count() == 2
+
+        step = published.steps.get(key="a")
+        step.version = draft  # repoint at an empty-allowed DRAFT parent
+        with pytest.raises(ImmutableVersion):
+            step.save()
+        # The published source never lost the member.
+        assert published.steps.count() == 2
+
+        # Moving a draft step INTO a published version is refused the same way.
+        draft_step = draft.steps.get(key="c")
+        draft_step.version = published
+        with pytest.raises(ImmutableVersion):
+            draft_step.save()
+        assert draft.steps.count() == 1
+        assert published.steps.count() == 2
+
+        # And the row-level delete on the published parent is still refused.
+        with pytest.raises(ImmutableVersion):
+            published.steps.get(key="b").delete()
+        assert published.steps.count() == 2
