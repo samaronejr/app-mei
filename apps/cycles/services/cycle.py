@@ -243,16 +243,15 @@ def open_cycle(
     require_enabled()
     with transaction.atomic():
         engagement = _engagement(actor, engagement_id)
-        definition = PlaybookVersion.objects.filter(
-            pk=playbook_version_id, state=VersionState.PUBLISHED
-        ).first()
+        definition = PlaybookVersion.objects.filter(pk=playbook_version_id).first()
         if definition is None:
             raise Http404
         profile = profile_at(engagement.client, period)
         scope = AppliesTo.parse(definition.applies_to_json)
         regime = profile.regime if profile else TaxRegime.UNKNOWN
         if (
-            engagement.client.status != ClientStatus.ACTIVE
+            definition.state != VersionState.PUBLISHED
+            or engagement.client.status != ClientStatus.ACTIVE
             or engagement.starts_on > period
             or (engagement.ends_on is not None and engagement.ends_on <= period)
             or (
@@ -261,6 +260,23 @@ def open_cycle(
             )
             or (scope.regimes and regime not in scope.regimes)
         ):
+            # Lifecycle changes constrain creation, not replay of an authorized
+            # case. Keep eligible attempts on INSERT RETURNING so the natural
+            # key remains the creation arbiter, rather than a racy pre-count.
+            existing = (
+                ServiceCycle.objects.select_for_update()
+                .filter(
+                    client_id=engagement.client_id,
+                    engagement=engagement,
+                    playbook_id=definition.playbook_id,
+                    period_start=period,
+                )
+                .first()
+            )
+            if existing is not None:
+                return CycleRef(existing.pk, existing.version, existing.state)
+            if definition.state != VersionState.PUBLISHED:
+                raise Http404
             msg = (
                 "O serviço e o perfil fiscal não correspondem "
                 "a esta competência e playbook."
