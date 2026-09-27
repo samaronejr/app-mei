@@ -16,11 +16,13 @@ from datetime import date
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models import Q
+from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
+from apps.authz.portfolio import visible_clients
 from apps.authz.services import can
 from apps.clients.models import (
     AssignmentRole,
@@ -34,6 +36,16 @@ from apps.clients.models import (
 
 OBJECT_TYPE = "clients.ClientAssignment"
 TAX_PROFILE_OBJECT_TYPE = "clients.TaxProfile"
+
+
+class TaxProfileConflictError(Exception):
+    """Raised when a correction's expected revision no longer matches the timeline.
+
+    A conflict, not a permission failure — the view layer maps it to 409 the same
+    way `MemberLifecycleError` is rendered, because the caller held the capability
+    and the row; what they no longer hold is a current snapshot.
+    """
+
 
 # A date far enough out to stand in for "open-ended" when comparing two ranges in
 # Python. Only used for the split arithmetic — the stored value stays NULL, because
@@ -153,16 +165,24 @@ def correct_tax_profile(  # noqa: PLR0913
     confidence: str = ProfileConfidence.STAFF_RECORDED,
     note: str = "",
     mei_category: str | None = None,
+    expected_revision: int,
 ) -> TaxProfile:
     """Assert a new claim about the client's regime, correcting what overlaps it.
 
-    The correction is one transaction: the client's row is locked so two corrections
-    cannot interleave, every current row overlapping the new range is stamped
-    `superseded_at` (its claim is preserved, never rewritten), slices of those rows
-    outside the new range are re-asserted as fresh rows pointing back at the ones
-    they continue, and the new claim is inserted last. `correction_of` names the
-    row whose claim the correction overruled — the overlapping row with the earliest
-    start — so the trail from assertion to assertion stays one hop long.
+    The correction is one transaction: the client is resolved through the actor's
+    portfolio — an invisible client answers `Http404`, refusing to confirm the id
+    names a real row — and its row is locked so two corrections cannot interleave.
+    Every current row overlapping the new range is stamped `superseded_at` (its
+    claim is preserved, never rewritten), slices of those rows outside the new
+    range are re-asserted as fresh rows pointing back at the ones they continue,
+    and the new claim is inserted last. `correction_of` names the row whose claim
+    the correction overruled — the overlapping row with the earliest start — so
+    the trail from assertion to assertion stays one hop long.
+
+    `expected_revision` is the optimistic-concurrency contract: the caller passes
+    the `tax_profile_revision` it read, and the write proceeds only while that
+    number is still current. Two callers holding the same snapshot cannot both
+    commit — the second raises `TaxProfileConflictError` before any row moves.
 
     `actor` is who performed the correction (audited and re-checked against
     `clients.edit_tax_profile`, so a caller that lost the capability mid-request
@@ -178,10 +198,20 @@ def correct_tax_profile(  # noqa: PLR0913
         raise ValueError(msg)
 
     with transaction.atomic():
-        # Lock the client row so a second correction on the same timeline waits for
-        # this one to commit or roll back before reading it. The exclusion
-        # constraint polices the range dimension; this lock polices the write side.
-        locked_client = ClientCompany.objects.select_for_update().get(pk=client.pk)
+        # Resolve through the actor's portfolio AND lock in one statement: the row
+        # is selected by the same visibility rule the views use
+        # (visible_clients: firm-wide roles see the firm, staff see assignments,
+        # nobody sees outside the tenant), and select_for_update holds it until
+        # commit. An invisible pk answers Http404 rather than a denial — 404
+        # refuses to confirm the row exists at all.
+        locked_client = (
+            visible_clients(actor, tenant_id=client.tenant_id)
+            .select_for_update()
+            .filter(pk=client.pk)
+            .first()
+        )
+        if locked_client is None:
+            raise Http404
         # The capability re-check sits INSIDE the lock: the row it protects and the
         # permission it requires are settled in the same instant, so a revoked
         # assignment cannot outrun the check.
@@ -191,6 +221,19 @@ def correct_tax_profile(  # noqa: PLR0913
                 "a tax-timeline correction needs the capability, not only a view."
             )
             raise PermissionDenied(msg)
+        # The version check — the third thing a domain service owes its caller
+        # besides the lock and the capability. Read under the row lock it is
+        # checked under, so a concurrent correction cannot slip between the
+        # compare and the bump. A stale snapshot is refused before a single
+        # profile row is touched, and nothing — not even an event — is written.
+        if locked_client.tax_profile_revision != expected_revision:
+            msg = (
+                f"client {client.pk} tax timeline is at revision "
+                f"{locked_client.tax_profile_revision}, not {expected_revision}: "
+                "the snapshot this correction was built from is stale — re-read "
+                "the timeline and correct again."
+            )
+            raise TaxProfileConflictError(msg)
 
         now = timezone.now()
         # Half-open overlap: a row's range [valid_from, valid_to) meets the
@@ -273,6 +316,12 @@ def correct_tax_profile(  # noqa: PLR0913
             correction_of=replaced,
             note=note,
         )
+        # Advance the revision with the rest of the correction so a loser can
+        # never observe an unchanged counter beside a changed timeline. The client
+        # row is locked, so read-modify-write in Python is safe here.
+        locked_client.tax_profile_revision += 1
+        locked_client.save(update_fields=["tax_profile_revision"])
+
         record_event(
             action=AuditAction.TAX_PROFILE_CORRECTED,
             tenant_id=client.tenant_id,
@@ -291,6 +340,7 @@ def correct_tax_profile(  # noqa: PLR0913
 
 
 __all__ = [
+    "TaxProfileConflictError",
     "assign_client",
     "correct_tax_profile",
     "create_default_checklist",

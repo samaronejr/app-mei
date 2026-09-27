@@ -38,16 +38,13 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 APP = "clients"
 BACKFILL = "0013_backfill_engagement_taxprofile"
-# The schema state the seeds are built against: everything the backfill reads
-# (is_mei, mei_category, opened_on, created_at) exists by then, and the models it
-# creates (Engagement, TaxProfile) already have their tables.
-SCHEMA = "0012_clientcontact_engagement_taxprofile"
-# The seed state's tenants node is the leaf, not the migration's declared
-# dependency: tenant rows are seeded through the historical model, and the real
-# table has columns (features, added by AXR1-002's tenants.0007) that a state
-# ending at tenants.0006 does not know about. Seeding through that older model
-# would send NULL where the live column is NOT NULL — the seed state must match
-# the schema it writes to.
+# The schema state the seeds are built against is each app's LEAF, not the
+# migration's own number: the rows are seeded through the historical models the
+# state projects, and a state that predates a later NOT NULL column (tenants'
+# `features`, clients' own `tax_profile_revision`) sends NULL into the live
+# column the live schema requires — the seed state must match the schema it
+# writes to, not merely the migration under test.
+SCHEMA = "0014_clientcompany_tax_profile_revision"
 TENANTS_SCHEMA = "0007_tenant_features"
 
 

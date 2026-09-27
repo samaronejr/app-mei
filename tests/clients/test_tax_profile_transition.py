@@ -12,13 +12,22 @@ better.
 from datetime import date
 
 import pytest
-from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, transaction
+from django.http import Http404
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event
-from apps.clients.models import ClientCompany, TaxProfile
-from apps.clients.services import correct_tax_profile, profile_at
+from apps.clients.models import (
+    AssignmentRole,
+    ClientAssignment,
+    ClientCompany,
+    TaxProfile,
+)
+from apps.clients.services import (
+    TaxProfileConflictError,
+    correct_tax_profile,
+    profile_at,
+)
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Membership, Tenant, TenantRole
 from tests.isolation.rolecheck import assert_isolated_role
@@ -67,6 +76,15 @@ def _regime_at(client: ClientCompany, on: date) -> str:
     return str(profile.regime)
 
 
+def _timeline_revision(client: ClientCompany) -> int:
+    """Read the counter a correction's caller is expected to pass back.
+
+    Callers read the revision before building their correction and pass it as
+    `expected_revision`; the service compares it under the row lock.
+    """
+    return int(ClientCompany.objects.get(pk=client.pk).tax_profile_revision)
+
+
 def test_overlapping_current_ranges_are_rejected(
     tenant: Tenant,
     client: ClientCompany,
@@ -80,6 +98,7 @@ def test_overlapping_current_ranges_are_rejected(
             regime="mei",
             valid_from=date(2025, 1, 1),
             actor=actor,
+            expected_revision=_timeline_revision(client),
         )
 
     # When a second CURRENT claim overlaps it — even partially — the insert is
@@ -116,6 +135,7 @@ def test_disjoint_ranges_and_other_clients_are_untouched(
             valid_from=date(2025, 1, 1),
             valid_to=date(2025, 6, 1),
             actor=actor,
+            expected_revision=_timeline_revision(client),
         )
         other = ClientCompany.objects.create(
             tenant=tenant,
@@ -156,12 +176,14 @@ def test_a_retrospective_correction_supersedes_and_splits(
             valid_from=date(2025, 1, 1),
             valid_to=date(2026, 1, 1),
             actor=actor,
+            expected_revision=_timeline_revision(client),
         )
         correct_tax_profile(
             client=client,
             regime="simples",
             valid_from=date(2026, 1, 1),
             actor=actor,
+            expected_revision=_timeline_revision(client),
         )
 
         # When a correction lands for May-September 2025, inside the first claim
@@ -172,6 +194,7 @@ def test_a_retrospective_correction_supersedes_and_splits(
             valid_to=date(2025, 10, 1),
             actor=actor,
             note="Receita confirmou desenquadramento retroativo",
+            expected_revision=_timeline_revision(client),
         )
 
         # Then the overruled row is superseded but still readable...
@@ -226,12 +249,14 @@ def test_profile_at_reads_the_timeline_across_a_transition(
             valid_from=date(2025, 1, 1),
             valid_to=date(2025, 4, 1),
             actor=actor,
+            expected_revision=_timeline_revision(client),
         )
         correct_tax_profile(
             client=client,
             regime="simples",
             valid_from=date(2025, 4, 1),
             actor=actor,
+            expected_revision=_timeline_revision(client),
         )
 
         # Then profile_at answers per the VALID clock on each side of the boundary
@@ -240,7 +265,7 @@ def test_profile_at_reads_the_timeline_across_a_transition(
         assert _regime_at(client, date(2099, 1, 1)) == "simples"
 
 
-def test_a_correction_without_the_capability_is_denied(
+def test_a_correction_on_an_invisible_client_is_not_found(
     tenant: Tenant,
     client: ClientCompany,
 ) -> None:
@@ -248,16 +273,16 @@ def test_a_correction_without_the_capability_is_denied(
     assert_isolated_role()
     outsider = User.objects.create_user(email="intruso@elsewhere.test")
 
-    # When it calls the service directly (bypassing any view gate)
-    with (
-        tenant_context(tenant.id),
-        pytest.raises(PermissionDenied),
-    ):
+    # When it calls the service directly (bypassing any view gate), the refusal is
+    # a 404 — the same "not found" the views answer — because a denial would
+    # confirm the id names a real client in the firm.
+    with tenant_context(tenant.id), pytest.raises(Http404):
         correct_tax_profile(
             client=client,
             regime="mei",
             valid_from=date(2025, 1, 1),
             actor=outsider,
+            expected_revision=_timeline_revision(client),
         )
 
     # Then no claim and no event were left behind
@@ -266,6 +291,57 @@ def test_a_correction_without_the_capability_is_denied(
         assert (
             Event.objects.filter(action=AuditAction.TAX_PROFILE_CORRECTED).count() == 0
         )
+
+
+def test_a_staff_accountant_corrects_only_their_assigned_clients(
+    tenant: Tenant,
+    client: ClientCompany,
+) -> None:
+    # Given a staff accountant with the capability but no assignment to this
+    # client — S8.1's layer 2: the capability is firm-side FULL for staff, so
+    # only the portfolio lens narrows them to the clients they actually work.
+    assert_isolated_role()
+    staff = User.objects.create_user(email="contadora.da.equipe@delta.test")
+    Membership.objects.create(
+        user=staff, tenant=tenant, role=TenantRole.STAFF_ACCOUNTANT
+    )
+    with tenant_context(tenant.id):
+        assigned_client = ClientCompany.objects.create(
+            tenant=tenant,
+            legal_name="Cliente Atribuido MEI",
+            cnpj="55KKK77722BB33",
+        )
+        ClientAssignment.objects.create(
+            tenant=tenant,
+            client=assigned_client,
+            user=staff,
+            role=AssignmentRole.PRIMARY,
+        )
+
+        # When it corrects the UNASSIGNED client, the refusal is the portfolio's
+        # 404 — and nothing is written, not even an event.
+        with pytest.raises(Http404):
+            correct_tax_profile(
+                client=client,
+                regime="mei",
+                valid_from=date(2025, 1, 1),
+                actor=staff,
+                expected_revision=_timeline_revision(client),
+            )
+        assert TaxProfile.objects.filter(client_id=client.id).count() == 0
+        assert (
+            Event.objects.filter(action=AuditAction.TAX_PROFILE_CORRECTED).count() == 0
+        )
+
+        # And the same actor on the ASSIGNED client corrects normally.
+        row = correct_tax_profile(
+            client=assigned_client,
+            regime="mei",
+            valid_from=date(2025, 1, 1),
+            actor=staff,
+            expected_revision=_timeline_revision(assigned_client),
+        )
+        assert row.client_id == assigned_client.id
 
 
 def test_an_unknown_period_answers_none_not_a_guess(
@@ -282,6 +358,7 @@ def test_an_unknown_period_answers_none_not_a_guess(
             valid_from=date(2025, 1, 1),
             valid_to=date(2026, 1, 1),
             actor=actor,
+            expected_revision=_timeline_revision(client),
         )
 
         # Then dates outside every current claim answer None: before the earliest
@@ -297,3 +374,95 @@ def test_an_unknown_period_answers_none_not_a_guess(
             cnpj="99QQQ11122XX00",
         )
         assert profile_at(newcomer, date(2025, 6, 1)) is None
+
+
+def test_profile_at_never_answers_with_a_superseded_claim(
+    tenant: Tenant,
+    client: ClientCompany,
+    actor: User,
+) -> None:
+    """The superseded_at IS NULL arm is load-bearing, not hygiene.
+
+    A superseded row keeps its ORIGINAL valid_from — supersede stamps belief, it
+    does not rewrite the claim. So after a correction that starts EARLIER than the
+    claim it replaces, both rows are orderable candidates and the superseded one
+    sorts FIRST on -valid_from. Dropping the current-row filter makes profile_at
+    return the dead claim's regime — deterministically, not by ordering luck.
+    """
+    # Given a believed Simples claim from April...
+    assert_isolated_role()
+    with tenant_context(tenant.id):
+        correct_tax_profile(
+            client=client,
+            regime="simples",
+            valid_from=date(2025, 4, 1),
+            actor=actor,
+            expected_revision=_timeline_revision(client),
+        )
+
+        # When a correction lands for January onward — before the claim's start
+        correct_tax_profile(
+            client=client,
+            regime="mei",
+            valid_from=date(2025, 1, 1),
+            actor=actor,
+            expected_revision=_timeline_revision(client),
+        )
+
+        # Then June is MEI — the superseded Simples row (valid_from April, the
+        # HIGHER sort key) must not surface as the answer.
+        assert _regime_at(client, date(2025, 6, 1)) == "mei"
+
+
+def test_a_stale_revision_is_refused_without_writes(
+    tenant: Tenant,
+    client: ClientCompany,
+    actor: User,
+) -> None:
+    # Given two callers who both read the empty timeline at revision 1 — the
+    # second caller's expected_revision goes stale the moment the first commits.
+    assert_isolated_role()
+    with tenant_context(tenant.id):
+        assert _timeline_revision(client) == 1
+
+        # When the first caller corrects, the timeline moves to revision 2
+        correct_tax_profile(
+            client=client,
+            regime="mei",
+            valid_from=date(2025, 1, 1),
+            actor=actor,
+            expected_revision=1,
+        )
+        assert _timeline_revision(client) == 2
+
+        # Then the second caller's stale snapshot is a conflict — typed, not a
+        # generic failure — and it writes nothing: no claim, no supersede, no
+        # event, and the revision itself stays put.
+        with pytest.raises(TaxProfileConflictError):
+            correct_tax_profile(
+                client=client,
+                regime="simples",
+                valid_from=date(2025, 6, 1),
+                actor=actor,
+                expected_revision=1,
+            )
+
+        assert _timeline_revision(client) == 2
+        assert _current_ranges() == [(date(2025, 1, 1), INFINITY, "mei")]
+        assert (
+            Event.objects.filter(action=AuditAction.TAX_PROFILE_CORRECTED).count() == 1
+        )
+
+        # And the correction lands once the caller re-reads: revision 2 is
+        # current, the range is inserted, and the first claim keeps its tail.
+        correct_tax_profile(
+            client=client,
+            regime="simples",
+            valid_from=date(2025, 6, 1),
+            actor=actor,
+            expected_revision=2,
+        )
+        assert _current_ranges() == [
+            (date(2025, 1, 1), date(2025, 6, 1), "mei"),
+            (date(2025, 6, 1), INFINITY, "simples"),
+        ]

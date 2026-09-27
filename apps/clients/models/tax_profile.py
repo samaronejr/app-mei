@@ -82,7 +82,8 @@ class TaxProfile(TenantScopedModel):
     )
     # Meaningful only while regime is MEI; kept nullable because an unknown regime
     # has no category to assert and a blank string would be a second spelling of
-    # "none". The CHECK below keeps the two columns consistent.
+    # "none". The pairing itself is write-path discipline, not a database CHECK —
+    # the constraint below polices only the date range.
     mei_category = models.CharField(  # noqa: DJ001
         _("MEI category"),
         max_length=16,

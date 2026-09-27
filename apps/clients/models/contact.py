@@ -129,11 +129,13 @@ class ClientContact(TenantScopedModel):
         using: str | None = None,
         update_fields: Iterable[str] | None = None,
     ) -> None:
-        """Enforce the seat-scope check on every write, not only on forms.
+        """Enforce the seat-scope check on every ORM write, not only on forms.
 
         Deliberately here rather than only in `clean`: `clean` runs for ModelForms
         and nothing else, so a management command or a future import would write
         straight past it — same shape as the roster guard on ClientAssignment.
+        Queryset updates, bulk_create and raw SQL bypass `save`, so the check's
+        coverage is the ORM save path, not the database itself.
         """
         self.assert_membership_matches_client()
         super().save(

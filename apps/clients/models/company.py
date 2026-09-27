@@ -150,6 +150,16 @@ class ClientCompany(TenantScopedModel):
     # Payroll is out of scope for v1, but the flag sizes the demand for it and keeps
     # a later eSocial decision a data question rather than a migration.
     has_employee = models.BooleanField(_("has employee"), default=False)
+    # The timeline's optimistic-concurrency counter. TaxProfile rows are immutable
+    # claims, so the version lives on the row the correction locks: every
+    # correct_tax_profile call carries the revision it read as expected_revision,
+    # and the write refuses to land when the timeline moved since that read — two
+    # callers holding the same snapshot cannot both win. Starts at 1, bumped by
+    # the service under the client row lock.
+    tax_profile_revision = models.PositiveIntegerField(
+        _("tax profile revision"),
+        default=1,
+    )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 
