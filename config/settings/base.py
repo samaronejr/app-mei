@@ -427,6 +427,13 @@ PORTAL_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024
 # container's filesystem -- the one direction untrusted callers fully control.
 PORTAL_UPLOAD_MAX_BYTES = PORTAL_DOCUMENT_MAX_BYTES
 
+# The global kill switch for the per-tenant feature flags in apps.core.flags. An
+# entry here overrides whatever a tenant's `features` column carries, so a
+# misbehaving R1 surface can be stood down platform-wide with an env var and a
+# restart — no migration, no per-tenant edits. Entries are slugs from
+# apps.core.flags.FEATURES; an unknown slug disables nothing, which fails safe.
+AXORIM_DISABLED_FEATURES = env.list("AXORIM_DISABLED_FEATURES", default=[])
+
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "purge-access-logs": {
         "task": "apps.audit.tasks.purge_access_logs",

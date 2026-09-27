@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar, Final
 
 from django.conf import settings
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -136,6 +137,25 @@ class Tenant(UUIDv7PrimaryKeyModel):
         max_length=32,
         choices=TenantPlan.choices,
         default=TenantPlan.TRIAL,
+    )
+    # The cohort a firm belongs to is data, not a code branch: R1 surfaces ship
+    # dark and each flag here turns one on for this firm alone. The registry the
+    # values are checked against is apps.core.flags.FEATURES; an entry outside it
+    # is dead weight, which is why TenantAdmin's form refuses unknown slugs rather
+    # than storing them.
+    features = ArrayField(
+        models.CharField(max_length=64),
+        verbose_name=_("features"),
+        default=list,
+        blank=True,
+    )
+    # The entitlement ceiling for the firm's active client count: a number the
+    # commercial contract sets and billing compares usage against. NULL means no
+    # ceiling has been contracted, which is a different answer from zero.
+    active_client_limit = models.PositiveIntegerField(
+        _("active client limit"),
+        null=True,
+        blank=True,
     )
     is_active = models.BooleanField(_("active"), default=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)

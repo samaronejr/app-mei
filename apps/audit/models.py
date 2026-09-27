@@ -69,6 +69,11 @@ class AuditAction(models.TextChoices):
     EXPORT = "export", _("export")
     IMPERSONATION = "impersonation", _("impersonation")
     TENANT_SELECTED = "tenant_selected", _("tenant selected")
+    # Platform-level edits to the tenancy root itself: feature flags, entitlements,
+    # plan. Written through record_platform_event because Tenant is in
+    # NON_TENANT_TABLES — the change has no tenant CONTEXT to record an Event in,
+    # only a tenant it is about.
+    TENANT_UPDATED = "tenant_updated", _("tenant updated")
     ALL_TENANTS_ACCESS = "all_tenants_access", _("cross-tenant access")
     DSR_SUBMITTED = "dsr_submitted", _("data subject request submitted")
     DENIED = "denied", _("action denied")

@@ -296,7 +296,7 @@ class PortalMiddleware:
                     # app_runtime, which is the only window where the three tables
                     # this needs are readable.
                     stash_token = portal_stash.set(
-                        self._build_stash(request.user, membership),
+                        self._build_stash(request.user, membership, tenant),
                     )
                     self._assume_portal_role()
                 response = self.get_response(request)
@@ -310,8 +310,18 @@ class PortalMiddleware:
             current_tenant_id.reset(tenant_token)
 
     @staticmethod
-    def _build_stash(user: Actor, membership: Membership) -> PortalStash:
-        """Resolve every capability once, as `app_runtime`, before the role switch."""
+    def _build_stash(
+        user: Actor,
+        membership: Membership,
+        tenant: Tenant | None,
+    ) -> PortalStash:
+        """Resolve every capability once, as `app_runtime`, before the role switch.
+
+        `features` comes from the tenant row `_resolve_tenant` already fetched —
+        passing `membership.tenant` would fetch it again, and after the switch
+        `app_portal` cannot read `tenants_tenant` at all, which is the whole reason
+        the flags are carried here.
+        """
         return PortalStash(
             # membership.user_id, not user.pk: _grant_context filtered on this user, so
             # they are the same value, and this one needs no narrowing and no query.
@@ -321,6 +331,9 @@ class PortalMiddleware:
                 user,
                 CAPABILITY_SLUGS,
                 tenant_id=membership.tenant_id,
+            ),
+            features=(
+                frozenset(tenant.features) if tenant is not None else frozenset()
             ),
         )
 

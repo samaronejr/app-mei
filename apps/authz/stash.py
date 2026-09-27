@@ -45,11 +45,19 @@ class PortalStashMiss(LookupError):  # noqa: N818
 
 @dataclass(frozen=True, slots=True)
 class PortalStash:
-    """One request's resolved levels, with the identity they were resolved for."""
+    """One request's resolved levels, with the identity they were resolved for.
+
+    `features` carries the tenant's raw feature flags for the same reason `levels`
+    carries the matrix: `tenants_tenant` is denied to `app_portal` after the role
+    switch, so the entitlement has to be resolved while the role is still
+    `app_runtime`. It defaults to empty — a stash built without it answers "all
+    off", which fails closed.
+    """
 
     user_pk: UUID
     tenant_id: UUID
     levels: Mapping[str, str]
+    features: frozenset[str] = frozenset()
 
 
 portal_stash: Final[ContextVar[PortalStash | None]] = ContextVar(
@@ -99,3 +107,26 @@ def stashed_level(
         raise PortalStashMiss(msg)
 
     return stash.levels[action]
+
+
+def stashed_features(tenant_id: UUID | None) -> frozenset[str] | None:
+    """Return the stashed feature flags, `None` when no stash applies.
+
+    `None` means "no portal role was assumed" — the firm side, `/accounts/`, the
+    non-atomic path — and the caller takes the ordinary read. A live stash asked
+    about a DIFFERENT tenant raises rather than answering with another firm's
+    flags, the same tenant rule `stashed_level` enforces.
+    """
+    stash = portal_stash.get()
+    if stash is None:
+        return None
+
+    if tenant_id != stash.tenant_id:
+        msg = (
+            f"The portal stash was built for tenant {stash.tenant_id!r} and was "
+            f"asked about {tenant_id!r}. Answering from it would report one "
+            f"firm's feature flags for another."
+        )
+        raise PortalStashMiss(msg)
+
+    return stash.features

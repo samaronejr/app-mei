@@ -30,6 +30,7 @@ from django.http import HttpRequest, StreamingHttpResponse
 from django.http.response import HttpResponseBase
 from django.urls import Resolver404, resolve
 
+from apps.core.flags import open_flag_cache, prime_flag_cache
 from apps.core.tenancy import current_tenant_id
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.models import Membership, Tenant
@@ -194,7 +195,13 @@ class TenantMiddleware:
         # tenant into the next one.
         token = current_tenant_id.set(tenant.id if tenant else None)
         try:
-            with transaction.atomic():
+            # The flag cache's lifetime is the request's: opened and closed here so
+            # a feature check can never answer the NEXT request with this one's
+            # tenant row. Primed from the row resolution already fetched, so the
+            # request's own tenant answers every check without a query of its own.
+            with open_flag_cache(), transaction.atomic():
+                if tenant is not None:
+                    prime_flag_cache(tenant)
                 self._apply_guc(tenant)
                 response = self.get_response(request)
                 self._reject_streaming(response, tenant)

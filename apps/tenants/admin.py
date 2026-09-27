@@ -4,10 +4,15 @@ from typing import Any
 
 from django import forms
 from django.contrib import admin
+from django.core.exceptions import ValidationError
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.utils.translation import gettext_lazy as _
 
+from apps.audit.models import AuditAction
+from apps.audit.services import Origin, record_platform_event
+from apps.core.flags import FEATURES
+from apps.core.netaddr import client_ip
 from apps.core.templatetags.ptbr import TENANT_ROLE_LABELS, papel
 from apps.tenants.models import (
     Invite,
@@ -98,13 +103,87 @@ class InviteAdminForm(forms.ModelForm[Invite]):
         fields = ("tenant", "email", "role", "expires_at", "accepted_at")
 
 
+class TenantAdminForm(forms.ModelForm[Tenant]):
+    """Hold the tenant form to the flag registry the rollout contract defines.
+
+    `features` is an array of free-text slugs at the column level on purpose — a
+    new flag is a code change, not a migration — so the admin form is where an
+    unknown slug is refused. Storing one would look like a grant and answer every
+    gate with `False` forever, which is the silent shape `UnknownFeature` exists
+    to prevent at the code layer; here it becomes a field error an operator can
+    actually see and fix.
+    """
+
+    class Meta:
+        """Fields listed positively: the entitlement pair is why this form exists."""
+
+        model = Tenant
+        fields = (
+            "name",
+            "slug",
+            "plan",
+            "is_active",
+            "features",
+            "active_client_limit",
+        )
+
+    def clean_features(self) -> list[str]:
+        """Refuse slugs `apps.core.flags.FEATURES` does not define."""
+        values: list[str] = self.cleaned_data["features"]
+        unknown = sorted(set(values) - FEATURES)
+        if unknown:
+            raise ValidationError(
+                _("Unknown feature flags: %(flags)s."),
+                params={"flags": ", ".join(unknown)},
+            )
+        return values
+
+
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin[Tenant]):
-    """Browse firms by the subdomain they are reached at."""
+    """Browse firms by the subdomain they are reached at.
 
+    `features` and `active_client_limit` are editable here because that is how a
+    firm joins a rollout cohort — the entitlement is data, and the console is the
+    operator surface that writes it. Every save is recorded as a `PlatformEvent`
+    naming the actor, the firm and the changed fields, so a flag appearing on a
+    tenant is never an untracked event.
+    """
+
+    form = TenantAdminForm
     list_display = ("slug", "name", "plan", "is_active")
     list_filter = ("plan", "is_active")
     search_fields = ("slug", "name")
+
+    def save_model(
+        self,
+        request: HttpRequest,
+        obj: Tenant,
+        form: forms.ModelForm[Tenant],
+        change: bool,
+    ) -> None:
+        """Persist the firm and record the entitlement change as a PlatformEvent.
+
+        A platform event rather than a tenant-scoped Event: `tenants_tenant` is a
+        tenancy root with no tenant context of its own, so the row names the firm
+        through `tenant_id` and `subject` instead of being written inside it.
+        """
+        super().save_model(request, obj, form, change)
+        record_platform_event(
+            action=AuditAction.TENANT_UPDATED,
+            origin=Origin(
+                actor=request.user,
+                subject=obj.slug,
+                ip=client_ip(request),
+            ),
+            tenant_id=obj.pk,
+            metadata={
+                "changed_fields": sorted(form.changed_data),
+                "created": not change,
+                "features": sorted(obj.features),
+                "active_client_limit": obj.active_client_limit,
+            },
+        )
 
 
 @admin.register(Membership)
