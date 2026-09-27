@@ -83,7 +83,7 @@ def test_create_a_client_set_its_profile_and_invite_a_contact(
 
     with page.expect_navigation():
         invite.click()
-    expect(page.locator("#contatos tbody")).to_contain_text("Convite enviado")
+    expect(page.locator("#contatos tbody")).to_contain_text("Convite pendente")
     axe_check(page)
     shell.assert_clean_console()
     shell.screenshot("onboarding-setup")

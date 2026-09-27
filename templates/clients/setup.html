@@ -132,8 +132,9 @@
                 <td data-label="{% translate 'Portal' %}">
                   {% if item.row.membership_id %}
                     {% translate "Com acesso" %}
-                  {% elif item.invite_pending %}
-                    {% translate "Convite enviado" %}
+                  {% elif item.pending_invite_id %}
+                    {% translate "Convite pendente" %}
+                    {% if may_assign %}<a class="link" href="{% url 'invite-revoke' item.pending_invite_id %}">{% blocktranslate with name=item.row.name %}Cancelar convite pendente de {{ name }}{% endblocktranslate %}</a>{% endif %}
                   {% elif item.invitable and may_assign %}
                     <form method="post" action="{% url 'client-contact-invite' client.pk item.row.pk %}" class="flex flex-wrap items-end gap-2">
                       {% csrf_token %}

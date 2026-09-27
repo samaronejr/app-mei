@@ -28,7 +28,7 @@ from django.utils.translation import gettext as _
 from apps.accounts.invites import issue_client_invite
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
-from apps.audit.services import ObjectRef, record_event
+from apps.audit.services import ObjectRef, Origin, record_event, record_platform_event
 from apps.authz.portfolio import PortfolioScope, portfolio_scope, visible_clients
 from apps.authz.services import can
 from apps.clients.models import (
@@ -564,6 +564,46 @@ def invite_contact(  # noqa: PLR0913 - keyword-only issuance contract
         )
 
 
+def withdraw_undelivered_invite(
+    *,
+    invite_id: UUID,
+    requested_by: User,
+    reason: str,
+) -> None:
+    """System compensation: stand down ONE invitation whose delivery failed.
+
+    Called only from the post-commit send of the request that issued `invite_id`,
+    with that request's own invitation. It is bookkeeping, not an administrator's
+    act: it grants nothing and only withdraws a credential nobody received, so it
+    does NOT re-check the requester's current `users.create` (which may have been
+    removed in between) — the public/manual `revoke_invite` keeps its check. Bounded
+    to that single row, and only while it is still unaccepted and unrevoked; an
+    already-withdrawn invitation is left as it is. Audited as an `invite_revoked`
+    platform event flagged `system`, attributed to the request that issued it.
+    Raises if the row cannot be updated, so the caller can report the truth.
+    """
+    with transaction.atomic():
+        # PLATFORM_QUERY_OK: tenants_invite is a tenancy root; the lookup is by the
+        # primary key this same request just created, under a row lock.
+        invite = Invite.objects.select_for_update().filter(pk=invite_id).first()
+        if invite is None or invite.accepted_at or invite.revoked_at:
+            return
+        invite.revoked_at = timezone.now()
+        invite.save(update_fields=["revoked_at"])
+        record_platform_event(
+            action=AuditAction.INVITE_REVOKED,
+            origin=Origin(actor=requested_by, subject=invite.email),
+            tenant_id=invite.tenant_id,
+            metadata={
+                "invite_id": str(invite.pk),
+                "role": invite.role,
+                "client_id": str(invite.client_id) if invite.client_id else None,
+                "system": True,
+                "reason": reason,
+            },
+        )
+
+
 def assignment_state(client: ClientCompany) -> str:
     """Fingerprint the client's current assignments: their optimistic version.
 
@@ -669,4 +709,5 @@ __all__ = [
     "save_engagement",
     "set_tax_profile",
     "update_client",
+    "withdraw_undelivered_invite",
 ]

@@ -25,12 +25,13 @@ from django.forms import Form
 from django.http import Http404, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.translation import gettext as _
 from django.utils.translation import gettext_lazy
 from django.views.decorators.http import require_http_methods, require_POST
 
 from apps.accounts.forms import portal_role_choices
-from apps.accounts.invites import InviteNotPermittedError, revoke_invite
+from apps.accounts.invites import InviteNotPermittedError
 from apps.accounts.models import User
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.services import can, require_can
@@ -65,6 +66,7 @@ from apps.clients.maintenance import (
     save_engagement,
     set_tax_profile,
     update_client,
+    withdraw_undelivered_invite,
 )
 from apps.clients.models import (
     ClientAssignment,
@@ -103,9 +105,20 @@ INVITE_SEND_FAILURE: Final = (
     "Não foi possível enviar o convite por e-mail. Nenhum convite ficou ativo; "
     "tente novamente em alguns minutos."
 )
-INVITE_SENT_NOTICE: Final = "Convite enviado por e-mail."
+# The send was refused AND the automatic withdrawal failed: the invitation may still
+# be live although nobody received it. Say exactly that, and point at the recovery.
+INVITE_UNRESOLVED_NOTICE: Final = (
+    "Não foi possível enviar o convite por e-mail, e ele não pôde ser cancelado "
+    'automaticamente: pode continuar ativo sem ter sido recebido. Use "Cancelar '
+    'convite pendente" neste contato e depois convide de novo.'
+)
+# S5.7: an SMTP acceptance is not a delivery, and never a reading.
+INVITE_SENT_NOTICE: Final = (
+    "Convite aceito pelo servidor de e-mail. Isso não confirma a leitura."
+)
 INVITE_SENT: Final = "enviado"
 INVITE_FAILED: Final = "falhou"
+INVITE_UNRESOLVED: Final = "pendente"
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +191,10 @@ def _setup_context(
         client_id=client.pk,
         accepted_at__isnull=True,
         revoked_at__isnull=True,
+        expires_at__gt=timezone.now(),
     )
-    pending_emails = {invite.email.lower() for invite in pending}
+    # email -> the open invitation, so a pending one can be cancelled from here.
+    pending_by_email = {invite.email.lower(): invite.pk for invite in pending}
     state = assignment_state(client)
     return {
         "client": client,
@@ -207,7 +222,7 @@ def _setup_context(
         "contacts": [
             {
                 "row": contact,
-                "invite_pending": contact.email.lower() in pending_emails,
+                "pending_invite_id": pending_by_email.get(contact.email.lower()),
                 "invitable": bool(
                     contact.active
                     and contact.email
@@ -249,9 +264,10 @@ def _setup_page(
     **forms: Form,
 ) -> HttpResponse:
     context = _setup_context(request, client, **forms)
-    context["invite_failed"] = (
-        _(INVITE_SEND_FAILURE) if invite_outcome == INVITE_FAILED else ""
-    )
+    context["invite_failed"] = {
+        INVITE_FAILED: _(INVITE_SEND_FAILURE),
+        INVITE_UNRESOLVED: _(INVITE_UNRESOLVED_NOTICE),
+    }.get(invite_outcome, "")
     context["invite_sent"] = (
         _(INVITE_SENT_NOTICE) if invite_outcome == INVITE_SENT else ""
     )
@@ -653,9 +669,11 @@ def _deliver_invitation(  # noqa: PLR0913 - everything the post-commit send need
     Runs from `transaction.on_commit`, after the tenant transaction has committed:
     the send is external I/O and must never happen inside it (plan MH-6/MN-3). The
     outcome is written into the redirect the view already returned, so the reader
-    lands on the setup page with a message either way. An SMTP refusal revokes the
-    invitation through `revoke_invite` (audited, capability re-checked) so no live
-    credential exists that nobody received, and the contact can be invited again.
+    lands on the setup page with a message either way. An SMTP refusal withdraws
+    the invitation through `withdraw_undelivered_invite` (system cleanup of that one
+    row, audited) so no live credential exists that nobody received, and the contact
+    can be invited again. If even that cleanup fails, the page says the invitation
+    may still be live and offers "Cancelar convite pendente" as the recovery.
     """
     try:
         _mail_contact_invitation(invite.email, tenant, raw_token)
@@ -666,13 +684,19 @@ def _deliver_invitation(  # noqa: PLR0913 - everything the post-commit send need
         )
         sentry_sdk.capture_exception(error)
         try:
-            revoke_invite(actor=actor, invite=invite)
-        except Exception as revoke_error:
+            withdraw_undelivered_invite(
+                invite_id=invite.pk,
+                requested_by=actor,
+                reason=type(error).__name__,
+            )
+        except Exception as cleanup_error:
             logger.exception(
                 "could not stand down an unsent invitation",
                 extra={"invite_id": str(invite.pk)},
             )
-            sentry_sdk.capture_exception(revoke_error)
+            sentry_sdk.capture_exception(cleanup_error)
+            response["Location"] = f"{setup_url}?convite={INVITE_UNRESOLVED}#contatos"
+            return
         response["Location"] = f"{setup_url}?convite={INVITE_FAILED}#contatos"
         return
     response["Location"] = f"{setup_url}?convite={INVITE_SENT}#contatos"
