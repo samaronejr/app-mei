@@ -56,6 +56,13 @@ from apps.accounts.invites import (
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
+from apps.authz.grants import (
+    GrantNotPermittedError,
+    GrantSeatError,
+    active_reviewer_user_ids,
+    reviewer_eligible,
+    set_review_capability,
+)
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
 from apps.portal.middleware import PORTAL_URLCONF
@@ -167,7 +174,7 @@ def issue_invite_view(request: AuthenticatedRequest) -> HttpResponse:
         return TemplateResponse(
             request,
             "accounts/team.html",
-            _team_context(request, tenant, form),
+            _team_context(request, tenant, form, with_reviewers=False),
         )
     return HttpResponseRedirect(reverse("invite-issued"))
 
@@ -445,6 +452,8 @@ def _team_context(
     request: AuthenticatedRequest,
     tenant: Tenant,
     form: InviteIssueForm,
+    *,
+    with_reviewers: bool,
 ) -> dict[str, object]:
     # The outer filter is separate from the one inside for_user: that narrows WHICH
     # FIRMS the caller belongs to, while this narrows which rows come back. When the
@@ -469,6 +478,20 @@ def _team_context(
         )
         .order_by("email")
     )
+    # Annotated in Python, not annotated in the template: deciding who may carry a
+    # reviewer grant is a role question, and the role-check guard confines those to
+    # apps/authz — `reviewer_eligible` is the one place the rule lives. The read is
+    # opt-in per call site because `invite_issue_view` reaches here on its
+    # SMTP-failure re-render, where `set_rollback` has already broken the request
+    # transaction (ATOMIC_REQUESTS) and any query raises TransactionManagementError.
+    # With reviewers off the queryset is returned lazy, exactly as before, and the
+    # template's own iteration happens after the response leaves the view — outside
+    # the rolled-back block. The column then renders empty on that error page.
+    if with_reviewers:
+        reviewers = active_reviewer_user_ids()
+        for member in memberships:  # evaluated here, inside a healthy transaction
+            setattr(member, "reviewer_eligible", reviewer_eligible(member))  # noqa: B010
+            setattr(member, "reviewer_active", member.user_id in reviewers)  # noqa: B010
     return {"memberships": memberships, "pending_invites": pending, "form": form}
 
 
@@ -494,7 +517,7 @@ def team_view(request: AuthenticatedRequest) -> HttpResponse:
     return render(
         request,
         "accounts/team.html",
-        _team_context(request, tenant, InviteIssueForm()),
+        _team_context(request, tenant, InviteIssueForm(), with_reviewers=True),
     )
 
 
@@ -681,6 +704,54 @@ def member_deactivate_view(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
         request,
         _("O acesso de %(email)s foi desativado.") % {"email": membership.user.email},
     )
+    return HttpResponseRedirect(reverse("team"))
+
+
+@require_POST
+@login_required
+@require_can(INVITE_CAPABILITY)
+def member_review_toggle_view(
+    request: AuthenticatedRequest,
+    pk: UUID,
+) -> HttpResponse:
+    """Give or take a staff accountant's `actions.approve` reviewer grant.
+
+    Gated on the same `users.create` as the roster's other edits, and deliberately
+    a POST with an explicit `enabled` rather than a blind toggle: a double-click or
+    a retry must converge on the asked-for state, not land wherever the
+    interleaving leaves it.
+
+    Anything the toggle cannot act on answers 404, matching `_visible_membership`'s
+    contract — for a row this control does not exist on (an owner or ops row, a
+    portal seat, a deactivated member), the route answers as if it were not there
+    rather than confirming the row is real. `GrantSeatError` collapses into the
+    same answer.
+    """
+    membership = _visible_membership(request, pk)
+    enabled = request.POST.get("enabled")
+    if enabled not in {"0", "1"}:
+        raise Http404
+    try:
+        set_review_capability(
+            actor=request.user,
+            membership=membership,
+            enabled=enabled == "1",
+        )
+    except GrantNotPermittedError as refused:
+        raise PermissionDenied(str(refused)) from refused
+    except GrantSeatError as refused:
+        raise Http404 from refused
+    email = membership.user.email
+    if enabled == "1":
+        messages.success(
+            request,
+            _("%(email)s pode revisar e aprovar.") % {"email": email},
+        )
+    else:
+        messages.success(
+            request,
+            _("%(email)s não pode mais revisar e aprovar.") % {"email": email},
+        )
     return HttpResponseRedirect(reverse("team"))
 
 

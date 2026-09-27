@@ -13,6 +13,7 @@ from apps.accounts.views import (
     issue_invite_view,
     member_deactivate_view,
     member_reactivate_view,
+    member_review_toggle_view,
     portal_invite_issue_view,
     team_view,
 )
@@ -28,6 +29,11 @@ urlpatterns = [
         "equipe/<uuid:pk>/reativar/",
         member_reactivate_view,
         name="member-reactivate",
+    ),
+    path(
+        "equipe/<uuid:pk>/revisar/",
+        member_review_toggle_view,
+        name="member-review-toggle",
     ),
     path("convites/", issue_invite_view, name="invite-issue"),
     path("convites/enviado/", invite_issued_view, name="invite-issued"),

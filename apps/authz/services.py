@@ -57,6 +57,27 @@ class UnknownCapability(LookupError):  # noqa: N818
     """
 
 
+# A total order over the enum, used only for `max()` when a user grant competes
+# with the role grant. `UserCapabilityGrant.level` is CHECK-constrained to
+# full/none, so in R1 the comparison this produces is trivially a grant of FULL —
+# the ranks below exist so that if the constraint is ever relaxed, "the max" stays
+# a defined answer rather than whichever string happened to sort later.
+_LEVEL_RANK: Final[dict[str, int]] = {
+    GrantLevel.NONE: 0,
+    GrantLevel.TICKET_ONLY: 1,
+    GrantLevel.VIEW_CONFIRM: 2,
+    GrantLevel.INITIATE_APPROVE: 3,
+    GrantLevel.OWN: 4,
+    GrantLevel.LIMITED: 5,
+    GrantLevel.FULL: 6,
+}
+
+
+def _max_level(first: str, second: str) -> str:
+    """Return the more permissive of two matrix levels."""
+    return first if _LEVEL_RANK[first] >= _LEVEL_RANK[second] else second
+
+
 def resolve_level(
     user: Actor,
     action: str,
@@ -65,11 +86,18 @@ def resolve_level(
 ) -> str:
     """Return the raw matrix level for this account, before object refinement.
 
-    Resolution order, and the order matters: superuser short-circuit, then the active
-    membership's role, then the grant. The short-circuit comes first because the
+    Resolution order, and the order matters: superuser short-circuit, then the
+    active membership's role, then the role grant, then a live
+    `UserCapabilityGrant` raising it. The short-circuit comes first because the
     report's *platform admin* column has no membership to look up — `Membership.role`
-    offers only the three firm-side roles — so a membership-first order would deny the
-    platform administrator every capability the matrix grants them.
+    offers only the three firm-side roles — so a membership-first order would deny
+    the platform administrator every capability the matrix grants them.
+
+    The user grant is consulted ONLY for firm-side roles. A client role's answer
+    comes from its role grant and the stash alone, by construction: R1 has no
+    legitimate path that mints a grant onto a portal membership, and a row written
+    there anyway — the ORM does not know the caller's intent — must resolve to
+    exactly what it would have resolved to absent the row.
     """
     # Before _capability, which reads authz_capability — denied to app_portal, and a
     # denied read aborts the transaction rather than refusing.
@@ -85,7 +113,9 @@ def resolve_level(
     if role is None:
         return GrantLevel.NONE
     grant = RoleGrant.objects.filter(role=role, capability=capability).first()
-    return grant.level if grant is not None else GrantLevel.NONE
+    role_level = grant.level if grant is not None else GrantLevel.NONE
+    user_level = _user_grant_level(user, action, role, tenant_id)
+    return _max_level(role_level, user_level)
 
 
 def can(
@@ -207,7 +237,69 @@ def _resolve_levels_and_role(
             capability__slug__in=slugs,
         ).values_list("capability__slug", "level"),
     )
-    return role, {slug: resolved.get(slug, GrantLevel.NONE) for slug in slugs}
+    user_levels = _user_grant_levels(user, slugs, role, tenant_id)
+    return role, {
+        slug: _max_level(
+            resolved.get(slug, GrantLevel.NONE),
+            user_levels.get(slug, GrantLevel.NONE),
+        )
+        for slug in slugs
+    }
+
+
+def _user_grant_level(
+    user: Actor,
+    action: str,
+    role: str,
+    tenant_id: UUID | None,
+) -> str:
+    """Return the live grant level for one capability, or NONE when none applies."""
+    return _user_grant_levels(user, (action,), role, tenant_id).get(
+        action,
+        GrantLevel.NONE,
+    )
+
+
+def _user_grant_levels(
+    user: Actor,
+    slugs: tuple[str, ...],
+    role: str,
+    tenant_id: UUID | None,
+) -> dict[str, str]:
+    """Read this account's live user grants for `slugs`, or none for client roles.
+
+    Skipped wholesale for the two client roles: a portal answer must come from the
+    role grant and the stash alone. With no client context a portal membership is
+    invisible to `role_of` and this is never reached for it; inside one it is, and
+    the skip is the difference between a grant row on a client seat being inert
+    and it smuggling a firm capability into a portal answer.
+
+    `all_objects` with an explicit tenant filter, deliberately: the scoped
+    manager reads the AMBIENT context var, while `resolve_level` may have been
+    handed a different explicit tenant — `role_of` above resolves `tenant_id or
+    current_tenant_id` and this read must ask about the same firm. Row-level
+    security still applies underneath, so a context-var ambient pointing at a
+    different tenant sees nothing either way — the policy is the boundary, this
+    filter is just the question being asked of the right tenant.
+    """
+    from apps.tenants.models import CLIENT_ROLES  # noqa: PLC0415
+
+    if role in CLIENT_ROLES:
+        return {}
+    resolved = tenant_id or current_tenant_id.get()
+    if resolved is None:
+        return {}
+    grant_model = django_apps.get_model("authz", "UserCapabilityGrant")
+    # ALL_OBJECTS_OK: `tenant_id=` names the tenant explicitly, matching what
+    # `role_of` resolved against; the scoped manager would instead ask the ambient
+    # context var, which a command handing an explicit tenant may never have set.
+    rows = grant_model.all_objects.filter(
+        tenant_id=resolved,
+        user=user,
+        capability__slug__in=slugs,
+        revoked_at__isnull=True,
+    )
+    return dict(rows.values_list("capability__slug", "level"))
 
 
 def require_can(

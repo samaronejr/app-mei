@@ -30,6 +30,7 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
     {
         "member-deactivate",
         "member-reactivate",
+        "member-review-toggle",
         "invite-revoke",
         "portal-invite-issue",
         "client-detail",

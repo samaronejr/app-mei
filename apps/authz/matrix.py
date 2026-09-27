@@ -1,8 +1,8 @@
 """The published permission matrix, transcribed cell for cell.
 
-Source: `deep-research-report.md` lines 51-66 — sixteen capability rows by six role
-columns, ninety-six cells. Line 49 is the table header and line 50 its separator;
-counting those two gives eighteen rows and the wrong total.
+Source: `deep-research-report.md` lines 51-80 — thirty capability rows by six role
+columns, one hundred and eighty cells. Line 49 is the table header and line 50 its
+separator; counting those two gives the wrong total.
 
 `ROLE_ORDER` reproduces the report's column order exactly so a row here can be read
 side by side with the published table. The matrix test does not trust this file: it
@@ -150,6 +150,84 @@ MATRIX: Final[tuple[CapabilityRow, ...]] = (
         "obligations.view_revenue_threshold_queue",
         "View revenue threshold queue",
         (FULL, FULL, FULL, FULL, NONE, NONE),
+    ),
+    # The R1 rows below are the S8.1 additions to the published table, and they use
+    # FULL and NONE ONLY, deliberately. `require_can` passes no object, so any
+    # object-refined level — LIMITED, OWN — is an unconditional denial, and the
+    # channel levels never grant an action at all. Per-client narrowing is not a
+    # capability level here: it happens in views and services, which load the
+    # client through `visible_clients`/`load_visible_client` and answer 404.
+    CapabilityRow(
+        "clients.import",
+        "Import client portfolio",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "clients.manage",
+        "Maintain clients, engagements, contacts",
+        (NONE, FULL, FULL, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "playbooks.manage",
+        "Edit and publish playbooks",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "cycles.operate",
+        "Operate service cycles",
+        (NONE, FULL, FULL, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "cycles.review",
+        "Review client documents",
+        (NONE, FULL, FULL, FULL, NONE, NONE),
+    ),
+    # The "reviewer" capability. `staff_accountant` is NONE here by role and is
+    # raised to FULL per person by an active `UserCapabilityGrant` — approver and
+    # initiator stay different people without adding a sixth role to the matrix.
+    CapabilityRow(
+        "actions.approve",
+        "Approve client-facing effects",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "cycles.complete",
+        "Complete service cycles",
+        (NONE, FULL, FULL, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "cycles.reopen",
+        "Reopen completed cycles",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "bulk.run",
+        "Run bulk operations",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "automations.manage",
+        "Manage automations",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "evidence.export",
+        "Export evidence bundles",
+        (NONE, FULL, FULL, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "support.grant",
+        "Grant support access",
+        (NONE, FULL, NONE, NONE, NONE, NONE),
+    ),
+    # The only new capability FULL for the client roles, which is the property
+    # `core.E010` demands of anything gating a portal view: `require_can` passes
+    # no object, so a lesser level would be an unconditional 403 for the very
+    # users the portal exists to serve.
+    CapabilityRow(
+        "publications.acknowledge",
+        "Acknowledge publications",
+        (NONE, NONE, NONE, NONE, FULL, FULL),
     ),
 )
 

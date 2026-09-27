@@ -21,8 +21,11 @@ from apps.tenants.models import CLIENT_ROLES, Membership, Tenant, TenantRole
 pytestmark = pytest.mark.django_db
 
 ALL_SLUGS = [row.slug for row in MATRIX]
-# One capability existence check, one membership read, one grant read.
-BULK_QUERY_BUDGET = 3
+# One capability existence check, one membership read, one role-grant read, one
+# user-grant read. The last is T4's: `UserCapabilityGrant` is consulted on every
+# firm-side resolution, and dropping the read would make this budget pass while
+# `resolve_level` silently disagreed — exactly the drift this test exists to catch.
+BULK_QUERY_BUDGET = 4
 
 
 @pytest.fixture

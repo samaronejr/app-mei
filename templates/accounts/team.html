@@ -25,6 +25,7 @@
               <th scope="col">{% translate "Pessoa" %}</th>
               <th scope="col">{% translate "Papel" %}</th>
               <th scope="col">{% translate "Situação" %}</th>
+              <th scope="col">{% translate "Revisão" %}</th>
               <th scope="col">{% translate "Ações" %}</th>
             </tr>
           </thead>
@@ -38,6 +39,29 @@
                     <span class="badge badge-ok">{% translate "ativo" %}</span>
                   {% else %}
                     <span class="badge badge-neutral">{% translate "inativo" %}</span>
+                  {% endif %}
+                </td>
+                <td data-label="{% translate 'Revisão' %}">
+                  {% comment %}
+                    The "Pode revisar e aprovar" grant: the S8.1 reviewer capability
+                    (actions.approve) exists only for staff_accountant rows — owners
+                    and ops hold it FULL by role, so a grant on them would be dead
+                    weight — and the two flags arrive precomputed because deciding
+                    eligibility is a role question, which lives in apps/authz.
+                    The state is explicit in the POST (enabled=1/0), never a blind
+                    flip, so a double-click converges instead of racing.
+                  {% endcomment %}
+                  {% if membership.reviewer_eligible %}
+                    <form method="post" action="{% url 'member-review-toggle' membership.pk %}">
+                      {% csrf_token %}
+                      {% if membership.reviewer_active %}<input type="hidden" name="enabled" value="0">{% else %}<input type="hidden" name="enabled" value="1">{% endif %}
+                      <button type="submit" class="btn btn-quiet" aria-pressed="{{ membership.reviewer_active|yesno:'true,false' }}">
+                        {% blocktranslate with email=membership.user.email %}Pode revisar e aprovar — {{ email }}{% endblocktranslate %}
+                      </button>
+                      {% if membership.reviewer_active %}
+                        <span class="badge badge-ok">{% translate "ativo" %}</span>
+                      {% endif %}
+                    </form>
                   {% endif %}
                 </td>
                 <td data-label="{% translate 'Ações' %}">
@@ -63,7 +87,7 @@
                 </td>
               </tr>
             {% empty %}
-              <tr><td colspan="4" class="empty-state">{% translate "Nenhum membro." %}</td></tr>
+              <tr><td colspan="5" class="empty-state">{% translate "Nenhum membro." %}</td></tr>
             {% endfor %}
           </tbody>
         </table>

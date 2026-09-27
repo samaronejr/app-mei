@@ -22,9 +22,10 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 OWNER_ONLY = "Equipe"
 SHARED = "Exportar clientes"
-# Two reads for the whole table: the capability existence check and the grant lookup,
-# plus the membership read that resolves the role.
-NAV_QUERY_BUDGET = 3
+# Three reads for the whole table: the capability existence check, the role-grant
+# lookup and the user-grant lookup (T4's UserCapabilityGrant), plus the membership
+# read that resolves the role.
+NAV_QUERY_BUDGET = 4
 
 
 @pytest.fixture(autouse=True)

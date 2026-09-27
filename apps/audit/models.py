@@ -60,6 +60,12 @@ class AuditAction(models.TextChoices):
     # were revocations.
     MEMBERSHIP_DEACTIVATED = "membership_deactivated", _("membership deactivated")
     MEMBERSHIP_REACTIVATED = "membership_reactivated", _("membership reactivated")
+    # Separate from ROLE_CHANGED for the same reason MEMBERSHIP_DEACTIVATED is: the
+    # question an investigation asks is "who was raised above their role, and who
+    # stood it down", and folding grants into role edits would make that answer a
+    # metadata read over every role change.
+    CAPABILITY_GRANTED = "capability_granted", _("capability granted")
+    CAPABILITY_REVOKED = "capability_revoked", _("capability revoked")
     ASSIGNMENT_CHANGED = "assignment_changed", _("assignment changed")
     CONNECTOR_CONNECTED = "connector_connected", _("connector connected")
     CONNECTOR_DISCONNECTED = "connector_disconnected", _("connector disconnected")

@@ -228,8 +228,8 @@ def test_the_disclosure_does_not_raise_the_nav_query_budget(
 ) -> None:
     """Rendering the bar twice — once flat, once in the disclosure — would double it."""
     _nav_disclosure(_firm_page(firm), where="the owner's Equipe page")
-    assert NAV_QUERY_BUDGET == 3, (
-        "tests/ui/test_navigation.py pinned the bar at 3 queries; the disclosure is "
+    assert NAV_QUERY_BUDGET == 4, (
+        "tests/ui/test_navigation.py pinned the bar at 4 queries; the disclosure is "
         f"markup and may not move it to {NAV_QUERY_BUDGET}"
     )
     with tenant_context(firm.tenant.id), django_assert_num_queries(NAV_QUERY_BUDGET):

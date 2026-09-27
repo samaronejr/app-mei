@@ -224,6 +224,10 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "The <uuid:pk> is a tenant-scoped membership object id, not a bearer "
         "credential."
     ),
+    "member-review-toggle": (
+        "The <uuid:pk> is a tenant-scoped membership object id the grant writes "
+        "against, not a bearer credential."
+    ),
     "invite-revoke": (
         "The <uuid:pk> is a tenant-scoped invitation object id, not a bearer "
         "credential."

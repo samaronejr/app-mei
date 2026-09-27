@@ -109,15 +109,16 @@ BUDGET_CLIENTS: Final = 60
 #
 #    1-6   session, user, membership, MFA enrolment, tenant resolve, membership
 #    7-9   transaction open, set_config('app.tenant_id'), SAVEPOINT
-#   10-12  require_can       -> capability, membership, grant
-#   13-15  portfolio_scope   -> granted_levels_with_role(view_assigned, view_all):
-#                              capability, membership, grant — one live resolution
-#      16  Paginator COUNT(*)
-#   17-19  the navigation bar's granted_levels, pinned at NAV_QUERY_BUDGET below
-#   20-22  the export action's own `{% can %}` on clients.view_all, in the template:
-#          capability, membership, grant
-#      23  the page's 50 rows
-#   24-26  RELEASE SAVEPOINT, COMMIT, AccessLog INSERT
+#   10-13  require_can       -> capability, membership, role grant, user grant
+#   14-17  portfolio_scope   -> granted_levels_with_role(view_assigned, view_all):
+#                              capability, membership, role grant, user grant — one
+#                              live resolution
+#      18  Paginator COUNT(*)
+#   19-22  the navigation bar's granted_levels, pinned at NAV_QUERY_BUDGET below
+#   23-26  the export action's own `{% can %}` on clients.view_all, in the template:
+#          capability, membership, role grant, user grant
+#      27  the page's 50 rows
+#   28-30  RELEASE SAVEPOINT, COMMIT, AccessLog INSERT
 #
 # The last three read "RELEASE SAVEPOINT x2" until this was re-measured statement by
 # statement; the second of them is the COMMIT. Corrected here rather than left alone,
@@ -167,11 +168,15 @@ BUDGET_CLIENTS: Final = 60
 # no role holds either of these two capabilities at that level today.
 #
 # So this number is a ratchet, not the claim that protects the product. The claim that
-# does is `test_the_query_count_does_not_grow_with_the_portfolio`: 26 is O(1) in
+# does is `test_the_query_count_does_not_grow_with_the_portfolio`: 30 is O(1) in
 # portfolio size, and an N+1 regression moves that test rather than this one. That test
 # measures the small firm and compares the large one against what it measured, so it
 # never needed editing here — which is the point of it being the load-bearing one.
-QUERY_BUDGET: Final = 26
+#
+# The budget moved 26 -> 30 in T4: each of the four authorization resolutions above
+# gained exactly one `authz_usercapabilitygrant` read, and a resolution that skipped
+# the table would make `granted_levels` disagree with `resolve_level`.
+QUERY_BUDGET: Final = 30
 
 # Additive only. `tests/ui/test_navigation.py` pins `OWNER_ONLY = "Equipe"` and
 # `SHARED = "Exportar clientes"` and neither is touched from here: the export link is
@@ -179,7 +184,7 @@ QUERY_BUDGET: Final = 26
 # day the list ships has lost a feature it was using.
 NAV_LABEL: Final = "Clientes"
 NAV_EXPORT_LABEL: Final = "Exportar clientes"
-NAV_QUERY_BUDGET: Final = 3
+NAV_QUERY_BUDGET: Final = 4
 
 # The RFB's official alphanumeric vector, and a legacy numeric CNPJ whose digits
 # overlap the query used to find the alphanumeric one. Both are checksum-valid.

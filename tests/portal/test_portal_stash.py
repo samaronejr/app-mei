@@ -152,7 +152,8 @@ def test_rule_6_the_stash_holds_every_matrix_slug(firm: Firm) -> None:
 
     # Then it carries the whole matrix, so no gated view can fall outside it
     assert body["slugs"] == sorted(CAPABILITY_SLUGS)
-    assert len(CAPABILITY_SLUGS) == 17
+    # 30 = the 17 pre-R1 rows plus the 13 slugs T4 seeded for R1 (S8.1).
+    assert len(CAPABILITY_SLUGS) == 30
 
 
 def test_rule_4_the_stash_does_not_survive_the_response(firm: Firm) -> None:
