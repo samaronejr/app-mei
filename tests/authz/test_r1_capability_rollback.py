@@ -66,8 +66,8 @@ def populated_round_trip() -> None:
         .order_by("pk")
         .values()
     )
-    # ALL_OBJECTS_OK: migration authority inspects both tenants without a GUC.
     non_r1_grants = list(
+        # ALL_OBJECTS_OK: migration authority inspects both tenants without a GUC.
         UserCapabilityGrant.all_objects.exclude(capability__slug__in=migration.SLUGS)
         .order_by("pk")
         .values()
@@ -84,8 +84,8 @@ def populated_round_trip() -> None:
     try:
         call_command("migrate", "authz", "0005", interactive=False, verbosity=1)
         assert not Capability.objects.filter(slug__in=migration.SLUGS).exists()
-        # ALL_OBJECTS_OK: remove active/revoked R1 grants in both tenants.
         assert (
+            # ALL_OBJECTS_OK: remove active/revoked R1 grants in both tenants.
             list(UserCapabilityGrant.all_objects.order_by("pk").values())
             == non_r1_grants
         )
@@ -103,8 +103,8 @@ def populated_round_trip() -> None:
         )
         == matrix
     )
-    # ALL_OBJECTS_OK: forward must not resurrect removed authority or lose other grants.
     assert (
+        # ALL_OBJECTS_OK: forward must not resurrect authority or lose other grants.
         list(UserCapabilityGrant.all_objects.order_by("pk").values()) == non_r1_grants
     )
     # ALL_OBJECTS_OK: forward also retains the audit trail.
