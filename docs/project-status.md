@@ -123,7 +123,23 @@ timeline on every new write path. Tests: `tests/clients/test_import_wizard.py`,
 `-happy.txt`, `-failure.txt`, `-adversarial.txt`, `-migration-reversal.txt`,
 `-gates.txt`, `-fix-1.txt` through `-fix-4.txt`, `-fix-6.txt`, `-fix-gates.txt`,
 `-fix6-gates.txt`, `-placement.txt`, `-placement-migration.txt`,
-`-placement-gates.txt` and the eight onboarding/import screenshots. Todos 8 to 29
+`-placement-gates.txt` and the eight onboarding/import screenshots. `AXR1-008`
+(versioned, typed playbooks behind `cycles_r1`: `Playbook`,
+`PlaybookVersion`, `PlaybookStep` with draft-only mutation,
+`expected_version` revision checks, persisted-parent reparent guards and a
+preview-signed publish; the MEI mensal and Coleta mensal system packs installed
+per-tenant under a signal, converging under concurrent install; targeting
+driven by `TaxProfile`/`Engagement` snapshots, never the legacy flag; gated on
+`playbooks.manage`; `cycles.0001`) is recorded on the T7 stack. Tests:
+`tests/cycles/test_playbook_versioning.py`, `test_adversarial.py`,
+`test_playbook_http_conflicts.py`, `test_step_formset.py` and
+`tests/browser/test_playbook_editor.py` plus `test_playbook_publication.py`.
+Evidence: `.evidence/AXR1-008-red.txt`, `-happy.txt`, `-failure.txt`,
+`-adversarial.txt`, `-gates.txt`, `-fix-1.txt` through `-fix-4.txt`,
+`-fix2-1.txt` through `-fix2-3.txt`, `-fix2-mutations.txt`, `-fix2-repeat.txt`,
+`-fix2-review.txt`, `-fix2-adversarial.txt`, `-fix2-gates.txt`,
+`-placement.txt` and the editor screenshots. The populated rollback/reapply
+retained pack and tenant playbooks, versions and steps. Todos 9 to 29
 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
@@ -225,9 +241,17 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **2407 passing**,
-verified by one serial full run on the placed `AXR1-007` code (`2a15498`, the
-same default-suite code as this record's head): the **2329** below plus **78**
+implementation head. The current default-suite baseline is **2478 passing**,
+verified by one serial full run on the placed `AXR1-008` code (`6de1fc2`, the
+same default-suite code as this record's head): the **2407** below plus **71**
+net-new `AXR1-008` tests (the versioned-playbook services, adversarial probes,
+HTTP conflict matrix and formset regressions, plus the cycles-table portal
+coverage cases). The browser run passed **36**, isolation **148** and the CNPJ
+pack **29** (`.evidence/AXR1-008-placement.txt`).
+
+The previous baseline was **2407 passing**,
+verified by one serial full run on the placed `AXR1-007` code (`2a15498`): the
+**2329** below plus **78**
 net-new `AXR1-007` tests (the import wizard, onboarding screens, contact-invite
 delivery and flag-agreement modules, including the gate-review regressions).
 The browser run passed **30**, isolation **139** and the CNPJ pack **29**
@@ -257,10 +281,11 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **30** cases: the **24** passing at the T3
+`browser` job. The suite now contains **36** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
-viewports). Every test in
+viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
+preview-bound publication journeys at two viewports). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
