@@ -26,6 +26,9 @@ reader who will never see them.
 
 ## Current plan
 
+Two plans are current, and they run on separate tracks: `pilot-readiness-v2`,
+described next, and `axorim-pivot-r1`, described under "Axorim pivot" below.
+
 **`pilot-readiness-v2`** — in execution. It supersedes `pilot-readiness-v1` and the
 Resend amendment, and it starts from what is actually true rather than what v1
 assumed: the latest code has never been deployed anywhere, the old OCI host still
@@ -50,10 +53,36 @@ capture. What remains is the F1-F4 final-verification wave and, after it, the
 owner's authorization of the pilot start; the `v0.2.0-rc1` tag and release follow
 that authorization per `ops/RELEASES.md` Phase B.
 
+## Axorim pivot
+
+The product direction changed on 2026-09-27. Product work is now governed by the
+local-only plan **`axorim-pivot-r1`**, which, like every plan since the exclusion,
+lives under `.omo/plans/` and is never committed. "Axorim" is an internal working
+name. The repository, the README headline and customer-facing copy stay "app-mei"
+until the name is cleared.
+
+- **Ids.** The plan has 29 numbered todos in five waves, plus a final verification
+  wave. Todo N is cited as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
+  evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
+- **Delivery.** One pull request per todo, based on current `main`, with every new
+  surface behind a per-tenant feature flag that's off by default. Each pull request
+  updates the progress line below and the suite baseline.
+- **Records.** `docs/product/pivot-supersession.md` says which earlier restrictions are
+  superseded and which still bind. ADRs 0002 to 0007 in `docs/decisions/` hold the
+  architecture decisions, and `docs/product/vocabulary.md` holds the status words.
+- **Pilot obligations stay open and separate.** The `pilot-readiness-v2` F1-F4 wave
+  and the owner's authorization of the pilot start are neither closed, waived nor
+  absorbed by the pivot. They're decided on their own track. R1 reaches the pilot
+  tenant only behind its flag, and only after that authorization.
+
+Progress: `AXR1-001` (the pivot records) lands with the commit that adds this
+section. Todos 2 to 29 and the final verification wave are open.
+
 ## Plan index
 
 | Plan | Status | Basis |
 | --- | --- | --- |
+| `axorim-pivot-r1` | **current** (product direction) | Started 2026-09-27. 29 todos in five waves plus a final verification wave; `AXR1-001` recorded the pivot. It runs separately from the open F1-F4 wave and pilot authorization of `pilot-readiness-v2`. |
 | `pilot-readiness-v2` | **current** | Execution complete: all 41 rows closed and `ops/check_go_no_go.py` exits 0 against the evidence directory, every S-line GO on the final capture. Only the F1-F4 audits and the owner's authorization remain. |
 | `pilot-readiness-v1` | **superseded** | Replaced by `pilot-readiness-v2` on 2026-09-21. Its checkbox states are frozen and its evidence is kept, never rewritten; v2's legacy reconciliation ledger classifies every v1 row (13 verified-complete, 5 repo-complete with operator evidence open, 12 partial, 8 open-valid, 2 superseded, 2 invalid-premise, plus the four F-rows that never ran). |
 | `resend-smtp-pilot-provider-amendment` | **superseded** | Superseded by owner decision D-Q1: Resend is used through the existing provider-neutral SMTP settings, so the amendment's new email machinery is unneeded. Its branch `chore/pilot-resend-smtp-round3h` is frozen, unpushed, and never to be merged. |
@@ -141,9 +170,19 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The `pilot-readiness-v2` baseline is **2024** passing, a clean
-serial run on merged `main` at `b19edf3` and later. Documentation-only commits must
-land on that number unchanged, which is the point of recording it.
+implementation head. The current baseline is **2053** passing, a clean serial run
+at `a962173` on 2026-09-27, recorded by `AXR1-001` before and after its
+documentation-only change.
+
+The rule is about the delta, not a fixed number. A documentation-only change must
+leave the latest recorded count unchanged. A change that adds tests raises it by
+exactly the tests it adds, and that pull request records the new count here with its
+delta. A count that drops without a recorded, classified reason is a failure.
+
+History. The `pilot-readiness-v2` baseline was **2024** passing, a clean serial run on
+merged `main` at `b19edf3` and later. Later pull requests added tests without updating
+that figure, which is how it drifted to 2053 and why the rule now follows the latest
+recorded count.
 
 Counts recorded under `pilot-readiness-v1`, kept for provenance:
 
@@ -169,6 +208,8 @@ so any file path or test module named in this directory has to resolve on disk.
 | `docs/residual-risks.md` | Accepted risks and known gaps from the hardening work. |
 | `docs/residual-risks-pilot.md` | The same, scoped to pilot readiness. |
 | `docs/decisions/` | Architecture decision records. |
+| `docs/product/pivot-supersession.md` | The Axorim pivot: superseded restrictions, constraints still in force, and R1's engineering scope. |
+| `docs/product/vocabulary.md` | The pt-BR status vocabulary and the rules for success words. |
 | `docs/lgpd.md`, `docs/retention.md` | Data-protection and retention posture. |
 | `docs/regulatory-watch.md`, `docs/fiscal/` | Fiscal parameters and what to watch. |
 | `docs/frontend.md` | Front-end conventions. |
