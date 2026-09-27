@@ -250,4 +250,6 @@ def portal_cycle_detail(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
     cycle = get_object_or_404(
         ServiceCycle.objects.filter(client_id=request.client.pk), pk=pk
     )
-    return render(request, "portal/cycle.html", portal_projection(cycle))
+    return render(
+        request, "portal/cycle.html", {"cycles_r1": True, **portal_projection(cycle)}
+    )

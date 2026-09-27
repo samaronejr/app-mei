@@ -220,8 +220,9 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     today = timezone.localdate()
     obligation_count, overdue_count = _situation(today)
     tenant_id = current_tenant_id.get()
+    cycles_r1 = bool(tenant_id and tenant_has(tenant_id, "cycles_r1"))
     cycles = []
-    if tenant_id and tenant_has(tenant_id, "cycles_r1"):
+    if cycles_r1:
         cycles = [
             {"id": cycle.pk, **portal_projection(cycle)}
             for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]
@@ -235,6 +236,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "overdue_count": overdue_count,
             "next_action": _next_action(today),
             "cycles": cycles,
+            "cycles_r1": cycles_r1,
         },
     )
 
