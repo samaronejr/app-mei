@@ -10,6 +10,8 @@ Status mapping (plan S7): a form error answers 422 on the same page, a stale ver
 answers 409 with a reload prompt, a missing capability 403.
 """
 
+import logging
+from functools import partial
 from http import HTTPStatus
 from smtplib import SMTPException
 from typing import Any, Final
@@ -28,10 +30,8 @@ from django.utils.translation import gettext_lazy
 from django.views.decorators.http import require_http_methods, require_POST
 
 from apps.accounts.forms import portal_role_choices
-from apps.accounts.invites import (
-    InviteNotPermittedError,
-    issue_client_invite,
-)
+from apps.accounts.invites import InviteNotPermittedError, revoke_invite
+from apps.accounts.models import User
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.services import can, require_can
 from apps.clients.forms import (
@@ -57,6 +57,7 @@ from apps.clients.maintenance import (
     add_assignment,
     assignment_state,
     create_client,
+    invite_contact,
     load_client,
     load_contact,
     remove_assignment,
@@ -99,8 +100,14 @@ CONFLICT_MESSAGE: Final = (
     "Nada foi salvo. Recarregue para ver a versão atual e tente de novo."
 )
 INVITE_SEND_FAILURE: Final = (
-    "Não foi possível enviar o convite por e-mail. Nada foi criado; tente novamente."
+    "Não foi possível enviar o convite por e-mail. Nenhum convite ficou ativo; "
+    "tente novamente em alguns minutos."
 )
+INVITE_SENT_NOTICE: Final = "Convite enviado por e-mail."
+INVITE_SENT: Final = "enviado"
+INVITE_FAILED: Final = "falhou"
+
+logger = logging.getLogger(__name__)
 
 
 def _tenant(request: AuthenticatedRequest) -> Tenant:
@@ -238,14 +245,17 @@ def _setup_page(
     request: AuthenticatedRequest,
     client: ClientCompany,
     status: int = HTTPStatus.OK,
+    invite_outcome: str = "",
     **forms: Form,
 ) -> HttpResponse:
-    return render(
-        request,
-        SETUP_TEMPLATE,
-        _setup_context(request, client, **forms),
-        status=status,
+    context = _setup_context(request, client, **forms)
+    context["invite_failed"] = (
+        _(INVITE_SEND_FAILURE) if invite_outcome == INVITE_FAILED else ""
     )
+    context["invite_sent"] = (
+        _(INVITE_SENT_NOTICE) if invite_outcome == INVITE_SENT else ""
+    )
+    return render(request, SETUP_TEMPLATE, context, status=status)
 
 
 def _to_setup(client_id: UUID, anchor: str = "") -> HttpResponseRedirect:
@@ -361,9 +371,13 @@ def client_edit_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
 @require_feature(FLAG)
 @require_can(MANAGE_CAPABILITY)
 def client_setup_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
-    """Show the client's services, tax profile, contacts and responsible people."""
+    """Show the client's services, tax profile, contacts and responsible people.
+
+    `?convite=` carries the outcome of the post-commit invitation send back here; it
+    selects one of two fixed sentences and is never echoed.
+    """
     client = load_client(request.user, _tenant_id(request), pk)
-    return _setup_page(request, client)
+    return _setup_page(request, client, invite_outcome=request.GET.get("convite", ""))
 
 
 def _engagement_data(form: EngagementForm) -> EngagementData:
@@ -625,6 +639,45 @@ def _mail_contact_invitation(
     _mail_portal_invitation(email, tenant.name, tenant.slug, raw_token)
 
 
+def _deliver_invitation(  # noqa: PLR0913 - everything the post-commit send needs
+    *,
+    response: HttpResponseRedirect,
+    setup_url: str,
+    actor: User,
+    invite: Invite,
+    tenant: Tenant,
+    raw_token: str,
+) -> None:
+    """Mail a committed invitation; on refusal, stand it down and say so.
+
+    Runs from `transaction.on_commit`, after the tenant transaction has committed:
+    the send is external I/O and must never happen inside it (plan MH-6/MN-3). The
+    outcome is written into the redirect the view already returned, so the reader
+    lands on the setup page with a message either way. An SMTP refusal revokes the
+    invitation through `revoke_invite` (audited, capability re-checked) so no live
+    credential exists that nobody received, and the contact can be invited again.
+    """
+    try:
+        _mail_contact_invitation(invite.email, tenant, raw_token)
+    except (SMTPException, OSError) as error:
+        logger.warning(
+            "contact invitation mail refused",
+            extra={"invite_id": str(invite.pk), "tenant_id": str(tenant.pk)},
+        )
+        sentry_sdk.capture_exception(error)
+        try:
+            revoke_invite(actor=actor, invite=invite)
+        except Exception as revoke_error:
+            logger.exception(
+                "could not stand down an unsent invitation",
+                extra={"invite_id": str(invite.pk)},
+            )
+            sentry_sdk.capture_exception(revoke_error)
+        response["Location"] = f"{setup_url}?convite={INVITE_FAILED}#contatos"
+        return
+    response["Location"] = f"{setup_url}?convite={INVITE_SENT}#contatos"
+
+
 @require_POST
 @login_required
 @require_tenant
@@ -637,67 +690,58 @@ def contact_invite_view(
 ) -> HttpResponse:
     """Invite a contact into this client's portal, at the contact's own address.
 
-    The address comes from the contact row, never from the request body, and the
-    invitation is issued by `issue_client_invite` — the same token lifecycle, audit
-    trail and capability re-check as the detail page's invite (`users.create`). A
-    contact without an address, or who asked not to be emailed, cannot be invited.
-    If the mail cannot be sent the request is rolled back: no live invitation is
-    left behind that nobody received.
+    `invite_contact` issues under the client and contact locks, against the
+    contact version the page was rendered with and the contact's current e-mail
+    permission, and refuses a second live invitation (409). The mail is sent only
+    after the request transaction commits (`_deliver_invitation`), and the result
+    comes back to the setup page as a message: sent, or not sent and retryable.
     """
     tenant = _tenant(request)
     tenant_id = _tenant_id(request)
     client, contact = load_contact(request.user, tenant_id, pk, contact_pk)
     form = ContactInviteForm(request.POST, prefix="convite")
-    valid = form.is_valid()
-    if not (contact.active and contact.email and contact.channel_email_allowed):
-        valid = False
-        form.add_error(
-            None,
-            _(
-                "Este contato não tem e-mail autorizado. Cadastre um e-mail e "
-                "marque que ele pode receber e-mails antes de convidar.",
-            ),
-        )
-    if not valid:
+    setup_url = reverse("client-setup", args=[client.pk])
+    if not form.is_valid():
         return _setup_page(
             request,
             client,
             HTTPStatus.UNPROCESSABLE_ENTITY,
             invite_form=form,
         )
-    # A replayed or double-clicked POST must not mint a second live credential for
-    # the same person: one pending invitation per contact address and client.
-    already_pending = (
-        Invite.objects.for_user(request.user)
-        .filter(
-            tenant_id=tenant_id,
-            client_id=client.pk,
-            email__iexact=contact.email,
-            accepted_at__isnull=True,
-            revoked_at__isnull=True,
-        )
-        .exists()
-    )
-    if already_pending:
-        return _conflict(request, reverse("client-setup", args=[client.pk]))
     try:
-        _invite, raw_token = issue_client_invite(
+        invite, raw_token = invite_contact(
             actor=request.user,
             tenant=tenant,
-            client=client,
-            email=contact.email,
+            client_id=client.pk,
+            contact_id=contact.pk,
             role=form.cleaned_data["role"],
+            expected_version=form.cleaned_data["version"],
         )
+    except ConflictError:
+        return _conflict(request, setup_url)
     except InviteNotPermittedError as error:
         raise PermissionDenied(str(error)) from error
-    try:
-        _mail_contact_invitation(contact.email, tenant, raw_token)
-    except (SMTPException, OSError):
-        transaction.set_rollback(True)
-        sentry_sdk.capture_exception()
-        form.add_error(None, _(INVITE_SEND_FAILURE))
-        return _setup_page(request, client, HTTPStatus.OK, invite_form=form)
-    return _to_setup(client.pk, "contatos")
+    except ValidationError as error:
+        _apply_errors(form, error)
+        return _setup_page(
+            request,
+            client,
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            invite_form=form,
+        )
+    response = HttpResponseRedirect(f"{setup_url}#contatos")
+    transaction.on_commit(
+        partial(
+            _deliver_invitation,
+            response=response,
+            setup_url=setup_url,
+            actor=request.user,
+            invite=invite,
+            tenant=tenant,
+            raw_token=raw_token,
+        ),
+    )
+    return response
 
 
 @require_POST

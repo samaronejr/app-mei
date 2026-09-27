@@ -217,6 +217,8 @@ class ContactInviteForm(forms.Form):
     """Which portal seat the contact is invited to; the address is the contact's."""
 
     role = forms.ChoiceField(label=_("Papel no portal"), choices=portal_role_choices)
+    # The contact version the page was rendered with; a stale one is refused.
+    version = forms.IntegerField(widget=forms.HiddenInput, min_value=1)
 
 
 class AssignmentForm(forms.Form):

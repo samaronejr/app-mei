@@ -414,14 +414,18 @@ def test_inviting_a_contact_mails_the_contacts_own_address() -> None:
 
     response = browser.post(
         reverse("client-contact-invite", args=[client.pk, contact.pk]),
-        {"convite-role": TenantRole.CLIENT_OWNER, "email": "intruso@x.test"},
+        {
+            "convite-role": TenantRole.CLIENT_OWNER,
+            "convite-version": 1,
+            "email": "intruso@x.test",
+        },
     )
 
     assert response.status_code == HTTPStatus.FOUND
     assert [message.to for message in mail.outbox] == [["maria@padaria.test"]]
     replay = browser.post(
         reverse("client-contact-invite", args=[client.pk, contact.pk]),
-        {"convite-role": TenantRole.CLIENT_OWNER},
+        {"convite-role": TenantRole.CLIENT_OWNER, "convite-version": 1},
     )
     # A replayed POST mints no second live credential and sends no second mail.
     assert replay.status_code == HTTPStatus.CONFLICT
@@ -443,9 +447,10 @@ def test_a_contact_who_refused_email_cannot_be_invited() -> None:
         )
     response = firm.as_owner().post(
         reverse("client-contact-invite", args=[client.pk, contact.pk]),
-        {"convite-role": TenantRole.CLIENT_OWNER},
+        {"convite-role": TenantRole.CLIENT_OWNER, "convite-version": 1},
     )
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "não tem e-mail autorizado" in response.content.decode()
     assert mail.outbox == []
     assert not Invite.objects.for_user(firm.owner).filter(tenant=firm.tenant).exists()
 

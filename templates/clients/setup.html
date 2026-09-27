@@ -109,6 +109,8 @@
     <section id="contatos" aria-labelledby="contatos-titulo" class="card p-5">
       <h2 id="contatos-titulo" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Contatos e acessos" %}</h2>
       {% with form=invite_form %}{% include "partials/pure/form_errors.html" %}{% endwith %}
+      {% if invite_failed %}<div class="mb-3">{% include "partials/pure/notice.html" with message=invite_failed variant="error" only %}</div>{% endif %}
+      {% if invite_sent %}<div class="mb-3">{% include "partials/pure/notice.html" with message=invite_sent variant="info" only %}</div>{% endif %}
       <div class="table-wrap">
         <table class="data-table row-stack">
           <caption class="visually-hidden">{% translate "Contatos deste cliente" %}</caption>
@@ -135,6 +137,7 @@
                   {% elif item.invitable and may_assign %}
                     <form method="post" action="{% url 'client-contact-invite' client.pk item.row.pk %}" class="flex flex-wrap items-end gap-2">
                       {% csrf_token %}
+                      <input type="hidden" name="convite-version" value="{{ item.row.version }}">
                       <div class="ui-field">
                         <label class="ui-field-label" for="convite-{{ item.row.pk }}-role">{% blocktranslate with name=item.row.name %}Papel de {{ name }} no portal{% endblocktranslate %}</label>
                         <select name="convite-role" id="convite-{{ item.row.pk }}-role" class="ui-field-input">

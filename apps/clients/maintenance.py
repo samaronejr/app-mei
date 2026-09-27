@@ -25,6 +25,7 @@ from django.http import Http404
 from django.utils import timezone
 from django.utils.translation import gettext as _
 
+from apps.accounts.invites import issue_client_invite
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
@@ -45,7 +46,7 @@ from apps.clients.services import (
     unassign_client,
 )
 from apps.fiscal.validators import normalize_document
-from apps.tenants.models import Membership
+from apps.tenants.models import Invite, Membership, Tenant
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -490,6 +491,79 @@ def load_contact(
     return client, contact
 
 
+class InvitePendingError(ConflictError):
+    """The contact already holds a live invitation for this client (HTTP 409)."""
+
+
+def invite_contact(  # noqa: PLR0913 - keyword-only issuance contract
+    *,
+    actor: User,
+    tenant: Tenant,
+    client_id: UUID,
+    contact_id: UUID,
+    role: str,
+    expected_version: int,
+) -> tuple[Invite, str]:
+    """Issue ONE portal invitation for a contact, judged on its current row.
+
+    Locks the client (portfolio-scoped, 404 otherwise) and then the contact — the
+    order `save_contact` takes them in — so an edit and an invitation cannot
+    interleave. Under those locks it re-checks the capability, the contact version
+    the page was rendered with, the contact's CURRENT permission to be e-mailed, and
+    that no live invitation exists for this address and client. Two racing requests
+    therefore serialize on the client row, and the second sees the first's committed
+    invitation and gets `InvitePendingError`; a request built from a page read
+    before the contact was deactivated gets `ConflictError`. Nothing is written on
+    either refusal.
+
+    Returns the invitation and its one-time raw token. Sending it is the CALLER's
+    job, after this transaction commits: no external I/O happens in here.
+    """
+    with transaction.atomic():
+        client = load_client(actor, tenant.pk, client_id, lock=True)
+        contact = (
+            ClientContact.objects.select_for_update()
+            .filter(client=client, pk=contact_id)
+            .first()
+        )
+        if contact is None:
+            raise Http404
+        _require(actor, ASSIGN_CAPABILITY, tenant.pk)
+        if contact.version != expected_version:
+            msg = (
+                f"contact {contact_id} is at version {contact.version}, "
+                f"not {expected_version}"
+            )
+            raise ConflictError(msg)
+        if not (contact.active and contact.email and contact.channel_email_allowed):
+            raise ValidationError(
+                _(
+                    "Este contato não tem e-mail autorizado. Cadastre um e-mail e "
+                    "marque que ele pode receber e-mails antes de convidar.",
+                ),
+            )
+        # PLATFORM_QUERY_OK: tenants_invite has no row-level policy; scoped here to
+        # this firm, this client and this address, read under the client lock.
+        pending = Invite.objects.filter(
+            tenant_id=tenant.pk,
+            client_id=client.pk,
+            email__iexact=contact.email,
+            accepted_at__isnull=True,
+            revoked_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).exists()
+        if pending:
+            msg = f"contact {contact_id} already holds a live invitation"
+            raise InvitePendingError(msg)
+        return issue_client_invite(
+            actor=actor,
+            tenant=tenant,
+            client=client,
+            email=contact.email,
+            role=role,
+        )
+
+
 def assignment_state(client: ClientCompany) -> str:
     """Fingerprint the client's current assignments: their optimistic version.
 
@@ -581,11 +655,13 @@ __all__ = [
     "ContactData",
     "DuplicateClientError",
     "EngagementData",
+    "InvitePendingError",
     "RetroNoteRequiredError",
     "add_assignment",
     "assignment_state",
     "create_client",
     "find_duplicate",
+    "invite_contact",
     "load_client",
     "load_contact",
     "remove_assignment",
