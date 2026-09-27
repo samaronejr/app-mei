@@ -97,8 +97,18 @@ recorded. `AXR1-005` (the client spine: `Engagement`, the effective-dated
 `tests/clients/test_backfill_v1.py`; `.evidence/AXR1-005-red.txt`, `-happy.txt`,
 `-failure.txt`, `-failure-ext.txt`, `-failure-template1.txt`, `-plan.txt`,
 `-adversarial.txt`, `-gates.txt`, and `-baseline.txt`) is recorded, with OG-10 —
-the pilot database's one-time `CREATE EXTENSION` step — still open. Todos 6 to
-29 and the final verification wave are open.
+the pilot database's one-time `CREATE EXTENSION` step — still open. `AXR1-006`
+(the profile-driven calendar and threshold readers, revision-checked registry
+dual-write, and client-isolated payment observations) is recorded on the T5
+stack. Pilot payment rendering uses observation provenance and verification,
+never work status; manual claims stay neutral. The gate repairs cover stale
+admin POSTs, portfolio authorization before matching-profile returns, shared
+audit-function preservation on rollback, and a genuinely failing drift guard.
+Evidence: `.evidence/AXR1-006-fix-1.txt`, `-fix-2.txt`, `-fix-3.txt`, `-fix-4.txt`,
+`-fix-5.txt`, `-failure.txt`, `-placement-rebase.txt`, `-placement-collection.txt`,
+`-placement-related.txt`, `-placement-migration.txt`, and `-placement-gates.txt`.
+The populated rollback/reapply retained obligations, attached documents and both
+audit streams. Todos 7 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -199,8 +209,15 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default suite contains **2266** tests: the
-**2228** post-repair T4 baseline plus thirty-eight net-new tests from `AXR1-005`
+implementation head. The current default-suite baseline is **2329 passing**,
+verified by one serial full run on the placed `AXR1-006` code head `8b968d0`.
+Collection on T5 (`1222815`) found **2266** default tests; T6 adds **63** net-new
+cases (33 from the reader/observation change and 30 gate-review regressions).
+Both collections deselected the same 26 browser cases. The separate browser
+run passed **26**, isolation passed **133**, and the CNPJ pack passed **29**.
+Evidence: `.evidence/AXR1-006-placement-collection.txt` and
+`.evidence/AXR1-006-placement-gates.txt`. The preceding T5 count was the **2228**
+post-repair T4 baseline plus thirty-eight net-new tests from `AXR1-005`
 (the client spine and its gate-review fixes).
 
 The pre-repair baseline is **2213** passing, reproduced at `9995488` on 2026-09-27
