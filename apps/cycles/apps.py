@@ -14,4 +14,4 @@ class CyclesConfig(AppConfig):
         # Imported inside ready(), not at module scope: the receivers reference
         # models, and importing models before the app registry is populated
         # raises AppRegistryNotReady.
-        from apps.cycles import signals  # noqa: F401, PLC0415
+        from apps.cycles import dependents, signals  # noqa: F401, PLC0415

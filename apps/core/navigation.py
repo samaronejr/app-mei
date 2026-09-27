@@ -76,13 +76,14 @@ PRODUCT_SHELL_FLAG: Final = "cycles_r1"
 # and Gestão at the team screen until playbooks and automations join it. The
 # MEI-era queues are reached from the dashboard's own counts, as they are today.
 #
-# Not listed yet, deliberately: Ciclos (added by AXR1-009, cycles), Comunicação
+# Not listed yet, deliberately: Comunicação
 # (AXR1-010, outbox) and Documentos (AXR1-013, document review). A flagged tenant is
 # never shown a control that leads nowhere, so each joins in the todo that ships its
 # route, in the S5.3 position above.
 NAV_R1: Final[tuple[NavItem, ...]] = (
     NavItem(_("Hoje"), "dashboard", "clients.view_assigned"),
     NavItem(_("Clientes"), "clients-list", "clients.view_assigned"),
+    NavItem(_("Ciclos"), "cycle-list", "clients.view_assigned"),
     # Playbooks join the shell here, before Gestão: the first working
     # destination under the gestão umbrella, gated on playbooks.manage.
     NavItem(_("Playbooks"), "playbook-list", PLAYBOOK_GATE),

@@ -132,6 +132,23 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- and carries DenyPortalAccess; the row carries the client-anchored portal policy,
 -- so a grant added by mistake would still be confined to one client.
 
+-- Re-applying bootstrap must not undo the new append-only table's migration.
+DO $$
+BEGIN
+    IF to_regclass('public.cycles_cycleevent') IS NOT NULL THEN
+        REVOKE ALL ON cycles_cycleevent FROM app_runtime;
+        GRANT SELECT, INSERT ON cycles_cycleevent TO app_runtime;
+    END IF;
+END
+$$;
+
+-- PORTAL_NONE: cycles_cycletask
+-- PORTAL_NONE: cycles_cycleamendment
+-- PORTAL_NONE: cycles_cycleevent
+-- PORTAL_NONE: cycles_internalnote
+-- PORTAL_NONE: cycles_exception
+-- T9 has no portal event writer and exposes no internal work or exception text.
+
 -- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
 -- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
 -- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the
@@ -154,6 +171,7 @@ BEGIN
         'clients_onboardingitem',
         'clients_engagement',
         'clients_taxprofile',
+        'cycles_servicecycle',
         'obligations_obligation',
         'obligations_monthlyrevenue',
         'obligations_document',

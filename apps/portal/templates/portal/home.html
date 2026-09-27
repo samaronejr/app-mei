@@ -52,6 +52,15 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
 {% block content %}
   {% if client %}
     <div class="space-y-4">
+      {% if cycles %}
+      <section class="card space-y-4 px-5 py-4" aria-labelledby="service-cycles">
+        <h2 id="service-cycles" class="text-sm font-semibold text-ink-700">Ciclos do período</h2>
+        <ul class="space-y-3">{% for cycle in cycles %}<li>
+          <a class="ui-link" href="{% url 'portal-cycle-detail' cycle.id %}">{{ cycle.period|competencia }}</a>
+          <p>{{ cycle.state_label }}</p><p>{{ cycle.next_action }}</p>
+        </li>{% endfor %}</ul>
+      </section>
+      {% endif %}
       <p class="card flex items-center gap-3 px-5 py-4 text-sm text-ink-700">
         {% if overdue_count %}
           <span class="badge badge-late">{% translate "Em atraso" %}</span>

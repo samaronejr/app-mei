@@ -34,6 +34,36 @@ class LiteralPin:
 
 APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
     LiteralPin(
+        "apps/cycles/cycle_views.py",
+        "owner",
+        ').select_related("client", "engagement", "owner", "playbook", "tax_profile")',
+    ): "ORM relation name, not the tenant owner role or a status comparison.",
+    LiteralPin(
+        "apps/cycles/cycle_views.py",
+        "owner",
+        'cycle.tasks.select_related("owner"),',
+    ): "ORM task owner relation; eagerly loaded to prevent per-row queries.",
+    LiteralPin(
+        "apps/cycles/workspace_views.py",
+        "owner",
+        '.select_related("playbook", "owner", "engagement")',
+    ): "ORM cycle owner relation, not an authorization role literal.",
+    LiteralPin(
+        "apps/cycles/records.py",
+        "blocked",
+        'BLOCKED = "blocked", "Bloqueada"',
+    ): "The TaskState declaration, independent of the onboarding status enum.",
+    LiteralPin(
+        "apps/cycles/records.py",
+        "waived",
+        'WAIVED = "waived", "Dispensada"',
+    ): "The TaskState declaration, independent of obligation settlement states.",
+    LiteralPin(
+        "apps/cycles/workspace.py",
+        "unknown",
+        'coverage=("unknown",),',
+    ): "The explicit missing-observation projection until the coverage domain lands.",
+    LiteralPin(
         "apps/accounts/models.py",
         "active",
         'is_active = models.BooleanField(_("active"), default=True)',

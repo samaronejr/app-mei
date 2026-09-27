@@ -62,6 +62,10 @@ STATUS_RENDER_SITES: Final[dict[str, RenderSite]] = {
         frozenset({"CLIENT_STATUS_LABELS"}),
         frozenset({"get_status_display"}),
     ),
+    "cycles/workspace.html": RenderSite(
+        frozenset({"ONBOARDING_STATUS_LABELS"}),
+        frozenset({"get_status_display"}),
+    ),
     "core/dashboard.html": RenderSite(
         frozenset({"CLIENT_STATUS_LABELS"}),
         frozenset({"get_status_display"}),

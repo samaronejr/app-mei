@@ -37,6 +37,11 @@ PORTAL_DENIED_TABLES = (
     "cycles_playbook",
     "cycles_playbookversion",
     "cycles_playbookstep",
+    "cycles_cycletask",
+    "cycles_cycleamendment",
+    "cycles_cycleevent",
+    "cycles_internalnote",
+    "cycles_exception",
 )
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so
@@ -45,6 +50,7 @@ APPEND_ONLY_TABLES = (
     "audit_event",
     "audit_platformevent",
     "obligations_sourceobservation",
+    "cycles_cycleevent",
 )
 
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
@@ -59,6 +65,7 @@ PORTAL_TABLES = (
     "clients_onboardingitem",
     "clients_engagement",
     "clients_taxprofile",
+    "cycles_servicecycle",
     "obligations_obligation",
     "obligations_monthlyrevenue",
     "obligations_document",

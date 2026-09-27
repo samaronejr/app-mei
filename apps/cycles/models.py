@@ -29,6 +29,35 @@ from django.utils.translation import gettext_lazy as _
 
 from apps.core.models import TenantScopedModel
 from apps.cycles.errors import ImmutableVersion
+from apps.cycles.records import (
+    CycleAmendment,
+    CycleEvent,
+    CycleState,
+    CycleTask,
+    Exception,  # noqa: A004 - the plan names this domain model Exception
+    ExceptionState,
+    InternalNote,
+    ServiceCycle,
+    TaskState,
+)
+
+__all__ = [
+    "CycleAmendment",
+    "CycleEvent",
+    "CycleState",
+    "CycleTask",
+    "Exception",
+    "ExceptionState",
+    "InternalNote",
+    "OwnerRule",
+    "Playbook",
+    "PlaybookStep",
+    "PlaybookVersion",
+    "ServiceCycle",
+    "StepKind",
+    "TaskState",
+    "VersionState",
+]
 
 KEY_MAX_LENGTH = 64
 LABEL_MAX_LENGTH = 120

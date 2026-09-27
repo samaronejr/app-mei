@@ -306,6 +306,18 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "AXR1-007. The <uuid:batch_pk> is a tenant-scoped import batch id behind "
         "RLS and the firm-wide import gate; it is not a bearer credential."
     ),
+    "cycle-detail": (
+        "The UUID is a cycle object id, not a bearer credential; portfolio loading, "
+        "capability checks and tenant RLS authorize every request."
+    ),
+    "cycle-open": (
+        "The UUID names a client resolved through the actor's portfolio; it does "
+        "not authorize creation, which requires the cycle operation capability."
+    ),
+    "portal-cycle-detail": (
+        "The UUID names a cycle, not a bearer credential. Authentication and "
+        "RESTRICTIVE portal client RLS authorize the base-table SELECT."
+    ),
     "playbook-detail": (
         "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer credential."
     ),
@@ -521,6 +533,10 @@ AXORIM_DISABLED_FEATURES = env.list("AXORIM_DISABLED_FEATURES", default=[])
 PRODUCT_NAME = env.str("PRODUCT_NAME", default="app-mei")
 
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
+    "generate-cycles": {
+        "task": "apps.cycles.tasks.generate_monthly_cycles",
+        "schedule": crontab(day_of_month=1, hour=5, minute=0),
+    },
     "purge-access-logs": {
         "task": "apps.audit.tasks.purge_access_logs",
         "schedule": crontab(hour=3, minute=30),

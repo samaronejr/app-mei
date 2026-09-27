@@ -27,6 +27,7 @@ because `AdminTenantMiddleware` is inert on this host.
 from django.urls import include, path
 
 from apps.core.views import healthz, readyz, versionz
+from apps.cycles.cycle_views import portal_cycle_detail
 from apps.portal.invite_views import portal_invite_accept
 from apps.portal.views import (
     document_download,
@@ -48,6 +49,7 @@ from apps.portal.views import (
 # duplicate `path()` does not error, it shadows, and `reverse()` then answers with
 # whichever pattern happens to come first.
 urlpatterns = [
+    path("ciclos/<uuid:pk>/", portal_cycle_detail, name="portal-cycle-detail"),
     path("healthz", healthz, name="healthz"),
     path("readyz", readyz, name="readyz"),
     path("versionz", versionz, name="versionz"),

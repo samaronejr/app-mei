@@ -41,6 +41,7 @@ from apps.clients.models import ClientCompany, OnboardingItem
 from apps.core.dashboard import das_calendar
 from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id
+from apps.cycles.workspace_views import client_workspace
 from apps.fiscal.capabilities import capability_for
 from apps.obligations.models import Obligation
 from apps.obligations.queries import ThresholdRow, threshold_warning
@@ -369,6 +370,9 @@ def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse
     client = visible_clients(request.user, tenant_id=tenant_id).filter(pk=pk).first()
     if client is None:
         raise Http404
+
+    if tenant_has(tenant.pk, "cycles_r1"):
+        return client_workspace(request, pk)
 
     context = client_detail_context(request, client)
     context["onboarding_r1"] = tenant_has(tenant.pk, ONBOARDING_FLAG)

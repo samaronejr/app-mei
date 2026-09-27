@@ -1,0 +1,37 @@
+{% extends "base.html" %}{% load ptbr %}
+{% block title %}Ciclos{% endblock %}
+{% block heading %}Ciclos{% endblock %}
+{% block content %}
+<form method="get" class="ui-panel grid gap-4 p-4 sm:grid-cols-3" aria-label="Filtrar ciclos">
+  <div class="ui-field">
+    <label for="periodo" class="ui-field-label">Competência</label>
+    <input id="periodo" name="periodo" type="month" value="{{ period|date:'Y-m' }}" class="ui-field-input">
+  </div>
+  <div class="ui-field">
+    <label for="estado" class="ui-field-label">Estado do trabalho</label>
+    <select id="estado" name="estado" class="ui-field-input"><option value="">Todos</option>{% for value,label in states %}<option value="{{ value }}"{% if state == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+  </div>
+  <div class="ui-field">
+    <label for="servico" class="ui-field-label">Serviço</label>
+    <select id="servico" name="servico" class="ui-field-input"><option value="">Todos</option><option value="mei_mensal"{% if service == 'mei_mensal' %} selected{% endif %}>MEI mensal</option><option value="documentos_mensal"{% if service == 'documentos_mensal' %} selected{% endif %}>Documentos mensal</option><option value="outro"{% if service == 'outro' %} selected{% endif %}>Outro</option></select>
+  </div>
+  <div class="ui-field">
+    <label for="regime" class="ui-field-label">Regime</label>
+    <select id="regime" name="regime" class="ui-field-input"><option value="">Todos</option>{% for value,label in regimes %}<option value="{{ value }}"{% if regime == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+  </div>
+  <div class="ui-field">
+    <label for="responsavel" class="ui-field-label">Responsável</label>
+    <select id="responsavel" name="responsavel" class="ui-field-input"><option value="">Todos</option>{% for id,email in owners %}<option value="{{ id }}"{% if owner_filter == id|stringformat:'s' %} selected{% endif %}>{{ email }}</option>{% endfor %}</select>
+  </div>
+  <div class="self-end"><button class="ui-btn ui-btn-primary" type="submit">Filtrar</button></div>
+</form>
+<p class="my-4 text-sm text-ink-600">{{ page.paginator.count }} ciclo{{ page.paginator.count|pluralize }} na competência. Estados representam trabalho interno, não pagamento ou entrega.</p>
+<div class="overflow-x-auto ui-panel" tabindex="0" role="region" aria-label="Ciclos da competência">
+  <table class="ui-table min-w-[40rem] w-full text-left">
+    <caption class="sr-only">Ciclos da competência {{ period|date:'m/Y' }}</caption>
+    <thead><tr><th scope="col">Cliente e serviço</th><th scope="col">Estado</th><th scope="col">Responsável</th></tr></thead>
+    <tbody>{% for cycle in page %}<tr><td data-label="Cliente e serviço"><a class="ui-link" href="{% url 'cycle-detail' cycle.pk %}">{{ cycle.client.legal_name }}</a><p>{{ cycle.playbook.name }}</p></td><td data-label="Estado">{{ cycle.get_state_display }}</td><td data-label="Responsável">{{ cycle.owner|default:'Fila da equipe' }}</td></tr>{% empty %}<tr><td colspan="3">Nenhum ciclo nestes filtros. Abra um ciclo no espaço do cliente ou aguarde a geração mensal.</td></tr>{% endfor %}</tbody>
+  </table>
+</div>
+<nav aria-label="Páginas de ciclos" class="mt-4 flex gap-4">{% if page.has_previous %}<a class="ui-link" href="?{{ filter_query }}&amp;pagina={{ page.previous_page_number }}">Anterior</a>{% endif %}{% if page.has_next %}<a class="ui-link" href="?{{ filter_query }}&amp;pagina={{ page.next_page_number }}">Próxima</a>{% endif %}</nav>
+{% endblock %}

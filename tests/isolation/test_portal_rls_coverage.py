@@ -53,7 +53,8 @@ RUNTIME_ROLE = "app_runtime"
 # portal-NONE: the batch carries a deny policy, the row a client-anchored one.
 # cycles_{playbook,playbookversion,playbookstep} (todo 8) are firm-internal
 # playbook definitions — portal-NONE, each carrying a DenyPortalAccess policy.
-EXPECTED_TENANT_TABLE_COUNT = 25
+# Six client-scoped cycle aggregate/history tables (todo 9) extend that union.
+EXPECTED_TENANT_TABLE_COUNT = 31
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -374,6 +375,12 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_playbook",
         "cycles_playbookstep",
         "cycles_playbookversion",
+        "cycles_servicecycle",
+        "cycles_cycletask",
+        "cycles_cycleamendment",
+        "cycles_cycleevent",
+        "cycles_internalnote",
+        "cycles_exception",
         "obligations_monthlyrevenue",
         "obligations_obligation",
         "obligations_sourceobservation",

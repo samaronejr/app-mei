@@ -2,9 +2,12 @@
 
 from django.urls import path
 
-from apps.cycles import views
+from apps.cycles import cycle_views, views
 
 urlpatterns = [
+    path("ciclos/", cycle_views.cycle_list, name="cycle-list"),
+    path("ciclos/<uuid:pk>/", cycle_views.cycle_detail, name="cycle-detail"),
+    path("clientes/<uuid:pk>/ciclos/abrir/", cycle_views.cycle_open, name="cycle-open"),
     path("gestao/playbooks/", views.playbook_list_view, name="playbook-list"),
     path(
         "gestao/playbooks/<uuid:pk>/",

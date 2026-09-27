@@ -41,6 +41,9 @@ from apps.accounts.models import User
 from apps.authz.services import require_can
 from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
+from apps.core.tenancy import current_tenant_id
+from apps.cycles.models import ServiceCycle
+from apps.cycles.workspace import portal_projection
 from apps.obligations.models import (
     Document,
     Obligation,
@@ -216,6 +219,13 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     # pass anyway, hiding the very failure it exists to catch.
     today = timezone.localdate()
     obligation_count, overdue_count = _situation(today)
+    tenant_id = current_tenant_id.get()
+    cycles = []
+    if tenant_id and tenant_has(tenant_id, "cycles_r1"):
+        cycles = [
+            {"id": cycle.pk, **portal_projection(cycle)}
+            for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]
+        ]
     return render(
         request,
         "portal/home.html",
@@ -224,6 +234,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "obligation_count": obligation_count,
             "overdue_count": overdue_count,
             "next_action": _next_action(today),
+            "cycles": cycles,
         },
     )
 
