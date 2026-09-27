@@ -335,8 +335,19 @@ jobs:
 
       # Same reason and same position as in the test job: service containers start
       # before checkout, so the roles are created here, ahead of any database step.
+      # The template1 lines come with it — this job's pytest run also creates a
+      # test database cloned from template1, so the same three extensions must
+      # exist there or clients.0012's btree_gist assertion fails at CREATE DATABASE
+      # time, not at a test. Same corrected URL-swap form the test job uses.
       - name: Bootstrap database roles
-        run: psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+        run: |
+          psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS unaccent;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 
       # Needs the runner's network to reach the Playwright CDN. If that is ever
       # blocked, the suite still runs locally and the gap is recorded (plan todo 3).
