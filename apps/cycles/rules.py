@@ -9,9 +9,9 @@ Two grammars live here, both deliberately small:
   table instead of being re-derived. Anything outside these three is refused:
   an unreadable rule that silently passed would generate deadlines nobody chose.
 * `applies_to` — which clients a published version targets. The value sets are
-  the literals T5's `TaxProfile.regime` and `Engagement.service_kind` enumerate;
-  they live as local tuples because those models land on a sibling branch, and
-  the plan requires the literal spellings, not a model dependency.
+  `TaxRegime.values` and `ServiceKind.values` — the same TextChoices the
+  rows enforce — so the stored JSON cannot name a regime the registry cannot
+  hold.
 
 `StepSpec` is the boundary between the editor's form fields and the row the
 service writes: validation happens here, on parsed data, never on POST strings.
@@ -23,6 +23,7 @@ from datetime import date
 from enum import StrEnum
 from typing import Final
 
+from apps.clients.models import ServiceKind, TaxRegime
 from apps.cycles.errors import DagCycleError, PlaybookValidationError
 from apps.cycles.models import OwnerRule, StepKind
 
@@ -31,23 +32,11 @@ KEY_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 # step key, deliberately, so the two namespaces can never collide.
 OBLIGATION_PATTERN: Final = re.compile(r"^[A-Z][A-Z0-9-]{0,15}$")
 
-# The regimes `clients_taxprofile.regime` enumerates (T5), spelled out so the
-# JSON contract is stable whether or not that model is installed yet.
-REGIMES: Final[tuple[str, ...]] = (
-    "mei",
-    "simples",
-    "presumido",
-    "real",
-    "isento",
-    "unknown",
-)
-
-# The service kinds `clients_engagement.service_kind` enumerates (T5).
-SERVICE_KINDS: Final[tuple[str, ...]] = (
-    "mei_mensal",
-    "documentos_mensal",
-    "outro",
-)
+# The value sets are the models' own TextChoices — `applies_to` stored JSON is
+# the same contract the rows enforce, so the pack cannot name a regime the
+# registry cannot hold.
+REGIMES: Final[tuple[str, ...]] = tuple(TaxRegime.values)
+SERVICE_KINDS: Final[tuple[str, ...]] = tuple(ServiceKind.values)
 
 APPLIES_TO_KEYS: Final[frozenset[str]] = frozenset({"regimes", "service_kinds"})
 

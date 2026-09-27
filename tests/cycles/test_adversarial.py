@@ -341,3 +341,51 @@ def test_reparenting_a_published_step_is_refused(firm: Firm) -> None:
         with pytest.raises(ImmutableVersion):
             published.steps.get(key="b").delete()
         assert published.steps.count() == 2
+
+
+def test_concurrent_pack_installs_do_not_duplicate_or_crash() -> None:
+    """Two installers on one tenant must converge: one inserts, one re-reads.
+
+    The barrier makes the race real — both calls enter the create path before
+    either commits, so the loser provably exercises the IntegrityError re-fetch
+    rather than winning the lock before the winner started.
+    """
+    import threading  # noqa: PLC0415
+    from threading import Barrier  # noqa: PLC0415
+
+    from tests.support_threads import run_in_thread_as_runtime  # noqa: PLC0415
+
+    flagged = make_firm("adv-race")
+    flagged.tenant.features = ["cycles_r1"]
+    flagged.tenant.save(update_fields=["features"])
+    barrier = Barrier(2)
+
+    def install() -> int:
+        barrier.wait(timeout=10)
+        return len(install_system_packs(flagged.tenant))
+
+    # The helper joins its worker, so it cannot be the main thread's half of the
+    # race: wrap it in a plain thread, and let THIS thread be the other racer.
+    box: dict[str, object] = {}
+
+    def worker() -> None:
+        try:
+            box["count"] = run_in_thread_as_runtime(flagged.tenant.id, install)
+        except BaseException as exc:  # noqa: BLE001 — re-raised below, not lost
+            box["error"] = exc
+
+    racing = threading.Thread(target=worker, name="installer-b", daemon=True)
+    racing.start()
+    mine = install()
+    racing.join(timeout=30)
+    assert not racing.is_alive(), "the racing installer never finished"
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    assert mine == 2
+    assert box["count"] == 2
+    # Exactly two system playbooks exist, each with exactly one version.
+    with tenant_context(flagged.tenant.id):
+        assert Playbook.objects.filter(is_system=True).count() == 2
+        for playbook in Playbook.objects.filter(is_system=True):
+            assert playbook.versions.count() == 1
+            assert playbook.versions.get().state == VersionState.PUBLISHED

@@ -16,7 +16,7 @@ what the firm calls the task internally.
 from dataclasses import dataclass
 from typing import Final
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from apps.core.flags import tenant_has
 from apps.core.tenancy import tenant_context
@@ -281,7 +281,24 @@ def install_system_packs(tenant: Tenant) -> list[Playbook]:
     with tenant_context(tenant.pk), transaction.atomic():
         for pack in SYSTEM_PACKS:
             playbook = Playbook.objects.select_for_update().filter(key=pack.key).first()
-            if playbook is not None and not playbook.is_system:
+            if playbook is None:
+                try:
+                    with transaction.atomic():
+                        playbook = Playbook.objects.create(
+                            tenant=tenant,
+                            key=pack.key,
+                            name=pack.name,
+                            is_system=True,
+                        )
+                except IntegrityError:
+                    # Two installers ran at once: the loser re-reads inside its
+                    # outer transaction, which now blocks on the winner's lock —
+                    # concurrent installs converge instead of one 500ing.
+                    playbook = (
+                        Playbook.objects.select_for_update()
+                        .get(key=pack.key)
+                    )
+            if not playbook.is_system:
                 # A tenant playbook already owns this key: the firm's own row
                 # wins, and the pack is never written over it.
                 continue

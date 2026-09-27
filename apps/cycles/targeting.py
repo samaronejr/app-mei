@@ -1,13 +1,12 @@
 """Which clients a playbook version targets — the `applies_to` half of preview.
 
-The registry columns this reads (`TaxProfile.regime`, `Engagement.service_kind`)
-land with T5, which is a sibling of this change, not part of its base. The
-readers therefore degrade along exactly the same mapping T5's own backfill
-applies (S12.1): `is_mei` reads as regime `mei` and service kind `mei_mensal`,
-anything else as `unknown`/`documentos_mensal`. When the models are installed
-they are used and the mapping never runs; the two paths cannot disagree on the
-same database because a client either has backfilled rows or falls back to the
-flag the backfill read.
+Targeting reads the effective-dated registry, never the legacy flag:
+`TaxProfile.regime` answers *which rules apply* as of the period being
+generated (the bitemporal current row `profile_at` reads), and
+`Engagement.service_kind` answers *what the firm sells the client* — the two
+axes `applies_to` can name. A client with no profile row covering the period
+reads as `unknown`, which is what the S12.1 backfill writes for the clients the
+legacy flag could not describe.
 
 Every query runs tenant-scoped — under `tenant_context`, or explicitly keyed by
 the caller's tenant — and only ever returns client primary keys: the preview
@@ -16,23 +15,27 @@ exists to count, not to browse.
 
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from django.apps import apps as django_apps
-from django.db.models import Model, Q, QuerySet
+from django.db.models import Q, QuerySet
 
-from apps.clients.models import ClientCompany, ClientStatus
+from apps.clients.models import (
+    ClientCompany,
+    ClientStatus,
+    Engagement,
+    TaxProfile,
+    TaxRegime,
+)
 from apps.cycles.rules import REGIMES, SERVICE_KINDS
 
 if TYPE_CHECKING:
     from apps.tenants.models import Tenant
 
-# Same literals as rules.py's tuples, named here for readability at the use site.
-REGIME_MEI: Final = "mei"
-REGIME_UNKNOWN: Final = "unknown"
-KIND_MEI_MENSAL: Final = "mei_mensal"
-KIND_DOCUMENTOS_MENSAL: Final = "documentos_mensal"
+# A profile gap or an unasserted regime is the UNKNOWN literal, matching the
+# backfill's choice: "the system does not know" is a different answer from
+# "mei", and must not match the pack's regimes axis by default.
+REGIME_UNKNOWN: Final = TaxRegime.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,54 +81,22 @@ class AppliesTo:
         )
 
 
-def _all_objects(model: type[Model]) -> Any:  # noqa: ANN401 — see docstring
-    """Return the unscoped manager of an optionally-installed sibling model.
-
-    Every tenant table carries `all_objects`, but `Model` itself does not —
-    the attribute exists by codebase convention (TenantScopedModel), so mypy
-    needs the explicit escape for a model type it has never seen. `Any` is the
-    honest return: the concrete class is a sibling todo's private surface.
-    """
-    # ALL_OBJECTS_OK: every caller filters on the explicit tenant — see _regimes_at.
-    return cast("Any", model).all_objects
-
-
-def _optional_model(app_label: str, name: str) -> type[Model] | None:
-    """Return the model, or None when the sibling todo that ships it is absent.
-
-    `apps.get_model` raises LookupError for a model a registered app does not
-    have — which is exactly the state of this branch's base: `clients` is
-    installed, `TaxProfile` and `Engagement` are T5's, not yet here.
-    """
-    try:
-        return django_apps.get_model(app_label, name)
-    except LookupError:
-        return None
-
-
 def _regimes_at(
     tenant: "Tenant", clients: list[ClientCompany], on: date
 ) -> dict[UUID, str]:
-    """Map each client to its regime on `on`, reading TaxProfile when present.
+    """Map each client to its regime on `on` — `profile_at` read in bulk.
 
-    Without the model — this change's own base — the answer is the one T5's
-    backfill derives from the same flag, so the preview a firm sees today is the
-    count the backfilled registry will reproduce.
+    One query for the whole list rather than N point lookups (the query-budget
+    rule): rows arrive latest-first per client and the first one wins, which is
+    exactly `profile_at`'s resolution order.
     """
-    model = _optional_model("clients", "TaxProfile")
-    if model is None:
-        return {
-            client.pk: REGIME_MEI if client.is_mei else REGIME_UNKNOWN
-            for client in clients
-        }
     ids = [client.pk for client in clients]
     rows = (
         # ALL_OBJECTS_OK: the tenant column is in the predicate explicitly —
         # preview runs inside tenant_context in requests, but the same function
         # serves management commands where relying on ambient context would be
         # the silent-empty failure the marker exists to catch.
-        _all_objects(model)
-        .filter(
+        TaxProfile.all_objects.filter(
             tenant_id=tenant.pk,
             client_id__in=ids,
             superseded_at__isnull=True,
@@ -146,21 +117,16 @@ def _regimes_at(
 def _service_kinds_at(
     tenant: "Tenant", clients: list[ClientCompany], on: date
 ) -> dict[UUID, frozenset[str]]:
-    """Map each client to its open engagements' service kinds on `on`."""
-    model = _optional_model("clients", "Engagement")
-    if model is None:
-        return {
-            client.pk: frozenset(
-                {KIND_MEI_MENSAL} if client.is_mei else {KIND_DOCUMENTOS_MENSAL}
-            )
-            for client in clients
-        }
+    """Map each client to its open engagements' service kinds on `on`.
+
+    "Open" is the engagement's own range — `starts_on <= on`, `ends_on` null or
+    after it; the model carries no status column, the date bounds ARE the state.
+    """
     ids = [client.pk for client in clients]
     rows = (
         # ALL_OBJECTS_OK: same reason as _regimes_at — tenant_id is in the
         # predicate, so the answer does not depend on ambient context.
-        _all_objects(model)
-        .filter(tenant_id=tenant.pk, client_id__in=ids)
+        Engagement.all_objects.filter(tenant_id=tenant.pk, client_id__in=ids)
         .filter(Q(starts_on__lte=on))
         .filter(Q(ends_on__isnull=True) | Q(ends_on__gt=on))
         .values_list("client_id", "service_kind")

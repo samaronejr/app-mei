@@ -39,6 +39,19 @@
           Publicar geraria ciclos para {{ count }} cliente(s) no período de {{ period }}; {{ pinned }} ciclo(s) aberto(s) continuam fixados em versões anteriores.
           {% endblocktranslate %}
         </p>
+        {% comment %}
+          Publish lives INSIDE the preview panel (S8.1: preview precedes
+          publish). Its form carries the signed revision token the preview
+          rendered; a draft changed since refuses with 409 rather than
+          publishing under a count nobody confirmed.
+        {% endcomment %}
+        <form method="post" class="mt-3">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="publish">
+          <input type="hidden" name="expected_version" value="{{ version.version }}">
+          <input type="hidden" name="preview_token" value="{{ preview_token }}">
+          <button type="submit" class="ui-btn ui-btn-primary">{% translate "Publicar esta pré-visualização" %}</button>
+        </form>
       </div>
     </section>
   {% endif %}
@@ -92,7 +105,12 @@
       <div class="mt-6 flex flex-wrap items-center gap-3">
         <button type="submit" name="action" value="save" class="ui-btn ui-btn-quiet">{% translate "Salvar rascunho" %}</button>
         <button type="submit" name="action" value="preview" class="ui-btn ui-btn-quiet">{% translate "Pré-visualizar publicação" %}</button>
-        <button type="submit" name="action" value="publish" class="ui-btn ui-btn-primary">{% translate "Publicar versão" %}</button>
+        {% comment %}
+          Publishing without a preview is refused at the view; the disabled
+          control keeps that visible rather than hiding the outcome. The active
+          publish button is rendered by the preview panel itself.
+        {% endcomment %}
+        <button type="submit" name="action" value="publish" class="ui-btn ui-btn-primary" disabled>{% translate "Publicar versão" %}</button>
       </div>
     {% endif %}
   </form>

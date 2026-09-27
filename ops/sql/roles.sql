@@ -132,6 +132,9 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- portal coverage meta-test inspects. Naming the tables closes every future table
 -- by default.
 --
+-- Portal-NONE tables are declared above as `-- PORTAL_NONE:` lines; the
+-- cycles_* tables join that list a commit later in this branch.
+--
 -- to_regclass-guarded because this file runs from the init hook against an EMPTY data
 -- directory under ON_ERROR_STOP=1: an unguarded GRANT on a table that does not exist
 -- yet aborts cluster bootstrap. On a fresh cluster this therefore grants nothing, so

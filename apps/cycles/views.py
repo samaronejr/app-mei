@@ -18,6 +18,7 @@ from uuid import UUID
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
 from django.forms.formsets import DELETION_FIELD_NAME, BaseFormSet
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
@@ -151,13 +152,39 @@ def _specs_of_valid_formset(formset: BaseFormSet[StepForm]) -> list[StepSpec]:
     return specs
 
 
-def _expectation(request: HttpRequest, version: PlaybookVersion) -> int:
-    """Read the optimistic counter the page submitted with the request."""
+def _expectation(request: HttpRequest) -> int | None:
+    """Read the optimistic counter the page submitted — required, not defaulted.
+
+    The counter is rendered into the form; a POST without one was not made from
+    this page and must not write at the current revision. `None` means missing
+    or malformed; callers translate it to 409 with no writes.
+    """
     raw = request.POST.get("expected_version")
+    if raw is None:
+        return None
     try:
-        return int(str(raw)) if raw is not None else version.version
+        return int(str(raw))
     except ValueError:
-        return -1
+        return None
+
+
+# Names the signature's purpose inside the key; not a credential, a scope pin.
+PREVIEW_TOKEN_SALT = "cycles.preview-publish.v1"  # noqa: S105
+_SIGNER = TimestampSigner(salt=PREVIEW_TOKEN_SALT)
+
+
+def _preview_token(version: PlaybookVersion) -> str:
+    """Sign the revision a preview panel was rendered for."""
+    return _SIGNER.sign(f"{version.pk}:{version.version}")
+
+
+def _preview_token_ok(version: PlaybookVersion, token: str) -> bool:
+    """Report whether the token names this version's CURRENT stored revision."""
+    try:
+        unsigned = _SIGNER.unsign(token)
+    except (BadSignature, SignatureExpired):
+        return False
+    return unsigned == f"{version.pk}:{version.version}"
 
 
 @require_http_methods(["GET", "POST"])
@@ -307,7 +334,7 @@ def playbook_editor_view(
     return _editor_post(request, playbook, version)
 
 
-def _editor_post(  # noqa: PLR0911 — each return IS one action's answer
+def _editor_post(  # noqa: PLR0911, C901 — each return IS one action's answer
     request: AuthenticatedRequest,
     playbook: Playbook,
     version: PlaybookVersion,
@@ -317,9 +344,21 @@ def _editor_post(  # noqa: PLR0911 — each return IS one action's answer
     form = PlaybookForm(request.POST)
     formset = _formset_of(request, version)
     context = _editor_context(playbook, version, form, formset)
-    expected = _expectation(request, version)
+    expected = _expectation(request)
     action = str(request.POST.get("action") or "")
 
+    if expected is None:
+        return _editor_errors(
+            request,
+            context,
+            [
+                _(
+                    "A revisão do rascunho é obrigatória; recarregue a página "
+                    "e tente de novo."
+                )
+            ],
+            status=HTTPStatus.CONFLICT,
+        )
     if version.state != VersionState.DRAFT:
         return _editor_errors(
             request,
@@ -339,7 +378,9 @@ def _editor_post(  # noqa: PLR0911 — each return IS one action's answer
                 direction=str(request.POST.get("direction") or ""),
             )
             return redirect("playbook-editor", pk=playbook.pk, number=moved.number)
-        if action not in {"save", "preview", "publish"}:
+        if action == "publish":
+            return _publish_post(request, context, playbook, version, expected=expected)
+        if action not in {"save", "preview"}:
             raise Http404
         if not (form.is_valid() and formset.is_valid()):
             return _editor_errors(
@@ -394,27 +435,59 @@ def _editor_action(
     if action == "save":
         messages.success(request, _("Rascunho salvo."))
         return redirect("playbook-editor", pk=playbook.pk, number=saved.number)
-    if action == "preview":
-        preview = playbooks.preview_publish(
-            actor=request.user,
-            tenant=tenant,
-            playbook_pk=playbook.pk,
-            number=saved.number,
-        )
-        fresh = _editor_context(
-            playbook,
-            saved,
-            form,
-            _formset_of(request, saved),
-            preview=preview,
-        )
-        return render(request, "cycles/playbook_editor.html", fresh)
-    version, preview = playbooks.publish_version(
+    preview = playbooks.preview_publish(
         actor=request.user,
         tenant=tenant,
         playbook_pk=playbook.pk,
         number=saved.number,
-        expected_version=saved.version,
+    )
+    fresh = _editor_context(
+        playbook,
+        saved,
+        form,
+        _formset_of(request, saved),
+        preview=preview,
+    )
+    # The token binds the preview panel to the revision it described; publish
+    # accepts only that token, so a draft edited after preview cannot be
+    # published under the old count.
+    fresh["preview_token"] = _preview_token(saved)
+    return render(request, "cycles/playbook_editor.html", fresh)
+
+
+def _publish_post(
+    request: AuthenticatedRequest,
+    context: dict[str, object],
+    playbook: Playbook,
+    version: PlaybookVersion,
+    *,
+    expected: int,
+) -> HttpResponse:
+    """Publish the revision the preview described — and only that revision.
+
+    Publishing does not take field content: the token signs `pk:version`, so a
+    draft changed since the preview refuses with 409 and must be previewed
+    again. The service re-validates the locked draft either way.
+    """
+    token = str(request.POST.get("preview_token") or "")
+    if not _preview_token_ok(version, token):
+        return _editor_errors(
+            request,
+            context,
+            [
+                _(
+                    "Publique a pré-visualização atual: gere a "
+                    "pré-visualização desta versão e confirme a partir dela."
+                )
+            ],
+            status=HTTPStatus.CONFLICT,
+        )
+    published, preview = playbooks.publish_version(
+        actor=request.user,
+        tenant=_tenant_of(request),
+        playbook_pk=playbook.pk,
+        number=version.number,
+        expected_version=expected,
     )
     messages.success(
         request,
@@ -423,7 +496,7 @@ def _editor_action(
             "período, %(pinned)s ciclos abertos fixados em versões anteriores."
         )
         % {
-            "number": version.number,
+            "number": published.number,
             "clients": preview.matching_clients,
             "pinned": preview.pinned_open_cycles,
         },
@@ -444,13 +517,24 @@ def playbook_retire_view(
     """Retire a published version; cycles already pinned to it stay readable."""
     playbook = _playbook_or_404(pk)
     tenant = _tenant_of(request)
+    _version_or_404(playbook, number)
+    expected = _expectation(request)
+    if expected is None:
+        messages.error(
+            request,
+            _(
+                "A revisão da versão é obrigatória; recarregue a página e "
+                "tente de novo."
+            ),
+        )
+        return redirect("playbook-detail", pk=playbook.pk)
     try:
         playbooks.retire_version(
             actor=request.user,
             tenant=tenant,
             playbook_pk=playbook.pk,
             number=number,
-            expected_version=_expectation(request, _version_or_404(playbook, number)),
+            expected_version=expected,
         )
     except (VersionConflict, IllegalTransition) as exc:
         messages.error(request, str(exc))

@@ -7,6 +7,7 @@ service guarantees the worker contract pins on every state change: the row lock,
 the optimistic version check, and the audit row.
 """
 
+from datetime import date
 from http import HTTPStatus
 
 import pytest
@@ -15,7 +16,7 @@ from django.db import connection, transaction
 from django.urls import reverse
 from pytest_django.fixtures import SettingsWrapper
 
-from apps.clients.models import ClientCompany
+from apps.clients.models import ClientCompany, Engagement, TaxProfile
 from apps.core.tenancy import tenant_context
 from apps.cycles.errors import (
     DagCycleError,
@@ -93,7 +94,12 @@ def test_publish_refuses_a_cyclic_dag_and_names_the_keys(firm: Firm) -> None:
 
 
 def test_the_editor_view_answers_the_cycle_with_422(firm: Firm) -> None:
-    """The same refusal, at the HTTP surface the acceptance names."""
+    """The same refusal, at the HTTP surface the acceptance names.
+
+    Publishing now requires a preview token — which only a successful preview
+    can mint — so the cyclic draft refuses at the preview action; a forged
+    direct publish is refused even earlier by the token check.
+    """
     firm.tenant.features = ["cycles_r1"]
     firm.tenant.save(update_fields=["features"])
     with tenant_context(firm.tenant.id):
@@ -111,7 +117,7 @@ def test_the_editor_view_answers_the_cycle_with_422(firm: Firm) -> None:
     response = session.post(
         reverse("playbook-editor", kwargs={"pk": playbook.pk, "number": 1}),
         data={
-            "action": "publish",
+            "action": "preview",
             "expected_version": "1",
             "name": "Cíclico",
             "steps-TOTAL_FORMS": "2",
@@ -136,6 +142,132 @@ def test_the_editor_view_answers_the_cycle_with_422(firm: Firm) -> None:
     )
     assert response.status_code == HTTPStatus.UNPROCESSABLE_CONTENT
     assert b"Depend" in response.content  # the cycle banner names the keys
+
+    # And a direct publish POST — no preview ever rendered — is refused before
+    # validation, leaving the draft untouched.
+    direct = session.post(
+        reverse("playbook-editor", kwargs={"pk": playbook.pk, "number": 1}),
+        data={"action": "publish", "expected_version": "1"},
+    )
+    assert direct.status_code == HTTPStatus.CONFLICT
+    with tenant_context(firm.tenant.id):
+        assert playbook.versions.get(number=1).state == VersionState.DRAFT
+
+
+def test_publish_requires_the_preview_token_of_the_current_revision(
+    flagged: Firm,
+) -> None:
+    """B2/B3: publish needs the signed token, and edits invalidate it.
+
+    The flow: preview renders a token bound to the revision it described;
+    publish accepts only that token; any subsequent draft write changes the
+    revision, so an old token — or none — is a 409 with no writes.
+    """
+    with tenant_context(flagged.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=flagged.owner,
+            tenant=flagged.tenant,
+            key="tok",
+            name="Token",
+            steps=[_spec("a")],
+        )
+    session = flagged.as_owner()
+    url = reverse("playbook-editor", kwargs={"pk": playbook.pk, "number": 1})
+    save_fields = {
+        "name": "Token",
+        "steps-TOTAL_FORMS": "1",
+        "steps-INITIAL_FORMS": "1",
+        "steps-MIN_NUM_FORMS": "0",
+        "steps-MAX_NUM_FORMS": "1000",
+        "steps-0-key": "a",
+        "steps-0-kind": "task",
+        "steps-0-label_ptbr": "A",
+        "steps-0-owner_rule": "team",
+        "steps-0-due_kind": "period_end_offset",
+        "steps-0-due_day": "5",
+    }
+
+    # Missing revision token on a mutating POST: refused, nothing written.
+    missing = session.post(
+        url, data={"action": "save", **save_fields}
+    )
+    assert missing.status_code == HTTPStatus.CONFLICT
+
+    # Publishing without any preview is refused, revision correct or not.
+    direct = session.post(
+        url,
+        data={"action": "publish", "expected_version": "1"},
+    )
+    assert direct.status_code == HTTPStatus.CONFLICT
+    with tenant_context(flagged.tenant.id):
+        assert playbook.versions.get(number=1).state == VersionState.DRAFT
+
+    # Preview mints the token bound to revision 2 (the preview's own save).
+    preview = session.post(
+        url,
+        data={"action": "preview", "expected_version": "1", **save_fields},
+    )
+    assert preview.status_code == HTTPStatus.OK
+    with tenant_context(flagged.tenant.id):
+        version = playbook.versions.get(number=1)
+        assert version.version == 2
+        token = f"{version.pk}:{version.version}"
+        from django.core.signing import TimestampSigner  # noqa: PLC0415
+
+        signed = TimestampSigner(salt="cycles.preview-publish.v1").sign(token)
+
+    # Publishing WITH the token lands.
+    published = session.post(
+        url,
+        data={
+            "action": "publish",
+            "expected_version": "2",
+            "preview_token": signed,
+        },
+    )
+    assert published.status_code == HTTPStatus.FOUND
+    with tenant_context(flagged.tenant.id):
+        assert playbook.versions.get(number=1).state == VersionState.PUBLISHED
+
+
+def test_a_preview_token_signed_for_an_old_revision_is_refused(
+    flagged: Firm,
+) -> None:
+    """Editing the draft after the preview invalidates its token (409)."""
+    from django.core.signing import TimestampSigner  # noqa: PLC0415
+
+    with tenant_context(flagged.tenant.id):
+        playbook = playbooks.create_playbook(
+            actor=flagged.owner,
+            tenant=flagged.tenant,
+            key="stale-tok",
+            name="Stale token",
+            steps=[_spec("a")],
+        )
+        draft = playbook.versions.get(number=1)
+        stale = TimestampSigner(salt="cycles.preview-publish.v1").sign(
+            f"{draft.pk}:{draft.version}"
+        )
+        playbooks.update_draft(
+            actor=flagged.owner,
+            tenant=flagged.tenant,
+            playbook_pk=playbook.pk,
+            number=1,
+            expected_version=1,
+            steps=[_spec("a"), _spec("b")],
+        )
+    session = flagged.as_owner()
+    response = session.post(
+        reverse("playbook-editor", kwargs={"pk": playbook.pk, "number": 1}),
+        data={
+            "action": "publish",
+            "expected_version": "2",
+            "preview_token": stale,
+        },
+    )
+    assert response.status_code == HTTPStatus.CONFLICT
+    with tenant_context(flagged.tenant.id):
+        assert playbook.versions.get(number=1).state == VersionState.DRAFT
 
 
 def test_a_published_version_is_immutable(firm: Firm) -> None:
@@ -232,15 +364,48 @@ def test_a_stale_expected_version_conflicts_without_writing(firm: Firm) -> None:
 # --- Preview ----------------------------------------------------------------
 
 
+def _register(
+    client: ClientCompany,
+    *,
+    regime: str,
+    service_kind: str,
+) -> None:
+    """Write the registry rows targeting reads: a current profile + engagement.
+
+    `provenance="probe"` marks the row as test-seeded rather than backfilled —
+    the targeting code reads values, not provenance, so either would do.
+    """
+    TaxProfile.objects.create(
+        tenant_id=client.tenant_id,
+        client=client,
+        regime=regime,
+        valid_from=date(2020, 1, 1),
+        provenance="probe",
+    )
+    Engagement.objects.create(
+        tenant_id=client.tenant_id,
+        client=client,
+        service_kind=service_kind,
+        starts_on=date(2020, 1, 1),
+        provenance="probe",
+    )
+
+
 def test_publish_preview_counts_the_clients_the_scope_covers(firm: Firm) -> None:
-    """Exact counts: is_mei maps to the same answer the T5 backfill will give."""
-    add_client(firm, legal_name="Alpha MEI", base=client_base(0, firm.tenant.slug))
-    add_client(firm, legal_name="Beta MEI", base=client_base(1, firm.tenant.slug))
-    non_mei = add_client(
+    """Exact counts: profile regime and engagement kind decide targeting."""
+    alpha = add_client(
+        firm, legal_name="Alpha MEI", base=client_base(0, firm.tenant.slug)
+    )
+    beta = add_client(
+        firm, legal_name="Beta MEI", base=client_base(1, firm.tenant.slug)
+    )
+    gama = add_client(
         firm, legal_name="Gama Ltda", base=client_base(2, firm.tenant.slug)
     )
     with tenant_context(firm.tenant.id):
-        ClientCompany.objects.filter(pk=non_mei.pk).update(is_mei=False)
+        _register(alpha, regime="mei", service_kind="mei_mensal")
+        _register(beta, regime="mei", service_kind="mei_mensal")
+        _register(gama, regime="simples", service_kind="documentos_mensal")
 
         mei = playbooks.create_playbook(
             actor=firm.owner,
@@ -294,6 +459,51 @@ def test_publish_preview_counts_the_clients_the_scope_covers(firm: Firm) -> None
         )
         assert preview2.matching_clients == 2
         assert preview2.pinned_open_cycles == 0  # no ServiceCycle rows exist yet
+
+
+def test_targeting_reads_the_profile_not_the_legacy_flag(firm: Firm) -> None:
+    """is_mei is legacy input; the profile claim is the answer targeting uses.
+
+    A client whose flag says MEI but whose current profile says `simples` must
+    NOT match the MEI pack, and a closed engagement must not match even while a
+    profile does — the period bound is part of "open".
+    """
+    legacy_flagged = add_client(
+        firm, legal_name="Flag MEI", base=client_base(0, firm.tenant.slug)
+    )
+    real_mei = add_client(
+        firm, legal_name="Profile MEI", base=client_base(1, firm.tenant.slug)
+    )
+    ended = add_client(
+        firm, legal_name="Ended MEI", base=client_base(2, firm.tenant.slug)
+    )
+    with tenant_context(firm.tenant.id):
+        # Flag says MEI, profile says simples — the profile wins.
+        assert legacy_flagged.is_mei
+        _register(legacy_flagged, regime="simples", service_kind="documentos_mensal")
+        _register(real_mei, regime="mei", service_kind="mei_mensal")
+        # A closed engagement drops the service-kind axis even with regime MEI.
+        _register(ended, regime="mei", service_kind="mei_mensal")
+        ended_engagement = ended.engagements.get()
+        ended_engagement.ends_on = date(2020, 6, 1)
+        ended_engagement.save()
+
+        mei = playbooks.create_playbook(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            key="profile-wins",
+            name="Profile wins",
+            applies_to={"regimes": ["mei"], "service_kinds": ["mei_mensal"]},
+            steps=[_spec("a")],
+        )
+        preview = playbooks.preview_publish(
+            actor=firm.owner,
+            tenant=firm.tenant,
+            playbook_pk=mei.pk,
+            number=1,
+        )
+        assert preview.matching_clients == 1
+        assert preview.client_ids == (real_mei.pk,)
 
 
 # --- Tenant isolation --------------------------------------------------------
