@@ -9,6 +9,7 @@ process, so its sends land in `django.core.mail.outbox`.
 
 import re
 from collections.abc import Callable
+from datetime import date
 from typing import Final
 
 import pytest
@@ -93,7 +94,12 @@ def test_create_a_client_set_its_profile_and_invite_a_contact(
     tenant = live.firm.tenant
     with tenant_context(tenant.id):
         client = ClientCompany.objects.get(cnpj=cnpj)
-        assert TaxProfile.objects.filter(client=client, regime="mei").count() == 1
+        # The creation opened the timeline from today (the flag's claim); the
+        # correction to 2021-03-01 superseded it, so exactly one claim is current.
+        current = TaxProfile.objects.filter(client=client, superseded_at__isnull=True)
+        assert list(current.values_list("regime", "valid_from", "valid_to")) == [
+            ("mei", date(2021, 3, 1), None),
+        ]
         assert ClientContact.objects.get(client=client).email == CONTACT_EMAIL
     invitation = Invite.objects.for_user(live.firm.owner).get(tenant=tenant)
     assert (invitation.email, invitation.client_id) == (CONTACT_EMAIL, client.pk)
