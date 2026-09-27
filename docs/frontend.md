@@ -92,6 +92,15 @@ plus `shell_header` for the flagged shell. Each documents its context in its own
 header comment and renders from that context alone. `tests/ui/test_ui_partials.py`
 pins the markup contracts; `tests/browser/test_components.py` drives the behaviour.
 
+### Shell navigation
+
+Under the flag the bar is `NAV_R1` in `apps/core/navigation.py`, resolved through the
+same `visible_nav_items` capability filter as the MEI-era bar. It lists only
+destinations that exist today: Hoje (the dashboard), Clientes, and Gestão (the team
+screen). The rest of the S5.3 top level joins in the todo that ships each route:
+Ciclos in `AXR1-009`, Comunicação in `AXR1-010` and Documentos in `AXR1-013`. A
+flagged firm is never offered a link that leads nowhere.
+
 ### Alpine components
 
 `dialog` (native `<dialog>`, focus returned to the opener), `uploadList`
