@@ -108,7 +108,23 @@ Evidence: `.evidence/AXR1-006-fix-1.txt`, `-fix-2.txt`, `-fix-3.txt`, `-fix-4.tx
 `-fix-5.txt`, `-failure.txt`, `-placement-rebase.txt`, `-placement-collection.txt`,
 `-placement-related.txt`, `-placement-migration.txt`, and `-placement-gates.txt`.
 The populated rollback/reapply retained obligations, attached documents and both
-audit streams. Todos 7 to 29 and the final verification wave remain open.
+audit streams. `AXR1-007` (in-product onboarding behind `import_r1`: create/edit
+with a tenant-scoped duplicate check and versions, engagement, tax-profile,
+contact and assignment editors, contact portal invites issued under lock and
+mailed after commit, and the CSV/XLSX portfolio import with plan, TenantTask
+commit, retry and dependents-aware rollback; `ImportBatch`/`ImportRow`,
+`clients.0015`) is recorded on the T6 stack, using the S8.1 `clients.manage` and
+`clients.import` capabilities and keeping the MEI flag in agreement with the tax
+timeline on every new write path. Tests: `tests/clients/test_import_wizard.py`,
+`tests/clients/test_onboarding_screens.py`,
+`tests/clients/test_contact_invite_delivery.py`,
+`tests/clients/test_onboarding_flag_agreement.py` and
+`tests/browser/test_onboarding.py`. Evidence: `.evidence/AXR1-007-red.txt`,
+`-happy.txt`, `-failure.txt`, `-adversarial.txt`, `-migration-reversal.txt`,
+`-gates.txt`, `-fix-1.txt` through `-fix-4.txt`, `-fix-6.txt`, `-fix-gates.txt`,
+`-fix6-gates.txt`, `-placement.txt`, `-placement-migration.txt`,
+`-placement-gates.txt` and the eight onboarding/import screenshots. Todos 8 to 29
+and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -209,7 +225,15 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **2329 passing**,
+implementation head. The current default-suite baseline is **2407 passing**,
+verified by one serial full run on the placed `AXR1-007` code (`2a15498`, the
+same default-suite code as this record's head): the **2329** below plus **78**
+net-new `AXR1-007` tests (the import wizard, onboarding screens, contact-invite
+delivery and flag-agreement modules, including the gate-review regressions).
+The browser run passed **30**, isolation **139** and the CNPJ pack **29**
+(`.evidence/AXR1-007-placement-gates.txt`).
+
+The previous baseline was **2329 passing**,
 verified by one serial full run on the placed `AXR1-006` code head `8b968d0`.
 Collection on T5 (`1222815`) found **2266** default tests; T6 adds **63** net-new
 cases (33 from the reader/observation change and 30 gate-review regressions).
@@ -233,8 +257,10 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **26** cases: the **24** passing at the T3
-commit `bff2bb2`, plus the two-viewport reviewer-conflict regression. Every test in
+`browser` job. The suite now contains **30** cases: the **24** passing at the T3
+commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
+four `AXR1-007` onboarding and import-wizard cases (two journeys at two
+viewports). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
