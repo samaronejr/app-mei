@@ -78,10 +78,17 @@ until the name is cleared.
 Progress: `AXR1-001` (the pivot records) lands with the commit that adds this
 section. `AXR1-002` (per-tenant feature flags with a global kill switch;
 `tests/core/test_flags.py`; `.evidence/AXR1-002-red.txt`, `-happy.txt`,
-`-failure.txt`, `-gates.txt`, and `-adversarial.txt`) and `AXR1-030`
+`-failure.txt`, `-gates.txt`, and `-adversarial.txt`), `AXR1-003` (the R1 design
+tokens, `templates/partials/ui/` components and the flagged product shell, plus the
+browser and accessibility harness; `tests/ui/test_product_shell.py`,
+`tests/ui/test_ui_partials.py`, `tests/test_support_threads.py`,
+`tests/browser/test_shell.py` and `tests/browser/test_components.py`;
+`.evidence/AXR1-003-baseline.txt`, `-happy.txt`, `-desktop.png`, `-mobile.png`,
+`-failure.txt`, `-failure-role.txt`, `-flagoff.txt`, `-mutation.txt`,
+`-ci-browser-job.txt`, `-gates.txt`, and `-adversarial.txt`) and `AXR1-030`
 (certificate metadata-only guard; `tests/clients/test_certificate_metadata_only.py`;
 `.evidence/AXR1-030-happy.txt`, `-failure.txt`, `-gates.txt`, and `-adversarial.txt`) are
-recorded. Todos 3 to 29 and the final verification wave are open.
+recorded. Todos 4 to 29 and the final verification wave are open.
 
 ## Plan index
 
@@ -175,8 +182,14 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current baseline is **2069** passing, a clean serial run
-at `401d0ce` on 2026-09-27, recorded by `AXR1-002` as 2054 plus fifteen new tests.
+implementation head. The current baseline is **2100** passing, a clean serial run
+at `bff2bb2` on 2026-09-27, recorded by `AXR1-003` as 2069 plus thirty-one new tests.
+
+Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
+`-m "not browser"`), so they are not part of the count above. They run with
+`uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
+`browser` job. That suite is **24** passing at `bff2bb2`: every test in
+`tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
 leave the latest recorded count unchanged. A change that adds tests raises it by
