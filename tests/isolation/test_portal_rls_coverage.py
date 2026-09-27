@@ -46,7 +46,9 @@ RUNTIME_ROLE = "app_runtime"
 # authz_usercapabilitygrant (todo 4) is a tenant table like any other: it carries
 # tenant_id, EnableRLS polices it, and its portal decision is DenyPortalAccess —
 # the portal reads its own capability answers from the stash, never this table.
-EXPECTED_TENANT_TABLE_COUNT = 16
+# clients_{clientcontact,engagement,taxprofile} (todo 5) are the three client
+# spine tables — portal-NONE for contacts, READ for the other two.
+EXPECTED_TENANT_TABLE_COUNT = 19
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -356,9 +358,12 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "authz_usercapabilitygrant",
         "clients_clientassignment",
         "clients_clientcompany",
+        "clients_clientcontact",
         "clients_clienttag",
+        "clients_engagement",
         "clients_onboardingitem",
         "clients_tag",
+        "clients_taxprofile",
         "obligations_monthlyrevenue",
         "obligations_obligation",
     },

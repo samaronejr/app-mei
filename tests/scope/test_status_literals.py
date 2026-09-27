@@ -90,6 +90,26 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         "OnboardingStatus or ClientStatus branch."
     ),
     LiteralPin(
+        "apps/clients/models/contact.py",
+        "active",
+        'active = models.BooleanField(_("active"), default=True)',
+    ): (
+        "The word is translatable field metadata for contact availability, not a "
+        "ClientStatus branch."
+    ),
+    LiteralPin(
+        "apps/clients/models/tax_profile.py",
+        "unknown",
+        'UNKNOWN = "unknown", _("unknown")',
+        count=2,
+    ): (
+        "TaxRegime is the effective-dated regime enum; its declaration line is not a "
+        "member of the watched status-render enums, so it is pinned here — twice on "
+        "one line, the value and its msgid, the same shape GovBrTrustLevel already "
+        "carries. The value is load-bearing: the backfill writes it for every "
+        "non-MEI client rather than inventing a regime."
+    ),
+    LiteralPin(
         "apps/core/checks.py",
         "client_owner",
         'portal_roles = ("client_owner", "client_collaborator")',

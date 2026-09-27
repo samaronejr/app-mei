@@ -83,6 +83,9 @@ class AuditAction(models.TextChoices):
     ALL_TENANTS_ACCESS = "all_tenants_access", _("cross-tenant access")
     DSR_SUBMITTED = "dsr_submitted", _("data subject request submitted")
     DENIED = "denied", _("action denied")
+    # A correction is one event even when it splits a row into three: the trail
+    # asks "who restated the timeline" before it asks how many rows moved.
+    TAX_PROFILE_CORRECTED = "tax_profile_corrected", _("tax profile corrected")
 
 
 class Event(TenantScopedModel):

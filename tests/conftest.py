@@ -35,12 +35,15 @@ APPEND_ONLY_TABLES = ("audit_event", "audit_platformevent")
 
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
 # rather than blanket so every other table — accounts_user, mfa_authenticator,
-# django_session — stays unreadable by the portal role.
+# django_session, and clients_clientcontact, which is portal-NONE in R1 — stays
+# unreadable by the portal role.
 PORTAL_TABLES = (
     "clients_clientcompany",
     "clients_clientassignment",
     "clients_clienttag",
     "clients_onboardingitem",
+    "clients_engagement",
+    "clients_taxprofile",
     "obligations_obligation",
     "obligations_monthlyrevenue",
     "obligations_document",

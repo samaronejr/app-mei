@@ -11,7 +11,7 @@
 -- app_test      owns the pytest-created test database.  CREATEDB + BYPASSRLS, and a
 --               member of both roles above so tests can SET ROLE app_runtime.
 -- app_portal    the client portal's role, entered with SET LOCAL ROLE inside the
---               request transaction. NOLOGIN, and holds SELECT on an ALLOW-LIST of six
+--               request transaction. NOLOGIN, and holds SELECT on an ALLOW-LIST of
 --               tables only, so any table added later is closed to the portal by
 --               default and a missing grant fails loudly instead of returning nothing.
 
@@ -21,6 +21,19 @@
 \getenv app_migrator_password APP_MIGRATOR_PASSWORD
 \getenv app_runtime_password APP_RUNTIME_PASSWORD
 \getenv app_test_password APP_TEST_PASSWORD
+
+-- Server-level prerequisites, owned by the bootstrap superuser on purpose.
+-- CREATE EXTENSION needs database-level CREATE, which app_migrator deliberately
+-- lacks, so the migration needing btree_gist (clients 0012, the TaxProfile
+-- exclusion constraint) ASSERTS its presence and fails with a readable message
+-- rather than installing it. On a database roles.sql did not initialise — the
+-- pilot DB predating this file — the superuser re-runs just these three lines
+-- (ops/README.md's runbook step). Test databases are cloned from template1, not
+-- from this one, so they need the same three extensions created there; that is
+-- 02-template1-extensions.sh in this directory and the bootstrap step in ci.yml.
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 DO $$
 BEGIN
@@ -110,7 +123,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
 -- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
 -- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the
--- portal coverage meta-test inspects. Naming the seven tables closes every future table
+-- portal coverage meta-test inspects. Naming the tables closes every future table
 -- by default.
 --
 -- to_regclass-guarded because this file runs from the init hook against an EMPTY data
@@ -127,6 +140,8 @@ BEGIN
         'clients_clientassignment',
         'clients_clienttag',
         'clients_onboardingitem',
+        'clients_engagement',
+        'clients_taxprofile',
         'obligations_obligation',
         'obligations_monthlyrevenue',
         'obligations_document'

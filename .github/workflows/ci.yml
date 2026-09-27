@@ -102,7 +102,18 @@ jobs:
       #
       # This step must stay ahead of the first step that touches the database.
       - name: Bootstrap database roles
-        run: psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+        run: |
+          psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+          # pytest-django clones each test database from template1, so extensions
+          # that exist only in app_mei never reach the suite. btree_gist in
+          # particular is asserted by the clients migration that needs it, and a
+          # test database without it fails there, not here.
+          psql "$SUPERUSER_DATABASE_URL" -d template1 -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;'
+          psql "$SUPERUSER_DATABASE_URL" -d template1 -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS unaccent;'
+          psql "$SUPERUSER_DATABASE_URL" -d template1 -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 
       - name: Lint (ruff check)
         run: uv run ruff check .

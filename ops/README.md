@@ -32,6 +32,35 @@ the target database under `app_migrator`, restores under that role, and reapplie
 Because entrypoint scripts only run against an **empty** data directory, editing
 `roles.sql` requires `docker compose down -v` — a restart will not re-run it.
 
+### Extensions live in the superuser bootstrap, not in migrations
+
+`ops/sql/roles.sql` now creates three extensions — `btree_gist`, `unaccent`,
+`pg_trgm` — at the top of the file. They are there and not in a migration because
+`CREATE EXTENSION` needs database-level `CREATE`, which `app_migrator` does not
+have, so no migration can install them; `clients 0012` (the `TaxProfile`
+exclusion constraint) instead **asserts** `btree_gist` exists and fails with a
+pointed message when it does not.
+
+**One-time runbook step (OG-10), required on every existing database before this
+schema first migrates:** run the three `CREATE EXTENSION` lines as the bootstrap
+superuser against the live pilot database. The pilot database predates the
+extension block, so it will not have them otherwise.
+
+```sh
+psql "$SUPERUSER_DATABASE_URL" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+  -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;' \
+  -c 'CREATE EXTENSION IF NOT EXISTS unaccent;' \
+  -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+```
+
+Test databases never see these statements at all: `pytest-django` clones them
+from `template1`, not from `app_mei`. The same three extensions therefore go into
+`template1` at init — `ops/sql/02-template1-extensions.sh` under Compose, and the
+`Bootstrap database roles` step in `.github/workflows/ci.yml` on a runner. The CI
+job's step doubles as documentation of the operator shape: run the extension
+creation against both `template1` (so future test databases work) and the app
+database (so the application schema can migrate).
+
 ### The portal grants do not survive a new migration, so `migrate` re-issues them
 
 `app_portal`'s two `GRANT` blocks are `to_regclass`-guarded, because the file runs under
