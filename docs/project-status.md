@@ -85,10 +85,13 @@ browser and accessibility harness; `tests/ui/test_product_shell.py`,
 `tests/browser/test_shell.py` and `tests/browser/test_components.py`;
 `.evidence/AXR1-003-baseline.txt`, `-happy.txt`, `-desktop.png`, `-mobile.png`,
 `-failure.txt`, `-failure-role.txt`, `-flagoff.txt`, `-mutation.txt`,
-`-ci-browser-job.txt`, `-gates.txt`, and `-adversarial.txt`) and `AXR1-030`
+`-ci-browser-job.txt`, `-gates.txt`, and `-adversarial.txt`), `AXR1-004` (the 13
+S8.1 capabilities and per-user capability grants; `tests/authz/test_r1_capabilities_positive.py`,
+`tests/authz/test_user_capability_grant.py`; `.evidence/AXR1-004-red.txt`,
+`-happy.txt`, `-failure.txt`, `-gates.txt`, and `-adversarial.txt`) and `AXR1-030`
 (certificate metadata-only guard; `tests/clients/test_certificate_metadata_only.py`;
 `.evidence/AXR1-030-happy.txt`, `-failure.txt`, `-gates.txt`, and `-adversarial.txt`) are
-recorded. Todos 4 to 29 and the final verification wave are open.
+recorded. Todos 5 to 29 and the final verification wave are open.
 
 ## Plan index
 
@@ -182,8 +185,12 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current baseline is **2100** passing, a clean serial run
-at `bff2bb2` on 2026-09-27, recorded by `AXR1-003` as 2069 plus thirty-one new tests.
+implementation head. The current baseline is **2213** passing, a clean serial run
+at `c428733` on 2026-09-27, recorded by `AXR1-004` as 2100 plus one hundred
+thirteen new tests: seventy-nine parametrized matrix cells, eleven positive
+resolution tests, fifteen grant tests, six manager-wiring cases and three
+RLS-coverage cases for `authz_usercapabilitygrant`, minus one replaced
+cell-count sentinel.
 
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
