@@ -188,9 +188,7 @@ def test_publish_requires_the_preview_token_of_the_current_revision(
     }
 
     # Missing revision token on a mutating POST: refused, nothing written.
-    missing = session.post(
-        url, data={"action": "save", **save_fields}
-    )
+    missing = session.post(url, data={"action": "save", **save_fields})
     assert missing.status_code == HTTPStatus.CONFLICT
 
     # Publishing without any preview is refused, revision correct or not.

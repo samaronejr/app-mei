@@ -63,7 +63,6 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Vale a partir de",
         "Vale até",
         "Visível no portal",
-
     }
 )
 APPROVED_ENGLISH_LABELS: Final[dict[str, str]] = {}

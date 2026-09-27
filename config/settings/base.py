@@ -307,16 +307,14 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "RLS and the firm-wide import gate; it is not a bearer credential."
     ),
     "playbook-detail": (
-        "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer "
-        "credential."
+        "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer credential."
     ),
     "playbook-editor": (
         "The <uuid:pk>/<int:number> pair is a tenant-scoped playbook version, "
         "not a bearer credential."
     ),
     "playbook-retire": (
-        "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer "
-        "credential."
+        "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer credential."
     ),
     "portal-document-download": (
         "apps/obligations/models/documents.py:13 says storage_key carries no "

@@ -45,8 +45,8 @@ APPEND_ONLY_TABLES = (
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
 # rather than blanket so every other table — accounts_user, mfa_authenticator,
 # django_session, and clients_clientcontact, which is portal-NONE in R1 — stays
-# unreadable by the portal role (the import tables are in PORTAL_DENIED_TABLES;
-# the cycles_* tables join that same tuple a commit later in this branch).
+# unreadable by the portal role (the import tables and the three cycles_* tables
+# are in PORTAL_DENIED_TABLES).
 PORTAL_TABLES = (
     "clients_clientcompany",
     "clients_clientassignment",

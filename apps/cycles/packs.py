@@ -294,10 +294,7 @@ def install_system_packs(tenant: Tenant) -> list[Playbook]:
                     # Two installers ran at once: the loser re-reads inside its
                     # outer transaction, which now blocks on the winner's lock —
                     # concurrent installs converge instead of one 500ing.
-                    playbook = (
-                        Playbook.objects.select_for_update()
-                        .get(key=pack.key)
-                    )
+                    playbook = Playbook.objects.select_for_update().get(key=pack.key)
             if not playbook.is_system:
                 # A tenant playbook already owns this key: the firm's own row
                 # wins, and the pack is never written over it.

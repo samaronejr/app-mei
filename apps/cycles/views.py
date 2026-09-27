@@ -265,6 +265,10 @@ def _list_post(request: AuthenticatedRequest, tenant: Tenant) -> HttpResponse | 
         ImmutableVersion,
     ) as exc:
         messages.error(request, str(exc))
+    # A playbook pk that is absent or belongs to another tenant is a 404, the
+    # same refusal the GETs give — never a 500 and never a leak-shaped denial.
+    except (Playbook.DoesNotExist, PlaybookVersion.DoesNotExist) as exc:
+        raise Http404 from exc
     except ValueError as exc:
         raise Http404 from exc
     return None

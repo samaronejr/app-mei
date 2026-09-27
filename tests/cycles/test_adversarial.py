@@ -7,6 +7,8 @@ and a foreign-pk clone attempt. Printed results are captured into
 .evidence/AXR1-008-adversarial.txt; the asserts are the parts that must hold.
 """
 
+from http import HTTPStatus
+
 import pytest
 from django.core.exceptions import PermissionDenied
 
@@ -389,3 +391,28 @@ def test_concurrent_pack_installs_do_not_duplicate_or_crash() -> None:
         for playbook in Playbook.objects.filter(is_system=True):
             assert playbook.versions.count() == 1
             assert playbook.versions.get().state == VersionState.PUBLISHED
+
+
+def test_a_foreign_playbook_pk_over_http_is_404_not_500() -> None:
+    """The reviewer-caught hole: DoesNotExist escaped _list_post as a 500."""
+    from django.urls import reverse  # noqa: PLC0415
+
+    firm = make_firm("adv-404")
+    firm.tenant.features = ["cycles_r1"]
+    firm.tenant.save(update_fields=["features"])
+    other = make_firm("adv-404b")
+    with tenant_context(other.tenant.id):
+        foreign = playbooks.create_playbook(
+            actor=other.owner,
+            tenant=other.tenant,
+            key="foreign-pk",
+            name="Foreign",
+            steps=[_spec("s")],
+        )
+    session = firm.as_owner()
+    for action in ("clone", "new_draft"):
+        response = session.post(
+            reverse("playbook-list"),
+            data={"action": action, "playbook": str(foreign.pk)},
+        )
+        assert response.status_code == HTTPStatus.NOT_FOUND
