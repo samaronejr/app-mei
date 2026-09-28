@@ -178,6 +178,47 @@ and OG-04 (retention and restore isolation of the journal prefix) remain
 **open**; sending stays paused until both are recorded. Todos 11 to 29 and the
 final verification wave remain open.
 
+`AXR1-011` (the client portal's request inbox, upload against a request, the
+company switcher and firm branding, all behind `cycles_r1`; `cycles.0003`,
+`delivery.0002`, `tenants.0009`) is recorded on the `AXR1-010` outbox branch; like that row, it
+describes code that is not yet on `main`. Client-visible `EvidenceRequest` and firm-only
+`RequestInternal` are separate tables (S8.2): the portal role reads requests,
+links and intakes under the RESTRICTIVE client policy and holds INSERT on
+`cycles_evidencelink`, `cycles_documentintake` and `cycles_cycleevent` — the last
+without SELECT, because the timeline also carries firm-side events. An upload
+inserts rows only; "Enviado pelo cliente" and "Recebido" are derived from the
+newest link, never stored, and neither takes the verified style. The same bytes
+twice produce one `Document` and a second link, over 10 MiB is a pt-BR 400, and a
+foreign request id is 404. The company switcher only selects among memberships
+re-verified on every request, rotates the session key, and answers 403 with no
+change for a non-member. Portal invitations leave through the outbox, with the
+token minted at dispatch and the previous link answering 410; no raw token is
+written to any row, attempt or log. Branding validates the colour against the two
+product foregrounds — at least one must reach AA, and the portal renders the one
+that does — and accepts a PNG of at most 200 KB, served through the app.
+Carried forward, not closed: a queued portal invitation whose message the
+provider rejects stays live, and the firm's "Cancelar convite pendente" control
+is the recovery until a terminal-state withdrawal lands with T13/T16. Interim
+until `AXR1-012`: a new upload is stored with an intake row in state `recebido`
+and re-served only to its uploader, and `AXR1-012` replaces that rule with
+quarantine and scanning. `OG-03` (a real production SMTP send) and `OG-05`
+(malware scanning) are OPEN and neither is claimed by this work; sending stays
+paused (`DELIVERY_PAUSED` defaults to true), so the only SMTP traffic in the
+evidence is the tests' own fake peer. Tests:
+`tests/portal/test_requests_inbox.py`, `test_upload_against_request.py` and
+`test_recipient_without_seat.py`, `tests/cycles/test_duplicate_upload_relink.py`
+and `test_request_services.py`, `tests/delivery/test_portal_invite_outbox.py` and
+`test_reminder_reevaluation.py`, `tests/isolation/test_multi_company_switch.py`,
+`tests/tenants/test_branding.py` and
+`tests/browser/test_journey_portal_upload.py`. Evidence:
+`.evidence/AXR1-011-baseline.txt`, `-red.txt`, `-happy.txt`, `-failure.txt`,
+`-adversarial.txt`, `-migrations.txt`, `-gates.txt` and the five 390x844 portal
+screenshots plus the 1440x900 staff one. The populated T11 schema round trip
+reversed `delivery.0002`, `cycles.0003` and `tenants.0009` and re-applied them;
+it dropped the four new tables with their seeded rows and left the pre-existing
+outbox, document and append-only protections intact. Todos 12 to 29 and the final
+verification wave remain open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -277,7 +318,21 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **2777 passing**
+implementation head. The current default-suite baseline is **2893 passing**,
+verified by one serial full run at `a88036e` (the `AXR1-011` code with the
+dead-helper refactor on top of it): the **2775** measured on this branch's
+original base `e184bc4` (the `AXR1-010` feature commit) plus **118** net-new `AXR1-011`
+cases covering the requests inbox, upload and relink, the portal-invite outbox,
+reminder re-evaluation, the company switcher, branding and the portal journey.
+Both figures come from serial runs in the same lane
+(`.evidence/AXR1-011-baseline.txt` and `-gates.txt`). The separate browser run
+passed **44**, isolation **216** and the CNPJ pack **29**. All STD-GATES passed.
+This branch now sits on the final `AXR1-010` head `9aa5dbc` (2777), which adds two
+crossed-grant cases, so the figure above is restated by the run recorded in the
+next paragraph of this section. This status-only commit does
+not change the tested code.
+
+The previous default-suite baseline was **2777 passing**
 (42 deselected), verified by one serial full run on the `AXR1-010` code
 (`54e76ad`). It is the **2669** collected on final T9 (`a521e50`: the 2667 below
 plus two replay fast-path regressions) plus **108** net-new `AXR1-010` cases:
