@@ -159,8 +159,24 @@ and `test_cycle_context.py`. Evidence: `.evidence/AXR1-009-fix-0.txt` through
 The populated T9 schema round trip (`migrate cycles 0001`, then forward) dropped
 and recreated the six new tables empty; six pre-existing audit events, one
 source observation and their shared append-only protections survived. This is
-schema reversibility, not restoration of the deleted cycle rows. Todos 10 to 29
-and the final verification wave remain open.
+schema reversibility, not restoration of the deleted cycle rows.
+`AXR1-010` (the durable delivery outbox behind `cycles_r1`: `PhasedTenantTask`,
+SKIP LOCKED claims committed before SMTP I/O and fence-checked finalization,
+append-only attempt and effect receipts, the independent `effects-journal/` and
+`reconcile_effects`, contact-only recipients, the pre-send hook registry, global
+`DELIVERY_PAUSED` (default on) plus a firm pause gated on `automations.manage`,
+the daily attempt cap, and the `/comunicacao/` queue; `delivery.0001`) is
+recorded on final T9. An ambiguous SMTP outcome is `resultado_incerto`, never
+retried, and opens a cycle exception; nothing is labelled delivered. Tests:
+`tests/delivery/`, `tests/core/test_phased_tenant_task.py`,
+`tests/security/test_outbox_log_hygiene.py` and
+`tests/browser/test_delivery_queue.py`. Evidence: `.evidence/AXR1-010-red.txt`,
+`-happy.txt`, `-failure.txt`, `-adversarial.txt`, `-migration.txt`,
+`-gates.txt`, `-fix-1.txt`, `-fix-gates.txt` and both-viewport screenshots.
+Operator gates OG-03 (a real send from the production host to an owner mailbox)
+and OG-04 (retention and restore isolation of the journal prefix) remain
+**open**; sending stays paused until both are recorded. Todos 11 to 29 and the
+final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -261,14 +277,22 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **2667 passing**,
+implementation head. The current default-suite baseline is **2777 passing**
+(42 deselected), verified by one serial full run on the `AXR1-010` code
+(`54e76ad`). It is the **2669** collected on final T9 (`a521e50`: the 2667 below
+plus two replay fast-path regressions) plus **108** net-new `AXR1-010` cases:
+72 in the new delivery, phased-task and outbox-hygiene modules, and 36 from
+existing table-enumerating meta-tests that now cover the four delivery tables.
+The separate browser run passed **42**, isolation **180** and the CNPJ pack
+**29**. Evidence: `.evidence/AXR1-010-fix-gates.txt` and `-fix-1.txt`. This
+status-only commit does not change the tested code.
+
+The previous default-suite baseline was **2667 passing**,
 verified by one serial full run on the placed and repaired `AXR1-009` code
 (`7d9db04`): the **2478** T8 baseline plus **189** net-new cases covering cycle
 transitions, generation/replay, isolation and model inventories, import rollback
 and flag-off compatibility. The separate browser run passed **40**, isolation
-**168** and the CNPJ pack **29**. All STD-GATES passed; evidence is
-`.evidence/AXR1-009-placement-gates.txt`. This status-only commit does not change
-the tested code.
+**168** and the CNPJ pack **29** (`.evidence/AXR1-009-placement-gates.txt`).
 
 The previous default-suite baseline was **2478 passing**,
 verified by one serial full run on the placed `AXR1-008` code (`6de1fc2`):
@@ -310,12 +334,13 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **40** cases: the **24** passing at the T3
+`browser` job. The suite now contains **42** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
 preview-bound publication journeys at two viewports), plus the four `AXR1-009`
 workspace/portal and distinct-client context cases (two journeys at two
+viewports), plus the two `AXR1-010` Comunicação queue cases (one journey at two
 viewports). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
