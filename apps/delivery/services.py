@@ -235,13 +235,13 @@ def _locked_claim(claim: Claim) -> OutboundMessage:
     return message
 
 
-def authorize_send(claim: Claim) -> OutboundMessage:
-    """Reserve the single network send for this fence, after live re-evaluation."""
-    return authorize_and_prepare(claim)[0]
-
-
 def authorize_and_prepare(claim: Claim) -> tuple[OutboundMessage, dict[str, str]]:
-    """Authorize as `authorize_send` does, then run the kind's `prepare` hook.
+    """Reserve the single network send for this fence, after live re-evaluation.
+
+    The gateway's only authorization entry point. It takes the message lock, refuses a
+    fence that already entered the gateway, re-evaluates the message against the live
+    domain rows (`still_valid`) and the pause/quota controls, and only then runs the
+    kind's `prepare` hook.
 
     The hook runs in the same transaction and under the same message lock, after the
     live re-evaluation passed: a portal invitation mints its one-time token here
