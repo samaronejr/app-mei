@@ -319,6 +319,18 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "The UUID names a cycle, not a bearer credential. Authentication and "
         "RESTRICTIVE portal client RLS authorize the base-table SELECT."
     ),
+    "cycle-request-action": (
+        "The UUID names a cycle loaded through the actor's portfolio; every request "
+        "command re-checks scope, version and capability inside the row lock."
+    ),
+    "portal-request-detail": (
+        "The UUID names an evidence request, not a bearer credential. "
+        "Authentication and RESTRICTIVE portal client RLS authorize the SELECT."
+    ),
+    "portal-request-upload": (
+        "The UUID names an evidence request, not a bearer credential. RLS hides "
+        "another client's request (404) and the composite key refuses the link."
+    ),
     "playbook-detail": (
         "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer credential."
     ),

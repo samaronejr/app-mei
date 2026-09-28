@@ -213,6 +213,11 @@ EXPECTED_TEMPLATES: Final = frozenset(
         "partials/nav.html",
         "partials/payment_observation.html",
         "partials/upload_form.html",
+        # T11: the request page and its three partials.
+        "request.html",
+        "partials/request_chip.html",
+        "partials/request_status.html",
+        "partials/request_upload.html",
     },
 )
 

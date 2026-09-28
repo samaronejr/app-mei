@@ -1,0 +1,17 @@
+{% load i18n ptbr %}{% comment %}
+The request's situation: the derived chip and every file sent against it. The upload
+answers an HTMX request with this partial alone, swapped over the region by its id,
+so the chip turns to "Recebido" without reloading the page.
+{% endcomment %}<section id="request-status" class="card space-y-3 px-5 py-4" aria-labelledby="situacao">
+  <h2 id="situacao" class="text-sm font-semibold text-ink-700">{% translate "Situação" %}</h2>
+  <p class="flex flex-wrap items-center gap-2 text-sm">{% include "portal/partials/request_chip.html" %}</p>
+  {% if notice %}<p class="text-sm text-ink-900" role="status">{{ notice }}</p>{% endif %}
+  {% if req.hint %}<p class="text-xs text-ink-600">{{ req.hint }}</p>{% endif %}
+  {% if files %}<ul class="upload-list" aria-label="{% translate 'Arquivos enviados' %}">{% for file in files %}
+    <li class="upload-item">
+      {% include "partials/pure/icons/file-text.html" %}
+      <span class="upload-name" title="{{ file.name }}">{{ file.name }}</span>
+      <span class="upload-meta">{{ file.size_label }} · {{ file.sent_at|data_hora }}</span>
+    </li>{% endfor %}
+  </ul>{% else %}<p class="empty-state text-ink-600">{% translate "Nenhum arquivo enviado ainda." %}</p>{% endif %}
+</section>

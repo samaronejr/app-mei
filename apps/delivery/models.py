@@ -32,6 +32,16 @@ class OutboundMessage(ClientRecord):
         "cycles.ServiceCycle", on_delete=models.PROTECT, null=True, blank=True
     )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    # T11: the portal invitation a `portal_invite` message delivers, or the one a
+    # request notice embeds for a contact without a seat. The token is minted at
+    # dispatch and never stored here; this is only the reference.
+    invite = models.ForeignKey(
+        "tenants.Invite", on_delete=models.PROTECT, null=True, blank=True
+    )
+    # T11: the request a reminder is about, re-read by the pre-send hook.
+    evidence_request = models.ForeignKey(
+        "cycles.EvidenceRequest", on_delete=models.PROTECT, null=True, blank=True
+    )
     proposal_id = models.UUIDField(null=True, blank=True)
     kind = models.SlugField(max_length=64, default="notice")
     idempotency_key = models.CharField(max_length=64)

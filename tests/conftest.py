@@ -39,9 +39,10 @@ PORTAL_DENIED_TABLES = (
     "cycles_playbookstep",
     "cycles_cycletask",
     "cycles_cycleamendment",
-    "cycles_cycleevent",
     "cycles_internalnote",
     "cycles_exception",
+    # T11: firm-only request instructions and waiver reasons.
+    "cycles_requestinternal",
     "delivery_outboundmessage",
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
@@ -72,6 +73,9 @@ PORTAL_TABLES = (
     "clients_engagement",
     "clients_taxprofile",
     "cycles_servicecycle",
+    "cycles_evidencerequest",
+    "cycles_evidencelink",
+    "cycles_documentintake",
     "obligations_obligation",
     "obligations_monthlyrevenue",
     "obligations_document",
@@ -83,7 +87,14 @@ PORTAL_TABLES = (
 # be: the portal reads its client's obligations and revenue, and writes only the vault.
 # INSERT only -- see the roles.sql comment for why UPDATE, DELETE, TRUNCATE, REFERENCES
 # and every sequence privilege are each withheld deliberately rather than incidentally.
-PORTAL_WRITE_TABLES = ("obligations_document",)
+# T11 adds the upload-against-request rows; cycles_cycleevent is INSERT-only (no
+# SELECT), the one write the portal cannot read back.
+PORTAL_WRITE_TABLES = (
+    "obligations_document",
+    "cycles_evidencelink",
+    "cycles_documentintake",
+    "cycles_cycleevent",
+)
 
 
 @pytest.fixture(scope="session")

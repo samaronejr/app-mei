@@ -11,7 +11,9 @@ from django.db.models import Q
 
 from apps.accounts.models import User
 from apps.clients.maintenance import load_client
+from apps.clients.models import ClientContact
 from apps.cycles.capabilities import CYCLES_OPERATE
+from apps.cycles.evidence import EvidenceRequest
 from apps.cycles.services.cycle import (
     load_cycle,
     require_actor,
@@ -27,6 +29,7 @@ from apps.delivery.policy import (
     resolve_recipient,
 )
 from apps.delivery.services import record
+from apps.tenants.models import Invite
 
 
 def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and revision
@@ -39,6 +42,8 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
     kind: str = "notice",
     cycle_id: UUID | None = None,
     idempotency_key: str = "",
+    invite: Invite | None = None,
+    evidence_request: EvidenceRequest | None = None,
 ) -> OutboundMessage:
     """Serialize intent creation on the authorized client; retries return one row."""
     require_enabled()
@@ -85,7 +90,10 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
             subject=definition.subject,
             body_ref=definition.template,
             portal_url=urlunsplit((parts.scheme, host, "/", "", "")),
+            invite=invite,
+            evidence_request=evidence_request,
         )
+        _require_same_client(client.pk, invite, evidence_request)
         message.content_digest = content_digest(message)
         previous = OutboundMessage.objects.filter(
             Q(business_intent_key=key) | Q(idempotency_key=caller_key), client=client
@@ -114,3 +122,79 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
         client.save(update_fields=["version"])
         record(message, message.state, actor=actor, code="enqueued")
         return message
+
+
+def _require_same_client(
+    client_id: UUID,
+    invite: Invite | None,
+    evidence_request: EvidenceRequest | None,
+) -> None:
+    """Refuse references to another client's invitation or request (T11)."""
+    if evidence_request is not None and evidence_request.client_id != client_id:
+        msg = "A solicitação não pertence a este cliente."
+        raise ValidationError(msg)
+    if invite is not None and invite.client_id != client_id:
+        msg = "O convite não pertence a este cliente."
+        raise ValidationError(msg)
+
+
+def portal_home_url(tenant_slug: str) -> str:
+    """Return the firm's portal root, derived exactly as `enqueue` derives it."""
+    parts = urlsplit(settings.PLATFORM_URL)
+    host = f"{tenant_slug}-portal.{parts.hostname}"
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return str(urlunsplit((parts.scheme, host, "/", "", "")))
+
+
+def enqueue_portal_invite(
+    actor: User,
+    invite: Invite,
+    contact: ClientContact,
+) -> OutboundMessage:
+    """Queue the delivery of one portal invitation inside the issuing transaction.
+
+    The caller (`invite_contact`, or the client-detail invitation) already holds the
+    client lock, re-checked `users.create` and wrote the invite in this transaction,
+    so the message commits or rolls back with it: no mail can leave for an invitation
+    that was never committed, and a rollback leaves no orphan message. No token is
+    stored: the gateway mints a fresh one at dispatch (`mint_token_for_dispatch`) and
+    the previous link then answers 410.
+
+    One message per invitation, keyed on the invitation id: a replay returns the same
+    row instead of queueing a second mail.
+    """
+    require_enabled()
+    definition = KINDS["portal_invite"]
+    key = hashlib.sha256(
+        f"portal_invite:{tenant_id()}:{invite.pk}".encode()
+    ).hexdigest()
+    previous = OutboundMessage.objects.filter(
+        client_id=invite.client_id, business_intent_key=key
+    ).first()
+    if previous is not None:
+        return previous
+    if contact.client_id != invite.client_id or contact.email.lower() != (
+        invite.email.lower()
+    ):
+        msg = "O contato não corresponde ao convite."
+        raise ValidationError(msg)
+    recipient = resolve_recipient(contact.client_id, contact.pk)
+    message = OutboundMessage(
+        tenant_id=tenant_id(),
+        client_id=invite.client_id,
+        contact=recipient,
+        created_by=actor,
+        kind="portal_invite",
+        business_intent_key=key,
+        idempotency_key=key,
+        recipients_json=[recipient.email],
+        subject=definition.subject,
+        body_ref=definition.template,
+        portal_url=portal_home_url(invite.tenant.slug),
+        invite=invite,
+    )
+    message.content_digest = content_digest(message)
+    message.save(force_insert=True)
+    record(message, message.state, actor=actor, code="enqueued")
+    return message

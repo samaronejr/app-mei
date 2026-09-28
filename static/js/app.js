@@ -406,11 +406,105 @@
    * knows the server will refuse. Refused files stay in the list with the reason,
    * but are removed from the input, so they are never uploaded. The server checks
    * again and is the authority; this is the courtesy of saying so early.
+   *
+   * When the form around it posts through HTMX (the portal request page, T11), the
+   * same component also shows the upload itself: `htmx:xhr:progress` moves the bar,
+   * "Cancelar envio" raises `htmx:abort`, and a failed or cancelled send keeps the
+   * chosen file in the input so "Tentar de novo" resubmits it without choosing again.
+   * A refusal from the server (400) is shown as the text it answered, via x-text,
+   * never as HTML.
    */
+  var UPLOAD_SENDING = "Enviando…";
+  var UPLOAD_DONE = "Arquivo enviado.";
+  var UPLOAD_CANCELLED =
+    "Envio cancelado. O arquivo continua escolhido: toque em Tentar de novo.";
+  var UPLOAD_FAILED =
+    "Não foi possível enviar. Verifique sua conexão; o arquivo continua escolhido.";
+  var HTTP_BAD_REQUEST = 400;
+
   function uploadList() {
     return {
       items: [],
       counter: 0,
+      phase: "idle",
+      progress: 0,
+      message: "",
+
+      get isUploading() {
+        return this.phase === "uploading" || this.phase === "cancelling";
+      },
+
+      get canRetry() {
+        return this.phase === "failed" || this.phase === "cancelled";
+      },
+
+      /* Negations as getters: the CSP build evaluates names, not expressions. */
+      get isIdle() {
+        return !this.isUploading;
+      },
+
+      get notUploading() {
+        return !this.isUploading;
+      },
+
+      get cannotRetry() {
+        return !this.canRetry;
+      },
+
+      get progressLabel() {
+        return this.isUploading ? UPLOAD_SENDING + " " + this.progress + "%" : "";
+      },
+
+      onStart: function () {
+        this.phase = "uploading";
+        this.progress = 0;
+        this.message = UPLOAD_SENDING;
+      },
+
+      onProgress: function (event) {
+        var detail = event.detail || {};
+        if (detail.lengthComputable && detail.total > 0) {
+          this.progress = Math.min(
+            100,
+            Math.round((detail.loaded * 100) / detail.total)
+          );
+        }
+      },
+
+      onDone: function (event) {
+        if (this.phase === "cancelling") {
+          this.phase = "cancelled";
+          this.message = UPLOAD_CANCELLED;
+          return;
+        }
+        var detail = event.detail || {};
+        if (detail.successful) {
+          this.phase = "done";
+          this.progress = 100;
+          this.message = UPLOAD_DONE;
+          this.items = [];
+          this.$refs.input.value = "";
+          return;
+        }
+        var xhr = detail.xhr;
+        this.phase = "failed";
+        this.message =
+          xhr && xhr.status === HTTP_BAD_REQUEST && xhr.responseText
+            ? xhr.responseText
+            : UPLOAD_FAILED;
+      },
+
+      cancel: function () {
+        if (!this.isUploading) {
+          return;
+        }
+        this.phase = "cancelling";
+        window.htmx.trigger(this.$root, "htmx:abort");
+      },
+
+      retry: function () {
+        this.$root.requestSubmit();
+      },
 
       get isEmpty() {
         return this.items.length === 0;

@@ -77,7 +77,7 @@ from apps.clients.models import (
     TaxProfile,
 )
 from apps.clients.views import ONBOARDING_FLAG, require_tenant
-from apps.core.flags import require_feature
+from apps.core.flags import require_feature, tenant_has
 from apps.tenants.models import Invite, Membership, Tenant
 
 FLAG: Final = ONBOARDING_FLAG
@@ -116,6 +116,14 @@ INVITE_UNRESOLVED_NOTICE: Final = (
 INVITE_SENT_NOTICE: Final = (
     "Convite aceito pelo servidor de e-mail. Isso não confirma a leitura."
 )
+# T11: with `cycles_r1`, the invitation is queued on the outbox in the issuing
+# transaction and mailed by the dispatcher; nothing has been sent yet when the page
+# says so, and the Comunicação queue shows what the SMTP server later answered.
+INVITE_QUEUED_NOTICE: Final = (
+    "Convite na fila de envio. Acompanhe o envio na fila de comunicação; um aceite "
+    "do servidor de e-mail não confirma a leitura."
+)
+INVITE_QUEUED: Final = "na-fila"
 INVITE_SENT: Final = "enviado"
 INVITE_FAILED: Final = "falhou"
 INVITE_UNRESOLVED: Final = "pendente"
@@ -268,9 +276,10 @@ def _setup_page(
         INVITE_FAILED: _(INVITE_SEND_FAILURE),
         INVITE_UNRESOLVED: _(INVITE_UNRESOLVED_NOTICE),
     }.get(invite_outcome, "")
-    context["invite_sent"] = (
-        _(INVITE_SENT_NOTICE) if invite_outcome == INVITE_SENT else ""
-    )
+    context["invite_sent"] = {
+        INVITE_SENT: _(INVITE_SENT_NOTICE),
+        INVITE_QUEUED: _(INVITE_QUEUED_NOTICE),
+    }.get(invite_outcome, "")
     return render(request, SETUP_TEMPLATE, context, status=status)
 
 
@@ -753,6 +762,13 @@ def contact_invite_view(
             HTTPStatus.UNPROCESSABLE_ENTITY,
             invite_form=form,
         )
+    if tenant_has(tenant.pk, "cycles_r1"):
+        # Same transaction as the invitation, under the locks invite_contact took:
+        # the message commits with the invite or not at all, and no I/O runs here.
+        from apps.delivery.outbox import enqueue_portal_invite  # noqa: PLC0415
+
+        enqueue_portal_invite(request.user, invite, contact)
+        return HttpResponseRedirect(f"{setup_url}?convite={INVITE_QUEUED}#contatos")
     response = HttpResponseRedirect(f"{setup_url}#contatos")
     transaction.on_commit(
         partial(

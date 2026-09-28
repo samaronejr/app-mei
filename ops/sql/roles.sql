@@ -144,10 +144,14 @@ $$;
 
 -- PORTAL_NONE: cycles_cycletask
 -- PORTAL_NONE: cycles_cycleamendment
--- PORTAL_NONE: cycles_cycleevent
 -- PORTAL_NONE: cycles_internalnote
 -- PORTAL_NONE: cycles_exception
--- T9 has no portal event writer and exposes no internal work or exception text.
+-- PORTAL_NONE: cycles_requestinternal
+-- T9 exposes no internal work or exception text. T11 keeps each request's firm-only
+-- instructions and waiver reason in cycles_requestinternal, which the portal never
+-- reads. cycles_cycleevent is INSERT-only for the portal (see the write list below):
+-- the upload appends its submission event, and the portal reads no event back,
+-- because the timeline also carries firm-side event types.
 
 -- PORTAL_NONE: delivery_outboundmessage
 -- PORTAL_NONE: delivery_deliveryattempt
@@ -193,6 +197,11 @@ BEGIN
         'clients_engagement',
         'clients_taxprofile',
         'cycles_servicecycle',
+        -- S8.2 / T11: the client's own requests (client-visible fields only), the
+        -- links it has submitted and their intake rows.
+        'cycles_evidencerequest',
+        'cycles_evidencelink',
+        'cycles_documentintake',
         'obligations_obligation',
         'obligations_monthlyrevenue',
         'obligations_document',
@@ -228,7 +237,14 @@ DECLARE
     portal_write_table text;
 BEGIN
     FOREACH portal_write_table IN ARRAY ARRAY[
-        'obligations_document'
+        'obligations_document',
+        -- T11: an upload against a request inserts its link, the intake row of a
+        -- new document and one submission event. Each carries the RESTRICTIVE
+        -- client-anchored WITH CHECK from its migration. cycles_cycleevent is the
+        -- one INSERT without SELECT: the portal appends and never reads events.
+        'cycles_evidencelink',
+        'cycles_documentintake',
+        'cycles_cycleevent'
     ]
     LOOP
         IF to_regclass('public.' || portal_write_table) IS NOT NULL THEN

@@ -582,6 +582,22 @@
    * Nothing here reaches for a safe-area inset — this is a browser page, not an
    * installed app shell. The page below reserves its own bottom padding instead, so
    * the last line of content is never left underneath the bar. */
+  /* T11 firm branding. The neutral defaults below are what an unbranded firm sees;
+   * a firm colour arrives from the same-origin route `/marca/tema.css`, linked after
+   * this sheet, which overrides both properties with a pair validated to 4.5:1. */
+  .portal-brand {
+    @apply bg-surface text-ink-900;
+  }
+
+  .portal-brand-logo {
+    @apply h-8 w-auto;
+  }
+
+  /* The upload progress bar on the request page (T11). */
+  .upload-progress {
+    @apply h-2 w-full overflow-hidden rounded-full bg-ink-100 accent-accent-500;
+  }
+
   .bottom-nav {
     @apply fixed inset-x-0 bottom-0 z-40 flex border-t border-ink-200 bg-surface
       shadow-raised md:static md:justify-center md:border-b md:border-t-0

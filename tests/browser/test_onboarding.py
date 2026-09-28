@@ -15,10 +15,12 @@ from typing import Final
 import pytest
 from django.core import mail
 from playwright.sync_api import FilePayload, expect
+from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, ClientContact, TaxProfile
 from apps.core.tenancy import tenant_context
+from apps.delivery.tasks import dispatch_outbox
 from apps.tenants.models import Invite
 from tests.browser.harness import BrowserPage, LiveFirm, axe_check
 from tests.ui.factories import client_base, make_cnpj
@@ -35,9 +37,18 @@ def _field(label: str) -> re.Pattern[str]:
     return re.compile(rf"^{re.escape(label)}( \*)?$")
 
 
+def _dispatch_queued_invitation(settings: SettingsWrapper) -> None:
+    """T11: under cycles_r1 the invitation is queued on the outbox inside the request
+    transaction and mailed by the dispatcher afterwards, never by the request."""
+    assert mail.outbox == []
+    settings.DELIVERY_PAUSED = False
+    dispatch_outbox()
+
+
 def test_create_a_client_set_its_profile_and_invite_a_contact(
     live_firm: Callable[..., LiveFirm],
     open_page: OpenPage,
+    settings: SettingsWrapper,
 ) -> None:
     live = live_firm("onb", features=FEATURES)
     shell = open_page(live, None)
@@ -89,6 +100,7 @@ def test_create_a_client_set_its_profile_and_invite_a_contact(
     shell.assert_clean_console()
     shell.screenshot("onboarding-setup")
 
+    _dispatch_queued_invitation(settings)
     assert [message.to for message in mail.outbox] == [[CONTACT_EMAIL]]
     assert "-portal." in mail.outbox[0].body
     tenant = live.firm.tenant

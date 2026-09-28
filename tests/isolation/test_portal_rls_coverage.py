@@ -55,7 +55,9 @@ RUNTIME_ROLE = "app_runtime"
 # playbook definitions — portal-NONE, each carrying a DenyPortalAccess policy.
 # Six client-scoped cycle aggregate/history tables (todo 9) extend that union.
 # Four firm-private delivery/control tables (todo 10) extend that union.
-EXPECTED_TENANT_TABLE_COUNT = 35
+# cycles_{evidencerequest,requestinternal,evidencelink,documentintake} (todo 11)
+# are the request/upload tables: three portal-readable, one portal-NONE.
+EXPECTED_TENANT_TABLE_COUNT = 39
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -379,9 +381,10 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_servicecycle",
         "cycles_cycletask",
         "cycles_cycleamendment",
-        "cycles_cycleevent",
         "cycles_internalnote",
         "cycles_exception",
+        "cycles_evidencerequest",
+        "cycles_requestinternal",
         "delivery_outboundmessage",
         "delivery_deliveryattempt",
         "delivery_deliveryeffect",
@@ -407,6 +410,25 @@ CLIENT_PAIRING_EXEMPT: Final[dict[str, str]] = {
     "uploaded_by_id": (
         "accounts_user is platform-level and has no client_id. A user is not owned by "
         "a client; the row's own client_id is what confines the document"
+    ),
+    "submitted_by_id": (
+        "accounts_user again (cycles_evidencelink, todo 11): the submitter is a "
+        "platform-level account; the link's own client_id confines the row"
+    ),
+    "actor_id": (
+        "accounts_user again (cycles_cycleevent, todo 11): the event's actor is a "
+        "platform-level account; the event's own client_id confines the row"
+    ),
+}
+
+# Portal-writable tables the portal deliberately cannot read back. cycles_cycleevent
+# (todo 11, S8.2): the upload appends its submission event, but the timeline also
+# carries firm-side event types, so the portal holds INSERT without SELECT. Its WITH
+# CHECK is exercised from the portal side by test_portal_write_refusal.py.
+INSERT_WITHOUT_SELECT: Final[dict[str, str]] = {
+    "cycles_cycleevent": (
+        "append-only timeline shared with firm-side events; the portal writes its "
+        "submission event and never reads the timeline"
     ),
 }
 
@@ -525,7 +547,12 @@ def test_the_write_allow_list_is_a_subset_of_the_read_one() -> None:
     # Then nothing is writable that is not also readable. A table the portal may INSERT
     # into but not SELECT from would make its own WITH CHECK refusals unverifiable from
     # the portal's side, and would be a shape nobody chose deliberately.
-    assert _write_allow_list_from_roles_sql() <= _allow_list_from_roles_sql()
+    assert (
+        _write_allow_list_from_roles_sql() - set(INSERT_WITHOUT_SELECT)
+        <= _allow_list_from_roles_sql()
+    )
+    assert set(INSERT_WITHOUT_SELECT) <= _write_allow_list_from_roles_sql()
+    assert all(reason.strip() for reason in INSERT_WITHOUT_SELECT.values())
 
 
 def test_the_portal_role_can_read_the_allow_list_and_nothing_else() -> None:

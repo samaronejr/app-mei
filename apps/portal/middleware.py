@@ -21,8 +21,13 @@ Four things here are easy to get wrong and silent when wrong:
   switched *inside* the block and then **asserted positively**, never inferred from the
   absence of an error.
 * **The client identity comes from the membership row and nowhere else.** Never from
-  the host, a query parameter, a header or the session. `_grant_context` returns the
-  `Membership`, and the GUC is written from `membership.client_id`.
+  the host, a query parameter or a header. The session may only SELECT AMONG the
+  memberships verified on this very request (T11 company switcher,
+  `SELECTED_CLIENT_SESSION_KEY`): `_grant_context` re-reads the user's active client
+  memberships on every request, honours the stored choice only if it names one of
+  them, and otherwise falls back to the lowest `client_id` and flags the stale choice.
+  It returns the `Membership`, and the GUC is written from `membership.client_id` --
+  never from the session value itself.
 * **`AdminTenantMiddleware` is inert on this host.** Its own lookup uses
   `slug_from_host`, which yields the literal `"acme-portal"` — a slug the reserved-slug
   validator guarantees no tenant owns — so its 404 never fires here. The admin refusal
@@ -38,6 +43,7 @@ Four things here are easy to get wrong and silent when wrong:
 
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from django.core.exceptions import PermissionDenied
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
@@ -48,6 +54,8 @@ from django.urls import Resolver404, resolve
 from apps.authz.matrix import CAPABILITY_SLUGS
 from apps.authz.services import Actor, granted_levels
 from apps.authz.stash import PortalStash, portal_stash
+from apps.clients.models import ClientCompany
+from apps.core.flags import tenant_row_has
 from apps.core.tenancy import (
     CLIENT_GUC,
     NO_CLIENT,
@@ -57,6 +65,7 @@ from apps.core.tenancy import (
     current_tenant_id,
 )
 from apps.portal.hosts import portal_slug_from_host
+from apps.tenants.branding import Brand, brand_for
 from apps.tenants.models import Membership, Tenant
 
 if TYPE_CHECKING:
@@ -107,16 +116,40 @@ ACCOUNTS_PREFIX = "/accounts/"
 # fetch of ClientCompany would find no row at all.
 INVITE_PREFIX = "/convites/"
 
-# Both, as one tuple, because `str.startswith` takes one and because the next path that
-# needs this treatment should be added to a list rather than to a boolean expression.
-UNCONFINED_PREFIXES: tuple[str, ...] = (ACCOUNTS_PREFIX, INVITE_PREFIX)
+# The company switcher (T11). Its POST rotates the session key (`cycle_key`), which
+# INSERTs a django_session row immediately -- a write app_portal cannot make -- so it
+# runs unconfined like the two trees above, and the view verifies the membership
+# itself as app_runtime before touching the session. It reads no client-scoped row.
+COMPANY_SELECT_PREFIX = "/empresa/selecionar/"
+
+# The session key holding the client a multi-company contact chose. Only ever a
+# SELECTION among memberships `_grant_context` verifies on each request.
+SELECTED_CLIENT_SESSION_KEY = "portal_client_id"
+
+# All of them, as one tuple, because `str.startswith` takes one and because the next
+# path that needs this treatment should be added to a list rather than to a boolean
+# expression.
+UNCONFINED_PREFIXES: tuple[str, ...] = (
+    ACCOUNTS_PREFIX,
+    INVITE_PREFIX,
+    COMPANY_SELECT_PREFIX,
+)
 
 
 class PortalHttpRequest(HttpRequest):
-    """An `HttpRequest` after this middleware has attached the tenant and client."""
+    """An `HttpRequest` after this middleware has attached the tenant and client.
+
+    `portal_companies` lists `(client_id, legal_name)` for every client this account
+    holds an active seat in, re-verified on this request (the switcher's choices);
+    `portal_selection_stale` is True when the stored choice no longer matched one;
+    `portal_brand` is the firm's branding as scalars (apps/tenants/branding.py).
+    """
 
     tenant: Tenant | None
     client: object | None
+    portal_companies: tuple[tuple[UUID, str], ...]
+    portal_selection_stale: bool
+    portal_brand: Brand | None
 
 
 class DispatchableHttpRequest(HttpRequest):
@@ -181,11 +214,15 @@ class PortalMiddleware:
         if self._is_non_atomic(request):
             return self._run_without_database_context(request)
         tenant = self._resolve_tenant(slug)
-        membership = (
-            None
+        request.portal_companies = ()
+        request.portal_selection_stale = False
+        request.portal_brand = None
+        memberships = (
+            []
             if request.path_info.startswith(UNCONFINED_PREFIXES)
             else self._grant_context(request, tenant)
         )
+        membership = self._select(request, tenant, memberships)
         # Resolving the tenant from the host is ROUTING; granting context is
         # AUTHORIZATION. An anonymous request gets neither dimension — exactly as
         # TenantMiddleware already does firm-side — so the login page renders with both
@@ -193,7 +230,15 @@ class PortalMiddleware:
         # named a firm would let that page read the firm's tenant-scoped rows as
         # app_runtime, which is a widening nobody asked for.
         granted = tenant if membership is not None else None
-        return self._run_in_portal_context(request, granted, membership)
+        switchable = tenant is not None and tenant_row_has(tenant, "cycles_r1")
+        return self._run_in_portal_context(
+            request,
+            granted,
+            membership,
+            tuple(row.client_id for row in memberships if row.client_id)
+            if switchable
+            else (),
+        )
 
     @staticmethod
     def _is_non_atomic(request: HttpRequest) -> bool:
@@ -232,18 +277,21 @@ class PortalMiddleware:
     def _grant_context(
         request: HttpRequest,
         tenant: Tenant | None,
-    ) -> Membership | None:
-        """Return the client-role membership this request may operate as, if any.
+    ) -> list[Membership]:
+        """Return every client-role membership this request may choose among.
+
+        Empty for an anonymous request.
+
 
         Anonymous requests get `None` and run as `app_runtime` with both GUCs empty, so
         the login page renders. Requiring a membership here instead would 403 the very
         page a portal user needs in order to obtain one.
         """
         if tenant is None:
-            return None
+            return []
         user = getattr(request, "user", None)
         if user is None or not user.is_authenticated:
-            return None
+            return []
         # PLATFORM_QUERY_OK: the portal's own bootstrap read, the mirror of
         # TenantMiddleware's. It runs as app_runtime before SET LOCAL ROLE, which is
         # why tenants_membership carries no portal policy and app_portal holds no
@@ -259,18 +307,55 @@ class PortalMiddleware:
             client__isnull=False,
         )
         # Ordered so a user holding two client roles in one firm resolves the same
-        # client on every request; .first() on an unordered queryset picks arbitrarily.
-        membership = candidates.order_by("client_id").first()
-        if membership is None:
+        # client on every request absent a choice; the whole verified list is read
+        # (one query, as `.first()` was) because the switcher selects AMONG it.
+        memberships = list(candidates.order_by("client_id"))
+        if not memberships:
             msg = "This account has no active client membership for this firm."
             raise PermissionDenied(msg)
-        return membership
+        return memberships
+
+    @staticmethod
+    def _select(
+        request: PortalHttpRequest,
+        tenant: Tenant | None,
+        memberships: list[Membership],
+    ) -> Membership | None:
+        """Pick the membership this request runs as: the session's choice, if verified.
+
+        The session value is a SELECTOR, never an identity. It is honoured only when it
+        names the client of one of the memberships `_grant_context` just re-read from
+        the database; anything else -- a revoked seat, a forged value, a client of
+        another firm -- falls back to the lowest `client_id` and flags the choice as
+        stale so the page can say so. Unflagged tenants (no `cycles_r1`) ignore the
+        choice entirely and keep the lowest `client_id`, as before T11.
+        """
+        if not memberships:
+            return None
+        chosen = memberships[0]
+        if tenant is None or not tenant_row_has(tenant, "cycles_r1"):
+            return chosen
+        selected = request.session.get(SELECTED_CLIENT_SESSION_KEY)
+        if selected is None:
+            return chosen
+        match = next(
+            (row for row in memberships if str(row.client_id) == str(selected)),
+            None,
+        )
+        if match is None:
+            # Removed so the notice shows once; the session is written back in the
+            # response phase, outside the portal transaction, as app_runtime.
+            request.session.pop(SELECTED_CLIENT_SESSION_KEY, None)
+            request.portal_selection_stale = True
+            return chosen
+        return match
 
     def _run_in_portal_context(
         self,
         request: PortalHttpRequest,
         tenant: Tenant | None,
         membership: Membership | None,
+        client_ids: tuple[UUID, ...] = (),
     ) -> HttpResponseBase:
         request.tenant = tenant
         client_id = membership.client_id if membership else None
@@ -290,7 +375,13 @@ class PortalMiddleware:
                 # because that same fetch is denied outright to `app_portal`, which
                 # holds no SELECT on the row until `app.client_id` is what confines it.
                 self._apply_gucs(tenant, client_id)
-                request.client = membership.client if membership else None
+                request.client = (
+                    self._attach_companies(request, membership, client_ids)
+                    if membership
+                    else None
+                )
+                if tenant is not None and tenant_row_has(tenant, "cycles_r1"):
+                    request.portal_brand = brand_for(tenant)
                 if membership is not None:
                     # Both context variables are live and the role is still
                     # app_runtime, which is the only window where the three tables
@@ -308,6 +399,36 @@ class PortalMiddleware:
                 portal_stash.reset(stash_token)
             current_client_id.reset(client_token)
             current_tenant_id.reset(tenant_token)
+
+    @staticmethod
+    def _attach_companies(
+        request: PortalHttpRequest,
+        membership: Membership,
+        client_ids: tuple[UUID, ...],
+    ) -> ClientCompany:
+        """Read the selected client and the switcher's choices in ONE query.
+
+        This replaces the single `membership.client` fetch that stood here, so the
+        request costs the same number of queries. It runs as app_runtime with the
+        tenant GUC set and BEFORE the role switch -- the only window in which the
+        names of the account's OTHER companies are readable at all; after it,
+        `app_portal` sees one client. The ids come from the verified memberships.
+        """
+        selected = membership.client_id
+        if selected is None:
+            msg = "A portal membership always names a client (CHECK constraint)."
+            raise PermissionDenied(msg)
+        ids = {selected, *client_ids}
+        companies = {
+            company.pk: company for company in ClientCompany.objects.filter(pk__in=ids)
+        }
+        request.portal_companies = tuple(
+            sorted(
+                ((pk, company.legal_name) for pk, company in companies.items()),
+                key=lambda row: (row[1], str(row[0])),
+            )
+        )
+        return companies[selected]
 
     @staticmethod
     def _build_stash(

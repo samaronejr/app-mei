@@ -46,6 +46,7 @@ from apps.accounts.invites import (
     InviteRevokedError,
     InviteScope,
     InviteScopeMismatchError,
+    InviteTokenSupersededError,
     accept_invite,
     issue_client_invite,
     issue_invite,
@@ -66,6 +67,8 @@ from apps.authz.grants import (
 )
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
+from apps.clients.models import ClientCompany
+from apps.core.flags import tenant_has
 from apps.portal.middleware import PORTAL_URLCONF
 from apps.tenants.models import Invite, Membership, Tenant, TenantRole
 from apps.tenants.validators import PORTAL_HOST_SUFFIX
@@ -110,6 +113,9 @@ _STATUS_BY_ERROR: dict[type[InviteError], HTTPStatus] = {
     # person holding the link: this credential existed and no longer works. Which of
     # the three it was is carried by the reason the page renders, not by the code.
     InviteRevokedError: HTTPStatus.GONE,
+    # T11: a link whose token a later dispatch re-minted. The invitation exists; this
+    # copy of the link is dead, which is what 410 says.
+    InviteTokenSupersededError: HTTPStatus.GONE,
     InviteEmailMismatchError: HTTPStatus.FORBIDDEN,
     InviteAccountExistsError: HTTPStatus.CONFLICT,
 }
@@ -303,6 +309,13 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
         )
     except InviteNotPermittedError as error:
         raise PermissionDenied(str(error)) from error
+    if tenant_has(tenant.pk, "cycles_r1"):
+        # T11: onto the outbox, inside this request's transaction. The send used to
+        # happen here, inside the tenant transaction, and could 500 when it raced an
+        # import rollback; now nothing leaves until the dispatcher claims the row
+        # after commit, and a rollback takes the message with the invitation.
+        _queue_portal_invitation(request.user, client, _invite)
+        return HttpResponseRedirect(reverse("invite-issued"))
     try:
         _mail_portal_invitation(
             form.cleaned_data["email"],
@@ -322,6 +335,42 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
             status=HTTPStatus.OK,
         )
     return HttpResponseRedirect(reverse("invite-issued"))
+
+
+def _queue_portal_invitation(
+    actor: User, client: ClientCompany, invite: Invite
+) -> None:
+    """Queue the invitation for the contact at its address, creating the contact.
+
+    The outbox resolves recipients from contacts only (never from a typed address),
+    so the address the firm typed is matched to an active contact of this client
+    allowed to receive e-mail, and a new contact is registered for it when none
+    exists. The client row lock serializes this with contact edits.
+    """
+    from apps.clients.models import ClientContact  # noqa: PLC0415
+    from apps.delivery.outbox import enqueue_portal_invite  # noqa: PLC0415
+
+    ClientCompany.objects.select_for_update().get(pk=client.pk)
+    contact = (
+        ClientContact.objects.select_for_update()
+        .filter(
+            client=client,
+            email__iexact=invite.email,
+            active=True,
+            channel_email_allowed=True,
+        )
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if contact is None:
+        contact = ClientContact.objects.create(
+            tenant_id=client.tenant_id,
+            client=client,
+            name=invite.email,
+            email=invite.email,
+            role_label=_("Convidado para o portal"),
+        )
+    enqueue_portal_invite(actor, invite, contact)
 
 
 def assert_firm_invite(*, invite: Invite) -> None:

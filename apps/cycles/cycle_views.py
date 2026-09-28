@@ -10,6 +10,8 @@ from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.views import AuthenticatedRequest
@@ -23,6 +25,9 @@ from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.forms import SERVICE_KIND_CHOICES
 from apps.cycles.models import (
     CycleState,
+    EvidenceLink,
+    EvidenceRequest,
+    RequestState,
     ServiceCycle,
     TaskState,
 )
@@ -36,6 +41,16 @@ from apps.cycles.services.cycle import (
     tenant_id,
     transition_cycle,
     transition_task,
+)
+from apps.cycles.services.requests import (
+    RequestFields,
+    client_status,
+    create_request,
+    preview_recipients,
+    remind_request,
+    send_requests,
+    update_request,
+    waive_request,
 )
 from apps.cycles.workspace import (
     available_actions,
@@ -178,11 +193,21 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                 error, status = str(exc), HTTPStatus.CONFLICT
             except (IllegalTransition, ValidationError) as exc:
                 error, status = str(exc), HTTPStatus.UNPROCESSABLE_CONTENT
+    return _render_detail(request, cycle.pk, error, status)
+
+
+def _render_detail(
+    request: AuthenticatedRequest,
+    pk: UUID,
+    error: str,
+    status: int,
+) -> HttpResponse:
+    """Render the cycle page; shared by the cycle and the request-action posts."""
     # Refresh state after a refused POST and fetch the visible context together,
     # rather than adding a client/engagement query for every header field.
     cycle = ServiceCycle.objects.select_related(
         "client", "engagement", "playbook", "playbook_version"
-    ).get(pk=cycle.pk)
+    ).get(pk=pk)
     steps = {step.key: step for step in cycle.playbook_version.steps.all()}
     tasks = [
         {
@@ -214,9 +239,127 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             "unmet": completion_unmet(cycle),
             "notes": cycle.notes.select_related("author").order_by("created_at", "pk"),
             "error": error,
+            **_requests_context(request, cycle),
         },
         status=status,
     )
+
+
+def _requests_context(
+    request: AuthenticatedRequest, cycle: ServiceCycle
+) -> dict[str, object]:
+    """Build the firm's view of the cycle's requests and the send preview (T11)."""
+    rows = list(
+        EvidenceRequest.objects.filter(cycle=cycle)
+        .prefetch_related("internals")
+        .order_by("created_at", "pk")
+    )
+    links: dict[UUID, list[EvidenceLink]] = {}
+    for link in (
+        EvidenceLink.objects.filter(request__cycle=cycle)
+        .select_related("document")
+        .order_by("created_at", "pk")
+    ):
+        links.setdefault(link.request_id, []).append(link)
+    today = timezone.localdate()
+    return {
+        "evidence_requests": [
+            {
+                "request": row,
+                "internal": next(iter(row.internals.all()), None),
+                "links": links.get(row.pk, []),
+                "status": client_status(row, submitted=row.pk in links, today=today),
+                "editable": row.state in {RequestState.DRAFT, RequestState.REQUESTED},
+                "closable": row.state
+                not in {
+                    RequestState.WAIVED,
+                    RequestState.ACCEPTED,
+                    RequestState.REPLACED,
+                },
+            }
+            for row in rows
+        ],
+        "draft_count": sum(1 for row in rows if row.state == RequestState.DRAFT),
+        "recipients": preview_recipients(request.user, cycle.pk),
+    }
+
+
+class RequestActionForm(forms.Form):
+    """One request command and the revision its form was rendered with."""
+
+    action = forms.ChoiceField(
+        choices=[
+            ("create", "create"),
+            ("update", "update"),
+            ("waive", "waive"),
+            ("send", "send"),
+            ("remind", "remind"),
+        ]
+    )
+    expected_version = forms.IntegerField(min_value=1, widget=forms.HiddenInput)
+    request_id = forms.UUIDField(required=False)
+    title = forms.CharField(required=False, max_length=160)
+    client_note = forms.CharField(required=False, max_length=2000)
+    due_on = forms.DateField(required=False)
+    instructions = forms.CharField(required=False, max_length=2000)
+    reason = forms.CharField(required=False, max_length=2000)
+
+
+@require_http_methods(["POST"])
+@login_required
+@require_tenant
+@require_can(CYCLES_OPERATE)
+def cycle_request_action(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
+    """Apply one versioned request command; the services re-check scope and version."""
+    cycle = load_cycle(request.user, pk)
+    form = RequestActionForm(request.POST)
+    if not form.is_valid():
+        return _render_detail(
+            request,
+            cycle.pk,
+            "Revise os dados da solicitação.",
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+        )
+    data = form.cleaned_data
+    fields = RequestFields(
+        title=data["title"],
+        client_note=data["client_note"],
+        due_on=data["due_on"],
+        instructions=data["instructions"],
+    )
+    version = data["expected_version"]
+    try:
+        if data["action"] == "create":
+            create_request(request.user, cycle.pk, fields, expected_version=version)
+        elif data["action"] == "send":
+            send_requests(request.user, cycle.pk, expected_version=version)
+        else:
+            target = get_object_or_404(
+                EvidenceRequest.objects.filter(cycle=cycle), pk=data["request_id"]
+            )
+            if data["action"] == "update":
+                update_request(
+                    request.user, target.pk, fields, expected_version=version
+                )
+            elif data["action"] == "waive":
+                waive_request(
+                    request.user,
+                    target.pk,
+                    reason=data["reason"],
+                    expected_version=version,
+                )
+            else:
+                remind_request(request.user, target.pk, expected_version=version)
+    except VersionConflict as exc:
+        return _render_detail(request, cycle.pk, str(exc), HTTPStatus.CONFLICT)
+    except (IllegalTransition, ValidationError) as exc:
+        message = (
+            "; ".join(exc.messages) if isinstance(exc, ValidationError) else str(exc)
+        )
+        return _render_detail(
+            request, cycle.pk, message, HTTPStatus.UNPROCESSABLE_CONTENT
+        )
+    return redirect(f"{reverse('cycle-detail', args=[cycle.pk])}#solicitacoes")
 
 
 @require_http_methods(["POST"])

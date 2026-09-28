@@ -44,24 +44,28 @@ def send(claim: Claim, *, before_network_io: Callable[[], None] | None = None) -
     from apps.delivery import journal  # noqa: PLC0415 - phased service dependency
     from apps.delivery.policy import content_digest, render_body  # noqa: PLC0415
     from apps.delivery.privacy import delivery_secrets  # noqa: PLC0415
-    from apps.delivery.services import authorize_send  # noqa: PLC0415
+    from apps.delivery.services import authorize_and_prepare  # noqa: PLC0415
 
     assert_no_transaction()
     if before_network_io is not None:
         before_network_io()
-    message = authorize_send(claim)
+    message, secrets = authorize_and_prepare(claim)
     if message.state != MessageState.SENDING:
         return Reply(message.state, message.last_error_code)
+    public_body = render_body(message)
+    if content_digest(message, rendered_body=public_body) != message.content_digest:
+        return Reply(MessageState.CANCELLED, "content_changed")
     email = EmailMessage(
         subject=message.subject,
-        body=render_body(message),
+        body=render_body(message, secrets) if secrets else public_body,
         to=message.recipients_json,
         headers={"Message-ID": f"<{message.pk}@outbox.local>"},
     )
-    if content_digest(message, rendered_body=str(email.body)) != message.content_digest:
-        return Reply(MessageState.CANCELLED, "content_changed")
     with delivery_secrets(
-        str(email.subject), str(email.body), *message.recipients_json
+        str(email.subject),
+        str(email.body),
+        *message.recipients_json,
+        *secrets.values(),
     ):
         journal.append(message, "intent_started")
         reply = smtp_send(email)

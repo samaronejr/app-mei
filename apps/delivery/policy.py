@@ -48,11 +48,19 @@ class BusinessIntent:
 
 @dataclass(frozen=True, slots=True)
 class MessageKind:
-    """Only application code registers templates and pre-send validity hooks."""
+    """Only application code registers templates and pre-send validity hooks.
+
+    `prepare` (T11) runs inside the gateway's authorization transaction, after
+    `still_valid` passed and under the message lock, and returns values that exist
+    only for this one send -- a freshly minted invitation link. They are rendered into
+    the outgoing body, registered with the redaction scope, and never stored: the
+    content digest is computed over the body rendered WITHOUT them.
+    """
 
     subject: str
     template: str
     still_valid: Callable[[OutboundMessage], tuple[bool, str]]
+    prepare: Callable[[OutboundMessage], dict[str, str]] | None = None
 
 
 KINDS: dict[str, MessageKind] = {
@@ -98,10 +106,15 @@ def resolve_recipient(client_id: UUID, contact_id: UUID | str) -> ClientContact:
     return contact
 
 
-def render_body(message: OutboundMessage) -> str:
-    """Render a shipped template, never a user-controlled path."""
+def render_body(message: OutboundMessage, secrets: dict[str, str] | None = None) -> str:
+    """Render a shipped template, never a user-controlled path.
+
+    Without `secrets` this is the digest-bound public body; with them, the body
+    actually sent. Templates must render a secret only when it is present.
+    """
     return render_to_string(
-        KINDS[message.kind].template, {"portal_url": message.portal_url}
+        KINDS[message.kind].template,
+        {"portal_url": message.portal_url, **(secrets or {})},
     )
 
 

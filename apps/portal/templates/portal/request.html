@@ -1,0 +1,32 @@
+{% extends "portal/base.html" %}
+{% load i18n static ptbr %}{% comment %}
+One request the firm sent (T11): what is asked, by when, what was already sent, and
+the upload control. Every value is a scalar the view derived; the request row, its
+internal companion and the cycle's notes never reach this template.
+
+The only portal page that loads scripts (see the `scripts` block note in the shell):
+the same vendored htmx, app.js and CSP-safe Alpine the firm side ships, in the same
+order -- app.js registers its components on `alpine:init`, so Alpine loads last.
+Without scripts the form is an ordinary multipart POST and the page still works.
+{% endcomment %}
+{% block title %}{{ req.title }}{% endblock %}
+{% block scripts %}
+  <meta name="htmx-config" content='{"allowEval": false, "includeIndicatorStyles": false}'>
+  <script src="{% static 'js/htmx.min.js' %}" defer></script>
+  <script src="{% static 'js/app.js' %}" defer></script>
+  <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>
+{% endblock %}
+{% block heading %}{{ req.title }}{% endblock %}
+{% block content %}
+<div class="space-y-4">
+  <a class="ui-link" href="{% url 'portal-home' %}">{% translate "Voltar para o início" %}</a>
+  {% if error %}{% include 'partials/pure/notice.html' with message=error variant='error' only %}{% endif %}
+  <section class="card space-y-3 px-5 py-4" aria-labelledby="pedido">
+    <h2 id="pedido" class="text-sm font-semibold text-ink-700">{% translate "O que o escritório pediu" %}</h2>
+    {% if req.client_note %}<p class="whitespace-pre-wrap break-words text-ink-900">{{ req.client_note }}</p>{% endif %}
+    {% if req.due_on %}<p class="text-sm text-ink-700">{% translate "Enviar até" %} <time datetime="{{ req.due_on.isoformat }}">{{ req.due_on|data }}</time></p>{% endif %}
+  </section>
+  {% include "portal/partials/request_status.html" %}
+  {% if req.open %}{% include "portal/partials/request_upload.html" %}{% endif %}
+</div>
+{% endblock %}

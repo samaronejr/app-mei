@@ -21,6 +21,12 @@ from django.utils.translation import gettext_lazy as _
 
 from apps.core.access import PlatformScopedManager, TenantRootManager
 from apps.core.models import UUIDv7PrimaryKeyModel
+from apps.tenants.branding import (
+    BRAND_NAME_MAX_LENGTH,
+    logo_upload_to,
+    validate_brand_color,
+    validate_logo,
+)
 from apps.tenants.validators import validate_tenant_slug
 
 if TYPE_CHECKING:
@@ -158,6 +164,31 @@ class Tenant(UUIDv7PrimaryKeyModel):
         blank=True,
     )
     is_active = models.BooleanField(_("active"), default=True)
+    # Portal branding (T11). Read by PortalMiddleware as app_runtime and handed to the
+    # portal shell as scalars (apps/tenants/branding.py): app_portal cannot read this
+    # table, so no portal template ever receives the row.
+    # `db_default` so a writer built on an older schema state (a data migration, a
+    # historical-state test) that omits these columns still inserts: expand first.
+    brand_name = models.CharField(
+        _("brand name"),
+        max_length=BRAND_NAME_MAX_LENGTH,
+        blank=True,
+        db_default="",
+    )
+    brand_color = models.CharField(
+        _("brand color"),
+        max_length=7,
+        blank=True,
+        db_default="",
+        validators=[validate_brand_color],
+    )
+    logo = models.FileField(
+        _("logo"),
+        upload_to=logo_upload_to,
+        blank=True,
+        db_default="",
+        validators=[validate_logo],
+    )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 
@@ -283,6 +314,16 @@ class Invite(UUIDv7PrimaryKeyModel):
     # exists for: "the firm changed its mind" and "nobody got round to it" become the
     # same fact, in the one column that could have told them apart.
     revoked_at = models.DateTimeField(_("revoked at"), null=True, blank=True)
+    # Digests of tokens a dispatch re-mint replaced (T11). The outbox mints a fresh
+    # token for every send attempt (`mint_token_for_dispatch`) and the previous link
+    # must answer "no longer valid" (410) rather than "no such invitation" (404), so
+    # the old digest is kept here. Digests only, never a raw token.
+    superseded_tokens = ArrayField(
+        models.CharField(max_length=64),
+        verbose_name=_("superseded token digests"),
+        default=list,
+        blank=True,
+    )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
     objects = PlatformScopedManager["Invite"]()

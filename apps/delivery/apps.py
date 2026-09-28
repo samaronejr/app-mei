@@ -29,3 +29,7 @@ class DeliveryConfig(AppConfig):
             ExceptionReason("Revise o contato e a recusa do servidor de e-mail."),
         )
         OUTBOX_TIMELINE_READERS.append(read_timeline)
+
+        from apps.delivery.kinds import register  # noqa: PLC0415
+
+        register()

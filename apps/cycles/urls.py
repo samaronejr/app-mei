@@ -7,6 +7,11 @@ from apps.cycles import cycle_views, views
 urlpatterns = [
     path("ciclos/", cycle_views.cycle_list, name="cycle-list"),
     path("ciclos/<uuid:pk>/", cycle_views.cycle_detail, name="cycle-detail"),
+    path(
+        "ciclos/<uuid:pk>/solicitacoes/",
+        cycle_views.cycle_request_action,
+        name="cycle-request-action",
+    ),
     path("clientes/<uuid:pk>/ciclos/abrir/", cycle_views.cycle_open, name="cycle-open"),
     path("gestao/playbooks/", views.playbook_list_view, name="playbook-list"),
     path(

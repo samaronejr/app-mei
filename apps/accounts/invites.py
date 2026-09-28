@@ -17,6 +17,7 @@ command, an API, a test helper — cannot reach acceptance without them.
 """
 
 import logging
+import secrets
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
@@ -29,7 +30,7 @@ from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
 from apps.authz.services import can
-from apps.tenants.models import Invite, Membership, Tenant
+from apps.tenants.models import INVITE_TOKEN_BYTES, Invite, Membership, Tenant
 
 if TYPE_CHECKING:
     from apps.clients.models import ClientCompany
@@ -98,6 +99,15 @@ class InviteNotRevocableError(InviteError):
     Separate from `InviteRevokedError` because the two face opposite directions. That
     one is shown to whoever holds a dead link; this one is shown to the administrator
     who just tried to stand one down, and the sentence each needs is different.
+    """
+
+
+class InviteTokenSupersededError(InviteError):
+    """The link carries a token a later dispatch replaced (T11): 410, not 404.
+
+    The invitation is real and may still be live; only this copy of the link is dead.
+    The holder is told to use the most recent e-mail rather than that no invitation
+    exists, which would send them to the firm for a re-issue they do not need.
     """
 
 
@@ -288,11 +298,17 @@ def revoke_invite(*, actor: User, invite: Invite) -> Invite:
 
 def resolve_invite(raw_token: str) -> Invite:
     """Look an invitation up by token and reject every unusable state."""
+    digest = Invite.hash_token(raw_token)
     # PLATFORM_QUERY_OK: the digest of a 32-byte unguessable token IS the scope
     # here, and the caller is anonymous by construction. Authorization is not skipped,
     # it is deferred to accept_invite, which binds redemption to the invited mailbox.
-    invite = Invite.objects.filter(token=Invite.hash_token(raw_token)).first()
+    invite = Invite.objects.filter(token=digest).first()
     if invite is None:
+        # PLATFORM_QUERY_OK: same digest-as-scope lookup, against the digests a
+        # dispatch re-mint replaced.
+        if Invite.objects.filter(superseded_tokens__contains=[digest]).exists():
+            msg = "That link was replaced by a more recent invitation e-mail."
+            raise InviteTokenSupersededError(msg)
         msg = "No invitation matches that link."
         raise InviteNotFoundError(msg)
     _assert_redeemable(invite)
@@ -525,3 +541,46 @@ def register_and_accept(
         user=user,
         expected_scope=expected_scope,
     )
+
+
+class InviteNotDispatchableError(ValueError):
+    """The invitation can no longer be delivered: revoked, accepted or expired.
+
+    A `ValueError` so the outbox's `prepare` hook contract cancels the message with
+    this reason code (apps/delivery/services.py::authorize_and_prepare).
+    """
+
+
+def mint_token_for_dispatch(invite: Invite) -> str:
+    """Mint a fresh one-time token for THIS send and invalidate every earlier one.
+
+    Called by the outbox gateway inside its authorization transaction, immediately
+    before SMTP (T11). The invitation row is locked and re-checked, the new digest
+    replaces `token`, and the previous digest moves to `superseded_tokens`, so a link
+    from an earlier attempt answers 410 instead of redeeming. Validity (7 days from
+    issue), single use and POST-only acceptance are unchanged.
+
+    Returns the raw token for the body being sent; it is never stored, logged or
+    written to any outbox row or attempt.
+    """
+    # PLATFORM_QUERY_OK: re-reads by primary key the invitation the outbox message
+    # names, purely to take the row lock the re-mint needs.
+    locked = Invite.objects.select_for_update().get(pk=invite.pk)
+    if locked.accepted_at is not None:
+        reason = "invite_accepted"
+        raise InviteNotDispatchableError(reason)
+    if locked.revoked_at is not None:
+        reason = "invite_revoked"
+        raise InviteNotDispatchableError(reason)
+    if locked.expires_at <= timezone.now():
+        reason = "invite_expired"
+        raise InviteNotDispatchableError(reason)
+    raw_token = secrets.token_urlsafe(INVITE_TOKEN_BYTES)
+    locked.superseded_tokens = [*locked.superseded_tokens, locked.token]
+    locked.token = Invite.hash_token(raw_token)
+    locked.save(update_fields=["token", "superseded_tokens"])
+    logger.info(
+        "invite token minted for dispatch",
+        extra={"invite_id": str(locked.pk), "tenant_id": str(locked.tenant_id)},
+    )
+    return raw_token

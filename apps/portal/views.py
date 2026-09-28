@@ -222,11 +222,16 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     tenant_id = current_tenant_id.get()
     cycles_r1 = bool(tenant_id and tenant_has(tenant_id, "cycles_r1"))
     cycles = []
+    requests = []
     if cycles_r1:
         cycles = [
             {"id": cycle.pk, **portal_projection(cycle)}
             for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]
         ]
+        # T11: the client's open requests, confined by RLS like every figure here.
+        from apps.portal.request_views import open_requests  # noqa: PLC0415
+
+        requests = open_requests(today)
     return render(
         request,
         "portal/home.html",
@@ -237,6 +242,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "next_action": _next_action(today),
             "cycles": cycles,
             "cycles_r1": cycles_r1,
+            "requests": requests,
         },
     )
 
@@ -425,6 +431,18 @@ def _documents_page(
         return paginator.page(1)
 
 
+def _interim_hidden(request: PortalVaultRequest) -> Q:
+    """Match the documents this account may NOT be served before T12's quarantine.
+
+    Interim rule (T11): a file that arrived through an upload against a request -- it
+    carries a `DocumentIntake` row -- is re-served only to the account that uploaded
+    it (the firm reads it firm-side). Everything else keeps the vault's semantics.
+    T12 replaces this with quarantine and scanning. RLS still confines every row to
+    the client; this only narrows further.
+    """
+    return Q(intakes__isnull=False) & ~Q(uploaded_by_id=request.user.pk)
+
+
 @require_http_methods(["GET"])
 @login_required
 @require_can(VAULT_CAPABILITY)
@@ -462,7 +480,9 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     needs one figure this model does not store, and computing it here keeps the template
     rendering values instead of deriving them.
     """
-    rows = Document.objects.order_by("-created_at", "pk")
+    rows = Document.objects.exclude(_interim_hidden(request)).order_by(
+        "-created_at", "pk"
+    )
     page = _documents_page(rows, request)
     return render(
         request,
@@ -620,7 +640,7 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
 @login_required
 @require_can(VAULT_CAPABILITY)
 def document_download(
-    request: PortalVaultRequest,  # noqa: ARG001
+    request: PortalVaultRequest,
     storage_key: str,
 ) -> HttpResponse:
     """Return one document's bytes, authorised against the row before storage is asked.
@@ -636,7 +656,9 @@ def document_download(
     because its iterator would be consumed after the transaction closes and the role and
     both GUCs are gone, yielding nothing.
     """
-    document = get_object_or_404(Document, storage_key=storage_key)
+    document = get_object_or_404(
+        Document.objects.exclude(_interim_hidden(request)), storage_key=storage_key
+    )
 
     try:
         # Size from metadata BEFORE the body. Under object storage this is a HEAD rather

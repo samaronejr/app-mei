@@ -237,7 +237,19 @@ def _locked_claim(claim: Claim) -> OutboundMessage:
 
 def authorize_send(claim: Claim) -> OutboundMessage:
     """Reserve the single network send for this fence, after live re-evaluation."""
-    from apps.delivery.policy import still_valid  # noqa: PLC0415 - service boundary
+    return authorize_and_prepare(claim)[0]
+
+
+def authorize_and_prepare(claim: Claim) -> tuple[OutboundMessage, dict[str, str]]:
+    """Authorize as `authorize_send` does, then run the kind's `prepare` hook.
+
+    The hook runs in the same transaction and under the same message lock, after the
+    live re-evaluation passed: a portal invitation mints its one-time token here
+    (T11), so a revoked or accepted invitation is refused before a token exists. A
+    hook refusing (`ValueError`) cancels the message with the hook's reason code. The
+    returned values are never written to any row.
+    """
+    from apps.delivery.policy import KINDS, still_valid  # noqa: PLC0415
 
     assert_no_transaction()
     with tenant_context(claim.tenant_id):
@@ -253,12 +265,19 @@ def authorize_send(claim: Claim) -> OutboundMessage:
             or not tenant_has(claim.tenant_id, "cycles_r1")
         ):
             valid, reason = False, "delivery_paused"
+        secrets: dict[str, str] = {}
+        prepare = KINDS[message.kind].prepare if valid else None
+        if prepare is not None:
+            try:
+                secrets = prepare(message)
+            except ValueError as refusal:
+                valid, reason = False, str(refusal) or "prepare_refused"
         if not valid:
             transition(message, Reply(MessageState.CANCELLED, reason))
         else:
             message.send_started_at = timezone.now()
             message.save(update_fields=["send_started_at"])
-        return message
+        return message, secrets
 
 
 def finalize(claim: Claim, reply: Reply) -> bool:

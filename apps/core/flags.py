@@ -154,6 +154,18 @@ def tenant_has(tenant_id: UUID, flag: str) -> bool:
     return flag in _features_for(tenant_id)
 
 
+def tenant_row_has(tenant: Tenant, flag: str) -> bool:
+    """Answer `tenant_has` from a row already in memory, issuing no query.
+
+    For `PortalMiddleware`, which holds the resolved tenant row before any stash or
+    flag cache exists and must not spend a query per request on the question.
+    """
+    if flag not in FEATURES:
+        msg = f"{flag!r} is not a feature flag in FEATURES."
+        raise UnknownFeature(msg)
+    return flag not in _disabled_features() and flag in (tenant.features or ())
+
+
 _P = ParamSpec("_P")
 _ResponseT = TypeVar("_ResponseT", bound=HttpResponseBase)
 _RequestT = TypeVar("_RequestT", bound=HttpRequest)

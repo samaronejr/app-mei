@@ -51,7 +51,16 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
 
 {% block content %}
   {% if client %}
-    <div class="space-y-4">{% if cycles %}
+    <div class="space-y-4">{% if cycles_r1 %}
+      <section class="card space-y-4 px-5 py-4" aria-labelledby="solicitacoes">
+        <h2 id="solicitacoes" class="text-sm font-semibold text-ink-700">{% translate "Solicitações do escritório" %}</h2>
+        {% if requests %}<ul class="space-y-4">{% for req in requests %}<li class="space-y-1" data-request-id="{{ req.id }}">
+          <a class="ui-link font-semibold" href="{% url 'portal-request-detail' req.id %}">{{ req.title }}</a>
+          <p class="flex flex-wrap items-center gap-2 text-sm">{% include "portal/partials/request_chip.html" %}{% if req.due_on %}<span>{% translate "Enviar até" %} <time datetime="{{ req.due_on.isoformat }}">{{ req.due_on|data }}</time></span>{% endif %}</p>
+          {% if req.client_note %}<p class="text-sm text-ink-700">{{ req.client_note }}</p>{% endif %}
+          {% if req.hint %}<p class="text-xs text-ink-600">{{ req.hint }}</p>{% endif %}
+        </li>{% endfor %}</ul>{% else %}<p class="empty-state text-ink-600">{% translate "Nenhuma solicitação em aberto. Avisaremos por e-mail quando o escritório pedir algum documento." %}</p>{% endif %}
+      </section>{% endif %}{% if cycles %}
       <section class="card space-y-4 px-5 py-4" aria-labelledby="service-cycles">
         <h2 id="service-cycles" class="text-sm font-semibold text-ink-700">Ciclos do período</h2>
         <ul class="space-y-3">{% for cycle in cycles %}<li>
@@ -75,9 +84,9 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
           <p class="text-lg font-semibold text-ink-900">{% if next_action.type_code == 'DAS' %}{% translate "Guia mensal (DAS)" %}{% elif next_action.type_code == 'DASN' %}{% translate "Declaração anual (DASN)" %}{% else %}{{ next_action.type_code }}{% endif %}</p>
 
           <dl class="grid grid-cols-2 gap-y-3 text-sm tabular-nums">
-            <dt class="text-ink-500">{% translate "Competência" %}</dt>
+            <dt class="{% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "Competência" %}</dt>
             <dd>{{ next_action.competence_month|competencia }}</dd>
-            <dt class="text-ink-500">{% translate "Vencimento" %}</dt>
+            <dt class="{% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "Vencimento" %}</dt>
             <dd><time datetime="{{ next_action.due_date.isoformat }}">{{ next_action.due_date|data }}</time></dd>
           </dl>
 
@@ -90,9 +99,9 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
           {% endif %}
 
           {% if next_action.type_code == 'DASN' %}
-            <p class="text-xs text-ink-500">{% translate "A declaração anual vence em 31 de maio e essa data não muda: ela não é adiada nem quando cai em fim de semana ou feriado." %}</p>
+            <p class="text-xs {% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "A declaração anual vence em 31 de maio e essa data não muda: ela não é adiada nem quando cai em fim de semana ou feriado." %}</p>
           {% elif next_action.rolled %}
-            <p class="text-xs text-ink-500">{% blocktranslate with origem=next_action.nominal_due_date|data %}A data original caiu em fim de semana ou feriado: adiada de {{ origem }} para o vencimento acima, que é a data que vale.{% endblocktranslate %}</p>
+            <p class="text-xs {% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% blocktranslate with origem=next_action.nominal_due_date|data %}A data original caiu em fim de semana ou feriado: adiada de {{ origem }} para o vencimento acima, que é a data que vale.{% endblocktranslate %}</p>
           {% endif %}
 
           <div class="flex flex-wrap gap-2">
@@ -100,14 +109,14 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
             <a class="btn btn-quiet" href="{% url 'portal-documents' %}">{% translate "Enviar documento" %}</a>
           </div>
         {% else %}
-          <p class="empty-state">{% translate "Nenhuma obrigação em aberto por enquanto. Avisaremos por aqui assim que a próxima abrir." %}</p>
+          <p class="empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Nenhuma obrigação em aberto por enquanto. Avisaremos por aqui assim que a próxima abrir." %}</p>
         {% endif %}
       </section>
 
       <dl class="card grid grid-cols-2 gap-y-3 px-5 py-4 text-sm tabular-nums">
-        <dt class="text-ink-500">{% translate "CNPJ" %}</dt>
+        <dt class="{% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "CNPJ" %}</dt>
         <dd>{{ client.cnpj|cnpj_mask }}</dd>
-        <dt class="text-ink-500">{% translate "Obrigações" %}</dt>
+        <dt class="{% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "Obrigações" %}</dt>
         <dd>{{ obligation_count }}</dd>
       </dl>
     </div>
