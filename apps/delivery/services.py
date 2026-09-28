@@ -30,6 +30,8 @@ from apps.delivery.models import (
     OutboundMessage,
 )
 
+# S8.1: pausing and resuming automations is its own capability.
+AUTOMATIONS_MANAGE = "automations.manage"
 RETRY_MINUTES = (1, 5, 15, 60, 60)
 MAX_ATTEMPTS = 6
 CLAIM_LIMIT = 50
@@ -331,7 +333,7 @@ def set_pause(actor: User, *, paused: bool, expected_version: int) -> Automation
     require_enabled()
     with transaction.atomic():
         control = _control()
-        require_actor(actor, "playbooks.manage")
+        require_actor(actor, AUTOMATIONS_MANAGE)
         if control.version != expected_version:
             msg = "Este registro mudou. Recarregue antes de salvar."
             raise VersionConflict(msg)

@@ -16,7 +16,12 @@ from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.services.cycle import require_enabled, tenant_id
 from apps.delivery.errors import VersionConflict
 from apps.delivery.models import AutomationPause, MessageState, OutboundMessage
-from apps.delivery.services import decide, remaining_quota, set_pause
+from apps.delivery.services import (
+    AUTOMATIONS_MANAGE,
+    decide,
+    remaining_quota,
+    set_pause,
+)
 
 
 class DecisionForm(forms.Form):
@@ -106,7 +111,7 @@ def communication(request: AuthenticatedRequest) -> HttpResponse:
             "control": control,
             "quota": remaining_quota(),
             "can_decide": can(request.user, CYCLES_OPERATE, tenant_id=tenant_id()),
-            "can_pause": can(request.user, "playbooks.manage", tenant_id=tenant_id()),
+            "can_pause": can(request.user, AUTOMATIONS_MANAGE, tenant_id=tenant_id()),
         },
         status=status,
     )

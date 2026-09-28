@@ -7,13 +7,21 @@ import pytest
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
 
+from apps.audit.models import Event
+from apps.authz.models import Capability, GrantLevel, UserCapabilityGrant
 from apps.core.tenancy import tenant_context
 from apps.delivery.errors import VersionConflict
-from apps.delivery.models import DeliveryAttempt, MessageState, OutboundMessage
+from apps.delivery.models import (
+    AutomationPause,
+    DeliveryAttempt,
+    MessageState,
+    OutboundMessage,
+)
 from apps.delivery.outbox import enqueue
 from apps.delivery.services import decide, set_pause
 from apps.tenants.models import Membership
 from tests.delivery.conftest import DeliverySetup
+from tests.delivery.test_boundaries import _web
 from tests.support_threads import run_in_thread_as_runtime
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -115,6 +123,44 @@ def test_unknown_needs_note_and_never_becomes_smtp_evidence(
                 action="not_sent",
                 note="stale",
             )
+
+
+@pytest.mark.parametrize(
+    ("granted", "allowed"),
+    [("automations.manage", True), ("playbooks.manage", False)],
+)
+def test_pause_follows_automations_manage_not_playbooks(
+    delivery: DeliverySetup, granted: str, allowed: bool
+) -> None:
+    # The staff role holds NONE on both capabilities, so one per-user grant
+    # crosses them: exactly one of the two is FULL for this account.
+    staff = delivery.graph.staff
+    with tenant_context(delivery.graph.tenant.pk):
+        UserCapabilityGrant.objects.create(
+            tenant=delivery.graph.tenant,
+            user=staff,
+            capability=Capability.objects.get(slug=granted),
+            level=GrantLevel.FULL,
+            granted_by=delivery.graph.actor,
+        )
+    page = _web(delivery, staff).get("/comunicacao/")
+    assert page.status_code == 200
+    assert (b'value="pause"' in page.content) is allowed
+    with tenant_context(delivery.graph.tenant.pk):
+        events = Event.objects.filter(action="delivery.pause_changed").count()
+        if allowed:
+            control = set_pause(staff, paused=True, expected_version=1)
+            assert control.paused
+            assert control.version == 2
+        else:
+            with pytest.raises(PermissionDenied):
+                set_pause(staff, paused=True, expected_version=1)
+            # The refused transaction rolls back entirely: no paused row and no
+            # revision bump survive the denial.
+            assert not AutomationPause.objects.filter(paused=True).exists()
+            assert not AutomationPause.objects.filter(version__gt=1).exists()
+        after = Event.objects.filter(action="delivery.pause_changed").count()
+        assert after == events + int(allowed)
 
 
 def test_stale_pause_has_no_event_or_state_write(delivery: DeliverySetup) -> None:
