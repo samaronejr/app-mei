@@ -59,6 +59,8 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "playbook-detail",
         "playbook-editor",
         "playbook-retire",
+        # T12
+        "staff-document-download",
         "admin:*",
     },
 )

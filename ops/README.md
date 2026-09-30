@@ -1189,6 +1189,39 @@ costs 154 MB and `docker image prune -f` will not touch it because it is tagged.
 it (`docker rmi app-mei-caddy:latest`) or leave it. Recorded so that its presence is not
 mistaken for a live tag during a rollback.
 
+## Malware scanning (ClamAV sidecar)
+
+Client uploads against a request are written under `quarantine/{tenant}/{client}/`
+and reach nobody -- staff, other portal users, parsers -- until a scan says clean;
+then the bytes are copied to their final key and the quarantine copy is deleted. A
+refused original (wrong type, or malware) is retained under `quarantine/` and never
+served. The beat task `scan-quarantine` (every minute, `cycles_r1` firms only)
+streams each pending upload to clamd with INSTREAM; a scanner that stays down is
+retried with backoff (1, 5, 15, 30, then 60 minutes) until 24 h after the upload, and
+then the file becomes `verificacao_indisponivel` and a cycle exception opens.
+
+**Off by default.** `CLAMAV_ENABLED=False` makes every new upload
+`verificacao_indisponivel`: staff can download it only after a warning dialog, each
+such download is recorded on the cycle timeline, and the portal never re-serves it.
+Turning scanning on needs both `CLAMAV_ENABLED=True` in `.env.prod` and the compose
+profile that creates the sidecar:
+
+    COMPOSE_PROFILES=clamav docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait
+
+**Memory is the constraint.** The `clamav` service (image pinned by digest,
+`mem_limit: 1536m`) holds the signature database in RAM, about 1.2 GiB with the
+official databases -- more than the whole current box (954 MiB + swap, see the sizing
+note at the top of `docker-compose.prod.yml`). Enabling it is gated on the host upsize
+(owner decision OD-11) and on operator gate OG-05: record on the production host, in
+`.evidence/AXR1-012-operator.txt`, `free -m` before and after start, `docker stats
+--no-stream` for the sidecar, and two successive freshclam updates from
+`docker compose logs clamav`. The quarantine prefix itself needs the bucket prefix and
+lifecycle rule of OG-04. None of these gates is closed by the code change.
+
+`reconcile_documents` checks each document at the key its bytes must be at (the
+quarantine key until verified) and descends into `quarantine/` when listing the
+bucket, so a leftover quarantine copy is reported as an orphan.
+
 ## Operator runsheets: procedures and as-executed records
 
 These runsheets were written before the pilot host migration and then executed during

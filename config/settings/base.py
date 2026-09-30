@@ -331,6 +331,11 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "The UUID names an evidence request, not a bearer credential. RLS hides "
         "another client's request (404) and the composite key refuses the link."
     ),
+    "staff-document-download": (
+        "AXR1-012. The UUID names a document, not a bearer credential: the client is "
+        "loaded through the actor's portfolio (404 outside it), tenant RLS scopes the "
+        "row, and the intake state decides whether any byte is served."
+    ),
     "playbook-detail": (
         "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer credential."
     ),
@@ -545,6 +550,15 @@ AXORIM_DISABLED_FEATURES = env.list("AXORIM_DISABLED_FEATURES", default=[])
 # customer-facing screen can adopt a name ahead of that decision.
 PRODUCT_NAME = env.str("PRODUCT_NAME", default="app-mei")
 
+# T12 malware scanning (S8.3). Off until OG-05 (host memory, freshclam) and OD-11
+# (host upsize): while off, new uploads end in `verificacao_indisponivel` -- staff
+# download only behind a warning, never re-served by the portal. On, the scan sweep
+# streams each quarantined upload to clamd (INSTREAM) at CLAMD_HOST:CLAMD_PORT.
+CLAMAV_ENABLED = env.bool("CLAMAV_ENABLED", default=False)
+CLAMD_HOST = env.str("CLAMD_HOST", default="clamav")
+CLAMD_PORT = env.int("CLAMD_PORT", default=3310)
+CLAMD_TIMEOUT_SECONDS = env.float("CLAMD_TIMEOUT_SECONDS", default=30.0)
+
 # Closed until the operator verifies the real SMTP route and journal storage.
 DELIVERY_PAUSED = env.bool("DELIVERY_PAUSED", default=True)
 DELIVERY_DAILY_CAP = env.int("DELIVERY_DAILY_CAP", default=100)
@@ -552,6 +566,12 @@ DELIVERY_DAILY_CAP = env.int("DELIVERY_DAILY_CAP", default=100)
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "dispatch-outbox": {
         "task": "apps.delivery.tasks.dispatch_outbox",
+        "schedule": 60.0,
+    },
+    # T12: scan quarantined uploads. Minute cadence like the outbox; the per-intake
+    # backoff (1-60 min, 24 h deadline) lives in `next_scan_at`, not here.
+    "scan-quarantine": {
+        "task": "apps.cycles.tasks.scan_quarantine",
         "schedule": 60.0,
     },
     "generate-cycles": {

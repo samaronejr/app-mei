@@ -1,0 +1,10 @@
+{% extends "base.html" %}{% comment %}
+The warning a firm user must pass before downloading a file no antivirus has checked
+(T12, `verificacao_indisponivel`). The dialog renders open: with script it becomes
+modal on load, without script it shows in the page. The download is its POST only.
+{% endcomment %}
+{% block title %}Arquivo sem verificação antivírus{% endblock %}
+{% block heading %}Arquivo sem verificação antivírus{% endblock %}
+{% block content %}
+{% include "partials/ui/dialog.html" with dialog_id="aviso-sem-verificacao" title="Baixar arquivo sem verificação?" body_template="cycles/_document_unscanned_body.html" open_on_load=True %}
+{% endblock %}

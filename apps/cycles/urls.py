@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from apps.cycles import cycle_views, views
+from apps.cycles import cycle_views, document_views, views
 
 urlpatterns = [
     path("ciclos/", cycle_views.cycle_list, name="cycle-list"),
@@ -13,6 +13,11 @@ urlpatterns = [
         name="cycle-request-action",
     ),
     path("clientes/<uuid:pk>/ciclos/abrir/", cycle_views.cycle_open, name="cycle-open"),
+    path(
+        "documentos/<uuid:pk>/baixar/",
+        document_views.staff_document_download,
+        name="staff-document-download",
+    ),
     path("gestao/playbooks/", views.playbook_list_view, name="playbook-list"),
     path(
         "gestao/playbooks/<uuid:pk>/",

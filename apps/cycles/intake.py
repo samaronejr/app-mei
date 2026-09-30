@@ -16,9 +16,14 @@ Deduplication is per client and content hash (S5.4 M5): the same bytes twice reu
 the one `Document` and add a second `EvidenceLink` (`relinked=True`) -- no error. The
 same bytes against the same request again change nothing and say so.
 
-Interim until T12: a new file is stored with the vault's existing semantics and gets
-an intake row in state `recebido`; the portal re-serves it only to its uploader (the
-firm sees it from the firm side). T12 adds quarantine, type sniffing and scanning.
+Quarantine (T12, S8.3): a new file's type is sniffed from its bytes (the declared
+type and name are ignored), and the bytes are written under
+`quarantine/{tenant}/{client}/` -- never to the final key. An allowed type gets an
+intake in `quarentena` and waits for the scan sweep (`apps.cycles.scanning`); a
+refused type gets an intake in `rejeitado_tipo`, no link, and the upload is answered
+with a refusal. The refused original is retained, never deleted and never served.
+Nothing here parses the file. Bytes identical to a refused document are refused
+again, without a link.
 """
 
 import hashlib
@@ -38,13 +43,16 @@ from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
+    REJECTED_STATES,
     DocumentIntake,
     EvidenceLink,
     EvidenceRequest,
     IntakeState,
     LinkOrigin,
+    quarantine_key,
 )
 from apps.cycles.records import CycleEvent
+from apps.cycles.sniffing import sniff
 from apps.obligations.models import Document
 from apps.tenants.models import Tenant
 
@@ -65,6 +73,10 @@ class UploadTooLarge(Exception):  # noqa: N818 - domain vocabulary
 
 class UploadMissing(Exception):  # noqa: N818 - domain vocabulary
     """No file arrived with the request."""
+
+
+class UploadRejected(Exception):  # noqa: N818 - domain vocabulary
+    """The bytes are not an accepted type (or match a refused document); not linked."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,34 +116,40 @@ def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
     upload: UploadedFile,
     payload: bytes,
     digest: str,
-) -> Document:
+) -> tuple[Document, DocumentIntake]:
+    sniffed = sniff(payload)
     document = Document(
         tenant=tenant,
         client=client,
         sha256=digest,
         original_filename=(upload.name or "documento")[:255],
-        content_type=(upload.content_type or "application/octet-stream")[:127],
+        # The sniffed type, never the declared one; a refused file has no type.
+        content_type=sniffed or "application/octet-stream",
         byte_size=len(payload),
         uploaded_by=actor,
     )
-    saved = default_storage.save(document.storage_key, ContentFile(payload))
-    if saved != document.storage_key:
+    held = quarantine_key(tenant.pk, client.pk, document.storage_key)
+    saved = default_storage.save(held, ContentFile(payload))
+    if saved != held:
         _discard(saved)
-        msg = "storage changed the requested document key"
+        msg = "storage changed the requested quarantine key"
         raise RuntimeError(msg)
     try:
         with transaction.atomic():
             document.save(force_insert=True)
-            DocumentIntake.objects.create(
+            intake = DocumentIntake.objects.create(
                 tenant=tenant,
                 client=client,
                 document=document,
-                state=IntakeState.RECEIVED,
+                state=IntakeState.QUARANTINED if sniffed else IntakeState.REJECTED_TYPE,
+                reason="" if sniffed else "tipo_nao_aceito",
+                sniffed_type=sniffed or "",
+                quarantine_key=held,
             )
     except Exception:
         _discard(saved)
         raise
-    return document
+    return document, intake
 
 
 def _discard(name: str) -> None:
@@ -139,6 +157,45 @@ def _discard(name: str) -> None:
         default_storage.delete(name)  # PILOT-205-COMPENSATING-DELETE
     except Exception as error:  # noqa: BLE001 - never mask the root failure
         sentry_sdk.capture_exception(error)
+
+
+def _document_for(  # noqa: PLR0913 - keyword-only: every value is verified context
+    *,
+    tenant: Tenant,
+    client: ClientCompany,
+    actor: User,
+    upload: UploadedFile,
+    payload: bytes,
+    digest: str,
+) -> tuple[Document, bool]:
+    """Return (document, relinked), or raise `UploadRejected` for refused bytes."""
+    document = Document.objects.filter(sha256=digest).first()
+    if document is None:
+        try:
+            document, intake = _store(
+                tenant=tenant,
+                client=client,
+                actor=actor,
+                upload=upload,
+                payload=payload,
+                digest=digest,
+            )
+        except IntegrityError as error:
+            if _constraint(error) != SHA256_CONSTRAINT:
+                raise
+            # The same bytes stored by a concurrent upload of this client: reuse it.
+            document = Document.objects.get(sha256=digest)
+        else:
+            if intake.state == IntakeState.REJECTED_TYPE:
+                # Committed with the caller's transaction: the refused original and
+                # its intake are the record. No link, no submission event.
+                raise UploadRejected
+            return document, False
+    if DocumentIntake.objects.filter(
+        document=document, state__in=REJECTED_STATES
+    ).exists():
+        raise UploadRejected
+    return document, True
 
 
 def intake_upload(
@@ -158,24 +215,14 @@ def intake_upload(
     if upload is None:
         raise UploadMissing
     payload, digest = _read_capped(upload)
-    document = Document.objects.filter(sha256=digest).first()
-    relinked = document is not None
-    if document is None:
-        try:
-            document = _store(
-                tenant=tenant,
-                client=client,
-                actor=actor,
-                upload=upload,
-                payload=payload,
-                digest=digest,
-            )
-        except IntegrityError as error:
-            if _constraint(error) != SHA256_CONSTRAINT:
-                raise
-            # The same bytes stored by a concurrent upload of this client: reuse it.
-            document = Document.objects.get(sha256=digest)
-            relinked = True
+    document, relinked = _document_for(
+        tenant=tenant,
+        client=client,
+        actor=actor,
+        upload=upload,
+        payload=payload,
+        digest=digest,
+    )
     link = EvidenceLink.objects.filter(request=request, document=document).first()
     if link is not None:
         return IntakeResult(link, document, relinked=True, already_linked=True)

@@ -15,3 +15,17 @@ class CyclesConfig(AppConfig):
         # models, and importing models before the app registry is populated
         # raises AppRegistryNotReady.
         from apps.cycles import dependents, signals  # noqa: F401, PLC0415
+        from apps.cycles.scanning import EXCEPTION_REASON  # noqa: PLC0415
+        from apps.cycles.services.exceptions import (  # noqa: PLC0415
+            ExceptionReason,
+            register_exception_reason,
+        )
+
+        # T12: the scanner stayed unavailable for 24 h after an upload.
+        register_exception_reason(
+            EXCEPTION_REASON,
+            ExceptionReason(
+                "Arquivo sem verificação antivírus. Confira o verificador ou peça "
+                "um novo envio; baixe somente com o aviso de risco."
+            ),
+        )

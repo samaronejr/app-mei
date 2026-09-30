@@ -28,10 +28,10 @@ from apps.cycles.errors import IllegalTransition
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
     TITLE_MAX_LENGTH,
-    EvidenceLink,
     EvidenceRequest,
     RequestInternal,
     RequestState,
+    counted_links,
 )
 from apps.cycles.models import CycleEvent, ServiceCycle
 from apps.cycles.services.cycle import (
@@ -421,7 +421,7 @@ def remind_request(
         require_actor(actor, CYCLES_OPERATE)
         if (
             request.state not in CLIENT_OPEN_STATES
-            or EvidenceLink.objects.filter(request=request).exists()
+            or counted_links().filter(request=request).exists()
         ):
             msg = "Esta solicitação não está aguardando o cliente."
             raise IllegalTransition(msg)

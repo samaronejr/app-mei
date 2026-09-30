@@ -36,10 +36,15 @@ from apps.core.flags import tenant_has, tenant_row_has
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
     CLIENT_VISIBLE_STATES,
-    EvidenceLink,
     EvidenceRequest,
+    counted_links,
 )
-from apps.cycles.intake import UploadMissing, UploadTooLarge, intake_upload
+from apps.cycles.intake import (
+    UploadMissing,
+    UploadRejected,
+    UploadTooLarge,
+    intake_upload,
+)
 from apps.cycles.services.requests import client_status
 from apps.portal.hosts import portal_slug_from_host
 from apps.portal.middleware import SELECTED_CLIENT_SESSION_KEY, PortalHttpRequest
@@ -91,6 +96,12 @@ class SentFile:
     relinked: bool
 
 
+REJECTED_MESSAGE: Final = (
+    "Este arquivo não foi aceito. Envie um PDF, XML, PNG ou JPEG que não seja "
+    "o arquivo recusado."
+)
+
+
 def _require_flag(request: HttpRequest) -> None:
     tenant = getattr(request, "tenant", None)
     if tenant is None or not tenant_has(tenant.pk, FLAG):
@@ -122,7 +133,8 @@ def open_requests(today: date) -> list[RequestRow]:
         )
     )
     submitted = set(
-        EvidenceLink.objects.filter(request_id__in=[row.pk for row in rows])
+        counted_links()
+        .filter(request_id__in=[row.pk for row in rows])
         .values_list("request_id", flat=True)
         .distinct()
     )
@@ -137,7 +149,8 @@ def _visible_request(pk: UUID) -> EvidenceRequest:
 
 def _files(request: EvidenceRequest) -> list[SentFile]:
     links = (
-        EvidenceLink.objects.filter(request=request)
+        counted_links()
+        .filter(request=request)
         .select_related("document")
         .order_by("created_at", "pk")
     )
@@ -233,6 +246,8 @@ def request_upload(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
         )
     except UploadMissing:
         return _refused(request, pk, "Escolha um arquivo antes de enviar.")
+    except UploadRejected:
+        return _refused(request, pk, REJECTED_MESSAGE)
     notice = (
         "Este arquivo já tinha sido enviado para esta solicitação. Nada mudou."
         if result.already_linked

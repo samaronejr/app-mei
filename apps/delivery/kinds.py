@@ -19,7 +19,7 @@ returns a reason code; the message is cancelled with it and nothing is sent.
 
 from django.utils import timezone
 
-from apps.cycles.evidence import CLIENT_OPEN_STATES, EvidenceLink, EvidenceRequest
+from apps.cycles.evidence import CLIENT_OPEN_STATES, EvidenceRequest, counted_links
 from apps.delivery.models import OutboundMessage
 from apps.delivery.policy import MessageKind, register_kind
 
@@ -80,7 +80,7 @@ def _request_waiting(message: OutboundMessage) -> tuple[bool, str]:
     current = EvidenceRequest.objects.filter(pk=request.pk).first()
     if current is None or current.state not in CLIENT_OPEN_STATES:
         return False, "request_closed"
-    if EvidenceLink.objects.filter(request_id=request.pk).exists():
+    if counted_links().filter(request_id=request.pk).exists():
         return False, "request_submitted"
     return True, ""
 

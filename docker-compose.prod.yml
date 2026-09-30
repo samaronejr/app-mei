@@ -60,6 +60,13 @@ x-app-environment: &app-environment
   EMAIL_USE_SSL: "${EMAIL_USE_SSL:-False}"
   EMAIL_TIMEOUT: "${EMAIL_TIMEOUT:-10}"
   DELIVERY_PAUSED: "${DELIVERY_PAUSED:-True}"
+  # T12 malware scanning. False until OG-05 (memory headroom + freshclam verified on
+  # the host) and OD-11 (host upsize): uploads then end in `verificacao_indisponivel`,
+  # staff-download-only behind a warning. Turning it on needs BOTH this variable and
+  # the `clamav` profile (COMPOSE_PROFILES=clamav), which starts the sidecar below.
+  CLAMAV_ENABLED: "${CLAMAV_ENABLED:-False}"
+  CLAMD_HOST: clamav
+  CLAMD_PORT: "3310"
   DELIVERY_DAILY_CAP: "${DELIVERY_DAILY_CAP:-100}"
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
@@ -407,9 +414,31 @@ services:
     mem_limit: 96m
     restart: unless-stopped
 
+  clamav:
+    # Opt-in: without `--profile clamav` (or COMPOSE_PROFILES=clamav) Compose never
+    # creates this service, so the pilot box keeps its current memory budget. Pinned
+    # by digest (the multi-arch index of clamav/clamav:1.4.3), so a re-tag upstream
+    # cannot change what runs. The image runs freshclam and clamd together; signature
+    # freshness and the real footprint on the host are operator gate OG-05, the host
+    # upsize is owner decision OD-11. See ops/README.md "Malware scanning".
+    image: clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+    profiles: ["clamav"]
+    environment:
+      CLAMAV_NO_MILTERD: "true"
+    volumes:
+      - clamav_db:/var/lib/clamav
+    # No published port: only worker reaches clamd, over the compose network (3310).
+    expose:
+      - "3310"
+    # clamd holds the whole signature database in memory (~1.2 GiB with the official
+    # databases); the limit is the budget OD-11 sizes the upsize for.
+    mem_limit: 1536m
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
   wal_archive:
   caddy_data:
   caddy_config:
+  clamav_db:

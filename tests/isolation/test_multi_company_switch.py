@@ -15,11 +15,13 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 from django.test import Client
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
-from apps.cycles.models import EvidenceLink, EvidenceRequest
+from apps.cycles.models import DocumentIntake, EvidenceLink, EvidenceRequest
+from apps.cycles.scanning import FakeScanner, scan_intake
 from apps.obligations.models import Document
 from apps.portal.middleware import SELECTED_CLIENT_SESSION_KEY
 from apps.tenants.models import Membership, TenantRole
@@ -87,7 +89,7 @@ def _assert_scoped_to(
     # request is 404 even as an HTMX request.
     partial = browser.post(
         f"/solicitacoes/{own_request.pk}/enviar",
-        {"file": upload(f"{company.pk}.pdf", f"bytes of {company.pk}".encode())},
+        {"file": upload(f"{company.pk}.pdf", f"%PDF-1.4 {company.pk}".encode())},
         headers={"HX-Request": "true"},
     )
     assert partial.status_code == HTTPStatus.OK
@@ -103,9 +105,15 @@ def _assert_scoped_to(
         assert own_doc.client_id == company.pk
         link = EvidenceLink.objects.get(document=own_doc)
         assert link.client_id == company.pk
+        intake_id = DocumentIntake.objects.get(document=own_doc).pk
         foreign_docs = list(
             Document.objects.filter(client=other).values_list("storage_key", flat=True)
         )
+    # T12: nothing is served before a clean verdict; scan it, then download.
+    assert browser.get(f"/documentos/{own_doc.storage_key}").status_code == 404
+    scan_intake(
+        setup.graph.tenant.pk, intake_id, scanner=FakeScanner(), now=timezone.now()
+    )
     # Download: own document served, the other company's never.
     assert browser.get(f"/documentos/{own_doc.storage_key}").status_code == 200
     for key in foreign_docs:

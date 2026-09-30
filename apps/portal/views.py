@@ -42,7 +42,8 @@ from apps.authz.services import require_can
 from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id
-from apps.cycles.models import ServiceCycle
+from apps.cycles.models import IntakeState, ServiceCycle
+from apps.cycles.serving import document_response
 from apps.cycles.workspace import portal_projection
 from apps.obligations.models import (
     Document,
@@ -431,16 +432,18 @@ def _documents_page(
         return paginator.page(1)
 
 
-def _interim_hidden(request: PortalVaultRequest) -> Q:
-    """Match the documents this account may NOT be served before T12's quarantine.
+def _unserved() -> Q:
+    """Match the documents the portal may NOT serve: every intake not yet verified.
 
-    Interim rule (T11): a file that arrived through an upload against a request -- it
-    carries a `DocumentIntake` row -- is re-served only to the account that uploaded
-    it (the firm reads it firm-side). Everything else keeps the vault's semantics.
-    T12 replaces this with quarantine and scanning. RLS still confines every row to
-    the client; this only narrows further.
+    Quarantine rule (T12, replacing T11's interim uploader-only rule): a file that
+    arrived through an upload against a request carries a `DocumentIntake`, and its
+    bytes reach no portal user -- its uploader included -- until the scanner has said
+    clean (`verificado`). Quarantined, refused and unscanned files
+    (`verificacao_indisponivel`) are never re-served. Documents without an intake keep
+    the vault's semantics. RLS still confines every row to the client; this only
+    narrows further.
     """
-    return Q(intakes__isnull=False) & ~Q(uploaded_by_id=request.user.pk)
+    return Q(intakes__isnull=False) & ~Q(intakes__state=IntakeState.VERIFIED)
 
 
 @require_http_methods(["GET"])
@@ -480,9 +483,7 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     needs one figure this model does not store, and computing it here keeps the template
     rendering values instead of deriving them.
     """
-    rows = Document.objects.exclude(_interim_hidden(request)).order_by(
-        "-created_at", "pk"
-    )
+    rows = Document.objects.exclude(_unserved()).order_by("-created_at", "pk")
     page = _documents_page(rows, request)
     return render(
         request,
@@ -640,7 +641,7 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
 @login_required
 @require_can(VAULT_CAPABILITY)
 def document_download(
-    request: PortalVaultRequest,
+    request: PortalVaultRequest,  # noqa: ARG001 - the decorators read it
     storage_key: str,
 ) -> HttpResponse:
     """Return one document's bytes, authorised against the row before storage is asked.
@@ -657,7 +658,7 @@ def document_download(
     both GUCs are gone, yielding nothing.
     """
     document = get_object_or_404(
-        Document.objects.exclude(_interim_hidden(request)), storage_key=storage_key
+        Document.objects.exclude(_unserved()), storage_key=storage_key
     )
 
     try:
@@ -681,8 +682,8 @@ def document_download(
             status=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    response = HttpResponse(payload, content_type=document.content_type)
-    response["Content-Disposition"] = (
-        f'attachment; filename="{document.original_filename}"'
+    return document_response(
+        payload,
+        content_type=document.content_type,
+        filename=document.original_filename,
     )
-    return response

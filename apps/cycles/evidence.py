@@ -153,13 +153,60 @@ class EvidenceLink(ClientRecord):
 
 
 class IntakeState(models.TextChoices):
-    """T11 writes `recebido` only; T12 adds quarantine and verification states."""
+    """S6.2: `recebido -> quarentena -> (verificado | rejeitado_* | indisponivel)`.
+
+    `recebido` is what T11 wrote before quarantine existed: bytes at the final key,
+    never scanned. It is treated exactly like `quarentena` (pending a scan, served to
+    nobody in the portal) and the scan sweep picks it up.
+    """
 
     RECEIVED = "recebido", "Recebido"
+    QUARANTINED = "quarentena", "Em verificação"
+    VERIFIED = "verificado", "Verificado"
+    REJECTED_MALWARE = "rejeitado_malware", "Recusado: ameaça detectada"
+    REJECTED_TYPE = "rejeitado_tipo", "Recusado: tipo de arquivo não aceito"
+    SCAN_UNAVAILABLE = "verificacao_indisponivel", "Verificação indisponível"
+
+
+# Waiting for the scanner: the sweep claims these.
+PENDING_SCAN_STATES: Final = frozenset({IntakeState.RECEIVED, IntakeState.QUARANTINED})
+# Refused for good. The original is retained (never deleted) and never served, and a
+# link to it does not count as the client having sent anything ("not linked").
+REJECTED_STATES: Final = frozenset(
+    {IntakeState.REJECTED_MALWARE, IntakeState.REJECTED_TYPE}
+)
+
+
+class ScanVerdict(models.TextChoices):
+    """What the scanner said; empty until a scan (or the disabled switch) decides."""
+
+    NONE = "", "Sem verificação"
+    CLEAN = "limpo", "Limpo"
+    INFECTED = "infectado", "Infectado"
+    UNAVAILABLE = "indisponivel", "Indisponível"
+
+
+def quarantine_key(tenant_id: object, client_id: object, storage_key: str) -> str:
+    """Where a new upload waits for its verdict (S7.5; bucket prefix: OG-04)."""
+    return f"quarantine/{tenant_id}/{client_id}/{storage_key}"
+
+
+def counted_links() -> "models.QuerySet[EvidenceLink]":
+    """Links that count as sent. A refused file (type or malware) is not linked (T12).
+
+    Derived, never written: the portal cannot UPDATE a link, and a verdict that lands
+    after the upload suspends the link by this filter alone.
+    """
+    return EvidenceLink.objects.exclude(document__intakes__state__in=REJECTED_STATES)
 
 
 class DocumentIntake(ClientRecord):
-    """The intake record of a newly stored document. INSERT-only from the portal."""
+    """The intake record of a newly stored document. INSERT-only from the portal.
+
+    The portal INSERTs it (with the sniffed type and the quarantine key it wrote);
+    only the firm-side scan service (`apps.cycles.scanning`) updates it, under a row
+    lock and a `version` check, so a stale verdict can never overwrite a newer one.
+    """
 
     document = models.ForeignKey(
         "obligations.Document", on_delete=models.PROTECT, related_name="intakes"
@@ -169,6 +216,37 @@ class DocumentIntake(ClientRecord):
     )
     reason = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
+    # T12: type sniffing, the malware verdict and the retry schedule. Each NOT NULL
+    # column also carries a database default, so an INSERT that names only the T11
+    # columns (an older writer, a raw-SQL probe) still lands as a pending intake.
+    sniffed_type = models.CharField(
+        max_length=64, blank=True, default="", db_default=""
+    )
+    quarantine_key = models.CharField(
+        max_length=255, blank=True, default="", db_default=""
+    )
+    verdict = models.CharField(
+        max_length=16,
+        choices=ScanVerdict.choices,
+        blank=True,
+        default=ScanVerdict.NONE,
+        db_default=ScanVerdict.NONE,
+    )
+    scan_engine = models.CharField(max_length=64, blank=True, default="", db_default="")
+    scan_signature_version = models.CharField(
+        max_length=128, blank=True, default="", db_default=""
+    )
+    scanned_at = models.DateTimeField(null=True, blank=True)
+    scan_attempts = models.PositiveIntegerField(default=0, db_default=0)
+    next_scan_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1, db_default=1)
+
+    @property
+    def object_key(self) -> str:
+        """Where the bytes are now: the quarantine key until the clean move."""
+        if self.state == IntakeState.VERIFIED or not self.quarantine_key:
+            return str(self.document.storage_key)
+        return self.quarantine_key
 
     class Meta(ClientRecord.Meta):
         """One intake per document (S6.2 DOCUMENT ||--|| DOCUMENTINTAKE)."""
@@ -178,5 +256,13 @@ class DocumentIntake(ClientRecord):
             models.UniqueConstraint(
                 fields=["tenant", "client", "document"],
                 name="documentintake_document_uniq",
+            ),
+        ]
+        indexes: ClassVar[list[models.Index]] = [
+            *ClientRecord.Meta.indexes,
+            # The scan sweep: pending rows whose retry time has come, tenant-led.
+            models.Index(
+                fields=["tenant", "state", "next_scan_at"],
+                name="documentintake_scan_due_idx",
             ),
         ]

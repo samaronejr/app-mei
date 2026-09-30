@@ -7,7 +7,7 @@ from django import forms
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.db.models import Q
+from django.db.models import OuterRef, Q, Subquery
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -22,6 +22,7 @@ from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.errors import IllegalTransition, VersionConflict
+from apps.cycles.evidence import REJECTED_STATES, DocumentIntake
 from apps.cycles.forms import SERVICE_KIND_CHOICES
 from apps.cycles.models import (
     CycleState,
@@ -245,6 +246,12 @@ def _render_detail(
     )
 
 
+def _intake_state(link: EvidenceLink) -> str | None:
+    """Read the `intake_state` annotation (None: a vault upload without intake)."""
+    state: str | None = link.__dict__.get("intake_state")
+    return state
+
+
 def _requests_context(
     request: AuthenticatedRequest, cycle: ServiceCycle
 ) -> dict[str, object]:
@@ -258,9 +265,23 @@ def _requests_context(
     for link in (
         EvidenceLink.objects.filter(request__cycle=cycle)
         .select_related("document")
+        # The intake state rides on the same query: no per-link lookup (T12).
+        .annotate(
+            intake_state=Subquery(
+                DocumentIntake.objects.filter(document=OuterRef("document_id")).values(
+                    "state"
+                )[:1]
+            )
+        )
         .order_by("created_at", "pk")
     ):
         links.setdefault(link.request_id, []).append(link)
+    # A refused file (type or malware) is shown to the firm but is not "sent" (T12).
+    counted = {
+        request_id
+        for request_id, rows in links.items()
+        if any(_intake_state(link) not in REJECTED_STATES for link in rows)
+    }
     today = timezone.localdate()
     return {
         "evidence_requests": [
@@ -268,7 +289,7 @@ def _requests_context(
                 "request": row,
                 "internal": next(iter(row.internals.all()), None),
                 "links": links.get(row.pk, []),
-                "status": client_status(row, submitted=row.pk in links, today=today),
+                "status": client_status(row, submitted=row.pk in counted, today=today),
                 "editable": row.state in {RequestState.DRAFT, RequestState.REQUESTED},
                 "closable": row.state
                 not in {
