@@ -318,19 +318,17 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **2893 passing**,
-verified by one serial full run at `a88036e` (the `AXR1-011` code with the
-dead-helper refactor on top of it): the **2775** measured on this branch's
-original base `e184bc4` (the `AXR1-010` feature commit) plus **118** net-new `AXR1-011`
-cases covering the requests inbox, upload and relink, the portal-invite outbox,
-reminder re-evaluation, the company switcher, branding and the portal journey.
-Both figures come from serial runs in the same lane
-(`.evidence/AXR1-011-baseline.txt` and `-gates.txt`). The separate browser run
-passed **44**, isolation **216** and the CNPJ pack **29**. All STD-GATES passed.
-This branch now sits on the final `AXR1-010` head `9aa5dbc` (2777), which adds two
-crossed-grant cases, so the figure above is restated by the run recorded in the
-next paragraph of this section. This status-only commit does
-not change the tested code.
+implementation head. The current default-suite baseline is **2895 passing**
+(44 deselected), verified by one serial full run of `AXR1-011` placed on the
+final `AXR1-010` head `9aa5dbc` (code at `ce92e78`). It is the **2777** of
+`AXR1-010` plus **118** net-new `AXR1-011` cases covering the requests inbox,
+upload and relink, the portal-invite outbox, reminder re-evaluation, the company
+switcher, branding and the portal journey. Before placement the same code measured
+**2893** on the `AXR1-010` feature commit `e184bc4` (2775), in the same lane
+(`.evidence/AXR1-011-baseline.txt` and `-gates.txt`). On the placed code the separate
+browser run passed **44**, isolation **216**, the CNPJ pack **29**, and the delivery,
+portal and cycle subset **497** (`.evidence/AXR1-011-placement-gates.txt`). This
+status-only commit does not change the tested code.
 
 The previous default-suite baseline was **2777 passing**
 (42 deselected), verified by one serial full run on the `AXR1-010` code
