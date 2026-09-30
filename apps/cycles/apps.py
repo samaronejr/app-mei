@@ -15,6 +15,9 @@ class CyclesConfig(AppConfig):
         # models, and importing models before the app registry is populated
         # raises AppRegistryNotReady.
         from apps.cycles import dependents, signals  # noqa: F401, PLC0415
+        from apps.cycles.extraction.service import (  # noqa: PLC0415
+            EXCEPTION_REASON as WRONG_COMPANY,
+        )
         from apps.cycles.scanning import EXCEPTION_REASON  # noqa: PLC0415
         from apps.cycles.services.exceptions import (  # noqa: PLC0415
             ExceptionReason,
@@ -27,5 +30,15 @@ class CyclesConfig(AppConfig):
             ExceptionReason(
                 "Arquivo sem verificação antivírus. Confira o verificador ou peça "
                 "um novo envio; baixe somente com o aviso de risco."
+            ),
+        )
+        # T13 (S15 B): the extracted CNPJ is not the client's. The document stays
+        # with the client that sent it, suspended; T14 owns the exception screen.
+        register_exception_reason(
+            WRONG_COMPANY,
+            ExceptionReason(
+                "Documento enviado parece ser de outra empresa. Confira o CNPJ na "
+                "revisão e peça ao cliente o arquivo correto; nunca reatribua o "
+                "documento a outro cliente."
             ),
         )

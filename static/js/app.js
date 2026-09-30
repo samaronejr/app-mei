@@ -2,7 +2,7 @@
  * Firm-side interface behaviour. Loaded by templates/base.html and by nothing else:
  * the RLS-isolated client portal ships no JavaScript at all.
  *
- * Four jobs. The first two exist because an HTMX swap is not a navigation. The
+ * Four jobs, plus the review page's keyboard shortcuts. The first two exist because an HTMX swap is not a navigation. The
  * browser moves focus and announces a page on navigation; it does neither when a
  * fragment is replaced in place, so a keyboard user is left with focus on an element
  * that no longer exists and a screen reader user is told nothing happened.
@@ -573,6 +573,48 @@
       },
     };
   }
+
+  /*
+   * Single-key shortcuts for a page that opts in with `data-shortcuts` (the document
+   * review, T13). A key names an element by `data-shortcut`: a field is focused, a
+   * button or link is activated exactly as a click would. Never while the user types
+   * in a field or holds a modifier, so typing an "a" in the reason is just a letter.
+   */
+  function typing(target) {
+    return (
+      target instanceof HTMLElement &&
+      (target.isContentEditable ||
+        target.matches("input, textarea, select, [role='textbox']"))
+    );
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if (
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      typing(event.target) ||
+      !event.key ||
+      event.key.length !== 1
+    ) {
+      return;
+    }
+    var scope = document.querySelector("[data-shortcuts]");
+    if (!scope) {
+      return;
+    }
+    var key = event.key.toLowerCase();
+    var target = scope.querySelector('[data-shortcut="' + key + '"]');
+    if (!target) {
+      return;
+    }
+    event.preventDefault();
+    target.focus();
+    if (!target.matches("input, textarea, select")) {
+      target.click();
+    }
+  });
 
   document.addEventListener("alpine:init", function () {
     window.Alpine.data("dialog", dialog);

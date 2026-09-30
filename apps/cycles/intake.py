@@ -24,6 +24,9 @@ refused type gets an intake in `rejeitado_tipo`, no link, and the upload is answ
 with a refusal. The refused original is retained, never deleted and never served.
 Nothing here parses the file. Bytes identical to a refused document are refused
 again, without a link.
+
+`vault_upload` (T13) routes the portal vault's free-form upload through the same
+sniff -> quarantine -> intake path, with no request and so no link.
 """
 
 import hashlib
@@ -116,11 +119,13 @@ def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
     upload: UploadedFile,
     payload: bytes,
     digest: str,
+    obligation_id: UUID | str | None = None,
 ) -> tuple[Document, DocumentIntake]:
     sniffed = sniff(payload)
     document = Document(
         tenant=tenant,
         client=client,
+        obligation_id=obligation_id,
         sha256=digest,
         original_filename=(upload.name or "documento")[:255],
         # The sniffed type, never the declared one; a refused file has no type.
@@ -167,6 +172,7 @@ def _document_for(  # noqa: PLR0913 - keyword-only: every value is verified cont
     upload: UploadedFile,
     payload: bytes,
     digest: str,
+    obligation_id: UUID | str | None = None,
 ) -> tuple[Document, bool]:
     """Return (document, relinked), or raise `UploadRejected` for refused bytes."""
     document = Document.objects.filter(sha256=digest).first()
@@ -179,6 +185,7 @@ def _document_for(  # noqa: PLR0913 - keyword-only: every value is verified cont
                 upload=upload,
                 payload=payload,
                 digest=digest,
+                obligation_id=obligation_id,
             )
         except IntegrityError as error:
             if _constraint(error) != SHA256_CONSTRAINT:
@@ -261,3 +268,33 @@ def intake_upload(
         },
     )
     return IntakeResult(link, document, relinked=relinked, already_linked=False)
+
+
+def vault_upload(
+    actor: User,
+    upload: UploadedFile | None,
+    *,
+    tenant: Tenant,
+    client: ClientCompany,
+    obligation_id: UUID | str | None = None,
+) -> tuple[Document, bool]:
+    """Store a portal vault upload through the same quarantine as a request upload.
+
+    T13 closes the vault's bypass (plan C-09): the bytes are sniffed, written under the
+    quarantine prefix with a `DocumentIntake`, and served to nobody -- not even another
+    account of the same client -- until the scanner says clean. Returns (document,
+    already_sent); refused bytes raise `UploadRejected` with the refused original and
+    its intake kept, exactly as for a request upload.
+    """
+    if upload is None:
+        raise UploadMissing
+    payload, digest = _read_capped(upload)
+    return _document_for(
+        tenant=tenant,
+        client=client,
+        actor=actor,
+        upload=upload,
+        payload=payload,
+        digest=digest,
+        obligation_id=obligation_id,
+    )

@@ -79,6 +79,13 @@ class Document(TenantScopedModel):
         verbose_name=_("uploaded by"),
     )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+    # T13 (vault quarantine, fail closed): TRUE unless the firm wrote the row. The
+    # portal serves a client upload only through a verified intake; a row that says
+    # nothing is a client upload, and the portal role cannot INSERT a FALSE
+    # (trigger `document_portal_client_upload`, obligations 0019).
+    client_upload = models.BooleanField(
+        _("uploaded by the client"), default=True, db_default=True
+    )
 
     class Meta(TenantScopedModel.Meta):
         """Model metadata."""

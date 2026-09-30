@@ -22,7 +22,7 @@ from django.utils.translation import pgettext_lazy
 from apps.authz.models import GrantLevel
 from apps.authz.services import Actor, granted_levels
 from apps.core.flags import tenant_has
-from apps.cycles.capabilities import PLAYBOOK_GATE
+from apps.cycles.capabilities import CYCLES_REVIEW, PLAYBOOK_GATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +76,13 @@ PRODUCT_SHELL_FLAG: Final = "cycles_r1"
 # and Gestão at the team screen until playbooks and automations join it. The
 # MEI-era queues are reached from the dashboard's own counts, as they are today.
 #
-# Documentos joins when its working review route ships (AXR1-013).
+# Documentos joined with its working review queue (AXR1-013), gated on the
+# capability its route requires (S8.1 cycles.review).
 NAV_R1: Final[tuple[NavItem, ...]] = (
     NavItem(_("Hoje"), "dashboard", "clients.view_assigned"),
     NavItem(_("Clientes"), "clients-list", "clients.view_assigned"),
     NavItem(_("Ciclos"), "cycle-list", "clients.view_assigned"),
+    NavItem(_("Documentos"), "document-queue", CYCLES_REVIEW),
     NavItem(_("Comunicação"), "delivery-queue", "clients.view_assigned"),
     # Playbooks join the shell here, before Gestão: the first working
     # destination under the gestão umbrella, gated on playbooks.manage.

@@ -18,7 +18,7 @@ from django.db.models import OuterRef, Subquery
 from django.utils import timezone
 
 from apps.core.tenancy import tenant_context
-from apps.cycles.evidence import DocumentIntake, IntakeState
+from apps.cycles.evidence import CLEAN_STATES, DocumentIntake
 from apps.obligations.models import Document
 from apps.tenants.models import Tenant
 
@@ -61,7 +61,7 @@ def _collect_global_union(storage: Storage, hash_sample_size: int) -> PhaseOneRe
             for final_key, expected_sha256, intake_state, held_key in rows:
                 storage_key = (
                     held_key
-                    if held_key and intake_state != IntakeState.VERIFIED
+                    if held_key and intake_state not in CLEAN_STATES
                     else final_key
                 )
                 result.storage_keys.add(storage_key)

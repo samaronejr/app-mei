@@ -463,12 +463,20 @@ def scan_intake(
     return outcome
 
 
-def due_intakes(tenant_id: UUID, now: datetime, limit: int = 50) -> list[UUID]:
-    """Pending intakes whose retry time has come (or that were never tried)."""
+def due_intakes(
+    tenant_id: UUID, now: datetime, limit: int = 50, *, vault_only: bool = False
+) -> list[UUID]:
+    """Pending intakes whose retry time has come (or that were never tried).
+
+    `vault_only` (T13) narrows to portal vault uploads -- intakes whose document no
+    request links -- which every firm scans, flagged or not.
+    """
     with tenant_context(tenant_id):
+        pending = DocumentIntake.objects.filter(state__in=PENDING_SCAN_STATES).filter(
+            Q(next_scan_at__isnull=True) | Q(next_scan_at__lte=now)
+        )
+        if vault_only:
+            pending = pending.filter(document__evidence_links__isnull=True)
         return list(
-            DocumentIntake.objects.filter(state__in=PENDING_SCAN_STATES)
-            .filter(Q(next_scan_at__isnull=True) | Q(next_scan_at__lte=now))
-            .order_by("created_at", "pk")
-            .values_list("pk", flat=True)[:limit]
+            pending.order_by("created_at", "pk").values_list("pk", flat=True)[:limit]
         )

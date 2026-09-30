@@ -61,6 +61,10 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "playbook-retire",
         # T12
         "staff-document-download",
+        # T13: firm-side review and inline preview of one submission (link id),
+        # portfolio-scoped by load_visible_client before any byte is read.
+        "document-review",
+        "document-preview",
         "admin:*",
     },
 )

@@ -336,6 +336,15 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "loaded through the actor's portfolio (404 outside it), tenant RLS scopes the "
         "row, and the intake state decides whether any byte is served."
     ),
+    "document-review": (
+        "AXR1-013. The UUID names a submission (evidence link), not a bearer "
+        "credential: cycles.review gates the route, the client is loaded through the "
+        "actor's portfolio (404 outside it) and the decision is version-checked."
+    ),
+    "document-preview": (
+        "AXR1-013. The UUID names a submission, not a bearer credential: portfolio "
+        "scope (404 outside it), then only a clean intake is served, sandboxed."
+    ),
     "playbook-detail": (
         "The <uuid:pk> is a tenant-scoped playbook object id, not a bearer credential."
     ),
@@ -572,6 +581,11 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     # backoff (1-60 min, 24 h deadline) lives in `next_scan_at`, not here.
     "scan-quarantine": {
         "task": "apps.cycles.tasks.scan_quarantine",
+        "schedule": 60.0,
+    },
+    # T13: extract verified uploads, one task per document (soft time limit each).
+    "extract-documents": {
+        "task": "apps.cycles.tasks.extract_documents",
         "schedule": 60.0,
     },
     "generate-cycles": {

@@ -14,4 +14,14 @@ so the chip turns to "Recebido" without reloading the page.
       <span class="upload-meta">{{ file.size_label }} · {{ file.sent_at|data_hora }}</span>
     </li>{% endfor %}
   </ul>{% else %}<p class="empty-state text-ink-600">{% translate "Nenhum arquivo enviado ainda." %}</p>{% endif %}
+  {% if declined %}<div id="arquivos-nao-aceitos">
+    <h3 class="text-sm font-semibold text-ink-700">{% translate "Arquivos não aceitos pela equipe" %}</h3>
+    <ul class="upload-list" aria-label="{% translate 'Arquivos não aceitos' %}">{% for file in declined %}
+    <li class="upload-item" data-declined>
+      {% include "partials/pure/icons/file-text.html" %}
+      <span class="upload-name" title="{{ file.name }}">{{ file.name }}</span>
+      <span class="upload-meta">{% translate "Motivo:" %} <span data-client-reason>{{ file.reason }}</span>{% if file.reviewed_at %} · {{ file.reviewed_at|data_hora }}{% endif %}</span>
+    </li>{% endfor %}
+    </ul>
+  </div>{% endif %}
 </section>

@@ -51,6 +51,11 @@ NFSE_ALLOWED_FILES = frozenset(
         "apps/fiscal/migrations/0001_initial.py",
         "apps/fiscal/migrations/0002_seed_capitals.py",
         "apps/fiscal/models.py",
+        # AXR1-013 (superseded restriction): the R1 plan (T13, S5.4 M5) commissions
+        # READING a national NFS-e XML the client uploaded. No request workflow,
+        # audit action or capability: the forbidden files below stay at zero.
+        "apps/cycles/extraction/__init__.py",
+        "apps/cycles/extraction/nfse_xml.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -80,6 +85,16 @@ CONNECTOR_ALLOWED_FILES = frozenset(
 # the field is a boolean rather than a payroll model. Pinned by location so that a
 # future *field* named `esocial_*` cannot slip in under the same allowance.
 ESOCIAL_ALLOWED_LOCATION = "apps/clients/models/company.py:151"
+
+# Row 10, AXR1-013 (superseded restriction): the R1 plan (T13, S5.4 M5) commissions a
+# read-only NF-e XML extractor for client uploads. Issuing, transmitting or managing
+# NF-e stays out of scope: only these two files may name it.
+NFE_READ_ONLY_FILES = frozenset(
+    {
+        "apps/cycles/extraction/__init__.py",
+        "apps/cycles/extraction/nfe_xml.py",
+    },
+)
 
 # Row 7. The only URL name matching `report|kpi|export` is T-033's client CSV export,
 # which the plan commissioned. Anything else is Reports v1 arriving early.
@@ -322,7 +337,7 @@ def test_row_10_no_esocial_nfe_whatsapp_or_support_console() -> None:
     # fail on legitimate code.
     whatsapp = _grep(sources, r"whatsapp")
     esocial = _grep(sources, r"esocial")
-    nfe = _grep(sources, r"\bnf-?e\b|\bnfc-?e\b")
+    nfe = _outside(_grep(sources, r"\bnf-?e\b|\bnfc-?e\b"), NFE_READ_ONLY_FILES)
     console = sorted(
         name
         for name in get_resolver().reverse_dict

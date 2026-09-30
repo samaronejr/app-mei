@@ -22,7 +22,7 @@ from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.errors import IllegalTransition, VersionConflict
-from apps.cycles.evidence import REJECTED_STATES, DocumentIntake
+from apps.cycles.evidence import SUSPENDED_STATES, DocumentIntake, ReviewDecision
 from apps.cycles.forms import SERVICE_KIND_CHOICES
 from apps.cycles.models import (
     CycleState,
@@ -276,11 +276,16 @@ def _requests_context(
         .order_by("created_at", "pk")
     ):
         links.setdefault(link.request_id, []).append(link)
-    # A refused file (type or malware) is shown to the firm but is not "sent" (T12).
+    # A refused file (type or malware), a document of another company and a file
+    # the reviewer did not accept are shown to the firm but are not "sent" (T12/T13).
     counted = {
         request_id
         for request_id, rows in links.items()
-        if any(_intake_state(link) not in REJECTED_STATES for link in rows)
+        if any(
+            _intake_state(link) not in SUSPENDED_STATES
+            and link.review_decision != ReviewDecision.REJECTED
+            for link in rows
+        )
     }
     today = timezone.localdate()
     return {

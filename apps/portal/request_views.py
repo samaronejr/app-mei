@@ -36,7 +36,9 @@ from apps.core.flags import tenant_has, tenant_row_has
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
     CLIENT_VISIBLE_STATES,
+    EvidenceLink,
     EvidenceRequest,
+    ReviewDecision,
     counted_links,
 )
 from apps.cycles.intake import (
@@ -69,6 +71,9 @@ STATUS_HINTS: Final[dict[str, str]] = {
     "recebido": "Recebemos seu arquivo. A equipe ainda vai conferir.",
     "atrasada": "O prazo passou. Envie assim que puder.",
     "solicitado": "Envie o arquivo pelo botão abaixo.",
+    "rejeitado": (
+        "A equipe não aceitou o arquivo enviado. Veja o motivo e envie de novo."
+    ),
 }
 
 
@@ -94,6 +99,15 @@ class SentFile:
     size_label: str
     sent_at: object
     relinked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DeclinedFile:
+    """A file the team did not accept, with the reason it wrote for the client (T13)."""
+
+    name: str
+    reason: str
+    reviewed_at: object
 
 
 REJECTED_MESSAGE: Final = (
@@ -165,11 +179,35 @@ def _files(request: EvidenceRequest) -> list[SentFile]:
     ]
 
 
+def _declined(request: EvidenceRequest) -> list[DeclinedFile]:
+    """Files the team did not accept, read from the link's review projection.
+
+    The portal never reads `cycles_review` (S8.2): the review service writes the
+    decision and the client's reason on the link, which the portal may SELECT.
+    """
+    links = (
+        EvidenceLink.objects.filter(
+            request=request, review_decision=ReviewDecision.REJECTED
+        )
+        .select_related("document")
+        .order_by("-reviewed_at", "pk")
+    )
+    return [
+        DeclinedFile(
+            name=link.document.original_filename,
+            reason=link.client_reason,
+            reviewed_at=link.reviewed_at,
+        )
+        for link in links
+    ]
+
+
 def _status_context(request: EvidenceRequest) -> dict[str, object]:
     files = _files(request)
     return {
         "req": _row(request, submitted=bool(files), today=timezone.localdate()),
         "files": files,
+        "declined": _declined(request),
     }
 
 

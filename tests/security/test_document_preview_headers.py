@@ -119,6 +119,9 @@ def test_legacy_vault_file_with_a_declared_html_type_is_octet_stream(
             content_type="text/html",
             byte_size=len(b"<script>alert(1)</script>"),
             uploaded_by=setup.portal_user,
+            # T13: only a firm-published row is served without an intake; a client
+            # upload without one fails closed (tests/portal/test_vault_quarantine.py).
+            client_upload=False,
         )
         default_storage.save(
             document.storage_key, ContentFile(b"<script>alert(1)</script>")

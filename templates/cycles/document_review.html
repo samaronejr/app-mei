@@ -1,0 +1,78 @@
+{% extends "base.html" %}{% load ptbr %}{% comment %}
+One submission under review (T13, S7.5): the original, the fields the extraction
+suggested beside what the reviewer types, and the decision. The reason typed for "Não
+aceitar" is shown to the client in the portal; everything else here stays firm-side.
+
+Keyboard: `data-shortcuts` scopes the single-key shortcuts static/js/app.js listens
+for (A accept, R focus the reason, N next document). They never fire while typing in
+a field, and every action is also an ordinary button or link.
+{% endcomment %}
+{% block title %}Revisar documento · {{ link.client.legal_name }}{% endblock %}
+{% block heading %}Revisar documento{% endblock %}
+{% block content %}
+<div class="grid gap-4" data-shortcuts>
+<header class="ui-panel p-4">
+  <p class="text-sm text-ink-600">{{ link.client.legal_name }} · {{ link.client.cnpj|cnpj_mask }}</p>
+  <h2 class="mt-1 font-semibold">{{ evidence_request.title }}</h2>
+  <p class="mt-1 text-sm">Arquivo: <strong class="break-all">{{ document.original_filename }}</strong> · enviado em {{ link.created_at|data_hora }}</p>
+  <nav class="mt-3 flex flex-wrap gap-4" aria-label="Navegação entre documentos"><a class="ui-link" href="{{ queue_url }}">Voltar para a fila</a>{% if next_link %}<a class="ui-link" href="{% url 'document-review' next_link.pk %}" data-shortcut="n" id="proximo-documento">Próximo documento</a>{% endif %}</nav>
+</header>
+{% if error %}<div role="alert" class="ui-panel p-4" data-error>{{ error }}</div>{% endif %}
+{% if note %}<div role="status" class="ui-panel p-4{% if divergent %} border-l-4 border-l-state-danger{% endif %}" data-note="{{ intake.reason|default:'sem_verificacao' }}">{{ note }}</div>{% endif %}
+<section class="ui-panel p-4" aria-labelledby="original-title">
+  <h2 id="original-title" class="ui-panel-heading">Original</h2>
+  {% if inline_image %}<img class="mt-3 max-h-[28rem] max-w-full rounded border border-ink-200" src="{% url 'document-preview' link.pk %}" alt="Prévia de {{ document.original_filename }}">
+  {% elif clean %}<p class="mt-2"><a class="ui-link" href="{% url 'document-preview' link.pk %}" target="_blank" rel="noopener noreferrer">Abrir o original em nova aba</a></p>
+  {% else %}<p class="mt-2">Este arquivo não passou pela verificação antivírus. <a class="ui-link" href="{% url 'staff-document-download' document.pk %}">Baixar com aviso de risco</a></p>{% endif %}
+</section>
+{% if decided %}
+<section class="ui-panel p-4" aria-labelledby="decision-title">
+  <h2 id="decision-title" class="ui-panel-heading">Decisão registrada</h2>
+  <p class="mt-2" data-decision="{{ link.review_decision }}">{% if link.review_decision == 'aceito' %}Aceito pela equipe{% else %}Não aceito{% endif %} em {{ link.reviewed_at|data_hora }}.</p>
+  {% if link.client_reason %}<p class="mt-1">Motivo informado ao cliente: {{ link.client_reason }}</p>{% endif %}
+</section>
+{% endif %}
+<form method="post" class="grid gap-4">{% csrf_token %}
+<input type="hidden" name="expected_version" value="{{ evidence_request.version }}">
+<section class="ui-panel p-4" aria-labelledby="fields-title">
+  <h2 id="fields-title" class="ui-panel-heading">Campos</h2>
+  <p class="mt-1 text-sm text-ink-600">Os valores sugeridos vêm da leitura automática e não são verificação oficial. Preencha "Revisado" só quando o valor correto for outro; o original nunca é alterado.</p>
+  <div class="table-wrap mt-3" tabindex="0" role="region" aria-label="Campos do documento">
+  <table class="ui-table ui-table-comfortable">
+    <caption class="visually-hidden">Campos do documento</caption>
+    <thead><tr><th scope="col">Campo</th><th scope="col">Sugerido</th><th scope="col">Origem</th><th scope="col">Revisado</th></tr></thead>
+    <tbody>{% for row in rows %}<tr data-field="{{ row.name }}">
+      <th scope="row" class="text-left font-medium">{{ row.label }}</th>
+      <td data-label="Sugerido" data-suggested>{{ row.suggested|default:"—" }}</td>
+      <td data-label="Origem" class="text-sm text-ink-600">{% if row.suggested_origin %}{{ row.suggested_origin }}{% if row.source_span %} <span class="text-ink-500">({{ row.source_span }})</span>{% endif %}{% else %}Não lido{% endif %}{% if row.reviewed_by %}<br>{{ row.reviewed_by }}{% endif %}</td>
+      <td data-label="Revisado">{% if decided %}{{ row.reviewed|default:"—" }}{% else %}<label class="visually-hidden" for="{{ field_prefix }}{{ row.name }}">{{ row.label }} revisado</label><input class="ui-field-input" id="{{ field_prefix }}{{ row.name }}" name="{{ field_prefix }}{{ row.name }}" value="{{ row.reviewed }}" maxlength="255" autocomplete="off">{% endif %}</td>
+    </tr>{% empty %}<tr><td colspan="4">Nenhum campo lido.</td></tr>{% endfor %}</tbody>
+  </table>
+  </div>
+</section>
+{% if not decided %}
+{% if divergent %}<fieldset class="ui-panel p-4">
+  <legend class="ui-panel-heading">Documento de outra empresa</legend>
+  <p class="mt-1 text-sm">Para aceitar mesmo assim, marque abaixo e registre a justificativa interna. O documento continua deste cliente; ele nunca é transferido para outro.</p>
+  <div class="mt-2 flex items-center gap-2"><input type="checkbox" id="third_party" name="third_party" value="1"><label for="third_party">Documento de terceiro relevante</label></div>
+  <div class="ui-field mt-2"><label class="ui-field-label" for="override_reason">Justificativa interna</label><textarea class="ui-field-input" id="override_reason" name="override_reason" maxlength="2000" rows="2"></textarea></div>
+</fieldset>{% endif %}
+<section class="ui-panel p-4" aria-labelledby="decide-title">
+  <h2 id="decide-title" class="ui-panel-heading">Decisão</h2>
+  <div class="mt-3 flex flex-wrap items-end gap-3"><button class="ui-btn ui-btn-primary" type="submit" name="decision" value="aceito" data-shortcut="a">Aceitar documento</button></div>
+  <div class="ui-field mt-4"><label class="ui-field-label" for="client_reason">Motivo para o cliente (aparece no portal quando o arquivo não é aceito)</label><textarea class="ui-field-input" id="client_reason" name="client_reason" maxlength="500" rows="3" data-shortcut="r" aria-describedby="client_reason_hint"></textarea><p id="client_reason_hint" class="text-xs text-ink-600">Ex.: "O arquivo é de outra empresa. Envie a nota emitida pelo seu CNPJ."</p></div>
+  <div class="mt-3"><button class="ui-btn ui-btn-quiet" type="submit" name="decision" value="rejeitado">Não aceitar</button></div>
+</section>
+{% endif %}
+</form>
+<section class="ui-panel p-4" aria-labelledby="shortcuts-title">
+  <h2 id="shortcuts-title" class="ui-panel-heading">Atalhos de teclado</h2>
+  <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+    <dt><kbd>A</kbd></dt><dd>Aceitar documento</dd>
+    <dt><kbd>R</kbd></dt><dd>Escrever o motivo para o cliente; depois Tab e Enter em "Não aceitar"</dd>
+    <dt><kbd>N</kbd></dt><dd>Próximo documento</dd>
+  </dl>
+  <p class="mt-2 text-xs text-ink-600">Os atalhos não funcionam enquanto você digita em um campo.</p>
+</section>
+</div>
+{% endblock %}

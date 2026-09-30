@@ -15,7 +15,6 @@ raises `permission denied`, which is why the template renders `request.client`
 rather than `request.tenant`.
 """
 
-import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date
@@ -27,11 +26,15 @@ import sentry_sdk
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.paginator import EmptyPage, Page, Paginator
 from django.db.models import Count, Q, QuerySet
-from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
+from django.http import (
+    Http404,
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBadRequest,
+)
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -42,7 +45,14 @@ from apps.authz.services import require_can
 from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id
-from apps.cycles.models import IntakeState, ServiceCycle
+from apps.cycles.evidence import PORTAL_SERVABLE_STATES
+from apps.cycles.intake import (
+    UploadMissing,
+    UploadRejected,
+    UploadTooLarge,
+    vault_upload,
+)
+from apps.cycles.models import ServiceCycle
 from apps.cycles.serving import document_response
 from apps.cycles.workspace import portal_projection
 from apps.obligations.models import (
@@ -81,6 +91,10 @@ OVERSIZED: Final = "oversized"
 # worked, which is not what she was asking; she sent the file so that somebody would act
 # on it, and this is the sentence that answers the question she actually had.
 UPLOAD_CONFIRMATION = _("Documento enviado. Sua contadora já pode vê-lo.")
+VAULT_REJECTED: Final = (
+    "Este arquivo não foi aceito. Envie um PDF, XML, PNG ou JPEG que não seja o "
+    "arquivo recusado."
+)
 
 
 class PortalVaultRequest(PortalHttpRequest):
@@ -432,18 +446,24 @@ def _documents_page(
         return paginator.page(1)
 
 
-def _unserved() -> Q:
-    """Match the documents the portal may NOT serve: every intake not yet verified.
+def _served() -> Q:
+    """Match the documents the portal may serve; everything else fails closed.
 
-    Quarantine rule (T12, replacing T11's interim uploader-only rule): a file that
-    arrived through an upload against a request carries a `DocumentIntake`, and its
-    bytes reach no portal user -- its uploader included -- until the scanner has said
-    clean (`verificado`). Quarantined, refused and unscanned files
-    (`verificacao_indisponivel`) are never re-served. Documents without an intake keep
-    the vault's semantics. RLS still confines every row to the client; this only
-    narrows further.
+    Quarantine rule (T12, T13): a client upload -- through a request or through this
+    vault -- reaches no portal user, its uploader and the other accounts of the same
+    client included, until the scanner has said clean (`verificado`, and the clean
+    states after it). A document of another company (`divergente`) is suspended and
+    not re-served either; quarantined, refused and unscanned files never are.
+
+    Fail closed (T13, plan C-09): a client upload WITHOUT any intake -- the vault
+    before T13, or any writer that forgets one -- is not served at all. Only a firm
+    upload (`client_upload=False`, which the portal role cannot INSERT) keeps the
+    vault's old semantics without an intake. RLS still confines every row to the
+    client; this only narrows further.
     """
-    return Q(intakes__isnull=False) & ~Q(intakes__state=IntakeState.VERIFIED)
+    return Q(intakes__state__in=PORTAL_SERVABLE_STATES) | Q(
+        client_upload=False, intakes__isnull=True
+    )
 
 
 @require_http_methods(["GET"])
@@ -483,7 +503,7 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     needs one figure this model does not store, and computing it here keeps the template
     rendering values instead of deriving them.
     """
-    rows = Document.objects.exclude(_unserved()).order_by("-created_at", "pk")
+    rows = Document.objects.filter(_served()).order_by("-created_at", "pk")
     page = _documents_page(rows, request)
     return render(
         request,
@@ -561,14 +581,6 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
     )
 
 
-def _delete_saved_document(saved_name: str) -> None:
-    """Delete only the object name returned by this request's storage write."""
-    try:
-        default_storage.delete(saved_name)  # PILOT-205-COMPENSATING-DELETE
-    except Exception as error:  # noqa: BLE001
-        _capture_storage_error(error)
-
-
 def _capture_storage_error(error: Exception) -> None:
     """Report storage inconsistency without replacing the request's root error."""
     try:
@@ -605,31 +617,26 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
     if upload.size is None or upload.size > settings.PORTAL_UPLOAD_MAX_BYTES:
         return _upload_refused(request, OVERSIZED)
 
-    payload = upload.read()
-    obligation_id = request.POST.get("obligation") or None
-    document = Document(
-        tenant=request.tenant,
-        client=request.client,
-        obligation_id=obligation_id,
-        sha256=hashlib.sha256(payload).hexdigest(),
-        original_filename=upload.name or "documento",
-        content_type=upload.content_type or "application/octet-stream",
-        byte_size=len(payload),
-        uploaded_by=request.user,
-    )
-    saved_name = default_storage.save(document.storage_key, ContentFile(payload))
-    if saved_name != document.storage_key:
-        _delete_saved_document(saved_name)
-        msg = "storage changed the requested document key"
-        raise RuntimeError(msg)
-
+    # T13: the same sniff -> quarantine -> intake path as a request upload. The file
+    # is served to nobody in the portal until the scanner says clean (`_served`).
+    if request.tenant is None:
+        raise Http404
     try:
-        document.save(force_insert=True)
-    except Exception:
-        _delete_saved_document(saved_name)
-        raise
-    # Back to the vault rather than to the landing page, so the client lands on the list
-    # their upload just joined and can see it there. The confirmation is queued rather
+        vault_upload(
+            request.user,
+            upload,
+            tenant=request.tenant,
+            client=request.client,
+            obligation_id=request.POST.get("obligation") or None,
+        )
+    except UploadTooLarge:
+        return _upload_refused(request, OVERSIZED)
+    except UploadMissing:
+        return _upload_refused(request, MISSING_FILE)
+    except UploadRejected:
+        return _upload_refused(request, VAULT_REJECTED)
+    # Back to the vault rather than to the landing page; the file joins the list once
+    # the scanner has said clean. The confirmation is queued rather
     # than rendered here: this response is a redirect, and a message written into the
     # session survives it because the session is written back in a response phase that
     # runs OUTSIDE the portal transaction, after the role and both GUCs are gone.
@@ -658,7 +665,7 @@ def document_download(
     both GUCs are gone, yielding nothing.
     """
     document = get_object_or_404(
-        Document.objects.exclude(_unserved()), storage_key=storage_key
+        Document.objects.filter(_served()), storage_key=storage_key
     )
 
     try:

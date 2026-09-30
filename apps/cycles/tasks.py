@@ -1,6 +1,7 @@
-"""Monthly generation (one tenant transaction) and the quarantine scan sweep (T12)."""
+"""Monthly generation, the quarantine scan sweep (T12) and extraction (T13)."""
 
 from datetime import date
+from typing import Final
 from uuid import UUID
 
 import sentry_sdk
@@ -16,12 +17,19 @@ from apps.core.tasks import (
     TenantTask,
     assert_no_transaction,
 )
+from apps.cycles.extraction.service import due_extractions, extract_intake
 from apps.cycles.models import PlaybookVersion, VersionState
 from apps.cycles.scanning import due_intakes, scan_intake, scanner_from_settings
 from apps.cycles.services.cycle import open_cycle
 from apps.cycles.targeting import AppliesTo, matching_clients
 from apps.obligations.models import SchedulerHeartbeat
 from apps.tenants.models import Tenant
+
+# One PDF gets 10 s of page-by-page deadline in `apps.cycles.parsing`; the soft limit
+# adds the read and the recording around it and, unlike the page deadline, also stops
+# a single page that never finishes. The hard limit is the backstop.
+EXTRACTION_SOFT_LIMIT_SECONDS: Final = 15
+EXTRACTION_HARD_LIMIT_SECONDS: Final = 30
 
 
 @shared_task(base=TenantTask)
@@ -78,7 +86,9 @@ def generate_monthly_cycles(self: PlatformTask) -> dict[str, int]:
 
 
 @shared_task(base=PhasedTenantTask)
-def scan_tenant_quarantine(tenant_id: UUID | str) -> dict[str, int]:
+def scan_tenant_quarantine(
+    tenant_id: UUID | str, *, vault_only: bool = False
+) -> dict[str, int]:
     """Scan one firm's due intakes; each scan runs phases A-B-C on its own.
 
     No outer transaction (PhasedTenantTask): the scanner's socket I/O happens between
@@ -90,7 +100,7 @@ def scan_tenant_quarantine(tenant_id: UUID | str) -> dict[str, int]:
     scanner = scanner_from_settings()
     counts: dict[str, int] = {}
     failures: list[BaseException] = []
-    for intake_id in due_intakes(tenant_pk, now):
+    for intake_id in due_intakes(tenant_pk, now, vault_only=vault_only):
         try:
             outcome = scan_intake(tenant_pk, intake_id, scanner=scanner, now=now)
         except Exception as error:  # noqa: BLE001 - reported below, never dropped
@@ -106,10 +116,47 @@ def scan_tenant_quarantine(tenant_id: UUID | str) -> dict[str, int]:
 
 @shared_task(base=PlatformTask, bind=True)
 def scan_quarantine(self: PlatformTask) -> int:
-    """Beat: every minute, scan due intakes of the firms with `cycles_r1` only."""
+    """Beat: every minute, scan due intakes; request uploads only under `cycles_r1`.
+
+    Portal vault uploads are scanned for every firm (T13, plan C-09): the vault is not
+    behind the flag, so its quarantine cannot be either -- an unscanned vault file is
+    never served to the portal, and without the sweep it would never be.
+    """
     assert_no_transaction()
     scanned = 0
     for tid in self.tenant_ids():
-        if tenant_has(tid, "cycles_r1"):
-            scanned += sum(scan_tenant_quarantine(str(tid)).values())
+        flagged = tenant_has(tid, "cycles_r1")
+        scanned += sum(
+            scan_tenant_quarantine(str(tid), vault_only=not flagged).values()
+        )
     return scanned
+
+
+@shared_task(
+    base=PhasedTenantTask,
+    soft_time_limit=EXTRACTION_SOFT_LIMIT_SECONDS,
+    time_limit=EXTRACTION_HARD_LIMIT_SECONDS,
+)
+def extract_document(tenant_id: UUID | str, intake_id: UUID | str) -> str:
+    """Extract one verified intake; a soft-limit hit is recorded as interrupted."""
+    return extract_intake(
+        UUID(str(tenant_id)), UUID(str(intake_id)), now=timezone.now()
+    ).value
+
+
+@shared_task(base=PlatformTask, bind=True)
+def extract_documents(self: PlatformTask) -> int:
+    """Beat: queue each verified intake of the firms with `cycles_r1` only.
+
+    Each document is its own task so the soft limit bounds one document. A document
+    queued twice is harmless: the second run finds the intake no longer
+    `verificado` (or at a newer version) and writes nothing.
+    """
+    assert_no_transaction()
+    queued = 0
+    for tid in self.tenant_ids():
+        if tenant_has(tid, "cycles_r1"):
+            for intake_id in due_extractions(tid):
+                extract_document.delay(str(tid), str(intake_id))
+                queued += 1
+    return queued

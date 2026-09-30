@@ -147,11 +147,16 @@ $$;
 -- PORTAL_NONE: cycles_internalnote
 -- PORTAL_NONE: cycles_exception
 -- PORTAL_NONE: cycles_requestinternal
+-- PORTAL_NONE: cycles_extractedfield
+-- PORTAL_NONE: cycles_review
 -- T9 exposes no internal work or exception text. T11 keeps each request's firm-only
 -- instructions and waiver reason in cycles_requestinternal, which the portal never
 -- reads. cycles_cycleevent is INSERT-only for the portal (see the write list below):
 -- the upload appends its submission event, and the portal reads no event back,
--- because the timeline also carries firm-side event types.
+-- because the timeline also carries firm-side event types. T13 keeps extracted and
+-- reviewed field values (cycles_extractedfield) and the firm's review decisions
+-- (cycles_review, S8.2) firm-only; the client reads a decision and its pt-BR reason
+-- from the columns the review service writes on cycles_evidencelink.
 
 -- PORTAL_NONE: delivery_outboundmessage
 -- PORTAL_NONE: delivery_deliveryattempt
