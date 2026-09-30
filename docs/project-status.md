@@ -216,8 +216,34 @@ and `test_request_services.py`, `tests/delivery/test_portal_invite_outbox.py` an
 screenshots plus the 1440x900 staff one. The populated T11 schema round trip
 reversed `delivery.0002`, `cycles.0003` and `tenants.0009` and re-applied them;
 it dropped the four new tables with their seeded rows and left the pre-existing
-outbox, document and append-only protections intact. Todos 12 to 29 and the final
-verification wave remain open.
+outbox, document and append-only protections intact.
+
+`AXR1-012` (quarantined document intake behind `cycles_r1`; `cycles.0004`) is
+recorded on the `AXR1-011` branch. Every portal upload is written under
+`quarantine/{tenant}/{client}/`, type-sniffed by magic bytes at offset 0 (PDF, XML,
+PNG, JPEG only; declared type and extension ignored; polyglots, SVG, ZIP, HTML and
+Office refused), scanned through the `Scanner` port (`ClamdScanner` over INSTREAM
+with timeouts, `FakeScanner` for tests) in a phased task that streams outside any
+transaction, and moved to its final key only after a clean verdict. Until then the
+portal answers 404 and staff 409; malware is `rejeitado_malware`, never linked or
+served, with the original retained. Retries back off to a 24 h deadline, then
+`verificacao_indisponivel` opens one exception. XML is parsed only through
+`defusedxml` and PDF text through `pypdf` (50 pages, 10 s checked between pages);
+served files carry `Content-Security-Policy: sandbox`, `nosniff` and an RFC 5987
+filename. This replaces the `AXR1-011` interim rule. `CLAMAV_ENABLED` defaults to
+false, so until the gates below close, client uploads are downloadable by staff only
+behind a warning and never re-served to the portal; the `clamav` sidecar is
+digest-pinned behind a compose profile and was never started. Dependencies
+`filetype`, `defusedxml` and `pypdf` are proposed. Tests:
+`tests/cycles/test_intake_hardening.py` and
+`tests/security/test_document_preview_headers.py`. Evidence:
+`.evidence/AXR1-012-baseline.txt`, `-red.txt`, `-happy.txt`, `-failure.txt`
+(`defusedxml` swapped for `xml.etree` fails the XXE cases), `-gates.txt`,
+`-adversarial.txt`, `-mutations.txt` and `-migrations.txt`. OG-05 (host memory
+and freshclam on Lightsail), OD-11 (host upsize) and OG-04 (quarantine prefix
+lifecycle) remain **open**. Carried to `AXR1-013`: the legacy portal vault upload
+still bypasses this pipeline, and the Celery soft limit that bounds one slow PDF
+page. Todos 13 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -318,7 +344,15 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **2895 passing**
+implementation head. The current default-suite baseline is **2956 passing**
+(44 deselected), verified by an independent serial full run of `AXR1-012` placed on
+the final `AXR1-011` head (`4772761`): the **2895** of `AXR1-011` plus **61**
+net-new `AXR1-012` cases. The same review ran the browser suite (**44**), isolation
+(**216**), the CNPJ pack (**29**), `npm run build` with a clean `static/` diff and
+`docker compose -f docker-compose.prod.yml config` with and without the `clamav`
+profile. This status-only commit does not change the tested code.
+
+The previous default-suite baseline was **2895 passing**
 (44 deselected), verified by one serial full run of `AXR1-011` placed on the
 final `AXR1-010` head `9aa5dbc` (code at `ce92e78`). It is the **2777** of
 `AXR1-010` plus **118** net-new `AXR1-011` cases covering the requests inbox,
