@@ -29,6 +29,7 @@ from uuid import UUID
 
 from celery.exceptions import SoftTimeLimitExceeded
 from django.core.files.storage import Storage, default_storage
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -51,6 +52,7 @@ from apps.cycles.extraction import (
     kind_for,
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
+from apps.cycles.records import Exception as CycleException
 from apps.cycles.services.exceptions import open_exception
 from apps.fiscal.validators import normalize_document
 
@@ -228,3 +230,60 @@ def due_extractions(tenant_id: UUID, limit: int = 50) -> list[UUID]:
             .order_by("created_at", "pk")
             .values_list("pk", flat=True)[:limit]
         )
+
+
+def due_divergent_links(tenant_id: UUID, limit: int = 50) -> list[UUID]:
+    """Find late links missing their cycle's finding, before applying the limit."""
+    with tenant_context(tenant_id):
+        recorded = CycleException.objects.filter(
+            cycle_id=OuterRef("request__cycle_id"),
+            subject_ref=OuterRef("document__intakes__pk"),
+            reason_code=EXCEPTION_REASON,
+        )
+        return list(
+            EvidenceLink.objects.filter(document__intakes__state=IntakeState.DIVERGENT)
+            .filter(~Exists(recorded))
+            .order_by("created_at", "pk")
+            .values_list("pk", flat=True)[:limit]
+        )
+
+
+def propagate_divergent_link(tenant_id: UUID, link_id: UUID, *, now: datetime) -> bool:
+    """Record a late cycle's finding once, without parsing or reclassifying.
+
+    The initial lookup requires committed divergence, so this cannot race the
+    original classification's intake-then-cycle locks. Lock cycle then intake,
+    like review, and recheck in case a reviewer accepted the third-party document.
+    A link committed after a sweep's snapshot remains due on the next sweep.
+    """
+    with tenant_context(tenant_id):
+        link = (
+            EvidenceLink.objects.select_related("request")
+            .filter(pk=link_id, document__intakes__state=IntakeState.DIVERGENT)
+            .first()
+        )
+        if link is None:
+            return False
+        cycle = ServiceCycle.objects.select_for_update().get(pk=link.request.cycle_id)
+        intake = DocumentIntake.objects.select_for_update().get(
+            document_id=link.document_id
+        )
+        if intake.state != IntakeState.DIVERGENT:
+            return False
+        # A resolved finding is history, not missing work. Duplicate tasks and
+        # multiple requests on the same cycle must not reopen it or emit again.
+        if CycleException.objects.filter(
+            cycle=cycle, reason_code=EXCEPTION_REASON, subject_ref=intake.pk
+        ).exists():
+            return False
+        open_exception(
+            EXCEPTION_REASON,
+            intake.pk,
+            actor=None,
+            cycle_id=cycle.pk,
+            expected_version=cycle.version,
+            owner=cycle.owner or link.request.created_by,
+            review_on=timezone.localdate(now),
+            evidence_refs=(intake.document_id,),
+        )
+        return True

@@ -17,7 +17,12 @@ from apps.core.tasks import (
     TenantTask,
     assert_no_transaction,
 )
-from apps.cycles.extraction.service import due_extractions, extract_intake
+from apps.cycles.extraction.service import (
+    due_divergent_links,
+    due_extractions,
+    extract_intake,
+    propagate_divergent_link,
+)
 from apps.cycles.models import PlaybookVersion, VersionState
 from apps.cycles.scanning import due_intakes, scan_intake, scanner_from_settings
 from apps.cycles.services.cycle import open_cycle
@@ -146,11 +151,13 @@ def extract_document(tenant_id: UUID | str, intake_id: UUID | str) -> str:
 
 @shared_task(base=PlatformTask, bind=True)
 def extract_documents(self: PlatformTask) -> int:
-    """Beat: queue each verified intake of the firms with `cycles_r1` only.
+    """Beat: queue extraction and late-link findings for `cycles_r1` firms.
 
     Each document is its own task so the soft limit bounds one document. A document
     queued twice is harmless: the second run finds the intake no longer
     `verificado` (or at a newer version) and writes nothing.
+    Divergent intakes are never parsed again: missing per-cycle findings have
+    their own database-only task, including links committed after classification.
     """
     assert_no_transaction()
     queued = 0
@@ -159,4 +166,15 @@ def extract_documents(self: PlatformTask) -> int:
             for intake_id in due_extractions(tid):
                 extract_document.delay(str(tid), str(intake_id))
                 queued += 1
+            for link_id in due_divergent_links(tid):
+                propagate_document_link.delay(str(tid), str(link_id))
+                queued += 1
     return queued
+
+
+@shared_task(base=TenantTask)
+def propagate_document_link(tenant_id: UUID | str, link_id: UUID | str) -> bool:
+    """Converge a divergent document's late link on one internal cycle exception."""
+    return propagate_divergent_link(
+        UUID(str(tenant_id)), UUID(str(link_id)), now=timezone.now()
+    )
