@@ -321,10 +321,48 @@ All owned resources were removed. Existing portal placeholder copy and four
 JavaScript diagnostics remain documented; live operator and owner gates remain
 **open**. No production delivery or pilot authorization is claimed.
 
+`AXR1-015` (immutable exact-effect proposals and append-only approval decisions;
+`cycles.0008`, `authz.0007`, `tenants.0010`) is recorded on the final
+`AXR1-014` branch. The closed manifest uses canonical UTF-8 bytes and a SHA-256
+digest to bind selected recipients, documents, evidence, source facts, money,
+policy and authority. Propose, approve, reject, revalidate and cancel are scoped,
+versioned services. Material changes invalidate the old revision without
+rewriting its bytes or decisions; unrelated facts follow the action-specific
+invalidate/warn/ignore matrix.
+
+Email proposals freeze real CRLF MIME bytes, headers and their hash, using
+persisted proposal facts rather than the render clock. Relevant portfolio
+assignment identities bind both initiator and approver authority: removing
+and re-adding an assignment cannot revive a decision. Firm-wide and unrelated
+assignments do not cause blanket invalidation. Self-approval is refused by
+default; the sole-staff exception requires owner policy, audited acknowledgment
+and explicit acknowledgment for each decision.
+
+The staff card shows the frozen effects before decisions, including
+keyboard-accessible mail headers. Approval records only a decision: it does
+not send mail, publish files or prove execution. Executor integration remains
+`AXR1-016`. The independent gate confirmed `6089575` after closing both MIME
+and portfolio-history findings. Populated reversal/reapply preserved inherited
+T14 private values, T13 data and shared protections; it intentionally removes
+the new proposal/approval rows.
+
+Tests include `tests/cycles/test_canonical_digest_vectors.py`,
+`test_effect_manifest.py`, `test_approval_invalidation.py`,
+`test_effect_sources.py`, `test_revalidate_revocation.py`,
+`test_approval_storage.py`, `test_approval_authority_races.py` and
+`tests/browser/test_approval_card.py`. Evidence:
+`.evidence/AXR1-015-rv-final-std.txt`, `-rv-final-probes.txt`,
+`-rv-final-restoration-cleanup.txt` and six fresh desktop/mobile card captures.
+Ten independent semantic cases passed; the updated recipient mutation caused
+three behavioral failures, followed by three restored passes. All owned
+resources were removed. Nonblocking reason-formatting, UUID recipient labels
+and inherited default error pages remain documented; owner/operator gates
+remain **open**. No production effect or pilot authorization is claimed.
+
 The latest execution instruction is to finish only the already-running
-`AXR1-014` and `AXR1-015`, then pause. No later feature or new child task is
-authorized by that instruction. Todos 15 to 29 and the final verification wave
-remain open.
+`AXR1-014` and `AXR1-015`, then pause. Both are recorded; no later feature or
+new child task is authorized by that instruction. Todos 16 to 29 and the final
+verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -425,7 +463,18 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3098 passing**
+implementation head. The current default-suite baseline is **3372 passing**
+(58 deselected), independently verified at `AXR1-015` code `6089575`
+(tree `c2c0c83`), on final `AXR1-014` (`eb566a8`): the **3098** below plus
+**274** net-new default-suite cases. The same serial review passed isolation
+(**231**), CNPJ (**29**), browser (**58**), lint, format, mypy, migration-drift
+and a clean rebuilt-static check. Evidence:
+`.evidence/AXR1-015-rv-final-std.txt`; independent semantic probes, recipient
+mutation/restoration, justified unchanged-source race/migration proof and
+exact teardown are retained with that task's evidence. Gate and cleanup
+exits were 0. This status-only commit does not change the approved code.
+
+The previous default-suite baseline was **3098 passing**
 (50 deselected), independently verified at `AXR1-014` code `c956af9`
 (tree `6c3fb90`), on final `AXR1-013` (`0382ddf`): the **3029** below plus
 **69** net-new default-suite cases. The same serial review passed isolation
@@ -524,14 +573,16 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **42** cases: the **24** passing at the T3
+`browser` job. The suite now contains **58** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
 preview-bound publication journeys at two viewports), plus the four `AXR1-009`
 workspace/portal and distinct-client context cases (two journeys at two
 viewports), plus the two `AXR1-010` Comunicação queue cases (one journey at two
-viewports). Every test in
+viewports), plus the two `AXR1-011` portal-upload/staff-request cases, plus the
+two `AXR1-013` document-review cases, plus the four `AXR1-014` exception cases,
+plus the eight `AXR1-015` approval-card cases. Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
