@@ -122,6 +122,7 @@ def load_cycle(actor: User, cycle_id: UUID, *, lock: bool = False) -> ServiceCyc
     load_client(actor, tenant_id(), cycle.client_id)
     if lock:
         cycle = ServiceCycle.objects.select_for_update().get(pk=cycle.pk)
+        load_client(actor, tenant_id(), cycle.client_id)
     return cycle
 
 

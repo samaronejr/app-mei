@@ -19,7 +19,9 @@ from django.urls import reverse
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
+from apps.accounts.models import User
 from apps.audit.models import AuditAction, PlatformEvent
+from apps.clients.maintenance import assignment_state, load_client, remove_assignment
 from apps.clients.models import (
     ClientAssignment,
     ClientCompany,
@@ -48,6 +50,7 @@ from apps.cycles.openers import (
     evaluate_tenant_exceptions,
 )
 from apps.cycles.scanning import EXCEPTION_REASON as SCAN_UNAVAILABLE
+from apps.cycles.services import cycle as cycle_services
 from apps.cycles.services import exceptions
 from apps.cycles.services.cycle import open_cycle
 from apps.cycles.services.exceptions import (
@@ -66,7 +69,7 @@ from tests.cycles.cycle_fixtures import PERIOD, CycleSetup, cycle_setup
 from tests.delivery.smtp import FakeSMTP
 from tests.portal.request_fixtures import portal_setup
 from tests.support import enrol_totp
-from tests.support_threads import RUNTIME_ROLE
+from tests.support_threads import RUNTIME_ROLE, run_in_thread_as_runtime
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -406,6 +409,57 @@ def test_an_unassigned_staff_accountant_is_denied_and_owners_must_see_the_client
             setup.staff, problem.pk, ExceptionState.HANDLING, expected_version=2
         )
         assert triaged.state == ExceptionState.HANDLING
+
+
+def test_assignment_revoked_after_scope_lookup_prevents_an_exception_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    setup = cycle_setup()
+    with tenant_context(setup.tenant.pk):
+        cycle = _cycle(setup)
+        problem = _open(setup, cycle, REQUEST_OVERDUE, uuid4())
+        assignment = ClientAssignment.objects.create(
+            tenant=setup.tenant, client=setup.client, user=setup.staff
+        )
+        transition_exception(
+            setup.staff, problem.pk, ExceptionState.HANDLING, expected_version=1
+        )
+        before = _writes()
+    real_load = load_client
+
+    def revoke() -> None:
+        remove_assignment(
+            actor=setup.actor,
+            tenant_id=setup.tenant.pk,
+            client_id=setup.client.pk,
+            assignment_id=assignment.pk,
+            expected_state=assignment_state(setup.client),
+        )
+        assert not ClientAssignment.objects.filter(pk=assignment.pk).exists()
+
+    def after_scope(
+        actor: User,
+        tenant_id: UUID,
+        client_id: UUID,
+        *,
+        lock: bool = False,
+    ) -> ClientCompany:
+        client = real_load(actor, tenant_id, client_id, lock=lock)
+        if actor.pk == setup.staff.pk:
+            run_in_thread_as_runtime(setup.tenant.pk, revoke)
+        return client
+
+    monkeypatch.setattr(cycle_services, "load_client", after_scope)
+    with tenant_context(setup.tenant.pk):
+        with pytest.raises(Http404):
+            transition_exception(
+                setup.staff,
+                problem.pk,
+                ExceptionState.RESOLVED,
+                expected_version=2,
+                note="Conferência concluída.",
+            )
+        assert _writes() == before
 
 
 def test_the_portal_sees_only_client_visible_rows_with_a_vacuity_control() -> None:
