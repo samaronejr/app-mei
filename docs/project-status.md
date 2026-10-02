@@ -287,9 +287,44 @@ All owned review containers, volumes, processes and temporary paths were
 removed. Existing semantic-template diagnostics and a favicon 404 are
 documented, not suppressed. OG-03/OG-04/OG-05 and OD-11 remain **open**;
 no production email, scanner activation or pilot authorization is claimed.
-The invitation terminal-state recovery remains in `AXR1-014`; search and
-AI-shadow exclusion proofs remain in `AXR1-021`/`AXR1-024`.
-Todos 14 to 29 and the final verification wave remain open.
+Search and AI-shadow exclusion proofs remain in `AXR1-021`/`AXR1-024`.
+
+`AXR1-014` (owned exceptions, deterministic openers, policy-restricted risk
+acceptance and client-safe help; `cycles.0006` and `cycles.0007`) is recorded on
+the final `AXR1-013` branch. Staff can assign, triage and resolve from the cycle
+or client workspace. Scoped evidence links reach the actual document, message
+or current subject; reload, Back and close preserve the selected drawer and
+natural keyboard focus. Internal instructions and references live in the
+portal-denied `ExceptionInternal` companion, not the portal-readable row.
+Populated reversal/reapply preserved stored private values, aggregate identities,
+T13 data, grants and shared protections.
+
+The rejected portal-invitation finalizer withdraws the invitation and retains
+its rejected delivery and audit record. Its exception belongs to the newest
+applicable open cycle; with none, no cycle or unrelated exception is fabricated.
+Replay does not resend or duplicate the terminal records. A further independent
+portfolio-revocation probe found a stale authorization lookup; the locked cycle
+loader now rechecks visibility before writes, with a real committed
+second-connection regression.
+
+The independent gate confirmed code `c956af9` after closing privacy, navigation
+and revocation findings. Tests include `tests/cycles/test_exceptions.py`,
+`test_exception_privacy.py`, `test_exception_policy_boundaries.py`,
+`test_exception_evidence.py`, `test_exception_navigation.py`,
+`test_exception_subjects.py` and `tests/browser/test_exceptions.py`. Evidence:
+`.evidence/AXR1-014-rv-final.txt`, `-rv-adversarial.txt`, `-rv-mutants.txt`,
+`-rv-restored.txt`, `-rv-revoke-red-final.txt`, `-rv-revoke-green.txt`,
+`-rv-revoke-typing.txt` and the final natural/terminal browser captures.
+Thirty-six natural evidence journeys covered nine reason families on both staff
+surfaces at both widths; actual portal SQL and rendered privacy controls passed.
+All owned resources were removed. Existing portal placeholder copy and four
+JavaScript diagnostics remain documented; live operator and owner gates remain
+**open**. No production delivery or pilot authorization is claimed.
+
+The latest execution instruction is to finish only the already-running
+`AXR1-014` and `AXR1-015`, then pause. No later feature or new child task is
+authorized by that instruction. Todos 15 to 29 and the final verification wave
+remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -390,7 +425,18 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3029 passing**
+implementation head. The current default-suite baseline is **3098 passing**
+(50 deselected), independently verified at `AXR1-014` code `c956af9`
+(tree `6c3fb90`), on final `AXR1-013` (`0382ddf`): the **3029** below plus
+**69** net-new default-suite cases. The same serial review passed isolation
+(**225**), CNPJ (**29**), browser (**50**), lint, format, mypy, migration-drift
+and a clean rebuilt-static check. Four additional browser cases performed
+**36** natural evidence journeys. Evidence: `.evidence/AXR1-014-rv-final.txt`;
+independent mutations, populated migration and revocation proofs are retained
+with that task's evidence. The final runner recorded gate and cleanup exit 0.
+This status-only commit does not change the approved code.
+
+The previous default-suite baseline was **3029 passing**
 (46 deselected), independently verified at `AXR1-013` code `8f5f475`
 (tree `7f93ff2`), on final `AXR1-012` (`8bf17e3`): the **2956** below plus
 **73** net-new default-suite cases. The same serial review ran isolation
