@@ -38,7 +38,12 @@ from apps.cycles.extraction.service import (
     record_extraction,
     run_extraction,
 )
-from apps.cycles.models import CycleEvent, EvidenceRequest, ServiceCycle
+from apps.cycles.models import (
+    CycleEvent,
+    EvidenceRequest,
+    ExceptionInternal,
+    ServiceCycle,
+)
 from apps.cycles.models import Exception as CycleException
 from apps.cycles.services.cycle import open_cycle
 from apps.cycles.services.requests import RequestFields, create_request, send_requests
@@ -101,7 +106,10 @@ def test_other_company_document_is_divergent_suspended_and_raises_an_exception(
     (problem,) = _exceptions(setup)
     assert problem.cycle_id == setup.cycle.pk
     assert problem.subject_ref == intake.pk
-    assert problem.evidence_refs == [str(intake.document_id)]
+    with tenant_context(setup.graph.tenant.pk):
+        assert ExceptionInternal.objects.get(exception=problem).evidence_refs == [
+            str(intake.document_id)
+        ]
     assert problem.state == "aberta"
     assert problem.blocks_completion is True
     assert problem.client_visible is False

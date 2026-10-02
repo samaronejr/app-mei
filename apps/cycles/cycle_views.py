@@ -297,6 +297,7 @@ def exception_rows(
     active = list(
         rows.filter(state__in=ACTIVE_STATES)
         .select_related("owner")
+        .prefetch_related("internals")
         .order_by("due_on", "review_on", "created_at", "pk")
     )
     roster = _roster(client_id) if active else []
@@ -306,6 +307,7 @@ def exception_rows(
         result.append(
             {
                 "exception": problem,
+                "internal": next(iter(problem.internals.all())),
                 "label": (reason.label if reason and reason.label else None)
                 or problem.reason_code,
                 "waivable": is_waivable(problem.reason_code),

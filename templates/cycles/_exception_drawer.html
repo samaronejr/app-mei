@@ -8,7 +8,7 @@ One exception drawer (T14). `row` comes from cycle_views.exception_rows; `origin
     <span class="text-sm text-ink-700">Responsável: {{ row.exception.owner.get_full_name|default:row.exception.owner.email }}. {% if row.exception.due_on %}Prazo: {{ row.exception.due_on|date:"d/m/Y" }}{% else %}Revisar até {{ row.exception.review_on|date:"d/m/Y" }}{% endif %}. {{ row.exception.get_state_display }}{% if row.exception.blocks_completion %} · bloqueia a conclusão{% endif %}</span>
   </summary>
   <div class="mt-3 grid gap-3">
-    <p class="text-sm">Próxima ação: {{ row.exception.next_action }}</p>
+    <p class="text-sm">Próxima ação: {{ row.internal.next_action }}</p>
     {% if row.exception.client_visible %}<p class="text-sm text-ink-700">No portal, o cliente vê: “{{ row.exception.client_message }}”</p>{% else %}<p class="text-sm text-ink-700">Interna · não aparece no portal.</p>{% endif %}
     {% if may_operate %}
       {% if row.roster %}

@@ -22,7 +22,12 @@ from apps.authz.portfolio import visible_clients
 from apps.cycles.capabilities import CYCLES_OPERATE, CYCLES_REVIEW
 from apps.cycles.errors import IllegalTransition
 from apps.cycles.models import Exception as CycleException
-from apps.cycles.models import ExceptionState, InternalNote, ServiceCycle
+from apps.cycles.models import (
+    ExceptionInternal,
+    ExceptionState,
+    InternalNote,
+    ServiceCycle,
+)
 from apps.cycles.services.cycle import (
     check_version,
     emit,
@@ -147,12 +152,17 @@ def open_exception(  # noqa: PLR0913 - the registered-opener contract carries sc
             reason_code=reason_code,
             subject_ref=subject_ref,
             owner=owner,
-            next_action=reason.next_action,
             due_on=due_on,
             review_on=review_on,
             blocks_completion=reason.blocks_completion,
             client_visible=reason.client_visible,
             client_message=reason.client_message,
+        )
+        ExceptionInternal.objects.create(
+            tenant_id=cycle.tenant_id,
+            client_id=cycle.client_id,
+            exception=problem,
+            next_action=reason.next_action,
             evidence_refs=[str(ref) for ref in evidence_refs],
         )
         cycle.version += 1

@@ -31,6 +31,7 @@ from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.models import (
     CycleEvent,
     EvidenceRequest,
+    ExceptionInternal,
     ExceptionState,
     InternalNote,
     PlaybookVersion,
@@ -421,10 +422,20 @@ def test_the_portal_sees_only_client_visible_rows_with_a_vacuity_control() -> No
             reason_code=CERTIFICATE_EXPIRING,
             subject_ref=world.other_client.pk,
             owner=setup.actor,
-            next_action="FOREIGN-NEXT-ACTION",
             review_on=PERIOD,
             client_visible=True,
             client_message="FOREIGN-CLIENT-MESSAGE",
+        )
+        ExceptionInternal.objects.create(
+            tenant=setup.tenant,
+            client=world.other_client,
+            exception=foreign,
+            next_action="FOREIGN-NEXT-ACTION",
+        )
+        internal_actions = list(
+            ExceptionInternal.objects.filter(
+                exception_id__in=[visible.pk, hidden.pk]
+            ).values_list("next_action", flat=True)
         )
         # Vacuity control: the firm's own role reads all three rows.
         assert CycleException.objects.count() == 3
@@ -458,8 +469,7 @@ def test_the_portal_sees_only_client_visible_rows_with_a_vacuity_control() -> No
         assert "Precisamos da sua ajuda" in body, path
         assert visible.client_message in body, path
         for internal in (
-            visible.next_action,
-            hidden.next_action,
+            *internal_actions,
             REASONS[TAX_PROFILE_UNKNOWN].label,
             "FOREIGN-CLIENT-MESSAGE",
         ):
@@ -516,7 +526,9 @@ def test_a_provider_rejected_portal_invite_is_withdrawn_and_owned(
             ExceptionState.OPEN,
         )
         assert problem.owner_id == setup.actor.pk
-        assert problem.evidence_refs == [str(message.pk)]
+        assert ExceptionInternal.objects.get(exception=problem).evidence_refs == [
+            str(message.pk)
+        ]
 
 
 def test_the_cycle_page_and_workspace_render_drawers_and_post_versioned_actions() -> (

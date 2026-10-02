@@ -48,6 +48,7 @@ from apps.cycles.records import (
     CycleState,
     CycleTask,
     Exception,  # noqa: A004 - the plan names this domain model Exception
+    ExceptionInternal,
     ExceptionState,
     InternalNote,
     ServiceCycle,
@@ -63,6 +64,7 @@ __all__ = [
     "EvidenceLink",
     "EvidenceRequest",
     "Exception",
+    "ExceptionInternal",
     "ExceptionState",
     "ExtractedField",
     "FieldOrigin",

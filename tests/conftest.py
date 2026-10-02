@@ -40,6 +40,7 @@ PORTAL_DENIED_TABLES = (
     "cycles_cycletask",
     "cycles_cycleamendment",
     "cycles_internalnote",
+    "cycles_exceptioninternal",
     # T11: firm-only request instructions and waiver reasons.
     "cycles_requestinternal",
     # T13: extracted/reviewed field values and review decisions are firm-only.

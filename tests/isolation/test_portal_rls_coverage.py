@@ -58,7 +58,8 @@ RUNTIME_ROLE = "app_runtime"
 # cycles_{evidencerequest,requestinternal,evidencelink,documentintake} (todo 11)
 # are the request/upload tables: three portal-readable, one portal-NONE.
 # cycles_{extractedfield,review} (todo 13) are firm-only extraction and review rows.
-EXPECTED_TENANT_TABLE_COUNT = 41
+# T14's private exception companion carries instructions and evidence references.
+EXPECTED_TENANT_TABLE_COUNT = 42
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -384,6 +385,7 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_cycleamendment",
         "cycles_internalnote",
         "cycles_exception",
+        "cycles_exceptioninternal",
         "cycles_evidencerequest",
         "cycles_requestinternal",
         "cycles_extractedfield",

@@ -145,11 +145,13 @@ $$;
 -- PORTAL_NONE: cycles_cycletask
 -- PORTAL_NONE: cycles_cycleamendment
 -- PORTAL_NONE: cycles_internalnote
+-- PORTAL_NONE: cycles_exceptioninternal
 -- PORTAL_NONE: cycles_requestinternal
 -- PORTAL_NONE: cycles_extractedfield
 -- PORTAL_NONE: cycles_review
 -- T9 exposes no internal work. T14 grants SELECT on cycles_exception (allow-list
--- below) under a policy that also requires client_visible; resolution prose stays
+-- below) under a policy that also requires client_visible; instructions and evidence
+-- references live in cycles_exceptioninternal, and resolution prose stays
 -- in cycles_internalnote. T11 keeps each request's firm-only
 -- instructions and waiver reason in cycles_requestinternal, which the portal never
 -- reads. cycles_cycleevent is INSERT-only for the portal (see the write list below):
@@ -209,7 +211,8 @@ BEGIN
         'cycles_evidencelink',
         'cycles_documentintake',
         -- S8.2 / T14: the portal predicate adds `client_visible`; only the fixed
-        -- client_message is rendered, never the firm's next action or notes.
+        -- client_message is rendered. Internal instructions/evidence are in the
+        -- portal-denied cycles_exceptioninternal companion, not this table.
         'cycles_exception',
         'obligations_obligation',
         'obligations_monthlyrevenue',
