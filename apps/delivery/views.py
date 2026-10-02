@@ -1,11 +1,13 @@
 """Portfolio-scoped operational queue; every POST carries its rendered revision."""
 
+from typing import TYPE_CHECKING
+
 from django import forms
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.http import HttpResponse
-from django.shortcuts import redirect, render
+from django.http import Http404, HttpResponse
+from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.views import AuthenticatedRequest
@@ -22,6 +24,9 @@ from apps.delivery.services import (
     remaining_quota,
     set_pause,
 )
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 
 class DecisionForm(forms.Form):
@@ -54,6 +59,12 @@ class DecisionForm(forms.Form):
         return data
 
 
+class MessageSelectionForm(forms.Form):
+    """A present selector names one UUID; an empty selector is not a queue filter."""
+
+    mensagem = forms.UUIDField()
+
+
 @require_http_methods(["GET", "POST"])
 @login_required
 @require_tenant
@@ -61,6 +72,12 @@ class DecisionForm(forms.Form):
 def communication(request: AuthenticatedRequest) -> HttpResponse:
     """Queue, failures and human uncertainty decisions without evidence inflation."""
     require_enabled()
+    selector = MessageSelectionForm(request.GET) if "mensagem" in request.GET else None
+    if selector is not None and not selector.is_valid():
+        raise Http404
+    message_id: UUID | None = (
+        selector.cleaned_data["mensagem"] if selector is not None else None
+    )
     error, status = "", 200
     if request.method == "POST":
         form = DecisionForm(request.POST)
@@ -93,7 +110,10 @@ def communication(request: AuthenticatedRequest) -> HttpResponse:
     rows = OutboundMessage.objects.filter(
         client_id__in=clients.values("pk")
     ).select_related("client")
-    selected = request.GET.get("estado", "")
+    if message_id is not None:
+        get_object_or_404(rows, pk=message_id)
+        rows = rows.filter(pk=message_id)
+    selected = "" if message_id is not None else request.GET.get("estado", "")
     if selected:
         rows = rows.filter(state=selected)
     page = Paginator(rows.order_by("-created_at", "pk"), 30).get_page(
@@ -107,6 +127,7 @@ def communication(request: AuthenticatedRequest) -> HttpResponse:
             "page": page,
             "states": MessageState.choices,
             "selected": selected,
+            "selected_message": message_id,
             "error": error,
             "control": control,
             "quota": remaining_quota(),

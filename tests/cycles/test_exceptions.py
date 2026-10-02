@@ -572,7 +572,10 @@ def test_the_cycle_page_and_workspace_render_drawers_and_post_versioned_actions(
         },
     )
     assert resolved.status_code == HTTPStatus.FOUND
-    assert "?periodo=2026-09#pendencias" in resolved["Location"]
+    assert resolved["Location"] == (
+        f"/clientes/{setup.client.pk}/?periodo=2026-09"
+        f"&pendencia={problem.pk}#pendencias"
+    )
     with tenant_context(setup.tenant.pk):
         assert CycleException.objects.get(pk=problem.pk).state == (
             ExceptionState.RESOLVED

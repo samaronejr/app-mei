@@ -11,6 +11,7 @@ from apps.authz.services import can
 from apps.clients.maintenance import load_client
 from apps.clients.models import ClientContact, Engagement, OnboardingItem
 from apps.cycles.capabilities import CYCLES_OPERATE
+from apps.cycles.exception_context import exception_rows
 from apps.cycles.models import Exception as CycleException
 from apps.cycles.models import PlaybookVersion, ServiceCycle, VersionState
 from apps.cycles.services.cycle import tenant_id
@@ -18,16 +19,23 @@ from apps.cycles.workspace import get_cycle_context, parse_period, timeline
 from apps.obligations.models import Document, Obligation
 
 
-def client_workspace(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
+def client_workspace(
+    request: AuthenticatedRequest,
+    pk: UUID,
+    selected_exception: CycleException | None = None,
+    error: str = "",
+    status: int = 200,
+) -> HttpResponse:
     """Render the existing detail route after its auth and feature gates."""
     client = load_client(request.user, tenant_id(), pk)
     try:
-        period = parse_period(request.GET.get("periodo"))
+        period = (
+            selected_exception.cycle.period_start
+            if selected_exception is not None
+            else parse_period(request.GET.get("periodo"))
+        )
     except ValueError:
         return HttpResponse("Competência inválida. Use AAAA-MM.", status=422)
-    # Imported here: cycle_views imports apps.clients.views, which imports this module.
-    from apps.cycles.cycle_views import exception_rows  # noqa: PLC0415
-
     context = get_cycle_context(request.user, pk, period)
     cycles = (
         ServiceCycle.objects.filter(client=client, period_start=period)
@@ -48,10 +56,13 @@ def client_workspace(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             "cycle_context": context,
             "cycles": cycles,
             "exceptions": exception_rows(
+                request,
                 CycleException.objects.filter(
                     client=client, cycle__period_start=period
                 ),
-                client.pk,
+                "cliente",
+                selected_exception,
+                error,
             ),
             "engagements": engagements,
             "definitions": PlaybookVersion.objects.filter(state=VersionState.PUBLISHED)
@@ -71,4 +82,5 @@ def client_workspace(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                 "position", "pk"
             ),
         },
+        status=status,
     )

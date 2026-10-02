@@ -280,9 +280,46 @@
        */
       init: function () {
         var element = this.$refs.dialog;
+        this.opener = document.getElementById(element.dataset.openerId);
+        if (!element.open) return;
+        // Fragment navigation runs during loading; upgrade after it so it cannot
+        // move keyboard focus back out of the modal.
+        if (document.readyState === "complete") {
+          this.openFromUrl();
+        } else {
+          window.addEventListener("load", this.openFromUrl.bind(this), { once: true });
+        }
+      },
+
+      openFromUrl: function () {
+        var element = this.$refs.dialog;
+        var remembered;
+        var target;
         if (element.open) {
           element.close();
           element.showModal();
+          if (element.dataset.openUrl) {
+            window.history.replaceState(
+              window.history.state, "", element.dataset.openUrl,
+            );
+          }
+          remembered = document.getElementById(
+            window.history.state && window.history.state.exceptionEvidence,
+          );
+          target = element.querySelector("[data-dialog-focus]") ||
+            (remembered && element.contains(remembered) ? remembered :
+              element.querySelector(".overlay-head button"));
+          if (target) target.focus();
+        }
+      },
+
+      rememberLink: function (event) {
+        var link = event.target.closest("a[data-exception-evidence]");
+        if (link) {
+          window.history.replaceState(
+            Object.assign({}, window.history.state, { exceptionEvidence: link.id }),
+            "",
+          );
         }
       },
 
@@ -301,6 +338,15 @@
        * to the control that opened it, if that control still exists.
        */
       restoreFocus: function () {
+        var element = this.$refs.dialog;
+        var state;
+        // The server-open upgrade queues a close event before reopening modal.
+        if (element.open) return;
+        if (element.dataset.closeUrl) {
+          state = Object.assign({}, window.history.state);
+          delete state.exceptionEvidence;
+          window.history.replaceState(state, "", element.dataset.closeUrl);
+        }
         var opener = this.opener;
         this.opener = null;
         if (opener && opener.isConnected && typeof opener.focus === "function") {

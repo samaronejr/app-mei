@@ -3,6 +3,7 @@
 {% block heading %}Comunicação{% endblock %}
 {% block content %}
 <p class="mb-4 text-ink-600">Acompanhe a fila e os retornos do servidor de e-mail. Aceitação pelo servidor não confirma a leitura.</p>
+{% if selected_message %}<p class="mb-4"><a class="ui-link" href="{% url 'delivery-queue' %}">Ver todas as mensagens</a></p>{% endif %}
 {% if error %}<div role="alert" class="ui-panel mb-4 p-4">{{ error }}</div>{% endif %}
 <section class="ui-panel mb-4 p-4" aria-label="Controles de envio">
   <p>Reservas disponíveis hoje: {{ quota }}. Cada tentativa consome uma reserva.</p>

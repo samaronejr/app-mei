@@ -1,48 +1,6 @@
-{% comment %}
-One exception drawer (T14). `row` comes from cycle_views.exception_rows; `origin` is
-"ciclo" or "cliente". Native <details>/<summary> opens with Enter/Space, no script.
-{% endcomment %}
-<details class="border-t pt-3" data-reason="{{ row.exception.reason_code }}" data-exception-id="{{ row.exception.pk }}">
-  <summary class="cursor-pointer">
-    <span class="font-semibold">Pendência: {{ row.label }}.</span>
-    <span class="text-sm text-ink-700">Responsável: {{ row.exception.owner.get_full_name|default:row.exception.owner.email }}. {% if row.exception.due_on %}Prazo: {{ row.exception.due_on|date:"d/m/Y" }}{% else %}Revisar até {{ row.exception.review_on|date:"d/m/Y" }}{% endif %}. {{ row.exception.get_state_display }}{% if row.exception.blocks_completion %} · bloqueia a conclusão{% endif %}</span>
-  </summary>
-  <div class="mt-3 grid gap-3">
-    <p class="text-sm">Próxima ação: {{ row.internal.next_action }}</p>
-    {% if row.exception.client_visible %}<p class="text-sm text-ink-700">No portal, o cliente vê: “{{ row.exception.client_message }}”</p>{% else %}<p class="text-sm text-ink-700">Interna · não aparece no portal.</p>{% endif %}
-    {% if may_operate %}
-      {% if row.roster %}
-      <form method="post" action="{% url 'cycle-exception-action' row.exception.pk %}" class="flex flex-wrap items-end gap-3">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="assign">
-        <input type="hidden" name="expected_version" value="{{ row.exception.version }}">
-        <input type="hidden" name="origin" value="{{ origin }}">
-        <div>
-          <label class="ui-field-label" for="owner-{{ row.exception.pk }}">Responsável</label>
-          <select class="ui-field-input" id="owner-{{ row.exception.pk }}" name="owner_id" required>
-            {% for member in row.roster %}<option value="{{ member.user_id }}"{% if member.user_id == row.exception.owner_id %} selected{% endif %}>{{ member.user.get_full_name|default:member.user.email }}</option>{% endfor %}
-          </select>
-        </div>
-        <button class="ui-btn ui-btn-quiet" type="submit">Atribuir</button>
-      </form>
-      {% endif %}
-      {% if row.actions %}
-      <form method="post" action="{% url 'cycle-exception-action' row.exception.pk %}" class="grid gap-3">
-        {% csrf_token %}
-        <input type="hidden" name="expected_version" value="{{ row.exception.version }}">
-        <input type="hidden" name="origin" value="{{ origin }}">
-        {% if row.exception.state == 'em_tratamento' %}
-        <div>
-          <label class="ui-field-label" for="exception-note-{{ row.exception.pk }}">O que foi feito ou motivo (interno, obrigatório para encerrar)</label>
-          <textarea class="ui-field-input" id="exception-note-{{ row.exception.pk }}" name="note" maxlength="2000"></textarea>
-        </div>
-        {% endif %}
-        <div class="flex flex-wrap gap-2">
-          {% for action, label in row.actions %}<button class="ui-btn {% if forloop.first %}ui-btn-primary{% else %}ui-btn-quiet{% endif %}" type="submit" name="action" value="{{ action }}">{{ label }}</button>{% endfor %}
-        </div>
-        {% if row.exception.state == 'em_tratamento' and not row.waivable %}<p class="text-xs text-ink-700">Esta pendência não pode ser aceita como risco: ela precisa ser resolvida.</p>{% endif %}
-      </form>
-      {% endif %}
-    {% endif %}
-  </div>
-</details>
+{% comment %}Shared URL-addressed native drawer, scoped by exception_context.{% endcomment %}
+<div class="border-t pt-3" data-reason="{{ row.exception.reason_code }}" data-exception-id="{{ row.exception.pk }}">
+  <a class="ui-link font-semibold" id="{{ row.trigger_id }}" href="{{ row.url }}" aria-haspopup="dialog" aria-controls="{{ row.dialog_id }}">Pendência: {{ row.label }}.</a>
+  <p class="text-sm text-ink-700">Responsável: {{ row.exception.owner.get_full_name|default:row.exception.owner.email }}. {% if row.exception.due_on %}Prazo: {{ row.exception.due_on|date:"d/m/Y" }}{% else %}Revisar até {{ row.exception.review_on|date:"d/m/Y" }}{% endif %}. {{ row.exception.get_state_display }}{% if row.is_active and row.exception.blocks_completion %} · bloqueia a conclusão{% endif %}</p>
+  {% include "partials/ui/drawer.html" with dialog_id=row.dialog_id title=row.title body_template="cycles/_exception_body.html" open_on_load=row.selected open_url=row.url close_url=row.close_url opener_id=row.trigger_id %}
+</div>

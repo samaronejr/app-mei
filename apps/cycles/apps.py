@@ -41,7 +41,8 @@ class CyclesConfig(AppConfig):
             ExceptionReason(
                 "Documento enviado parece ser de outra empresa. Confira o CNPJ na "
                 "revisão e peça ao cliente o arquivo correto; nunca reatribua o "
-                "documento a outro cliente."
+                "documento a outro cliente.",
+                label="documento de outra empresa",
             ),
         )
         # T14: the deterministic openers the daily sweep runs.

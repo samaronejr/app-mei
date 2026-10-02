@@ -7,7 +7,7 @@ from django import forms
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.db.models import OuterRef, Q, QuerySet, Subquery
+from django.db.models import OuterRef, Q, Subquery
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -15,20 +15,21 @@ from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.views import AuthenticatedRequest
-from apps.authz.portfolio import PortfolioScope, portfolio_scope, visible_clients
+from apps.authz.portfolio import visible_clients
 from apps.authz.services import can, require_can
 from apps.clients.maintenance import load_client
-from apps.clients.models import ClientAssignment, Engagement, TaxRegime
+from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.evidence import SUSPENDED_STATES, DocumentIntake, ReviewDecision
+from apps.cycles.exception_context import EXCEPTION_ACTION_LABELS, exception_rows
+from apps.cycles.exception_evidence import exception_location
 from apps.cycles.forms import SERVICE_KIND_CHOICES
 from apps.cycles.models import (
     CycleState,
     EvidenceLink,
     EvidenceRequest,
-    ExceptionState,
     RequestState,
     ServiceCycle,
     TaskState,
@@ -46,11 +47,7 @@ from apps.cycles.services.cycle import (
     transition_task,
 )
 from apps.cycles.services.exceptions import (
-    ACTIVE_STATES,
-    EXCEPTION_TRANSITIONS,
     assign_exception,
-    is_waivable,
-    reason_for,
     transition_exception,
 )
 from apps.cycles.services.requests import (
@@ -68,15 +65,9 @@ from apps.cycles.workspace import (
     parse_period,
     portal_projection,
 )
+from apps.cycles.workspace_views import client_workspace
 from apps.portal.request_views import client_help
 from apps.portal.views import PortalVaultRequest
-from apps.tenants.models import Membership
-
-EXCEPTION_ACTION_LABELS = {
-    ExceptionState.HANDLING: "Começar a tratar",
-    ExceptionState.RESOLVED: "Marcar como resolvida",
-    ExceptionState.RISK_ACCEPTED: "Aceitar como risco",
-}
 
 
 class ChangeForm(forms.Form):
@@ -220,6 +211,7 @@ def _render_detail(
     pk: UUID,
     error: str,
     status: int,
+    selected_exception: CycleException | None = None,
 ) -> HttpResponse:
     """Render the cycle page; shared by the cycle and the request-action posts."""
     # Refresh state after a refused POST and fetch the visible context together,
@@ -258,76 +250,17 @@ def _render_detail(
             "unmet": completion_unmet(cycle),
             "notes": cycle.notes.select_related("author").order_by("created_at", "pk"),
             "exceptions": exception_rows(
-                CycleException.objects.filter(cycle=cycle), cycle.client_id
+                request,
+                CycleException.objects.filter(cycle=cycle),
+                "ciclo",
+                selected_exception,
+                error,
             ),
             "error": error,
             **_requests_context(request, cycle),
         },
         status=status,
     )
-
-
-def _roster(client_id: UUID) -> list[Membership]:
-    """Firm members an exception may be handed to (the service re-checks each)."""
-    assigned = set(
-        ClientAssignment.objects.filter(client_id=client_id).values_list(
-            "user_id", flat=True
-        )
-    )
-    members = (
-        # PLATFORM_QUERY_OK: tenants_membership is a tenancy root; this firm's staff.
-        Membership.objects.filter(
-            tenant_id=tenant_id(), client__isnull=True, is_active=True
-        )
-        .select_related("user")
-        .order_by("user__email")
-    )
-    return [
-        member
-        for member in members
-        if member.user_id in assigned
-        or portfolio_scope(member.user, tenant_id=tenant_id()) is PortfolioScope.ALL
-    ]
-
-
-def exception_rows(
-    rows: QuerySet[CycleException], client_id: UUID
-) -> list[dict[str, object]]:
-    """Active exceptions with their S5.7 label, drawer actions and owner roster."""
-    active = list(
-        rows.filter(state__in=ACTIVE_STATES)
-        .select_related("owner")
-        .prefetch_related("internals")
-        .order_by("due_on", "review_on", "created_at", "pk")
-    )
-    roster = _roster(client_id) if active else []
-    result = []
-    for problem in active:
-        reason = reason_for(problem.reason_code)
-        result.append(
-            {
-                "exception": problem,
-                "internal": next(iter(problem.internals.all())),
-                "label": (reason.label if reason and reason.label else None)
-                or problem.reason_code,
-                "waivable": is_waivable(problem.reason_code),
-                "actions": [
-                    (target, EXCEPTION_ACTION_LABELS[target])
-                    for target in (
-                        ExceptionState.HANDLING,
-                        ExceptionState.RESOLVED,
-                        ExceptionState.RISK_ACCEPTED,
-                    )
-                    if target in EXCEPTION_TRANSITIONS.get(problem.state, frozenset())
-                    and (
-                        target != ExceptionState.RISK_ACCEPTED
-                        or is_waivable(problem.reason_code)
-                    )
-                ],
-                "roster": roster,
-            }
-        )
-    return result
 
 
 def _intake_state(link: EvidenceLink) -> str | None:
@@ -489,21 +422,38 @@ class ExceptionActionForm(forms.Form):
     )
 
 
-@require_http_methods(["POST"])
+def _render_exception_surface(
+    request: AuthenticatedRequest,
+    problem: CycleException,
+    origin: str,
+    error: str,
+    status: int,
+) -> HttpResponse:
+    if origin == "cliente":
+        return client_workspace(request, problem.client_id, problem, error, status)
+    return _render_detail(request, problem.cycle_id, error, status, problem)
+
+
+@require_http_methods(["GET", "POST"])
 @login_required
 @require_tenant
 @require_can(CYCLES_OPERATE)
 def cycle_exception_action(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     """Apply one versioned exception command; 409 when the drawer was stale."""
     require_enabled()
-    problem = get_object_or_404(CycleException.objects.all(), pk=pk)
+    problem = get_object_or_404(CycleException.objects.select_related("cycle"), pk=pk)
     cycle = load_cycle(request.user, problem.cycle_id)
+    origin = request.POST.get("origin") or request.GET.get("origem", "ciclo")
+    origin = "cliente" if origin == "cliente" else "ciclo"
+    if request.method == "GET":
+        return redirect(exception_location(cycle, problem.pk, origin))
     form = ExceptionActionForm(request.POST)
     data = form.cleaned_data if form.is_valid() else None
     if data is None or (data["action"] == "assign" and data["owner_id"] is None):
-        return _render_detail(
+        return _render_exception_surface(
             request,
-            cycle.pk,
+            problem,
+            origin,
             "Revise os dados da pendência.",
             HTTPStatus.UNPROCESSABLE_CONTENT,
         )
@@ -524,18 +474,17 @@ def cycle_exception_action(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
                 note=data["note"],
             )
     except VersionConflict as exc:
-        return _render_detail(request, cycle.pk, str(exc), HTTPStatus.CONFLICT)
+        return _render_exception_surface(
+            request, problem, origin, str(exc), HTTPStatus.CONFLICT
+        )
     except (IllegalTransition, ValidationError) as exc:
         message = (
             "; ".join(exc.messages) if isinstance(exc, ValidationError) else str(exc)
         )
-        return _render_detail(
-            request, cycle.pk, message, HTTPStatus.UNPROCESSABLE_CONTENT
+        return _render_exception_surface(
+            request, problem, origin, message, HTTPStatus.UNPROCESSABLE_CONTENT
         )
-    if data["origin"] == "cliente":
-        workspace = reverse("client-detail", args=[cycle.client_id])
-        return redirect(f"{workspace}?periodo={cycle.period_start:%Y-%m}#pendencias")
-    return redirect(f"{reverse('cycle-detail', args=[cycle.pk])}#pendencias")
+    return redirect(exception_location(cycle, problem.pk, origin))
 
 
 @require_http_methods(["POST"])

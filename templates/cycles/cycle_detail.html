@@ -20,7 +20,7 @@
 <section class="ui-panel p-4 mt-6" id="solicitacoes" aria-labelledby="requests-title">
   <h2 id="requests-title" class="ui-panel-heading">Solicitações ao cliente</h2>
   <p class="text-sm text-ink-600">O título, a orientação e o prazo aparecem no portal do cliente. As instruções internas e o motivo de dispensa ficam só aqui.</p>
-  <ul class="mt-4 grid gap-4">{% for row in evidence_requests %}<li class="border-t pt-3" data-request-id="{{ row.request.pk }}">
+  <ul class="mt-4 grid gap-4">{% for row in evidence_requests %}<li id="solicitacao-{{ row.request.pk }}" class="border-t pt-3" data-request-id="{{ row.request.pk }}">
     <h3 class="font-semibold">{{ row.request.title }}</h3>
     <p>{{ row.request.get_state_display }}{% if row.status == 'recebido' %} · <span class="status-badge status-pending">Recebido do cliente · aguardando conferência</span>{% elif row.status == 'atrasada' %} · Atrasada{% endif %} · prazo {{ row.request.due_on|date:'d/m/Y'|default:'não definido' }} · revisão {{ row.request.version }}</p>
     {% if row.request.client_note %}<p class="text-sm">Orientação ao cliente: {{ row.request.client_note }}</p>{% endif %}
