@@ -1,13 +1,18 @@
 """Load selected live facts under their real writers' transaction fences."""
 
+import base64
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from email.generator import BytesGenerator
+from email.utils import format_datetime
+from io import BytesIO
 from uuid import UUID
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.mail import EmailMessage
 from django.core.validators import validate_email
 from django.db.models import Q
 
@@ -25,6 +30,7 @@ from apps.cycles.effects.manifest import (
     ObservationEffect,
     Recipient,
     canonicalize,
+    normalize_email,
 )
 from apps.cycles.evidence import PORTAL_SERVABLE_STATES, ReviewDecision
 from apps.cycles.models import (
@@ -380,6 +386,7 @@ def build_manifest(
         "body": spec.body,
         "reason": spec.reason,
     }
+    recipients = _recipients(sources, spec.action_kind, authorities)
     if spec.action_kind is ActionKind.EMAIL_NOTICE:
         provider = "smtp"
         identity = [
@@ -390,6 +397,24 @@ def build_manifest(
         ]
         account_id = hashlib.sha256(canonicalize(identity)).hexdigest()
         payload["from"] = settings.DEFAULT_FROM_EMAIL
+        message = EmailMessage(
+            subject=spec.subject,
+            body=spec.body,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            to=sorted(normalize_email(row["address"]) for row in recipients),
+            headers={
+                "Date": format_datetime(
+                    proposal.created_at.astimezone(UTC), usegmt=True
+                ),
+                "Message-ID": f"<{proposal.pk}@outbox.local>",
+            },
+        ).message()
+        buffer = BytesIO()
+        BytesGenerator(buffer, mangle_from_=False).flatten(message, linesep="\r\n")
+        wire = buffer.getvalue()
+        payload["headers"] = {key: str(value) for key, value in message.items()}
+        payload["mime_base64"] = base64.b64encode(wire).decode("ascii")
+        payload["mime_sha256"] = hashlib.sha256(wire).hexdigest()
     else:
         provider, account_id = "axorim", str(tenant.pk)
     return EffectManifestV1(
@@ -416,7 +441,7 @@ def build_manifest(
             "operation": spec.action_kind,
         },
         payload=payload,
-        recipients=_recipients(sources, spec.action_kind, authorities),
+        recipients=recipients,
         money=_money(sources, spec),
         documents=_documents(sources),
         evidence=_evidence(sources, spec),
@@ -428,7 +453,7 @@ def build_manifest(
             "hash": hashlib.sha256(canonicalize(policy)).hexdigest(),
         },
         authorization=authorities[proposal.initiator_id].snapshot(
-            initiation_capability(spec.action_kind), now=now
+            initiation_capability(spec.action_kind), client_id=cycle.client_id, now=now
         ),
         approval_rule={
             "required_capability": "actions.approve",

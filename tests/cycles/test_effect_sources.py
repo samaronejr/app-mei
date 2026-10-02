@@ -1,8 +1,13 @@
 """Live selected sources, not synthetic manifest-only changes."""
 
+import base64
+import hashlib
 import json
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
+from email.parser import BytesParser
+from email.policy import default
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import pytest
@@ -31,6 +36,42 @@ from tests.cycles.document_fixtures import reviewed
 from tests.portal.request_fixtures import portal_setup
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+def test_email_freezes_reproducible_transport_bytes_and_revalidates_sender(
+    monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+) -> None:
+    setup = approval_graph("approval-email-transport")
+    with tenant_context(setup.graph.tenant.pk):
+        frozen = bytes(setup.proposal.manifest_bytes)
+        payload = json.loads(frozen)["payload"]
+        wire = base64.b64decode(payload["mime_base64"], validate=True)
+        message = BytesParser(policy=default).parsebytes(wire)
+        assert hashlib.sha256(wire).hexdigest() == payload["mime_sha256"]
+        assert str(message["From"]) == settings.DEFAULT_FROM_EMAIL
+        assert str(message["To"]) == setup.contact.email
+        assert str(message["Subject"]) == "Documentos de setembro"
+        assert message.get_content().rstrip("\r\n") == (
+            "Confira os documentos selecionados."
+        )
+        assert payload["headers"]["Message-ID"] == (
+            f"<{setup.proposal.pk}@outbox.local>"
+        )
+        assert parsedate_to_datetime(payload["headers"]["Date"]) == (
+            setup.proposal.created_at.astimezone(UTC).replace(microsecond=0)
+        )
+        future = timezone.now() + timedelta(minutes=1)
+        monkeypatch.setattr(timezone, "now", lambda: future)
+        assert approve(
+            setup.graph.actor, setup.proposal.pk, expected_version=1
+        ).executable
+        assert revalidate(setup.graph.actor, setup.proposal.pk).executable
+        assert bytes(setup.proposal.manifest_bytes) == frozen
+        settings.DEFAULT_FROM_EMAIL = "another-sender@example.test"
+        result = revalidate(setup.graph.actor, setup.proposal.pk)
+        assert not result.executable
+        assert result.proposal.state == ProposalState.INVALIDATED
+        assert bytes(result.proposal.manifest_bytes) == frozen
 
 
 def _source(setup: ApprovalGraph, *, official: bool = False) -> SourceObservation:

@@ -7,8 +7,15 @@ from uuid import UUID
 
 from apps.accounts.models import User
 from apps.authz.models import GrantLevel, RoleGrant, UserCapabilityGrant
-from apps.authz.portfolio import VIEW_ALL, VIEW_ASSIGNED, visible_clients
+from apps.authz.portfolio import (
+    VIEW_ALL,
+    VIEW_ASSIGNED,
+    PortfolioScope,
+    portfolio_scope,
+    visible_clients,
+)
 from apps.authz.services import can, granted_levels_with_role, role_of
+from apps.clients.models import ClientAssignment
 from apps.cycles.effects.manifest import (
     AuthorizationSnapshot,
     GrantSnapshot,
@@ -76,7 +83,9 @@ class Authority:
             .exists()
         )
 
-    def snapshot(self, capability: str, *, now: datetime) -> AuthorizationSnapshot:
+    def snapshot(
+        self, capability: str, *, client_id: UUID, now: datetime
+    ) -> AuthorizationSnapshot:
         """Bind real row ids/revisions and grant expiry, including portfolio policy."""
         if self.membership is None:
             msg = "An authority snapshot requires a firm membership."
@@ -98,15 +107,30 @@ class Authority:
             and row.revoked_at is None
             and (row.expires_at is None or row.expires_at > now)
         )
+        assignment_id = None
+        if (
+            portfolio_scope(self.user, tenant_id=self.membership.tenant_id)
+            is PortfolioScope.ASSIGNED
+        ):
+            assignment_id = (
+                ClientAssignment.objects.filter(client_id=client_id, user=self.user)
+                .values_list("pk", flat=True)
+                .first()
+            )
         return {
             "membership_id": str(self.membership.pk),
             "membership_version": self.membership.version,
+            "portfolio_assignment_id": (
+                str(assignment_id) if assignment_id is not None else None
+            ),
             "grants": tuple(grants),
         }
 
-    def snapshot_data(self, capability: str, *, now: datetime) -> dict[str, JSONValue]:
+    def snapshot_data(
+        self, capability: str, *, client_id: UUID, now: datetime
+    ) -> dict[str, JSONValue]:
         """Use the manifest's same canonical grant representation for a decision."""
-        snapshot = self.snapshot(capability, now=now)
+        snapshot = self.snapshot(capability, client_id=client_id, now=now)
         grants: list[JSONValue] = [
             {
                 "id": row["id"],
@@ -122,6 +146,7 @@ class Authority:
         return {
             "membership_id": snapshot["membership_id"],
             "membership_version": snapshot["membership_version"],
+            "portfolio_assignment_id": snapshot["portfolio_assignment_id"],
             "grants": sorted(grants, key=canonicalize),
         }
 

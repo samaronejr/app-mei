@@ -82,6 +82,7 @@ def stored() -> Stored:
             authorization={
                 "membership_id": str(author.pk),
                 "membership_version": author.version,
+                "portfolio_assignment_id": None,
                 "grants": (),
             },
             approval_rule={

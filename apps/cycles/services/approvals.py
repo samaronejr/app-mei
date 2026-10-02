@@ -229,7 +229,7 @@ def _approval_reasons(
                 InvalidationReason("approver_role_revoked", Impact.INVALIDATE)
             )
         elif decision.authorization_snapshot["authority"] != authority.snapshot_data(
-            APPROVE, now=now
+            APPROVE, client_id=scope.client.pk, now=now
         ):
             reasons.append(
                 InvalidationReason("approver_authority_changed", Impact.INVALIDATE)
@@ -460,8 +460,8 @@ def approve(
         _invalidate(scope, proposal, reasons, now=now)
         return DecisionResult(proposal, reasons)
     authority = scope.authorities[scope.actor_id]
-    member_snapshot = authority.snapshot(APPROVE, now=now)
-    snapshot = authority.snapshot_data(APPROVE, now=now)
+    member_snapshot = authority.snapshot(APPROVE, client_id=scope.client.pk, now=now)
+    snapshot = authority.snapshot_data(APPROVE, client_id=scope.client.pk, now=now)
     grant_expiries = [
         row.expires_at
         for row in authority.user_grants
@@ -519,8 +519,8 @@ def reject(
         raise ValidationError(msg)
     now = timezone.now()
     authority = scope.authorities[actor.pk]
-    member_snapshot = authority.snapshot(APPROVE, now=now)
-    snapshot = authority.snapshot_data(APPROVE, now=now)
+    member_snapshot = authority.snapshot(APPROVE, client_id=scope.client.pk, now=now)
+    snapshot = authority.snapshot_data(APPROVE, client_id=scope.client.pk, now=now)
     Approval.objects.create(
         tenant=scope.tenant,
         client=scope.client,

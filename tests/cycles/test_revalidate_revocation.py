@@ -7,16 +7,19 @@ import pytest
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 
+from apps.accounts.models import User
 from apps.accounts.views import _deactivate
 from apps.authz.grants import set_review_capability
 from apps.authz.models import RoleGrant, UserCapabilityGrant
+from apps.clients.maintenance import add_assignment, assignment_state, remove_assignment
+from apps.clients.models import ClientAssignment, ClientCompany
 from apps.clients.services import unassign_client
 from apps.core.tenancy import tenant_context
 from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
 from apps.cycles.models import Approval, CycleEvent, ProposalState
 from apps.cycles.services.approvals import approve, propose, revalidate
 from apps.cycles.services.requests import RequestFields, create_request
-from apps.tenants.models import Membership
+from apps.tenants.models import Membership, TenantRole
 from tests.cycles.approval_fixtures import ApprovalGraph, approval_graph
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -25,6 +28,116 @@ pytestmark = pytest.mark.django_db(transaction=True)
 @pytest.fixture
 def setup() -> ApprovalGraph:
     return approval_graph()
+
+
+@pytest.mark.parametrize("principal", ["initiator", "approver"])
+def test_replacement_portfolio_admission_cannot_reuse_old_approval(
+    setup: ApprovalGraph, principal: str
+) -> None:
+    with tenant_context(setup.graph.tenant.pk):
+        proposal = setup.proposal
+        approver = setup.graph.actor
+        if principal == "approver":
+            member = Membership.objects.get(
+                tenant=setup.graph.tenant, user=setup.graph.staff, client__isnull=True
+            )
+            set_review_capability(
+                actor=setup.graph.actor,
+                membership=member,
+                enabled=True,
+                expected_version=member.review_grant_version,
+            )
+            proposal = propose(
+                setup.graph.actor,
+                setup.cycle.pk,
+                ProposalDraft(
+                    ProposalInput.from_data(proposal.input_spec),
+                    proposal.expires_at,
+                    previous_id=proposal.pk,
+                    previous_version=1,
+                ),
+                expected_version=setup.cycle.version,
+            )
+            approver = setup.graph.staff
+        assert approve(approver, proposal.pk, expected_version=1).executable
+        decision = Approval.objects.get(proposal=proposal)
+        frozen = bytes(proposal.manifest_bytes)
+        client = setup.graph.client
+        original = ClientAssignment.objects.get(client=client, user=setup.graph.staff)
+        remove_assignment(
+            actor=setup.graph.actor,
+            tenant_id=setup.graph.tenant.pk,
+            client_id=client.pk,
+            assignment_id=original.pk,
+            expected_state=assignment_state(client),
+        )
+        client.refresh_from_db()
+        replacement = add_assignment(
+            actor=setup.graph.actor,
+            tenant_id=setup.graph.tenant.pk,
+            client_id=client.pk,
+            user_id=setup.graph.staff.pk,
+            expected_state=assignment_state(client),
+        )
+        assert replacement.pk != original.pk
+        result = revalidate(setup.graph.actor, proposal.pk)
+        assert not result.executable
+        assert result.proposal.state == ProposalState.INVALIDATED
+        assert bytes(result.proposal.manifest_bytes) == frozen
+        assert Approval.objects.get(pk=decision.pk).digest == proposal.digest
+
+
+@pytest.mark.parametrize("unrelated", ["other_client", "other_user", "firm_wide"])
+def test_unrelated_portfolio_admission_changes_keep_approval_valid(
+    setup: ApprovalGraph, unrelated: str
+) -> None:
+    with tenant_context(setup.graph.tenant.pk):
+        client = setup.graph.client
+        user = setup.graph.actor
+        if unrelated == "other_client":
+            client = ClientCompany.objects.create(
+                tenant=setup.graph.tenant,
+                legal_name="Another synthetic client",
+                cnpj="11444777000161",
+            )
+            user = setup.graph.staff
+        elif unrelated == "other_user":
+            user = User.objects.create_user(email="another-portfolio@example.test")
+            Membership.objects.create(
+                tenant=setup.graph.tenant, user=user, role=TenantRole.STAFF_ACCOUNTANT
+            )
+        original = add_assignment(
+            actor=setup.graph.actor,
+            tenant_id=setup.graph.tenant.pk,
+            client_id=client.pk,
+            user_id=user.pk,
+            expected_state=assignment_state(client),
+        )
+        client.refresh_from_db()
+        assert approve(
+            setup.graph.actor, setup.proposal.pk, expected_version=1
+        ).executable
+        frozen = bytes(setup.proposal.manifest_bytes)
+        remove_assignment(
+            actor=setup.graph.actor,
+            tenant_id=setup.graph.tenant.pk,
+            client_id=client.pk,
+            assignment_id=original.pk,
+            expected_state=assignment_state(client),
+        )
+        client.refresh_from_db()
+        replacement = add_assignment(
+            actor=setup.graph.actor,
+            tenant_id=setup.graph.tenant.pk,
+            client_id=client.pk,
+            user_id=user.pk,
+            expected_state=assignment_state(client),
+        )
+        assert replacement.pk != original.pk
+        result = revalidate(setup.graph.actor, setup.proposal.pk)
+        assert result.executable
+        assert not result.reasons
+        assert bytes(result.proposal.manifest_bytes) == frozen
 
 
 def test_unrelated_request_counter_does_not_change_live_email_effects(

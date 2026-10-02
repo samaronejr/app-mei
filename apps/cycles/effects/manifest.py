@@ -229,6 +229,7 @@ class AuthorizationSnapshot(TypedDict):
 
     membership_id: str
     membership_version: int
+    portfolio_assignment_id: str | None
     grants: tuple[GrantSnapshot, ...]
 
 
@@ -447,6 +448,11 @@ class EffectManifestV1:
             "authorization": {
                 "membership_id": _uuid(self.authorization["membership_id"]),
                 "membership_version": self.authorization["membership_version"],
+                "portfolio_assignment_id": (
+                    _uuid(self.authorization["portfolio_assignment_id"])
+                    if self.authorization["portfolio_assignment_id"] is not None
+                    else None
+                ),
                 "grants": sorted(grants, key=canonicalize),
             },
             "approval_rule": {

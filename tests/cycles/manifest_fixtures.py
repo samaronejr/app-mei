@@ -79,6 +79,7 @@ def manifest_example() -> EffectManifestV1:
         authorization={
             "membership_id": SECOND.upper(),
             "membership_version": 6,
+            "portfolio_assignment_id": None,
             "grants": (
                 {"id": THIRD, "version": 2, "expires_at": NOW + timedelta(days=1)},
                 {"id": FIRST, "version": 1, "expires_at": None},
