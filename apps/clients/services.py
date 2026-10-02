@@ -56,6 +56,7 @@ class TaxProfileConflictError(Exception):
 FAR_FUTURE = date.max
 
 
+@transaction.atomic
 def assign_client(
     *,
     actor: User,
@@ -64,6 +65,7 @@ def assign_client(
     role: str = AssignmentRole.PRIMARY,
 ) -> ClientAssignment:
     """Put an account on a client, recording who did it."""
+    client = ClientCompany.objects.select_for_update(no_key=True).get(pk=client.pk)
     assignment = ClientAssignment(
         tenant_id=client.tenant_id,
         client=client,
@@ -75,6 +77,7 @@ def assign_client(
     return assignment
 
 
+@transaction.atomic
 def unassign_client(*, actor: User, assignment: ClientAssignment) -> None:
     """Take an account off a client, recording who did it.
 
@@ -82,6 +85,10 @@ def unassign_client(*, actor: User, assignment: ClientAssignment) -> None:
     readable, and both land in the same request transaction — a rollback discards
     the pair together rather than leaving a record of a removal that did not happen.
     """
+    ClientCompany.objects.select_for_update(no_key=True).get(pk=assignment.client_id)
+    assignment = ClientAssignment.objects.select_for_update(no_key=True).get(
+        pk=assignment.pk
+    )
     _record(actor=actor, assignment=assignment, change="unassigned")
     assignment.delete()
 

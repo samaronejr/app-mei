@@ -149,6 +149,9 @@ $$;
 -- PORTAL_NONE: cycles_requestinternal
 -- PORTAL_NONE: cycles_extractedfield
 -- PORTAL_NONE: cycles_review
+-- PORTAL_NONE: cycles_actionproposal
+-- PORTAL_NONE: cycles_approval
+-- Exact recipients, frozen payloads and approval authority are firm-private.
 -- T9 exposes no internal work. T14 grants SELECT on cycles_exception (allow-list
 -- below) under a policy that also requires client_visible; instructions and evidence
 -- references live in cycles_exceptioninternal, and resolution prose stays
@@ -171,7 +174,7 @@ DECLARE
     receipt_table text;
 BEGIN
     FOREACH receipt_table IN ARRAY ARRAY[
-        'delivery_deliveryattempt', 'delivery_deliveryeffect'
+        'delivery_deliveryattempt', 'delivery_deliveryeffect', 'cycles_approval'
     ]
     LOOP
         IF to_regclass('public.' || receipt_table) IS NOT NULL THEN

@@ -249,6 +249,7 @@ def _render_detail(
             "may_operate": can(request.user, CYCLES_OPERATE, tenant_id=tenant_id()),
             "unmet": completion_unmet(cycle),
             "notes": cycle.notes.select_related("author").order_by("created_at", "pk"),
+            "proposals": cycle.proposals.order_by("-created_at", "-pk"),
             "exceptions": exception_rows(
                 request,
                 CycleException.objects.filter(cycle=cycle),

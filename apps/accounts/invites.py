@@ -469,6 +469,7 @@ def accept_invite(
     expected_scope: InviteScope,
 ) -> Membership:
     """Redeem at the expected door for an account that owns the invited address."""
+    user = User.objects.select_for_update(no_key=True).get(pk=user.pk)
     # Re-read under a row lock: two clicks on the same link land in two requests, and
     # a check made outside the lock would let both create a membership.
     # PLATFORM_QUERY_OK: re-reads by primary key the invite already resolved from

@@ -28,6 +28,12 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from apps.core.models import TenantScopedModel
+from apps.cycles.effects.records import (
+    ActionProposal,
+    Approval,
+    ApprovalDecision,
+    ProposalState,
+)
 from apps.cycles.errors import ImmutableVersion
 from apps.cycles.evidence import (
     DocumentIntake,
@@ -56,6 +62,9 @@ from apps.cycles.records import (
 )
 
 __all__ = [
+    "ActionProposal",
+    "Approval",
+    "ApprovalDecision",
     "CycleAmendment",
     "CycleEvent",
     "CycleState",
@@ -75,6 +84,7 @@ __all__ = [
     "Playbook",
     "PlaybookStep",
     "PlaybookVersion",
+    "ProposalState",
     "RequestInternal",
     "RequestState",
     "Review",

@@ -22,6 +22,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.clients.maintenance import load_client
 from apps.clients.models import ClientCompany, ClientContact
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.errors import IllegalTransition
@@ -363,6 +364,8 @@ def send_requests(
     preview, never messaged).
     """
     with transaction.atomic():
+        candidate = load_cycle(actor, cycle_id)
+        load_client(actor, tenant_id(), candidate.client_id, lock=True)
         cycle = _open_cycle(actor, cycle_id)
         check_version(cycle.version, expected_version)
         require_actor(actor, CYCLES_OPERATE)
@@ -416,6 +419,10 @@ def remind_request(
 ) -> list[Recipient]:
     """Queue a reminder about one outstanding request; re-checked again at send."""
     with transaction.atomic():
+        candidate = EvidenceRequest.objects.filter(pk=request_id).first()
+        if candidate is None:
+            raise Http404
+        load_client(actor, tenant_id(), candidate.client_id, lock=True)
         cycle, request = _locked_request(actor, request_id)
         check_version(request.version, expected_version)
         require_actor(actor, CYCLES_OPERATE)

@@ -2,9 +2,16 @@
 
 from django.urls import path
 
-from apps.cycles import cycle_views, document_views, review_views, views
+from apps.cycles import approval_views, cycle_views, document_views, review_views, views
 
 urlpatterns = [
+    path("acoes/<uuid:pk>/", approval_views.approval_card, name="approval-card"),
+    path(
+        "ciclos/<uuid:pk>/propor/",
+        approval_views.proposal_create,
+        name="proposal-create",
+    ),
+    path("gestao/aprovacoes/", approval_views.approval_policy, name="approval-policy"),
     path("ciclos/", cycle_views.cycle_list, name="cycle-list"),
     path("ciclos/<uuid:pk>/", cycle_views.cycle_detail, name="cycle-detail"),
     path(

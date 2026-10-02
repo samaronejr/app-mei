@@ -84,6 +84,11 @@ class ServiceCycle(ClientRecord):
         related_name="reviewed_cycles",
     )
     version = models.PositiveIntegerField(default=1)
+    # Structural effect identity, not unrelated request/task/form bookkeeping.
+    # A database trigger advances it for pinned context and amendment changes.
+    effect_revision = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
     amendment = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(default=timezone.now)
 

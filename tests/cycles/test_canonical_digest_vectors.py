@@ -278,7 +278,10 @@ def test_decimal_strings_have_explicit_scale_and_rounding(
     assert decimal_string(Decimal(value), scale=scale, rounding=rounding) == expected
 
 
-def test_decimal_formatting_is_independent_of_ambient_context() -> None:
+@pytest.mark.parametrize("sticky_flags", [False, True])
+def test_decimal_formatting_is_independent_of_ambient_context(
+    sticky_flags: bool,
+) -> None:
     with localcontext() as context:
         context.prec = 1
         context.rounding = ROUND_DOWN
@@ -286,11 +289,13 @@ def test_decimal_formatting_is_independent_of_ambient_context() -> None:
         context.Emin = -1
         for signal in context.traps:
             context.traps[signal] = True
+        for signal in context.flags:
+            context.flags[signal] = sticky_flags
 
         result = decimal_string(Decimal("999.995"), scale=2, rounding=ROUND_HALF_EVEN)
         assert result == "1000.00"
         assert context.prec == 1
-        assert not any(context.flags.values())
+        assert all(flag is sticky_flags for flag in context.flags.values())
 
 
 @pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "-Infinity"])

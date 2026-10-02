@@ -46,6 +46,8 @@ PORTAL_DENIED_TABLES = (
     # T13: extracted/reviewed field values and review decisions are firm-only.
     "cycles_extractedfield",
     "cycles_review",
+    "cycles_actionproposal",
+    "cycles_approval",
     "delivery_outboundmessage",
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
@@ -59,6 +61,7 @@ APPEND_ONLY_TABLES = (
     "audit_platformevent",
     "obligations_sourceobservation",
     "cycles_cycleevent",
+    "cycles_approval",
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
 )

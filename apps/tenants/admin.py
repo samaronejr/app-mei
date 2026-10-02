@@ -5,6 +5,7 @@ from typing import Any
 from django import forms
 from django.contrib import admin
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.utils.translation import gettext_lazy as _
@@ -14,6 +15,7 @@ from apps.audit.services import Origin, record_platform_event
 from apps.core.flags import FEATURES
 from apps.core.netaddr import client_ip
 from apps.core.templatetags.ptbr import TENANT_ROLE_LABELS, papel
+from apps.tenants.authority import lock_users
 from apps.tenants.models import (
     Invite,
     Membership,
@@ -203,6 +205,46 @@ class MembershipAdmin(admin.ModelAdmin[Membership]):
     list_display = ("user", "tenant", "client", "role_name", "is_active")
     list_filter = (RoleListFilter, "is_active", "client")
     search_fields = ("user__email", "tenant__slug", "client__legal_name")
+
+    @transaction.atomic
+    def save_model(
+        self,
+        request: HttpRequest,
+        obj: Membership,
+        form: forms.ModelForm[Membership],
+        change: bool,
+    ) -> None:
+        """Fence both sides of a user/tenant move before locking the seat."""
+        # PLATFORM_QUERY_OK: the platform admin edits this exact root row.
+        # CLIENT_SCOPE_OK: the platform editor handles both firm and portal seats.
+        previous = Membership.objects.filter(pk=obj.pk).first() if change else None
+        users = {obj.user_id}
+        if previous is not None:
+            users.add(previous.user_id)
+        lock_users(users)
+        if previous is not None:
+            # PLATFORM_QUERY_OK: recheck discovery after acquiring user fences.
+            # CLIENT_SCOPE_OK: the same exact firm or portal row is being edited.
+            locked = Membership.objects.select_for_update(no_key=True).get(pk=obj.pk)
+            if locked.user_id != previous.user_id or locked.version != previous.version:
+                msg = "O acesso mudou. Recarregue antes de salvar."
+                raise ValidationError(msg)
+        super().save_model(request, obj, form, change)
+
+    @transaction.atomic
+    def delete_model(self, request: HttpRequest, obj: Membership) -> None:
+        """Use the same user fence when deleting one seat."""
+        lock_users((obj.user_id,))
+        super().delete_model(request, obj)
+
+    @transaction.atomic
+    def delete_queryset(
+        self, request: HttpRequest, queryset: QuerySet[Membership]
+    ) -> None:
+        """Fence a platform-selected batch before any member is removed."""
+        lock_users(queryset.values_list("user_id", flat=True))
+        for member in queryset.order_by("tenant_id", "pk"):
+            self.delete_model(request, member)
 
     @admin.display(description=_("Papel"), ordering="role")
     def role_name(self, obj: Membership) -> str:

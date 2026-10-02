@@ -23,8 +23,10 @@ from uuid import UUID
 from django.apps import apps as django_apps
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied
+from django.db.models import Q
 from django.http import HttpRequest
 from django.http.response import HttpResponseBase
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
@@ -299,6 +301,7 @@ def _user_grant_levels(
     # `role_of` resolved against; the scoped manager would instead ask the ambient
     # context var, which a command handing an explicit tenant may never have set.
     rows = grant_model.all_objects.filter(
+        Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()),
         tenant_id=resolved,
         user=user,
         capability__slug__in=slugs,

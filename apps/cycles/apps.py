@@ -48,3 +48,11 @@ class CyclesConfig(AppConfig):
         # T14: the deterministic openers the daily sweep runs.
         for code, reason in REASONS.items():
             register_exception_reason(code, reason)
+        register_exception_reason(
+            "approval_invalidated",
+            ExceptionReason(
+                "Os efeitos ou a autoridade mudaram. Confira o cartão congelado "
+                "e crie uma nova versão antes de pedir outra aprovação.",
+                label="aprovação invalidada",
+            ),
+        )

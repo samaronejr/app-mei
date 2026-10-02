@@ -230,7 +230,10 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
         link.review_decision = decision
         link.client_reason = reason
         link.reviewed_at = now
-        link.save(update_fields=["review_decision", "client_reason", "reviewed_at"])
+        link.version += 1
+        link.save(
+            update_fields=["review_decision", "client_reason", "reviewed_at", "version"]
+        )
         previous = request.state
         if accepting:
             request.state = RequestState.ACCEPTED

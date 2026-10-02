@@ -3,6 +3,12 @@
 {% block heading %}{{ cycle.client.legal_name }} · {{ cycle.period_start|date:'m/Y' }}{% endblock %}
 {% block content %}
 <a class="ui-link" href="{% url 'client-detail' cycle.client_id %}?periodo={{ cycle.period_start|date:'Y-m' }}">Voltar ao espaço do cliente</a>
+<section class="ui-panel p-4 mt-4" aria-labelledby="cycle-proposals">
+  <h2 id="cycle-proposals" class="ui-panel-heading">Efeitos e aprovações</h2>
+  <p class="text-sm text-ink-600">A decisão autoriza efeitos exatos. Não comprova que foram executados.</p>
+  <ul class="mt-3 grid gap-2">{% for proposal in proposals %}<li><a class="ui-link" href="{% url 'approval-card' proposal.pk %}">{{ proposal.get_action_kind_display }} · versão {{ proposal.revision }}</a> · {{ proposal.get_state_display }}</li>{% empty %}<li>Nenhuma proposta neste ciclo.</li>{% endfor %}</ul>
+  {% if may_operate %}<p class="mt-3"><a class="ui-link" href="{% url 'proposal-create' cycle.pk %}">Propor efeitos para aprovação</a></p>{% endif %}
+</section>
 {% if error %}<div role="alert" class="ui-panel p-4 my-4">{{ error }}</div>{% endif %}
 <section class="ui-panel p-4 mt-4" aria-labelledby="cycle-summary">
 <header id="cycle-context" class="mb-4">

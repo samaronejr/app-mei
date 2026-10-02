@@ -66,6 +66,9 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         # portfolio-scoped by load_visible_client before any byte is read.
         "document-review",
         "document-preview",
+        # T15: portfolio-scoped object IDs, never bearer credentials.
+        "approval-card",
+        "proposal-create",
         "admin:*",
     },
 )

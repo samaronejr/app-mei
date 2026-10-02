@@ -59,7 +59,11 @@ RUNTIME_ROLE = "app_runtime"
 # are the request/upload tables: three portal-readable, one portal-NONE.
 # cycles_{extractedfield,review} (todo 13) are firm-only extraction and review rows.
 # T14's private exception companion carries instructions and evidence references.
-EXPECTED_TENANT_TABLE_COUNT = 42
+# T15 adds two exact-effect tables, client-paired and independently portal-denied.
+EXPECTED_TENANT_TABLE_COUNT = 44
+EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
+    {"cycles_actionproposal", "cycles_approval"}
+)
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -265,6 +269,11 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
 
         policies = _portal_policies(table)
         assert policies, f"{table} has no portal policy and no exemption"
+        if table in EXACT_EFFECT_PRIVATE_TABLES:
+            assert {policy.name for policy in policies} == {
+                f"{table}_portal_client_isolation",
+                f"{table}_portal_denied",
+            }
 
         is_client_scoped = table in CLIENT_IDENTITY_COLUMN or _has_column(
             table,
@@ -289,6 +298,15 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
                 f"{table}.{name} is restrictive and also binds {sorted(roles)}"
             )
 
+            if (
+                table in EXACT_EFFECT_PRIVATE_TABLES
+                and name == f"{table}_portal_denied"
+            ):
+                # These client-paired tables have an additional deny-all backstop:
+                # even an accidental portal grant must reveal no frozen effects.
+                assert qual.strip().lower() == "false", f"{table}.{name} USING"
+                assert with_check.strip().lower() == "false", f"{table}.{name} CHECK"
+                continue
             if is_client_scoped:
                 # Then the predicate confines the portal to one client, on BOTH sides.
                 for side, expression in (("USING", qual), ("WITH CHECK", with_check)):
@@ -390,6 +408,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_requestinternal",
         "cycles_extractedfield",
         "cycles_review",
+        "cycles_actionproposal",
+        "cycles_approval",
         "delivery_outboundmessage",
         "delivery_deliveryattempt",
         "delivery_deliveryeffect",

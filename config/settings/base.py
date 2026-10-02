@@ -328,6 +328,15 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "actor's portfolio (404 outside it); every command re-checks scope, version "
         "and capability inside the row lock."
     ),
+    "approval-card": (
+        "AXR1-015. The UUID identifies frozen effects, not a bearer credential. "
+        "Authentication, tenant RLS and live portfolio scope protect the card; "
+        "decision commands recheck capability and version under their locks."
+    ),
+    "proposal-create": (
+        "AXR1-015. The UUID identifies a cycle loaded through the actor's portfolio. "
+        "Creating a proposal requires the live action capability and locked version."
+    ),
     "portal-request-detail": (
         "The UUID names an evidence request, not a bearer credential. "
         "Authentication and RESTRICTIVE portal client RLS authorize the SELECT."

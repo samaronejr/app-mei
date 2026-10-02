@@ -164,6 +164,20 @@ class Tenant(UUIDv7PrimaryKeyModel):
         blank=True,
     )
     is_active = models.BooleanField(_("active"), default=True)
+    # T15: only the audited, versioned owner action changes this approval policy.
+    allow_self_approval = models.BooleanField(
+        default=False, db_default=False, editable=False
+    )
+    approval_quorum = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
+    approval_policy_version = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
+    # Admission/activity revision, not a cached count of active staff.
+    approval_roster_version = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
     # Portal branding (T11). Read by PortalMiddleware as app_runtime and handed to the
     # portal shell as scalars (apps/tenants/branding.py): app_portal cannot read this
     # table, so no portal template ever receives the row.
@@ -200,6 +214,16 @@ class Tenant(UUIDv7PrimaryKeyModel):
         verbose_name = _("tenant")
         verbose_name_plural = _("tenants")
         ordering: ClassVar[list[str]] = ["name"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    approval_quorum__gt=0,
+                    approval_policy_version__gt=0,
+                    approval_roster_version__gt=0,
+                ),
+                name="tenant_positive_approval_policy",
+            ),
+        ]
 
     def __str__(self) -> str:
         """Identify the firm by the subdomain it is reached at."""
@@ -233,6 +257,7 @@ class Membership(UUIDv7PrimaryKeyModel):
     is_active = models.BooleanField(_("active"), default=True)
     # The seat survives revocation and re-granting; an individual grant row does not.
     review_grant_version = models.PositiveBigIntegerField(default=0, editable=False)
+    version = models.PositiveIntegerField(default=1, db_default=1, editable=False)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
     objects = PlatformScopedManager["Membership"]()
@@ -243,6 +268,10 @@ class Membership(UUIDv7PrimaryKeyModel):
         verbose_name = _("membership")
         verbose_name_plural = _("memberships")
         constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0),
+                name="membership_positive_version",
+            ),
             # NULLS NOT DISTINCT is what preserves the Phase-1 guarantee. With the
             # PostgreSQL default, two firm-side rows both carrying client = NULL would
             # be considered distinct and a user could hold two roles in one firm.

@@ -167,6 +167,7 @@ class EvidenceLink(ClientRecord):
     )
     client_reason = models.TextField(blank=True, default="", db_default="")
     reviewed_at = models.DateTimeField(null=True, blank=True)
+    version = models.PositiveIntegerField(default=1, db_default=1, editable=False)
 
     class Meta(ClientRecord.Meta):
         """One link per request and document (S7.5)."""
