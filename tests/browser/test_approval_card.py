@@ -1,5 +1,6 @@
 """Frozen cards and actual decisions, in both policed live-browser viewports."""
 
+import json
 from collections.abc import Callable
 
 import pytest
@@ -50,6 +51,10 @@ def test_frozen_card_is_accessible_and_keyboard_approval_records_only_a_decision
     url = live.url(f"/acoes/{setup.proposal.pk}/")
     opened.goto(url)
     expect(page.locator("[data-frozen-body]")).to_have_text(SCRIPT_BODY)
+    frozen = json.loads(bytes(setup.proposal.manifest_bytes))
+    expect(page.locator("[data-frozen-mime-sha256]")).to_have_text(
+        frozen["payload"]["mime_sha256"]
+    )
     assert page.evaluate("window.T15_BROWSER_CANARY === undefined")
     assert page.evaluate(
         """() => !!(document.querySelector('#frozen-policy').compareDocumentPosition(
@@ -58,6 +63,17 @@ def test_frozen_card_is_accessible_and_keyboard_approval_records_only_a_decision
     )
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     axe_check(page)
+    headers = page.locator("[data-frozen-mail-headers]")
+    summary = headers.locator("summary")
+    for _step in range(32):
+        page.keyboard.press("Tab")
+        if summary.evaluate("(control) => document.activeElement === control"):
+            break
+    expect(summary).to_be_focused()
+    page.keyboard.press("Enter")
+    expect(headers).to_have_attribute("open", "")
+    expect(headers).to_contain_text(frozen["payload"]["headers"]["Message-ID"])
+    opened.screenshot("t15-frozen-mail-headers")
     with tenant_context(setup.graph.tenant.pk):
         deliveries = (
             OutboundMessage.objects.count(),
