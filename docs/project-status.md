@@ -61,12 +61,16 @@ lives under `.omo/plans/` and is never committed. "Axorim" is an internal workin
 name. The repository, the README headline and customer-facing copy stay "app-mei"
 until the name is cleared.
 
-- **Ids.** The plan has 29 numbered todos in five waves, plus a final verification
-  wave. Todo N is cited as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
+- **Ids.** The plan has 29 original numbered todos in five waves, the added
+  `AXR1-030` certificate guard, and a final verification wave. Todo N is cited
+  as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
-- **Delivery.** One pull request per todo, based on current `main`, with every new
-  surface behind a per-tenant feature flag that's off by default. Each pull request
-  updates the progress line below and the suite baseline.
+- **Delivery.** One open pull request per todo in a linear stack: the first is
+  based on `main`, and each later branch and PR is based on the preceding todo's
+  branch. No merges or force pushes; merging awaits the user's instruction
+  because it deploys to the pilot host. Every new surface stays behind a
+  per-tenant feature flag that's off by default. Each pull request updates the
+  progress line below and the suite baseline.
 - **Records.** `docs/product/pivot-supersession.md` says which earlier restrictions are
   superseded and which still bind. ADRs 0002 to 0007 in `docs/decisions/` hold the
   architecture decisions, and `docs/product/vocabulary.md` holds the status words.
@@ -245,6 +249,48 @@ lifecycle) remain **open**. Carried to `AXR1-013`: the legacy portal vault uploa
 still bypasses this pipeline, and the Celery soft limit that bounds one slow PDF
 page. Todos 13 to 29 and the final verification wave remain open.
 
+`AXR1-013` (deterministic document extraction, field provenance, wrong-company
+quarantine and staff review; `cycles.0005`, `obligations.0019`) is recorded on
+the final `AXR1-012` branch, not on `main`. The scoped `/documentos/` queue and
+review route expose XML/PDF suggestions and their origin without modifying
+original bytes. Unknown XML layouts and images make no automatic verification
+claim. Accepted corrections stay in `Review`; rejected files retain a pt-BR
+reason visible to their client. Capability, portfolio scope and rendered
+version are checked under the actual cycle/request locks; stale writes answer
+409 without effects. Wrong-company findings suspend links, preserve ownership
+and propagate their exception to later cycles when the same bytes are linked
+again. The legacy vault upload path now enters intake, and historical
+unverified client uploads fail closed when served. The PDF worker's soft/hard
+bounds are 15/30 seconds; interruption handling does not claim a timed
+live-worker kill.
+
+The review table contains its hidden labels at 390 pixels while retaining
+accessible associations and table-only horizontal scrolling. Keyboard
+decisions wait on navigation-load signals, not timing sleeps. An independent
+review confirmed `8f5f475`, closed both review findings, reproduced six
+XML/PDF viewport cases, and proved that removing the containment class fails
+the mobile journey at 628 versus 390 pixels. Both source hashes were restored
+and both keyboard journeys passed again. Native headless PDF rendering is
+unverified; actual clicks returned the unchanged original bytes and safe
+headers. The populated schema reversal preserved pre-existing documents,
+links and shared protections; it dropped the added review/extraction rows,
+which forward migration does not restore.
+
+Tests: `tests/cycles/test_extraction.py`, `test_wrong_company_upload.py`,
+`test_review_concurrency.py`, `test_duplicate_upload_relink.py` and
+`tests/browser/test_document_review.py`. Evidence:
+`.evidence/AXR1-013-reviewer-final-attacks.txt`, `-reviewer-remaining.txt`,
+`-ui-fix-red.txt`, `-ui-fix-render.txt`, `-ui-fix-gates.txt`,
+`-rv-8f5f475-baseline.txt`, `-rv-8f5f475-mutation.txt`,
+`-rv-8f5f475-restored.txt` and `-rv-8f5f475-cleanup-final.txt`.
+All owned review containers, volumes, processes and temporary paths were
+removed. Existing semantic-template diagnostics and a favicon 404 are
+documented, not suppressed. OG-03/OG-04/OG-05 and OD-11 remain **open**;
+no production email, scanner activation or pilot authorization is claimed.
+The invitation terminal-state recovery remains in `AXR1-014`; search and
+AI-shadow exclusion proofs remain in `AXR1-021`/`AXR1-024`.
+Todos 14 to 29 and the final verification wave remain open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -344,7 +390,18 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **2956 passing**
+implementation head. The current default-suite baseline is **3029 passing**
+(46 deselected), independently verified at `AXR1-013` code `8f5f475`
+(tree `7f93ff2`), on final `AXR1-012` (`8bf17e3`): the **2956** below plus
+**73** net-new default-suite cases. The same serial review ran isolation
+(**222**), CNPJ (**29**), browser (**46**), lint, format, mypy, migration-drift
+and a clean rebuilt-static check. Evidence:
+`.evidence/AXR1-013-rv-8f5f475-baseline.txt`; the separate biting mutation,
+exact restore, two passing keyboard cases and teardown are recorded in
+`-mutation.txt`, `-restored.txt` and `-cleanup-final.txt` with that prefix.
+This status-only commit does not change the approved code.
+
+The previous default-suite baseline was **2956 passing**
 (44 deselected), verified by an independent serial full run of `AXR1-012` placed on
 the final `AXR1-011` head (`4772761`): the **2895** of `AXR1-011` plus **61**
 net-new `AXR1-012` cases. The same review ran the browser suite (**44**), isolation
