@@ -125,7 +125,20 @@ def effect(message: OutboundMessage) -> None:
 
 
 def report_problem(message: OutboundMessage) -> None:
-    """Open a system-attributed cycle exception without impersonating a worker."""
+    """Open a system-attributed cycle exception without impersonating a worker.
+
+    A provider refusal first runs the kind's own terminal hook (T14: a refused
+    portal invitation is withdrawn and gets its own exception).
+    """
+    from apps.delivery.policy import KINDS  # noqa: PLC0415
+
+    kind = KINDS.get(message.kind)
+    if (
+        message.state == MessageState.REJECTED
+        and kind is not None
+        and kind.on_rejected is not None
+    ):
+        kind.on_rejected(message)
     if message.cycle_id is None:
         return
     cycle = ServiceCycle.objects.select_for_update().get(pk=message.cycle_id)

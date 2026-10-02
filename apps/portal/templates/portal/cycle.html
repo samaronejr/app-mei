@@ -6,4 +6,8 @@
   <h2 id="cycle-period" class="text-xl font-semibold">{{ state_label }}</h2>
   <p class="mt-3">{{ next_action }}</p>
 </section>
+{% if help_rows %}<section class="ui-panel mt-4 p-4" aria-labelledby="cycle-help">
+  <h2 id="cycle-help" class="text-lg font-semibold">Precisamos da sua ajuda</h2>
+  <ul class="mt-3 grid gap-3">{% for item in help_rows %}<li><p>{{ item.message }}</p>{% if item.due_on %}<p class="text-sm">Até {{ item.due_on|date:'d/m/Y' }}</p>{% endif %}</li>{% endfor %}</ul>
+</section>{% endif %}
 {% endblock %}

@@ -41,6 +41,7 @@ from apps.cycles.models import (
     TaskState,
     VersionState,
 )
+from apps.cycles.models import Exception as CycleException
 from apps.cycles.targeting import AppliesTo
 from apps.obligations.models import Obligation
 
@@ -129,7 +130,7 @@ def emit(
     actor: User | None,
     event_type: str,
     *,
-    aggregate: CycleTask | InternalNote | None = None,
+    aggregate: CycleTask | InternalNote | CycleException | None = None,
     payload: dict[str, str | int] | None = None,
 ) -> CycleEvent:
     """Produce an internal event from known ids/codes, never user text."""

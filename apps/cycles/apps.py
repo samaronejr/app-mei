@@ -18,6 +18,7 @@ class CyclesConfig(AppConfig):
         from apps.cycles.extraction.service import (  # noqa: PLC0415
             EXCEPTION_REASON as WRONG_COMPANY,
         )
+        from apps.cycles.openers import REASONS  # noqa: PLC0415
         from apps.cycles.scanning import EXCEPTION_REASON  # noqa: PLC0415
         from apps.cycles.services.exceptions import (  # noqa: PLC0415
             ExceptionReason,
@@ -29,7 +30,8 @@ class CyclesConfig(AppConfig):
             EXCEPTION_REASON,
             ExceptionReason(
                 "Arquivo sem verificação antivírus. Confira o verificador ou peça "
-                "um novo envio; baixe somente com o aviso de risco."
+                "um novo envio; baixe somente com o aviso de risco.",
+                label="arquivo sem verificação antivírus",
             ),
         )
         # T13 (S15 B): the extracted CNPJ is not the client's. The document stays
@@ -42,3 +44,6 @@ class CyclesConfig(AppConfig):
                 "documento a outro cliente."
             ),
         )
+        # T14: the deterministic openers the daily sweep runs.
+        for code, reason in REASONS.items():
+            register_exception_reason(code, reason)

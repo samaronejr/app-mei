@@ -24,6 +24,7 @@ from apps.cycles.extraction.service import (
     propagate_divergent_link,
 )
 from apps.cycles.models import PlaybookVersion, VersionState
+from apps.cycles.openers import evaluate_tenant_exceptions
 from apps.cycles.scanning import due_intakes, scan_intake, scanner_from_settings
 from apps.cycles.services.cycle import open_cycle
 from apps.cycles.targeting import AppliesTo, matching_clients
@@ -117,6 +118,28 @@ def scan_tenant_quarantine(
         msg = f"{len(failures)} intake scan(s) failed in tenant {tenant_pk}"
         raise RuntimeError(msg) from failures[0]
     return counts
+
+
+@shared_task(base=TenantTask)
+def open_exceptions_for_tenant(tenant_id: UUID | str) -> dict[str, int]:
+    """Run T14's deterministic openers for one firm; unflagged firms are untouched."""
+    tenant_pk = UUID(str(tenant_id))
+    if not tenant_has(tenant_pk, "cycles_r1"):
+        return {"evaluated": 0, "skipped_no_owner": 0}
+    # PLATFORM_QUERY_OK: the TenantTask context names this exact firm.
+    counts = evaluate_tenant_exceptions(Tenant.objects.get(pk=tenant_pk))
+    return {"evaluated": counts.evaluated, "skipped_no_owner": counts.skipped_no_owner}
+
+
+@shared_task(base=PlatformTask, bind=True)
+def open_deterministic_exceptions(self: PlatformTask) -> dict[str, int]:
+    """Beat: once a day, only for firms with `cycles_r1`."""
+    totals = {"evaluated": 0, "skipped_no_owner": 0}
+    for tid in self.tenant_ids():
+        if tenant_has(tid, "cycles_r1"):
+            for key, value in open_exceptions_for_tenant(str(tid)).items():
+                totals[key] += value
+    return totals
 
 
 @shared_task(base=PlatformTask, bind=True)

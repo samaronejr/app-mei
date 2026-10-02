@@ -49,6 +49,16 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         '.select_related("playbook", "owner", "engagement")',
     ): "ORM cycle owner relation, not an authorization role literal.",
     LiteralPin(
+        "apps/cycles/cycle_views.py",
+        "owner",
+        '.select_related("owner")',
+    ): "AXR1-014: ORM exception owner relation for the drawer, not a role literal.",
+    LiteralPin(
+        "apps/cycles/openers.py",
+        "owner",
+        '.select_related("client", "engagement__responsible", "owner")',
+    ): "AXR1-014: ORM cycle owner relation for the sweep's owner chain.",
+    LiteralPin(
         "apps/cycles/records.py",
         "blocked",
         'BLOCKED = "blocked", "Bloqueada"',

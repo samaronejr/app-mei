@@ -55,12 +55,16 @@ class MessageKind:
     only for this one send -- a freshly minted invitation link. They are rendered into
     the outgoing body, registered with the redaction scope, and never stored: the
     content digest is computed over the body rendered WITHOUT them.
+
+    `on_rejected` (T14) runs in the finalizing transaction, under the message lock,
+    when the provider's refusal is recorded as `recusada_pelo_provedor`.
     """
 
     subject: str
     template: str
     still_valid: Callable[[OutboundMessage], tuple[bool, str]]
     prepare: Callable[[OutboundMessage], dict[str, str]] | None = None
+    on_rejected: Callable[[OutboundMessage], None] | None = None
 
 
 KINDS: dict[str, MessageKind] = {

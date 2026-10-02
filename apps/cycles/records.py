@@ -245,7 +245,8 @@ class ExceptionState(models.TextChoices):
 class Exception(ClientRecord):  # noqa: A001 - S6.3's domain model name
     """An owned problem with an explicit next action and review/deadline.
 
-    Portal NONE in T9, including client_visible rows. T14 owns any later exposure.
+    Portal SELECT since T14, confined by RLS to the client AND `client_visible` rows.
+    The portal renders `client_message` only; resolution prose lives in InternalNote.
     """
 
     cycle = models.ForeignKey(
@@ -266,6 +267,7 @@ class Exception(ClientRecord):  # noqa: A001 - S6.3's domain model name
     review_on = models.DateField(null=True, blank=True)
     blocks_completion = models.BooleanField(default=True)
     client_visible = models.BooleanField(default=False)
+    client_message = models.CharField(max_length=500, blank=True, default="")
     evidence_refs = models.JSONField(default=list)
     version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(default=timezone.now)
@@ -284,5 +286,9 @@ class Exception(ClientRecord):  # noqa: A001 - S6.3's domain model name
                 condition=models.Q(due_on__isnull=False)
                 | models.Q(review_on__isnull=False),
                 name="exception_has_review_date",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(client_visible=False) | ~models.Q(client_message=""),
+                name="exception_visible_has_message",
             ),
         ]

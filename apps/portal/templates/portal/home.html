@@ -51,7 +51,11 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
 
 {% block content %}
   {% if client %}
-    <div class="space-y-4">{% if cycles_r1 %}
+    <div class="space-y-4">{% if cycles_r1 %}{% if help_rows %}
+      <section class="card space-y-4 px-5 py-4" aria-labelledby="ajuda">
+        <h2 id="ajuda" class="text-sm font-semibold text-ink-700">{% translate "Precisamos da sua ajuda" %}</h2>
+        <ul class="space-y-3">{% for item in help_rows %}<li class="space-y-1"><p>{{ item.message }}</p>{% if item.due_on %}<p class="text-sm text-ink-700">{% translate "Até" %} <time datetime="{{ item.due_on.isoformat }}">{{ item.due_on|data }}</time></p>{% endif %}</li>{% endfor %}</ul>
+      </section>{% endif %}
       <section class="card space-y-4 px-5 py-4" aria-labelledby="solicitacoes">
         <h2 id="solicitacoes" class="text-sm font-semibold text-ink-700">{% translate "Solicitações do escritório" %}</h2>
         {% if requests %}<ul class="space-y-4">{% for req in requests %}<li class="space-y-1" data-request-id="{{ req.id }}">

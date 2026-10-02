@@ -323,6 +323,11 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "The UUID names a cycle loaded through the actor's portfolio; every request "
         "command re-checks scope, version and capability inside the row lock."
     ),
+    "cycle-exception-action": (
+        "AXR1-014. The UUID names an exception whose cycle is loaded through the "
+        "actor's portfolio (404 outside it); every command re-checks scope, version "
+        "and capability inside the row lock."
+    ),
     "portal-request-detail": (
         "The UUID names an evidence request, not a bearer credential. "
         "Authentication and RESTRICTIVE portal client RLS authorize the SELECT."
@@ -587,6 +592,12 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "extract-documents": {
         "task": "apps.cycles.tasks.extract_documents",
         "schedule": 60.0,
+    },
+    # T14: deterministic exception openers (overdue requests, expiring certificate
+    # metadata, unknown tax profile, service without responsible), idempotent.
+    "open-exceptions": {
+        "task": "apps.cycles.tasks.open_deterministic_exceptions",
+        "schedule": crontab(hour=6, minute=0),
     },
     "generate-cycles": {
         "task": "apps.cycles.tasks.generate_monthly_cycles",

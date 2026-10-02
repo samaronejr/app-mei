@@ -47,6 +47,8 @@ from apps.cycles.intake import (
     UploadTooLarge,
     intake_upload,
 )
+from apps.cycles.models import Exception as CycleException
+from apps.cycles.services.exceptions import ACTIVE_STATES
 from apps.cycles.services.requests import client_status
 from apps.portal.hosts import portal_slug_from_host
 from apps.portal.middleware import SELECTED_CLIENT_SESSION_KEY, PortalHttpRequest
@@ -153,6 +155,33 @@ def open_requests(today: date) -> list[RequestRow]:
         .distinct()
     )
     return [_row(row, submitted=row.pk in submitted, today=today) for row in rows]
+
+
+@dataclass(frozen=True, slots=True)
+class HelpRow:
+    """One exception the firm chose to show: its fixed client sentence and date."""
+
+    message: str
+    due_on: date | None
+
+
+def client_help(cycle_id: UUID | None = None) -> list[HelpRow]:
+    """Open exceptions shown as "Precisamos da sua ajuda" (T14, S8.2).
+
+    No client and no `client_visible` filter here: the RESTRICTIVE portal policy
+    confines cycles_exception to this client's client-visible rows, so a test that
+    weakens the policy sees the leak. Only the client columns are selected; the
+    firm's next action and owner are never loaded.
+    """
+    rows = CycleException.objects.filter(state__in=ACTIVE_STATES)
+    if cycle_id is not None:
+        rows = rows.filter(cycle_id=cycle_id)
+    return [
+        HelpRow(message=message, due_on=due_on)
+        for message, due_on in rows.order_by(
+            "due_on", "review_on", "created_at", "pk"
+        ).values_list("client_message", "due_on")
+    ]
 
 
 def _visible_request(pk: UUID) -> EvidenceRequest:

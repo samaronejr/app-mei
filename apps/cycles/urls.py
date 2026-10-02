@@ -12,6 +12,11 @@ urlpatterns = [
         cycle_views.cycle_request_action,
         name="cycle-request-action",
     ),
+    path(
+        "ciclos/pendencias/<uuid:pk>/",
+        cycle_views.cycle_exception_action,
+        name="cycle-exception-action",
+    ),
     path("clientes/<uuid:pk>/ciclos/abrir/", cycle_views.cycle_open, name="cycle-open"),
     path("documentos/", review_views.document_queue, name="document-queue"),
     path(

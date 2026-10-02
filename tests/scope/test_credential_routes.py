@@ -54,6 +54,7 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "portal-cycle-detail",
         # T11
         "cycle-request-action",
+        "cycle-exception-action",
         "portal-request-detail",
         "portal-request-upload",
         "playbook-detail",

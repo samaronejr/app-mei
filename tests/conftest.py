@@ -40,7 +40,6 @@ PORTAL_DENIED_TABLES = (
     "cycles_cycletask",
     "cycles_cycleamendment",
     "cycles_internalnote",
-    "cycles_exception",
     # T11: firm-only request instructions and waiver reasons.
     "cycles_requestinternal",
     # T13: extracted/reviewed field values and review decisions are firm-only.
@@ -79,6 +78,8 @@ PORTAL_TABLES = (
     "cycles_evidencerequest",
     "cycles_evidencelink",
     "cycles_documentintake",
+    # T14: client-visible exceptions only (the policy adds client_visible).
+    "cycles_exception",
     "obligations_obligation",
     "obligations_monthlyrevenue",
     "obligations_document",

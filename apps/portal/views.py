@@ -238,15 +238,20 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     cycles_r1 = bool(tenant_id and tenant_has(tenant_id, "cycles_r1"))
     cycles = []
     requests = []
+    help_rows = []
     if cycles_r1:
         cycles = [
             {"id": cycle.pk, **portal_projection(cycle)}
             for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]
         ]
         # T11: the client's open requests, confined by RLS like every figure here.
-        from apps.portal.request_views import open_requests  # noqa: PLC0415
+        from apps.portal.request_views import (  # noqa: PLC0415
+            client_help,
+            open_requests,
+        )
 
         requests = open_requests(today)
+        help_rows = client_help()
     return render(
         request,
         "portal/home.html",
@@ -258,6 +263,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "cycles": cycles,
             "cycles_r1": cycles_r1,
             "requests": requests,
+            "help_rows": help_rows,
         },
     )
 
