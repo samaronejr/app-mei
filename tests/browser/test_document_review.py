@@ -146,6 +146,10 @@ def test_keyboard_only_reject_then_accept_and_the_client_reads_the_reason(
     expect(
         page.page.locator("[data-field='emitente_cnpj'] [data-suggested]")
     ).to_have_text("11444777000161")
+    assert (viewport := page.page.viewport_size) is not None
+    assert (
+        page.page.evaluate("document.documentElement.scrollWidth") <= viewport["width"]
+    )
     axe_check(page.page)
     page.screenshot("AXR1-013-revisao")
 
@@ -157,22 +161,28 @@ def test_keyboard_only_reject_then_accept_and_the_client_reads_the_reason(
     page.page.keyboard.type(REASON)
     page.page.keyboard.press("Tab")
     expect(page.page.get_by_role("button", name="Não aceitar")).to_be_focused()
-    with page.page.expect_response(
-        lambda response: (
-            response.request.method == "POST" and "/revisar/" in response.url
-        ),
-        timeout=10000,
-    ) as rejected:
+    with (
+        page.page.expect_event("load", timeout=10000),
+        page.page.expect_response(
+            lambda response: (
+                response.request.method == "POST" and "/revisar/" in response.url
+            ),
+            timeout=10000,
+        ) as rejected,
+    ):
         page.page.keyboard.press("Enter")
     assert rejected.value.status == 302
     # The next undecided document opens; A accepts it.
     expect(page.page).to_have_url(live.url(f"/documentos/{desk.accepted.pk}/revisar/"))
-    with page.page.expect_response(
-        lambda response: (
-            response.request.method == "POST" and "/revisar/" in response.url
-        ),
-        timeout=10000,
-    ) as accepted:
+    with (
+        page.page.expect_event("load", timeout=10000),
+        page.page.expect_response(
+            lambda response: (
+                response.request.method == "POST" and "/revisar/" in response.url
+            ),
+            timeout=10000,
+        ) as accepted,
+    ):
         page.page.keyboard.press("a")
     assert accepted.value.status == 302
     expect(page.page).to_have_url(live.url("/documentos/"))
