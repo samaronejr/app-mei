@@ -4,12 +4,16 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Final, cast
 
+import pytest
 from django.db import models
 from django.template import Context, Template
+from django.template.loader import render_to_string
 
 from apps.core.templatetags import ptbr
+from apps.obligations.presentation import payment_state
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 TEMPLATES_ROOT: Final[Path] = PROJECT_ROOT / "templates"
@@ -80,6 +84,13 @@ STATUS_RENDER_SITES: Final[dict[str, RenderSite]] = {
     ),
     "obligations/queue.html": RenderSite(
         frozenset({"OBLIGATION_STATUS_LABELS"}),
+        frozenset({"get_status_display"}),
+    ),
+    # T17: the Cobertura badge renders the same states the portal receipt
+    # label does, through the shared component — the partial registers its own
+    # includes so a hand-written status class can never sneak back in.
+    "partials/cycles/coverage_item.html": RenderSite(
+        frozenset(),
         frozenset({"get_status_display"}),
     ),
 }
@@ -320,3 +331,111 @@ The old row.get_status_display helper was replaced.
     assert _markup_only(planted["plantado.html"]).count("\n") == planted[
         "plantado.html"
     ].count("\n")
+
+
+# ---------------------------------------------------------------------------
+# T17: observation sources render through one adapter and one badge.
+# The matrix below is this file's contract for three surfaces at once: the
+# portal receipt partial, the staff coverage badge and the status_badge
+# component itself. Mutating `staff_recorded` into the verified style — or any
+# state name into a style it did not earn — must fail here, not in a snapshot.
+# ---------------------------------------------------------------------------
+
+_ADAPTER_CASES: list[tuple[str, str, str, str]] = [
+    # (source_kind, verification_status, outcome, expected portal state)
+    ("official_api", "verified", "accepted", "verified"),
+    ("official_file_import", "verified", "accepted", "verified"),
+    ("staff_recorded", "unknown", "accepted", "manual"),
+    ("staff_recorded", "unknown", "recorded", "manual"),
+    ("staff_recorded", "pending_review", "accepted", "manual"),
+    ("client_submitted", "pending_review", "submitted", "manual"),
+    ("client_submitted", "pending_review", "none", "manual"),
+    ("legacy_status", "unknown", "recorded", "manual"),
+    ("legacy_status", "not_applicable", "recorded", "manual"),
+    ("official_api", "stale", "accepted", "stale"),
+    ("official_api", "refresh_failed", "refresh_failed", "stale"),
+    ("official_api", "pending_review", "accepted", "unknown"),
+    ("staff_recorded", "unsupported", "rejected", "unknown"),
+    ("staff_recorded", "unsupported", "retracted", "unknown"),
+    # A deterministic rule can assert a schedule; it can never borrow a badge
+    # that says a person or an official source verified a payment.
+    ("deterministic_rule", "verified", "accepted", "unknown"),
+    ("deterministic_rule", "verified", "scheduled", "unknown"),
+]
+
+
+def test_payment_state_adapter_never_promotes_a_manual_source() -> None:
+    """Every (source, verification, outcome) maps to exactly one portal state."""
+    for source, verification, outcome, expected in _ADAPTER_CASES:
+        actual = payment_state(source, verification, outcome)
+        assert actual == expected, (
+            f"{source}/{verification}/{outcome} rendered as {actual!r}, "
+            f"not {expected!r}"
+        )
+
+
+@pytest.mark.django_db
+def test_receipt_partial_renders_every_adapter_state() -> None:
+    """The portal partial honors the adapter's state and never the forbidden word."""
+    for source, verification, outcome, state in _ADAPTER_CASES:
+        row = SimpleNamespace(
+            payment_state=state,
+            payment_source=source,
+            payment_verification=verification,
+            payment_outcome=outcome,
+        )
+        html = render_to_string(
+            "portal/partials/payment_observation.html", {"row": row}
+        )
+        assert f'data-payment-state="{state}"' in html, (
+            f"{source}/{verification}/{outcome}: expected state {state} in {html!r}"
+        )
+        assert "confirmad" not in html.lower()
+
+
+@pytest.mark.django_db
+def test_coverage_badge_maps_every_state_through_the_shared_component() -> None:
+    """Each coverage state reaches the badge with the mapping's own style."""
+    states: list[tuple[str, str]] = [
+        ("verified", "status-confirmed"),
+        ("manual", "status-manual"),
+        ("pending_review", "status-pending"),
+        ("stale", "status-stale"),
+        ("refresh_failed", "status-stale"),
+        ("unknown", "status-unknown"),
+        ("not_applicable", "status-unknown"),
+    ]
+    for state, marker in states:
+        item = SimpleNamespace(
+            engagement_id="00000000-0000-0000-0000-000000000001",
+            service_kind="mei_mensal",
+            state=state,
+            obligation_id=None,
+            facets={
+                "calendar": "unknown",
+                "guide": "unknown",
+                "payment": "unknown",
+            },
+            correctable=False,
+        )
+        html = render_to_string(
+            "partials/cycles/coverage_item.html",
+            {"item": item, "may_operate": False},
+        )
+        assert marker in html, f"{state} did not render {marker} in {html!r}"
+    # unknown_scope renders as plain text: no badge may borrow a state it
+    # never evaluated.
+    unknown_scope = SimpleNamespace(
+        engagement_id="00000000-0000-0000-0000-000000000002",
+        service_kind="folha",
+        state="unknown_scope",
+        obligation_id=None,
+        facets={"calendar": "unknown", "guide": "unknown", "payment": "unknown"},
+        correctable=False,
+    )
+    html = render_to_string(
+        "partials/cycles/coverage_item.html",
+        {"item": unknown_scope, "may_operate": False},
+    )
+    assert "status-confirmed" not in html
+    assert "status-manual" not in html

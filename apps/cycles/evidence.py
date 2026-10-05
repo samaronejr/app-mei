@@ -52,6 +52,19 @@ CLIENT_VISIBLE_STATES: Final = frozenset(
 )
 
 
+class RequestKind(models.TextChoices):
+    """What the request asks the client to send (T17).
+
+    `comprovante` is a payment receipt: it must be bound to the obligation it
+    pays for while the request is still a draft, so a submitted link can be
+    attributed to a subject and period without parsing titles or filenames.
+    Everything else stays the generic `documento` and carries no binding.
+    """
+
+    DOCUMENTO = "documento", "Documento"
+    COMPROVANTE = "comprovante", "Comprovante de pagamento"
+
+
 class EvidenceRequest(ClientRecord):
     """One thing the firm asks the client for, inside one cycle.
 
@@ -61,6 +74,25 @@ class EvidenceRequest(ClientRecord):
 
     cycle = models.ForeignKey(
         ServiceCycle, on_delete=models.PROTECT, related_name="requests"
+    )
+    # T17: receipt binding. A `comprovante` request names the obligation whose
+    # payment it evidences (client-paired; the CHECK below keeps the pair
+    # consistent). Identity fields are mutable only while `state == 'rascunho'`:
+    # once sent, a wrong binding is fixed by a new correctly bound request, not
+    # by rewriting one the client may have already answered.
+    kind = models.CharField(
+        "kind",
+        max_length=16,
+        choices=RequestKind.choices,
+        default=RequestKind.DOCUMENTO,
+    )
+    obligation = models.ForeignKey(
+        "obligations.Obligation",
+        on_delete=models.PROTECT,
+        related_name="evidence_requests",
+        verbose_name="obligation",
+        null=True,
+        blank=True,
     )
     title = models.CharField(max_length=TITLE_MAX_LENGTH)
     client_note = models.TextField(blank=True)
@@ -79,12 +111,25 @@ class EvidenceRequest(ClientRecord):
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta(ClientRecord.Meta):
-        """Tenant-led index for the per-cycle list."""
+        """Tenant-led index for the per-cycle list, plus the receipt-binding pair."""
 
         indexes: ClassVar[list[models.Index]] = [
             *ClientRecord.Meta.indexes,
             models.Index(
                 fields=["tenant", "cycle", "state"], name="evidencerequest_cycle_idx"
+            ),
+        ]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            *ClientRecord.Meta.constraints,
+            # A receipt always names its obligation; a generic document never may.
+            # The mirror-image arms are deliberate: binding a `documento` request
+            # would silently attach a submission to a payment it never claimed.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(kind="comprovante", obligation__isnull=False)
+                    | models.Q(kind="documento", obligation__isnull=True)
+                ),
+                name="evidencerequest_kind_obligation_check",
             ),
         ]
 
@@ -404,6 +449,10 @@ class Review(ClientRecord):
     # it as a relevant third-party document, with a firm-only reason.
     third_party = models.BooleanField(default=False)
     override_reason = models.TextField(blank=True)
+    # T17: for a receipt request, whether the accepted file is usable as payment
+    # evidence. Firm-only like the rest of the row; the client sees only the
+    # decision projected onto the link.
+    payment_relevant = models.BooleanField(default=False)
     corrections_json = models.JSONField(default=list, blank=True)
     reviewer = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+"

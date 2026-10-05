@@ -62,6 +62,7 @@ from apps.obligations.models import (
     ObservationSubjectKind,
     SourceObservation,
 )
+from apps.obligations.presentation import payment_state
 from apps.obligations.queries import SETTLED
 from apps.portal.middleware import PortalHttpRequest
 
@@ -161,6 +162,8 @@ class Payment:
     status: str
     payment_source: str | None = None
     payment_verification: str | None = None
+    payment_outcome: str | None = None
+    payment_state: str | None = None
 
 
 def _situation(today: date) -> tuple[int, int]:
@@ -322,32 +325,62 @@ def _payment(row: Mapping[str, Any]) -> Payment:
 
 def _latest_payment_source(
     obligations: list[Mapping[str, Any]],
-) -> dict[UUID, tuple[str, str]]:
-    """Return each obligation's newest payment source and verification together.
+) -> dict[UUID, tuple[str, str, str, str]]:
+    """Return each obligation's current payment claim, classified for the card.
 
-    One query for the whole page rather than one per card — the per-row pattern is
-    the N+1 the page's query budget exists to forbid. "Newest" is the last row in
-    `observed_at` order with `pk` breaking ties, matching the table's own ordering:
-    superseding writes a NEW row (the table is append-only), so the latest
-    assertion is the current belief and there is nothing to join against.
+    One query for the whole page rather than one per card — the per-row pattern
+    is the N+1 the page's query budget exists to forbid. "Current" means the
+    claim chain's heads: superseded rows are excluded (the table is
+    append-only, so a rejected receipt's positive claim never resurfaces), and
+    among the surviving heads the newest USABLE one wins — a rejected or
+    retracted head is knowledge about a claim, not a claim. Periods match the
+    row's competence or are unscoped (the T9 backfill wrote period-free rows),
+    and the final word on what the row LOOKS like is `payment_state`'s,
+    computed here so the template can never diverge from the coverage panel.
     """
     subject_ids = [row["id"] for row in obligations]
     if not subject_ids:
         return {}
-    observations = (
+    rows = (
         SourceObservation.objects.filter(
             subject_kind=ObservationSubjectKind.OBLIGATION,
             kind=ObservationKind.PAYMENT,
             subject_ref_id__in=subject_ids,
         )
         .order_by("observed_at", "pk")
-        .values_list("subject_ref_id", "source_kind", "verification_status")
+        .values_list(
+            "pk",
+            "subject_ref_id",
+            "source_kind",
+            "verification_status",
+            "outcome",
+            "supersedes_id",
+            "period",
+        )
     )
-    # Ascending order, later keys win: each newer assertion replaces the earlier.
-    return {
-        subject: (source, verification)
-        for subject, source, verification in observations
-    }
+    heads: dict[UUID, list[tuple[object, str, str, str, object]]] = {}
+    superseded = {row[5] for row in rows if row[5]}
+    for pk, subject, source, verification, outcome, _supersedes, period in rows:
+        if pk not in superseded:
+            heads.setdefault(subject, []).append(
+                (pk, source, verification, outcome, period)
+            )
+    answers: dict[UUID, tuple[str, str, str, str]] = {}
+    for subject, chain in heads.items():
+        usable = [
+            row
+            for row in chain
+            if row[2] != "unsupported" and row[3] not in {"rejected", "retracted"}
+        ]
+        head = usable[-1] if usable else chain[-1]
+        _pk, source_s, verification_s, outcome_s, _period = head
+        answers[subject] = (
+            source_s,
+            verification_s,
+            outcome_s,
+            payment_state(source_s, verification_s, outcome_s),
+        )
+    return answers
 
 
 @require_http_methods(["GET"])
@@ -405,7 +438,11 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
         source = sources.get(row["id"])
         if source is not None:
             payment = replace(
-                payment, payment_source=source[0], payment_verification=source[1]
+                payment,
+                payment_source=source[0],
+                payment_verification=source[1],
+                payment_outcome=source[2],
+                payment_state=source[3],
             )
         payments.append(payment)
     return render(

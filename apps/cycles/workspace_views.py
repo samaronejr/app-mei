@@ -16,6 +16,7 @@ from apps.cycles.models import Exception as CycleException
 from apps.cycles.models import PlaybookVersion, ServiceCycle, VersionState
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.workspace import get_cycle_context, parse_period, timeline
+from apps.obligations.coverage import coverage_for
 from apps.obligations.models import Document, Obligation
 
 
@@ -77,6 +78,9 @@ def client_workspace(
             "obligations": Obligation.objects.filter(
                 client=client, competence_month=period
             ).select_related("obligation_type"),
+            # T17: the Cobertura panel — what the firm knows about each
+            # engagement's obligations this competence, honest states only.
+            "coverage": coverage_for(request.user, client, period),
             "contacts": ClientContact.objects.filter(client=client, active=True),
             "checklist": OnboardingItem.objects.filter(client=client).order_by(
                 "position", "pk"

@@ -42,6 +42,8 @@ from apps.cycles.services.cycle import (
     require_actor,
     tenant_id,
 )
+from apps.obligations.coverage import SERVICE_OBLIGATIONS
+from apps.obligations.models import Obligation
 from apps.tenants.models import Invite, Membership
 
 NOTE_MAX_LENGTH: Final = 2000
@@ -57,6 +59,9 @@ class RequestFields:
     due_on: date | None = None
     instructions: str = ""
     required: bool = True
+    # T17: a `comprovante` request binds to the obligation it pays for.
+    kind: str = "documento"
+    obligation_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +99,46 @@ def _clean(fields: RequestFields) -> RequestFields:
         due_on=fields.due_on,
         instructions=fields.instructions.strip(),
         required=fields.required,
+        kind=fields.kind,
+        obligation_id=fields.obligation_id,
     )
+
+
+def _bind_obligation(
+    cycle: ServiceCycle,
+    kind: str,
+    obligation_id: UUID | None,
+) -> Obligation | None:
+    """Resolve the obligation a `comprovante` request pays for (T17).
+
+    The binding is validated at write time inside the aggregate lock — not
+    trusted from the form — and only while the request is a draft does the
+    caller get to choose it. Returns the obligation row, or None for a
+    `documento` request.
+    """
+    if kind == "documento":
+        if obligation_id is not None:
+            msg = "Uma solicitação de documento não vincula uma obrigação."
+            raise ValidationError(msg)
+        return None
+    if kind != "comprovante":
+        msg = "Tipo de solicitação desconhecido."
+        raise ValidationError(msg)
+    if obligation_id is None:
+        msg = "Vincule a obrigação que este comprovante paga."
+        raise ValidationError(msg)
+    obligation = Obligation.objects.filter(pk=obligation_id).first()
+    if (
+        obligation is None
+        or obligation.client_id != cycle.client_id
+        or obligation.competence_month != cycle.period_start
+    ):
+        raise Http404
+    codes = SERVICE_OBLIGATIONS.get(cycle.engagement.service_kind)
+    if not codes or obligation.obligation_type_id not in codes:
+        msg = "Este serviço não tem uma obrigação mapeada para esta solicitação."
+        raise ValidationError(msg)
+    return obligation
 
 
 def _event(
@@ -151,6 +195,7 @@ def create_request(
         cycle = _open_cycle(actor, cycle_id)
         check_version(cycle.version, expected_version)
         require_actor(actor, CYCLES_OPERATE)
+        obligation = _bind_obligation(cycle, cleaned.kind, cleaned.obligation_id)
         request = EvidenceRequest.objects.create(
             tenant_id=cycle.tenant_id,
             client_id=cycle.client_id,
@@ -159,6 +204,8 @@ def create_request(
             client_note=cleaned.client_note,
             due_on=cleaned.due_on,
             required=cleaned.required,
+            kind=cleaned.kind,
+            obligation=obligation,
             created_by=actor,
         )
         RequestInternal.objects.create(
@@ -189,13 +236,39 @@ def update_request(
         if request.state not in EDITABLE_STATES:
             msg = "Esta solicitação não pode mais ser editada."
             raise IllegalTransition(msg)
+        # The bound row is needed for the non-draft identity check below; it is
+        # also the object the draft rebind writes, so it loads once here.
+        request.obligation = (
+            Obligation.objects.filter(pk=request.obligation_id).first()
+            if request.obligation_id
+            else None
+        )
+        if request.state == RequestState.DRAFT:
+            request.obligation = _bind_obligation(
+                cycle, cleaned.kind, cleaned.obligation_id
+            )
+            request.kind = cleaned.kind
+        elif (
+            cleaned.kind != request.kind
+            or cleaned.obligation_id != request.obligation_id
+        ):
+            msg = "Tipo e obrigação vinculada só mudam em rascunho."
+            raise ValidationError(msg)
         request.title = cleaned.title
         request.client_note = cleaned.client_note
         request.due_on = cleaned.due_on
         request.required = cleaned.required
         request.version += 1
         request.save(
-            update_fields=["title", "client_note", "due_on", "required", "version"]
+            update_fields=[
+                "title",
+                "client_note",
+                "due_on",
+                "required",
+                "kind",
+                "obligation",
+                "version",
+            ]
         )
         internal = RequestInternal.objects.select_for_update().get(request=request)
         internal.instructions = cleaned.instructions

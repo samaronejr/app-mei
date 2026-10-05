@@ -339,6 +339,9 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                 expected_version=expected,
                 third_party=request.POST.get("third_party") == "1",
                 override_reason=request.POST.get("override_reason", ""),
+                # T17: only a bound receipt consumes the flag; for every other
+                # request it is inert, and the service re-checks the binding.
+                payment_relevant=request.POST.get("payment_relevant") == "1",
             )
         except VersionConflict as conflict:
             error, status = str(conflict), HTTPStatus.CONFLICT

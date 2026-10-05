@@ -91,6 +91,8 @@ class RequestRow:
     status_label: str
     hint: str
     open: bool
+    # T17: a receipt request tells the client which document proves payment.
+    kind: str = "documento"
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +137,7 @@ def _row(request: EvidenceRequest, *, submitted: bool, today: date) -> RequestRo
         status_label=STATUS_LABELS.get(status, "Pendente"),
         hint=STATUS_HINTS.get(status, ""),
         open=request.state in CLIENT_OPEN_STATES,
+        kind=request.kind,
     )
 
 

@@ -44,11 +44,18 @@ class ObservationSubjectKind(models.TextChoices):
 
 
 class ObservationKind(models.TextChoices):
-    """Which fact about the subject this row asserts."""
+    """Which fact about the subject this row asserts.
+
+    `CALENDAR_SCHEDULED` (T17) asserts only that the obligation's stored schedule
+    exists -- its nominal and resolved dates for one competence -- never that a
+    guide was issued, anything was filed, or money moved. Naming the calendar
+    fact `guide_issued` would dress a rule output as an issuance event.
+    """
 
     PAYMENT = "payment", _("payment")
     FILING = "filing", _("filing")
     GUIDE_ISSUED = "guide_issued", _("guide issued")
+    CALENDAR_SCHEDULED = "calendar_scheduled", _("calendar scheduled")
 
 
 class ObservationSourceKind(models.TextChoices):
@@ -84,6 +91,28 @@ class ObservationVerificationStatus(models.TextChoices):
     REFRESH_FAILED = "refresh_failed", _("refresh failed")
     UNAUTHORIZED = "unauthorized", _("unauthorized")
     NOT_APPLICABLE = "not_applicable", _("not applicable")
+
+
+class ObservationOutcome(models.TextChoices):
+    """What the assertion ended up meaning for the claim it makes (T17).
+
+    `NONE` marks rows that never declared an outcome — the T9 backfill and any
+    row written before the vocabulary existed. `SUBMITTED` is a client file
+    awaiting the firm; `ACCEPTED`/`REJECTED` are its decision; `RECORDED`,
+    `CORRECTED` and `RETRACTED` are the staff-fact lifecycle; `SCHEDULED` is
+    the calendar producer's; `REFRESH_FAILED` is an official refresh that
+    failed and therefore proves nothing new.
+    """
+
+    NONE = "none", _("no outcome recorded")
+    SUBMITTED = "submitted", _("submitted")
+    ACCEPTED = "accepted", _("accepted")
+    REJECTED = "rejected", _("rejected")
+    RECORDED = "recorded", _("recorded")
+    CORRECTED = "corrected", _("corrected")
+    RETRACTED = "retracted", _("retracted")
+    SCHEDULED = "scheduled", _("scheduled")
+    REFRESH_FAILED = "refresh_failed", _("refresh failed")
 
 
 class SourceObservation(TenantScopedModel):
@@ -160,6 +189,31 @@ class SourceObservation(TenantScopedModel):
         null=True,
         blank=True,
     )
+    # What this assertion ended up meaning (T17): a rejected submission and a
+    # retracted staff note are different outcomes of the same unsupported
+    # status, and only the outcome can say which.
+    outcome = models.CharField(
+        _("outcome"),
+        max_length=32,
+        choices=ObservationOutcome.choices,
+        default=ObservationOutcome.NONE,
+    )
+    # The reference the staffer named for a manual fact — a guia number, a
+    # protocol, a receipt identifier. Short because it is a pointer, never
+    # prose: reasons belong to the review that produced them.
+    source_ref = models.CharField(_("source reference"), max_length=255, blank=True)
+    # The submitted file this assertion cites as evidence (T17). Client-paired:
+    # the composite constraint in the migration makes a cross-client link
+    # unrepresentable. Optional because staff-recorded facts may name none; a
+    # receipt assertion (submission, acceptance, rejection) may not omit it.
+    evidence_link = models.ForeignKey(
+        "cycles.EvidenceLink",
+        on_delete=models.PROTECT,
+        related_name="observations",
+        verbose_name=_("evidence link"),
+        null=True,
+        blank=True,
+    )
     # When THIS SYSTEM wrote the row — distinct from `observed_at`, which is the
     # source's clock. A backfill observed months ago is still recorded now.
     recorded_at = models.DateTimeField(_("recorded at"), auto_now_add=True)
@@ -177,6 +231,15 @@ class SourceObservation(TenantScopedModel):
             models.UniqueConstraint(
                 fields=["tenant", "client", "id"],
                 name="sourceobservation_tenant_client_id_uniq",
+            ),
+            # T17: one observation chain may cite a link at most once -- the
+            # submission it was created from. A second assertion about the same
+            # link (the review's outcome) supersede-chains off it rather than
+            # duplicating the submission identity.
+            models.UniqueConstraint(
+                fields=["tenant", "client", "evidence_link"],
+                condition=models.Q(evidence_link__isnull=False),
+                name="sourceobservation_evidence_link_uniq",
             ),
         ]
         indexes: ClassVar[list[models.Index]] = [

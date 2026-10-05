@@ -631,6 +631,13 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
         "task": "apps.audit.tasks.purge_access_logs",
         "schedule": crontab(hour=3, minute=30),
     },
+    # T17: receipt submissions materialize as observations mostly via the
+    # on-commit enqueue; this sweep is the idempotent floor for whatever the
+    # enqueue lost. Minute cadence, same as the outbox and the quarantine scan.
+    "materialize-receipt-observations": {
+        "task": "apps.obligations.tasks.materialize_receipt_observations",
+        "schedule": 60.0,
+    },
     # Every five minutes, and /healthz alarms after fifteen. The scheduler's failure
     # mode is silence: when beat stops, no task raises and nothing reaches Sentry,
     # so the only way to detect it is to require a positive signal on a timer.

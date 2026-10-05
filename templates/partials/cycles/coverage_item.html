@@ -1,0 +1,94 @@
+{% comment %}
+One Cobertura row (T17): what the firm currently knows about one engagement's
+obligation for this competence — never more.
+
+`item.state` is the headline and `item.facets` the decomposition: agenda,
+guia and pagamento are independent facets, because a calendar assertion only
+ever says the schedule exists. An item with no mapped subject (`unknown_scope`)
+renders its state as plain text: a badge would borrow the visual weight of a
+state nobody evaluated.
+
+The badge is the shared status-badge component, so hue + glyph + word come
+from the same mapping every state name uses — `pending_review` renders as
+`pending` (aguardando), `refresh_failed` as `stale`, `not_applicable` as
+`unknown` (it asserts nothing to verify), and `verified` is the only state
+that can ever wear `confirmed`.
+{% endcomment %}
+<li class="border-t pt-3" data-coverage-item data-engagement-id="{{ item.engagement_id }}" data-obligation-id="{{ item.obligation_id|default:'' }}" data-coverage-state="{{ item.state }}">
+  <h3 class="font-semibold">{% if item.service_kind == 'mei_mensal' %}MEI mensal{% elif item.service_kind == 'documentos_mensal' %}Documentos mensal{% else %}Serviço {{ item.service_kind }}{% endif %}</h3>
+  {% if item.state == 'unknown_scope' %}
+    <p class="text-sm text-ink-600">Este serviço não declara quais obrigações acompanha.</p>
+  {% else %}
+    {% if item.state == 'verified' %}
+      {% include "partials/ui/status_badge.html" with state='confirmed' label='Pagamento verificado' only %}
+      <p class="text-sm text-ink-600">Verificação oficial dentro da validade.</p>
+    {% elif item.state == 'manual' %}
+      {% include "partials/ui/status_badge.html" with state='manual' label='Pagamento informado' only %}
+      <p class="text-sm text-ink-600">Registro manual — ainda não verificado junto à Receita.</p>
+    {% elif item.state == 'pending_review' %}
+      {% include "partials/ui/status_badge.html" with state='pending' label='Aguardando conferência' only %}
+      <p class="text-sm text-ink-600">Comprovante enviado pelo cliente — ainda não conferido.</p>
+    {% elif item.state == 'stale' %}
+      {% include "partials/ui/status_badge.html" with state='stale' label='Desatualizado' only %}
+      <p class="text-sm text-ink-600">A última verificação oficial saiu da validade.</p>
+    {% elif item.state == 'refresh_failed' %}
+      {% include "partials/ui/status_badge.html" with state='stale' label='Falha na verificação' only %}
+      <p class="text-sm text-ink-600">A última tentativa de verificação falhou.</p>
+    {% elif item.state == 'not_applicable' %}
+      {% include "partials/ui/status_badge.html" with state='unknown' label='Não se aplica' only %}
+      <p class="text-sm text-ink-600">O perfil fiscal desta competência não pede esta obrigação.</p>
+    {% else %}
+      {% include "partials/ui/status_badge.html" with state='unknown' label='Sem informação' only %}
+      <p class="text-sm text-ink-600">Nenhuma fonte informou o pagamento desta obrigação.</p>
+    {% endif %}
+    <p class="mt-1 text-xs text-ink-600" data-facets>
+      Agenda: <span data-facet="calendar">{{ item.facets.calendar }}</span> ·
+      Guia: <span data-facet="guide">{{ item.facets.guide }}</span> ·
+      Pagamento: <span data-facet="payment">{{ item.facets.payment }}</span>
+    </p>
+  {% endif %}
+  {% comment %}Actions post to the cycle's own page; on the workspace (no
+cycle context) the panel is read-only and the form cannot be drawn.{% endcomment %}
+  {% if may_operate and item.obligation_id and cycle %}
+    <details class="mt-2"><summary class="ui-link">Registrar fato</summary>
+      <form method="post" action="{% url 'cycle-detail' cycle.pk %}" class="mt-2 grid gap-2">{% csrf_token %}
+        <input type="hidden" name="action" value="observation">
+        <input type="hidden" name="op" value="record">
+        <input type="hidden" name="subject_id" value="{{ item.obligation_id }}">
+        <input type="hidden" name="expected_version" value="{{ cycle.version }}">
+        <input type="hidden" name="kind" value="payment">
+        <div><label class="ui-field-label" for="ref-{{ item.obligation_id }}-pay">Referência (guia, comprovante, protocolo)</label><input class="ui-field-input" id="ref-{{ item.obligation_id }}-pay" name="source_ref" maxlength="255"></div>
+        <div><button class="ui-btn ui-btn-quiet" type="submit">Registrar pagamento informado</button></div>
+      </form>
+      <form method="post" action="{% url 'cycle-detail' cycle.pk %}" class="mt-2 grid gap-2">{% csrf_token %}
+        <input type="hidden" name="action" value="observation">
+        <input type="hidden" name="op" value="record">
+        <input type="hidden" name="subject_id" value="{{ item.obligation_id }}">
+        <input type="hidden" name="expected_version" value="{{ cycle.version }}">
+        <input type="hidden" name="kind" value="guide_issued">
+        <div><label class="ui-field-label" for="ref-{{ item.obligation_id }}-guide">Referência da emissão</label><input class="ui-field-input" id="ref-{{ item.obligation_id }}-guide" name="source_ref" maxlength="255"></div>
+        <div><button class="ui-btn ui-btn-quiet" type="submit">Registrar guia emitida</button></div>
+      </form>
+      {% if item.correctable %}
+        <form method="post" action="{% url 'cycle-detail' cycle.pk %}" class="mt-2 grid gap-2">{% csrf_token %}
+          <input type="hidden" name="action" value="observation">
+          <input type="hidden" name="op" value="correct">
+          <input type="hidden" name="subject_id" value="{{ item.obligation_id }}">
+          <input type="hidden" name="expected_version" value="{{ cycle.version }}">
+          <input type="hidden" name="kind" value="payment">
+          <input type="hidden" name="head_id" value="{{ item.head_id }}">
+          <div><button class="ui-btn ui-btn-quiet" type="submit">Corrigir o registro atual</button></div>
+        </form>
+        <form method="post" action="{% url 'cycle-detail' cycle.pk %}" class="mt-2 grid gap-2">{% csrf_token %}
+          <input type="hidden" name="action" value="observation">
+          <input type="hidden" name="op" value="retract">
+          <input type="hidden" name="subject_id" value="{{ item.obligation_id }}">
+          <input type="hidden" name="expected_version" value="{{ cycle.version }}">
+          <input type="hidden" name="kind" value="payment">
+          <input type="hidden" name="head_id" value="{{ item.head_id }}">
+          <div><button class="ui-btn ui-btn-quiet" type="submit">Retirar o registro atual</button></div>
+        </form>
+      {% endif %}
+    </details>
+  {% endif %}
+</li>

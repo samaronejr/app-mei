@@ -74,6 +74,57 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         'coverage=("unknown",),',
     ): "The explicit missing-observation projection until the coverage domain lands.",
     LiteralPin(
+        "apps/obligations/models/observations.py",
+        "scheduled",
+        'SCHEDULED = "scheduled", _("scheduled")',
+        count=2,
+    ): (
+        "AXR1-017: ObservationOutcome.SCHEDULED is the outcome vocabulary's own "
+        "member; the literal merely mirrors ObligationStatus's value, which is a "
+        "different domain."
+    ),
+    LiteralPin(
+        "apps/obligations/observations.py",
+        "scheduled",
+        'OUTCOME_SCHEDULED: Final = "scheduled"',
+    ): (
+        "AXR1-017: module-level alias for ObservationOutcome.SCHEDULED used in "
+        "assert_fact's outcome comparison; not an obligation status."
+    ),
+    LiteralPin(
+        "apps/obligations/coverage.py",
+        "unknown",
+        'UNKNOWN: Final = "unknown"',
+    ): (
+        "AXR1-017: CoverageState is the panel's coverage vocabulary, not the "
+        "onboarding status whose value it happens to share."
+    ),
+    LiteralPin(
+        "apps/obligations/coverage.py",
+        "not_applicable",
+        'NOT_APPLICABLE: Final = "not_applicable"',
+    ): (
+        "AXR1-017: CoverageState.NOT_APPLICABLE is the engagement-coverage "
+        "answer, not OnboardingStatus's member."
+    ),
+    LiteralPin(
+        "apps/obligations/presentation.py",
+        "unknown",
+        'PAYMENT_STATES: Final = frozenset({"verified", "manual", "stale", "unknown"})',
+    ): (
+        "AXR1-017: PAYMENT_STATES declares the portal adapter's vocabulary; "
+        "'unknown' names the portal's no-verified-claim state, not a model enum."
+    ),
+    LiteralPin(
+        "apps/obligations/presentation.py",
+        "unknown",
+        'return "unknown"',
+        count=2,
+    ): (
+        "AXR1-017: the adapter's 'unknown' return is the portal state name, "
+        "documented and rendered verbatim; it is not an enum value."
+    ),
+    LiteralPin(
         "apps/accounts/models.py",
         "active",
         'is_active = models.BooleanField(_("active"), default=True)',

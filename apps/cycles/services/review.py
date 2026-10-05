@@ -24,6 +24,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.cycles import receipt_observations
 from apps.cycles.capabilities import CYCLES_REVIEW
 from apps.cycles.errors import IllegalTransition
 from apps.cycles.evidence import (
@@ -158,20 +159,33 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
     expected_version: int,
     third_party: bool = False,
     override_reason: str = "",
+    payment_relevant: bool = False,
 ) -> ReviewRef:
-    """Decide on one submitted file against the request revision the page showed."""
+    """Decide on one submitted file against the request revision the page showed.
+
+    Lock order is the scanner's and the extractor's: intake first, then cycle,
+    request and link. Taking the request while the intake row was still locked
+    by a finalizing scanner was the deadlock pair this todo closes; the link
+    lock is `of=("self",)` because the document row is the scanner's second
+    hold and a review never writes it. The observation write for a bound
+    receipt comes last, under the subject lock, so it cannot reorder ahead of
+    the decision that produced it.
+    """
     reason, override = _validate(decision, client_reason, override_reason)
     cleaned = _clean_corrections(corrections)
     with transaction.atomic():
         candidate = EvidenceLink.objects.filter(pk=link_id).first()
         if candidate is None:
             raise Http404
-        cycle_id = (
-            EvidenceRequest.objects.filter(pk=candidate.request_id)
-            .values_list("cycle_id", flat=True)
-            .get()
+        # The intake lock precedes every aggregate lock — the same order
+        # `scan_intake` and `extract_intake` take it — so this transaction can
+        # never hold the request while a scanner waits on it.
+        intake = (
+            DocumentIntake.objects.select_for_update(of=("self",))
+            .filter(document_id=candidate.document_id)
+            .first()
         )
-        cycle = load_cycle(actor, cycle_id, lock=True)
+        cycle = load_cycle(actor, candidate.request.cycle_id, lock=True)
         request = EvidenceRequest.objects.select_for_update().get(
             pk=candidate.request_id
         )
@@ -181,18 +195,15 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
             msg = "Esta solicitação não está aberta para revisão."
             raise IllegalTransition(msg)
         link = (
-            EvidenceLink.objects.select_for_update()
+            EvidenceLink.objects.select_for_update(of=("self",))
             .select_related("document")
             .get(pk=candidate.pk)
         )
         if link.review_decision:
             msg = "Este arquivo já foi revisado."
             raise IllegalTransition(msg)
-        intake = (
-            DocumentIntake.objects.select_for_update()
-            .filter(document_id=link.document_id)
-            .first()
-        )
+        # Re-read under the lock taken above: the scanner may have finalized
+        # the state between candidate load and now.
         if intake is not None and intake.state not in REVIEWABLE_STATES:
             msg = "Aguarde a verificação e a leitura automática do arquivo."
             raise IllegalTransition(msg)
@@ -225,6 +236,7 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
             reviewer=actor,
             reviewed_at=now,
             document_sha256=link.document.sha256,
+            payment_relevant=payment_relevant,
         )
         _save_corrections(link, actor, cleaned, now)
         link.review_decision = decision
@@ -271,6 +283,15 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
                 "to": request.state,
                 "corrections": len(cleaned),
             },
+        )
+        # T17: a bound receipt's decision becomes an observation under the
+        # subject lock, taken last, inside this same transaction.
+        receipt_observations.apply_review(
+            request=request,
+            link=link,
+            decision=decision,
+            payment_relevant=payment_relevant,
+            actor=actor,
         )
         return ReviewRef(review.pk, decision, request.version)
 

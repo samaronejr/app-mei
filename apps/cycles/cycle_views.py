@@ -1,6 +1,8 @@
 """HTML cycle surfaces: portfolio-scoped, flag-gated and version-carrying forms."""
 
+from collections.abc import Mapping
 from http import HTTPStatus
+from typing import Any
 from uuid import UUID
 
 from django import forms
@@ -14,6 +16,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
+from apps.accounts.models import User
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import can, require_can
@@ -66,6 +69,13 @@ from apps.cycles.workspace import (
     portal_projection,
 )
 from apps.cycles.workspace_views import client_workspace
+from apps.obligations.coverage import coverage_for
+from apps.obligations.models import Obligation
+from apps.obligations.observations import (
+    StaleObservationError,
+    record_staff_fact,
+    retract_staff_fact,
+)
 from apps.portal.request_views import client_help
 from apps.portal.views import PortalVaultRequest
 
@@ -74,12 +84,29 @@ class ChangeForm(forms.Form):
     """One explicit intent and the revision rendered with that intent."""
 
     action = forms.ChoiceField(
-        choices=[("transition", "transition"), ("task", "task"), ("note", "note")]
+        choices=[
+            ("transition", "transition"),
+            ("task", "task"),
+            ("note", "note"),
+            ("observation", "observation"),
+        ]
     )
     expected_version = forms.IntegerField(min_value=1, widget=forms.HiddenInput)
     to_state = forms.CharField(required=False, max_length=32)
     task_id = forms.UUIDField(required=False)
     reason = forms.CharField(required=False, max_length=10000)
+    # T17 staff-fact fields; only the observation action reads them.
+    op = forms.ChoiceField(
+        choices=[("record", "record"), ("correct", "correct"), ("retract", "retract")],
+        required=False,
+    )
+    subject_id = forms.UUIDField(required=False)
+    kind = forms.ChoiceField(
+        choices=[("payment", "payment"), ("guide_issued", "guide_issued")],
+        required=False,
+    )
+    head_id = forms.UUIDField(required=False)
+    source_ref = forms.CharField(required=False, max_length=255)
 
 
 class OpenForm(forms.Form):
@@ -201,6 +228,8 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                         data["reason"],
                         expected_version=data["expected_version"],
                     )
+                elif data["action"] == "observation":
+                    _observation_action(request.user, cycle, data)
                 else:
                     task = get_object_or_404(cycle.tasks, pk=data["task_id"])
                     transition_task(
@@ -211,7 +240,7 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                         reason=data["reason"],
                     )
                 return redirect("cycle-detail", pk=pk)
-            except VersionConflict as exc:
+            except (VersionConflict, StaleObservationError) as exc:
                 error, status = str(exc), HTTPStatus.CONFLICT
             except (IllegalTransition, ValidationError) as exc:
                 error, status = str(exc), HTTPStatus.UNPROCESSABLE_CONTENT
@@ -252,6 +281,12 @@ def _render_detail(
         "cycles/cycle_detail.html",
         {
             "cycle": cycle,
+            "coverage": coverage_for(
+                request.user,
+                cycle.client,
+                cycle.period_start,
+                engagement_id=cycle.engagement_id,
+            ),
             "service_label": dict(SERVICE_KIND_CHOICES)[cycle.engagement.service_kind],
             "tasks": tasks,
             "actions": [
@@ -276,6 +311,41 @@ def _render_detail(
     )
 
 
+def _observation_action(
+    actor: User, cycle: ServiceCycle, data: Mapping[str, Any]
+) -> None:
+    """Write the staff fact the Cobertura panel posted (T17).
+
+    `subject_id` is resolved through the actor's portfolio inside the service;
+    the period is always the cycle's own competence so a fact can never land
+    on a month the panel did not show. A missing head on a correct/retract is
+    a form error; a head that moved is a stale-snapshot conflict.
+    """
+    if data["subject_id"] is None or not data["op"] or not data["kind"]:
+        msg = "Informe a obrigação, o fato e a ação."
+        raise ValidationError(msg)
+    if data["op"] == "retract":
+        if data["head_id"] is None:
+            msg = "Informe o registro a retirar."
+            raise ValidationError(msg)
+        retract_staff_fact(
+            actor,
+            subject_id=data["subject_id"],
+            kind=data["kind"],
+            period=cycle.period_start,
+            expected_head_id=data["head_id"],
+        )
+        return
+    record_staff_fact(
+        actor,
+        subject_id=data["subject_id"],
+        kind=data["kind"],
+        period=cycle.period_start,
+        source_ref=data["source_ref"],
+        expected_head_id=data["head_id"] if data["op"] == "correct" else None,
+    )
+
+
 def _intake_state(link: EvidenceLink) -> str | None:
     """Read the `intake_state` annotation (None: a vault upload without intake)."""
     state: str | None = link.__dict__.get("intake_state")
@@ -288,6 +358,7 @@ def _requests_context(
     """Build the firm's view of the cycle's requests and the send preview (T11)."""
     rows = list(
         EvidenceRequest.objects.filter(cycle=cycle)
+        .select_related("obligation__obligation_type")
         .prefetch_related("internals")
         .order_by("created_at", "pk")
     )
@@ -337,6 +408,11 @@ def _requests_context(
         ],
         "draft_count": sum(1 for row in rows if row.state == RequestState.DRAFT),
         "recipients": preview_recipients(request.user, cycle.pk),
+        # The only legal receipt bindings — the service re-checks inside the
+        # aggregate lock; this list just keeps the form honest.
+        "bindable_obligations": Obligation.objects.filter(
+            client_id=cycle.client_id, competence_month=cycle.period_start
+        ),
     }
 
 
@@ -359,6 +435,13 @@ class RequestActionForm(forms.Form):
     due_on = forms.DateField(required=False)
     instructions = forms.CharField(required=False, max_length=2000)
     reason = forms.CharField(required=False, max_length=2000)
+    # T17: receipt binding; always submitted (defaults echo the stored row), so
+    # a non-draft edit simply replays them and the service sees no change.
+    kind = forms.ChoiceField(
+        choices=[("documento", "documento"), ("comprovante", "comprovante")],
+        required=False,
+    )
+    obligation_id = forms.UUIDField(required=False)
 
 
 @require_http_methods(["POST"])
@@ -382,6 +465,8 @@ def cycle_request_action(request: AuthenticatedRequest, pk: UUID) -> HttpRespons
         client_note=data["client_note"],
         due_on=data["due_on"],
         instructions=data["instructions"],
+        kind=data["kind"] or "documento",
+        obligation_id=data["obligation_id"],
     )
     version = data["expected_version"]
     try:

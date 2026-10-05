@@ -267,7 +267,33 @@ def intake_upload(
             "relinked": relinked,
         },
     )
+    _schedule_observation(link)
     return IntakeResult(link, document, relinked=relinked, already_linked=False)
+
+
+def _schedule_observation(_link: EvidenceLink) -> None:
+    """Enqueue the receipt materializer once this upload's transaction commits.
+
+    Only bound `comprovante` requests produce observations, and the portal role
+    cannot insert them — so the write is deferred to an `app_runtime` task
+    after commit. A broker failure is logged, never swallowed silently: the
+    minute sweep is the floor that re-materializes the link regardless. The
+    link itself is only the trigger's provenance — the sweep re-finds it.
+    """
+
+    def enqueue() -> None:
+        # Imported here: the tasks module pulls the generator's import graph,
+        # and this file sits at the bottom of it.
+        from apps.obligations.tasks import (  # noqa: PLC0415
+            materialize_receipt_observations,
+        )
+
+        try:
+            materialize_receipt_observations.apply_async()
+        except Exception as error:  # noqa: BLE001 — enqueue is best-effort; sweep covers
+            sentry_sdk.capture_exception(error)
+
+    transaction.on_commit(enqueue)
 
 
 def vault_upload(
