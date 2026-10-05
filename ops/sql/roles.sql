@@ -151,6 +151,7 @@ $$;
 -- PORTAL_NONE: cycles_review
 -- PORTAL_NONE: cycles_actionproposal
 -- PORTAL_NONE: cycles_approval
+-- PORTAL_NONE: cycles_actionexecution
 -- Exact recipients, frozen payloads and approval authority are firm-private.
 -- T9 exposes no internal work. T14 grants SELECT on cycles_exception (allow-list
 -- below) under a policy that also requires client_visible; instructions and evidence
@@ -174,7 +175,8 @@ DECLARE
     receipt_table text;
 BEGIN
     FOREACH receipt_table IN ARRAY ARRAY[
-        'delivery_deliveryattempt', 'delivery_deliveryeffect', 'cycles_approval'
+        'delivery_deliveryattempt', 'delivery_deliveryeffect', 'cycles_approval',
+        'cycles_actionexecution', 'cycles_clientacknowledgement'
     ]
     LOOP
         IF to_regclass('public.' || receipt_table) IS NOT NULL THEN
@@ -208,6 +210,7 @@ BEGIN
         'clients_engagement',
         'clients_taxprofile',
         'cycles_servicecycle',
+        'cycles_clientpublication',
         -- S8.2 / T11: the client's own requests (client-visible fields only), the
         -- links it has submitted and their intake rows.
         'cycles_evidencerequest',
@@ -259,7 +262,8 @@ BEGIN
         -- one INSERT without SELECT: the portal appends and never reads events.
         'cycles_evidencelink',
         'cycles_documentintake',
-        'cycles_cycleevent'
+        'cycles_cycleevent',
+        'cycles_clientacknowledgement'
     ]
     LOOP
         IF to_regclass('public.' || portal_write_table) IS NOT NULL THEN

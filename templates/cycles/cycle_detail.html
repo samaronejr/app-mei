@@ -18,6 +18,7 @@
   <p class="text-sm text-ink-600">Competência {{ cycle.period_start|date:'m/Y' }}</p>
   <h2 id="cycle-summary" class="ui-panel-heading">{{ cycle.playbook.name }} · {{ cycle.get_state_display }}</h2>
 </header>
+{% if actions %}<p class="mb-3 text-sm text-ink-600">Concluir ou encerrar com pendências cria uma proposta para aprovação. A mudança só ocorre depois de executar os efeitos aprovados.</p>{% endif %}
 <p>Versão fixada: {{ cycle.playbook_version.number }} · revisão {{ cycle.version }}{% if cycle.amendment %} · emenda {{ cycle.amendment }}{% endif %}</p><p class="text-sm text-ink-600">Estado do trabalho interno. Não comprova pagamento, entrega ou protocolo oficial.</p>
 {% if actions %}<form method="post" class="mt-4 grid gap-3">{% csrf_token %}<input type="hidden" name="action" value="transition"><input type="hidden" name="expected_version" value="{{ cycle.version }}"><div><label class="ui-field-label" for="target">Próximo estado</label><select class="ui-field-input" name="to_state" id="target" required><option value="">Escolha um estado</option>{% for value,label in actions %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></div><div><label class="ui-field-label" for="reason">Motivo (obrigatório para bloquear ou encerrar com pendências)</label><textarea class="ui-field-input" id="reason" name="reason" maxlength="10000"></textarea></div><div><button class="ui-btn ui-btn-primary" type="submit">Alterar estado</button></div></form>{% endif %}
 </section>

@@ -64,7 +64,15 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
           {% if req.client_note %}<p class="text-sm text-ink-700">{{ req.client_note }}</p>{% endif %}
           {% if req.hint %}<p class="text-xs text-ink-600">{{ req.hint }}</p>{% endif %}
         </li>{% endfor %}</ul>{% else %}<p class="empty-state text-ink-600">{% translate "Nenhuma solicitação em aberto. Avisaremos por e-mail quando o escritório pedir algum documento." %}</p>{% endif %}
-      </section>{% endif %}{% if cycles %}
+      </section>
+      {% if publications %}<section class="card space-y-4 px-5 py-4" aria-labelledby="publications">
+        <h2 id="publications" class="text-sm font-semibold text-ink-700">Publicações do escritório</h2>
+        <ul class="space-y-3">{% for publication in publications %}<li class="min-w-0">
+          <a class="ui-link break-words" href="{% url 'portal-publication-detail' publication.id %}">{{ publication.title }}</a>
+          <p class="text-sm text-ink-600">{{ publication.published_at|data_hora }}{% if publication.state == 'retirada' %} · Retirada pelo escritório{% endif %}</p>
+        </li>{% endfor %}</ul>
+      </section>{% endif %}
+      {% endif %}{% if cycles %}
       <section class="card space-y-4 px-5 py-4" aria-labelledby="service-cycles">
         <h2 id="service-cycles" class="text-sm font-semibold text-ink-700">Ciclos do período</h2>
         <ul class="space-y-3">{% for cycle in cycles %}<li>

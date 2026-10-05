@@ -48,6 +48,7 @@ PORTAL_DENIED_TABLES = (
     "cycles_review",
     "cycles_actionproposal",
     "cycles_approval",
+    "cycles_actionexecution",
     "delivery_outboundmessage",
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
@@ -62,6 +63,8 @@ APPEND_ONLY_TABLES = (
     "obligations_sourceobservation",
     "cycles_cycleevent",
     "cycles_approval",
+    "cycles_actionexecution",
+    "cycles_clientacknowledgement",
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
 )
@@ -79,6 +82,7 @@ PORTAL_TABLES = (
     "clients_engagement",
     "clients_taxprofile",
     "cycles_servicecycle",
+    "cycles_clientpublication",
     "cycles_evidencerequest",
     "cycles_evidencelink",
     "cycles_documentintake",
@@ -102,6 +106,7 @@ PORTAL_WRITE_TABLES = (
     "cycles_evidencelink",
     "cycles_documentintake",
     "cycles_cycleevent",
+    "cycles_clientacknowledgement",
 )
 
 

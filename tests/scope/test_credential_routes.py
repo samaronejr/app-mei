@@ -69,6 +69,10 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         # T15: portfolio-scoped object IDs, never bearer credentials.
         "approval-card",
         "proposal-create",
+        # T16: scoped publication/link identifiers, never bearer credentials.
+        "portal-publication-detail",
+        "portal-publication-download",
+        "publication-withdraw",
         "admin:*",
     },
 )

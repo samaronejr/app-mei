@@ -239,6 +239,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     cycles = []
     requests = []
     help_rows = []
+    publications = []
     if cycles_r1:
         cycles = [
             {"id": cycle.pk, **portal_projection(cycle)}
@@ -252,6 +253,13 @@ def portal_home(request: HttpRequest) -> HttpResponse:
 
         requests = open_requests(today)
         help_rows = client_help()
+        from apps.cycles.models import ClientPublication  # noqa: PLC0415
+
+        publications = list(
+            ClientPublication.objects.order_by("-published_at", "pk").values(
+                "id", "title", "state", "published_at"
+            )[:12]
+        )
     return render(
         request,
         "portal/home.html",
@@ -264,6 +272,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "cycles_r1": cycles_r1,
             "requests": requests,
             "help_rows": help_rows,
+            "publications": publications,
         },
     )
 

@@ -43,6 +43,20 @@ class DeliveryConfig(AppConfig):
         )
         OUTBOX_TIMELINE_READERS.append(read_timeline)
 
+        from apps.cycles.effects.delivery import (  # noqa: PLC0415
+            register as register_approved,
+        )
+        from apps.cycles.effects.guards import (  # noqa: PLC0415
+            actions_terminal,
+            effects_started,
+        )
+        from apps.cycles.services.cycle import (  # noqa: PLC0415
+            COMPLETION_GUARDS,
+            EFFECT_GUARDS,
+        )
         from apps.delivery.kinds import register  # noqa: PLC0415
 
         register()
+        register_approved()
+        COMPLETION_GUARDS["actions"] = actions_terminal
+        EFFECT_GUARDS["approved_actions"] = effects_started

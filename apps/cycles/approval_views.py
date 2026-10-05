@@ -25,11 +25,13 @@ from apps.cycles.approval_forms import (
     observation_status_label,
 )
 from apps.cycles.effects.build import BuildError, initiation_capability
+from apps.cycles.effects.executors import ExecutionResult, execute
 from apps.cycles.effects.inputs import ProposalInput
 from apps.cycles.effects.manifest import ActionKind
 from apps.cycles.errors import IllegalTransition, VersionConflict
-from apps.cycles.models import ActionProposal, ProposalState
+from apps.cycles.models import ActionExecution, ActionProposal, ProposalState
 from apps.cycles.services.approvals import (
+    DecisionResult,
     approve,
     cancel,
     configure_approval_policy,
@@ -38,6 +40,7 @@ from apps.cycles.services.approvals import (
     revalidate,
 )
 from apps.cycles.services.cycle import load_cycle, require_enabled, tenant_id
+from apps.delivery.errors import IntentConflict
 from apps.tenants.models import Tenant
 
 REASON_LABELS = {
@@ -90,6 +93,7 @@ def _decision(
     if not form.is_valid():
         return _card(request, proposal, "Revise os dados informados.", 422)
     data = form.cleaned_data
+    result: DecisionResult | ExecutionResult
     try:
         if data["action"] == "approve":
             result = approve(
@@ -109,6 +113,21 @@ def _decision(
             result = cancel(
                 request.user, proposal.pk, expected_version=data["expected_version"]
             )
+        elif data["action"] == "execute":
+            result = execute(
+                request.user, proposal.pk, expected_version=data["expected_version"]
+            )
+            if not result.executed:
+                proposal.refresh_from_db()
+                return _card(
+                    request,
+                    proposal,
+                    (
+                        "A execução não está autorizada. "
+                        "Confira a validade e as aprovações."
+                    ),
+                    HTTPStatus.CONFLICT,
+                )
         else:
             result = revalidate(
                 request.user, proposal.pk, expected_version=data["expected_version"]
@@ -116,7 +135,7 @@ def _decision(
     except VersionConflict as error:
         proposal.refresh_from_db()
         return _card(request, proposal, str(error), HTTPStatus.CONFLICT)
-    except (ValidationError, IllegalTransition) as error:
+    except (ValidationError, IllegalTransition, IntentConflict) as error:
         return _card(request, proposal, str(error), HTTPStatus.UNPROCESSABLE_CONTENT)
     if result.proposal.state == ProposalState.INVALIDATED:
         proposal.refresh_from_db()
@@ -167,11 +186,19 @@ def _card(
         }
         for row in frozen["observations"]
     ]
+    execution = ActionExecution.objects.filter(proposal=proposal).first()
     return render(
         request,
         "cycles/approval_card.html",
         {
             "proposal": proposal,
+            "execution": execution,
+            "may_execute": (
+                controls.propose
+                and proposal.state == ProposalState.APPROVED
+                and execution is None
+                and expires_at > now
+            ),
             "frozen": frozen,
             "dates": dates,
             "expired": expires_at <= now,

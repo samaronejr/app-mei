@@ -85,14 +85,29 @@ class ProposalInput:
     subject: str = ""
     body: str = ""
     reason: str = ""
+    withdraw_publication_id: UUID | None = None
+    completion_state: str = "concluido"
 
     def validate(self) -> None:
         """Validate at the proposal boundary, before any persistent write."""
         if not self.step_key or self.occurrence < 1:
             msg = "Informe a etapa e uma ocorrência positiva."
             raise ValidationError(msg)
+        if self.withdraw_publication_id is not None and (
+            self.action_kind is not ActionKind.CLIENT_PUBLICATION
+            or not self.reason.strip()
+        ):
+            msg = "Uma retirada exige uma publicação e um motivo."
+            raise ValidationError(msg)
         if "\r" in self.subject or "\n" in self.subject:
             msg = "O assunto deve ocupar uma única linha."
+            raise ValidationError(msg)
+        if self.completion_state not in {"concluido", "encerrado_com_pendencias"} or (
+            self.action_kind is ActionKind.CYCLE_COMPLETION
+            and self.completion_state == "encerrado_com_pendencias"
+            and not self.reason.strip()
+        ):
+            msg = "Escolha o encerramento e justifique as pendências."
             raise ValidationError(msg)
         selections = (
             self.recipient_ids,
@@ -128,7 +143,7 @@ class ProposalInput:
 
     def as_data(self) -> dict[str, JSONValue]:
         """Store source ids and rendered copy, never regenerated identities."""
-        return {
+        data: dict[str, JSONValue] = {
             "action_kind": self.action_kind,
             "step_key": self.step_key,
             "occurrence": self.occurrence,
@@ -141,11 +156,16 @@ class ProposalInput:
             "body": self.body,
             "reason": self.reason,
         }
+        if self.withdraw_publication_id is not None:
+            data["withdraw_publication_id"] = str(self.withdraw_publication_id)
+        if self.action_kind is ActionKind.CYCLE_COMPLETION:
+            data["completion_state"] = self.completion_state
+        return data
 
     @classmethod
     def from_data(cls, data: dict[str, JSONValue]) -> "ProposalInput":
         """Load exactly the persisted input schema, without permissive defaults."""
-        if set(data) != {
+        required = {
             "action_kind",
             "step_key",
             "occurrence",
@@ -157,7 +177,12 @@ class ProposalInput:
             "subject",
             "body",
             "reason",
-        }:
+        }
+        if set(data) not in (
+            required,
+            required | {"withdraw_publication_id"},
+            required | {"completion_state"},
+        ):
             msg = "A seleção persistida da proposta é inválida."
             raise ValidationError(msg)
         occurrence, money = data["occurrence"], data["money"]
@@ -176,7 +201,23 @@ class ProposalInput:
             subject=_text(data["subject"]),
             body=_text(data["body"]),
             reason=_text(data["reason"]),
+            withdraw_publication_id=(
+                UUID(_text(data["withdraw_publication_id"]))
+                if "withdraw_publication_id" in data
+                else None
+            ),
+            completion_state=(
+                _text(data["completion_state"])
+                if "completion_state" in data
+                else "concluido"
+            ),
         )
+        if (
+            "completion_state" in data
+            and result.action_kind is not ActionKind.CYCLE_COMPLETION
+        ):
+            msg = "O resultado de encerramento pertence apenas à conclusão."
+            raise ValidationError(msg)
         result.validate()
         return result
 

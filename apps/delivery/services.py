@@ -262,35 +262,63 @@ def authorize_and_prepare(claim: Claim) -> tuple[OutboundMessage, dict[str, str]
     hook refusing (`ValueError`) cancels the message with the hook's reason code. The
     returned values are never written to any row.
     """
-    from apps.delivery.policy import KINDS, still_valid  # noqa: PLC0415
-
     assert_no_transaction()
     with tenant_context(claim.tenant_id):
-        control = _control()
-        message = _locked_claim(claim)
-        if message.send_started_at is not None:
-            msg = "This fence already entered the gateway."
-            raise StaleFenceError(msg)
+        return prepare_claim(claim)
+
+
+@transaction.atomic
+def prepare_claim(claim: Claim) -> tuple[OutboundMessage, dict[str, str]]:
+    """Lock control, message, authority, client and cycle through dispatch start.
+
+    The caller owns tenant_context. This is also the boundary exercised by real
+    runtime-role race threads. Every acquired authorization lock survives through
+    send_started_at and the outer commit; no I/O occurs here.
+    """
+    from apps.delivery.policy import KINDS, still_valid  # noqa: PLC0415
+
+    if tenant_id() != claim.tenant_id:
+        raise Http404
+    control = _control()
+    message = _locked_claim(claim)
+    if message.send_started_at is not None:
+        msg = "This fence already entered the gateway."
+        raise StaleFenceError(msg)
+    if (
+        settings.DELIVERY_PAUSED
+        or control.paused
+        or not tenant_has(claim.tenant_id, "cycles_r1")
+    ):
+        valid, reason = False, "delivery_paused"
+    else:
         valid, reason = still_valid(message)
-        if (
-            settings.DELIVERY_PAUSED
-            or control.paused
-            or not tenant_has(claim.tenant_id, "cycles_r1")
-        ):
-            valid, reason = False, "delivery_paused"
-        secrets: dict[str, str] = {}
-        prepare = KINDS[message.kind].prepare if valid else None
-        if prepare is not None:
-            try:
-                secrets = prepare(message)
-            except ValueError as refusal:
-                valid, reason = False, str(refusal) or "prepare_refused"
-        if not valid:
-            transition(message, Reply(MessageState.CANCELLED, reason))
-        else:
-            message.send_started_at = timezone.now()
-            message.save(update_fields=["send_started_at"])
-        return message, secrets
+    secrets: dict[str, str] = {}
+    prepare = KINDS[message.kind].prepare if valid else None
+    if prepare is not None:
+        try:
+            secrets = prepare(message)
+        except ValueError as refusal:
+            valid, reason = False, str(refusal) or "prepare_refused"
+    # Time keeps advancing while an authority/source acquisition is blocked.
+    if message.lease_until is None or message.lease_until <= timezone.now():
+        valid, reason = False, "lease_expired_before_dispatch"
+    if not valid:
+        transition(message, Reply(MessageState.CANCELLED, reason))
+    else:
+        message.send_started_at = timezone.now()
+        message.save(update_fields=["send_started_at"])
+        if message.proposal_id is not None and message.cycle_id is not None:
+            CycleEvent.objects.create(
+                tenant_id=message.tenant_id,
+                client_id=message.client_id,
+                cycle_id=message.cycle_id,
+                type="proposal.dispatch_started",
+                aggregate_type="ActionProposal",
+                aggregate_id=message.proposal_id,
+                aggregate_version=message.fence,
+                payload={"message_id": str(message.pk), "digest": message.body_ref},
+            )
+    return message, secrets
 
 
 def finalize(claim: Claim, reply: Reply) -> bool:
@@ -334,8 +362,8 @@ def decide(
         candidate = OutboundMessage.objects.filter(pk=message_id).first()
         if candidate is None:
             raise Http404
-        load_client(actor, tenant_id(), candidate.client_id, lock=True)
         message = OutboundMessage.objects.select_for_update().get(pk=message_id)
+        load_client(actor, tenant_id(), message.client_id, lock=True)
         require_actor(actor, CYCLES_OPERATE)
         if message.version != expected_version:
             msg = "Este registro mudou. Recarregue antes de salvar."

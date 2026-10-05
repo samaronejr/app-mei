@@ -21,7 +21,7 @@
   <button class="ui-btn ui-btn-primary" type="submit">Filtrar</button>
 </form>
 <div class="space-y-4">
-{% for message in page %}
+{% for item in communications %}{% with message=item.message %}
 <article class="ui-panel p-4" aria-labelledby="message-{{ message.pk }}">
   <h2 class="font-semibold" id="message-{{ message.pk }}">{{ message.client.legal_name }}</h2>
   <p>{{ message.subject }}</p>
@@ -29,6 +29,18 @@
   <p class="text-sm text-ink-600">{{ message.created_at|date:'d/m/Y H:i' }} · Tentativas: {{ message.attempts }}</p>
   {% if message.last_error_code %}<p class="text-sm">Código: {{ message.last_error_code }}</p>{% endif %}
   {% if message.decision_note %}<p class="mt-2">Nota da equipe: {{ message.decision_note }}</p>{% endif %}
+  <ol class="mt-4 space-y-2 text-sm" aria-label="Histórico do envio">
+    {% for entry in item.timeline %}<li><time>{{ entry.when|date:'d/m/Y H:i' }}</time> · {{ entry.label }}{% if entry.code %}<span class="text-ink-600"> · {{ entry.code }}</span>{% endif %}</li>{% endfor %}
+  </ol>
+  {% if item.publication %}<section class="mt-4 border-t border-ink-200 pt-4" aria-label="Recebimento da publicação">
+    <h3 class="font-semibold break-words">{{ item.publication.title }}</h3>
+    <p class="text-sm">{{ item.publication.get_state_display }}</p>
+    <ul class="mt-2 space-y-2">{% for receipt in item.publication.acknowledgements.all %}
+      <li class="break-words" data-acknowledgement="{{ receipt.publication_digest }}">Recebimento registrado pelo cliente {{ receipt.user.email }} em {{ receipt.acknowledged_at|date:'d/m/Y H:i' }}.</li>
+    {% empty %}<li>Sem confirmação de recebimento do cliente.</li>{% endfor %}</ul>
+    <p class="mt-2 text-sm text-ink-600">A confirmação se refere à versão publicada e independe do resultado do e-mail.</p>
+    {% if can_decide and item.publication.state == 'publicada' %}<p class="mt-3"><a class="ui-link" href="{% url 'publication-withdraw' item.publication.pk %}">Retirar publicação</a></p>{% endif %}
+  </section>{% endif %}
   {% if can_decide %}
   {% if message.state == 'resultado_incerto' %}
   <p class="mt-3">O envio pode ter ocorrido. Verifique antes de decidir. Uma informação da equipe não comprova aceitação pelo servidor e não dispara um novo envio.</p>
@@ -42,7 +54,7 @@
   {% endif %}
   {% endif %}
 </article>
-{% empty %}<div class="ui-panel p-6"><h2 class="font-semibold">Nenhuma mensagem nestes filtros</h2><p>Os avisos dos ciclos aparecerão aqui quando forem colocados na fila.</p></div>{% endfor %}
+{% endwith %}{% empty %}<div class="ui-panel p-6"><h2 class="font-semibold">Nenhuma mensagem nestes filtros</h2><p>Os avisos dos ciclos aparecerão aqui quando forem colocados na fila.</p></div>{% endfor %}
 </div>
 <nav class="mt-4 flex gap-4" aria-label="Páginas de mensagens">{% if page.has_previous %}<a class="ui-link" href="?estado={{ selected|urlencode }}&amp;pagina={{ page.previous_page_number }}">Anterior</a>{% endif %}{% if page.has_next %}<a class="ui-link" href="?estado={{ selected|urlencode }}&amp;pagina={{ page.next_page_number }}">Próxima</a>{% endif %}</nav>
 {% endblock %}

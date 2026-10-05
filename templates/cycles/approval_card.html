@@ -25,10 +25,18 @@
   </section>
   <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-message">
     <h2 id="frozen-message" class="ui-panel-heading">Conteúdo congelado</h2>
+    {% if frozen.payload.completion_state %}<p class="mt-3 font-semibold">Resultado autorizado: {% if frozen.payload.completion_state == 'encerrado_com_pendencias' %}encerrar com pendências justificadas{% else %}concluir o ciclo, se todas as condições forem atendidas{% endif %}.</p>{% endif %}
     {% if frozen.payload.subject %}<p class="mt-3 font-semibold break-words" data-frozen-subject>{{ frozen.payload.subject }}</p>{% endif %}
     {% if frozen.payload.from %}<p class="mt-1 text-sm break-all">Remetente: {{ frozen.payload.from }}</p>{% endif %}
     {% if frozen.payload.body %}<pre class="mt-3 whitespace-pre-wrap break-words font-sans text-sm" data-frozen-body>{{ frozen.payload.body }}</pre>{% else %}<p class="mt-3 text-sm">Esta ação não contém mensagem externa.</p>{% endif %}
     {% if frozen.payload.reason %}<p class="mt-3 whitespace-pre-wrap break-words">{{ frozen.payload.reason }}</p>{% endif %}
+    {% if frozen.payload.notice %}<details class="mt-4 text-sm">
+      <summary class="ui-link">Conferir o aviso de e-mail incluído</summary>
+      <p class="mt-3 font-semibold">{{ frozen.payload.notice.subject }}</p>
+      <p class="break-all">Remetente: {{ frozen.payload.notice.from }}</p>
+      <pre class="mt-2 whitespace-pre-wrap break-words font-sans">{{ frozen.payload.notice.body }}</pre>
+      <p class="mt-2 text-xs">SHA-256 da mensagem MIME</p><code class="block break-all text-xs">{{ frozen.payload.notice.mime_sha256 }}</code>
+    </details>{% endif %}
     {% if frozen.payload.mime_sha256 %}
     <p class="mt-3 text-xs text-ink-600">SHA-256 da mensagem MIME congelada</p>
     <code class="block break-all text-xs" data-frozen-mime-sha256>{{ frozen.payload.mime_sha256 }}</code>
@@ -92,6 +100,11 @@
   </section>
   <section class="ui-panel p-4" aria-labelledby="approval-decision" data-decision-controls>
     <h2 id="approval-decision" class="ui-panel-heading">Decidir sobre estes efeitos</h2>
+    {% if execution %}<p class="mt-3">Efeito registrado em {{ execution.executed_at|data_hora }}.{% if proposal.action_kind == 'email_notice' %} O aviso foi colocado na fila; o resultado do servidor de e-mail está em Comunicação.{% endif %}</p>
+    {% elif may_execute %}<form method="post" class="mt-4">{% csrf_token %}
+      <input type="hidden" name="expected_version" value="{{ proposal.version }}">
+      <button class="ui-btn ui-btn-primary" name="action" value="execute" type="submit">Executar efeitos aprovados</button>
+    </form>{% endif %}
     {% if awaiting and may_approve and not expired %}
       {% if self_approval and frozen.approval_rule.separation_of_duties %}<p class="mt-3">Outra pessoa autorizada precisa aprovar esta versão.</p>
       {% else %}<form method="post" class="mt-4 grid gap-3">{% csrf_token %}

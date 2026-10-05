@@ -337,6 +337,21 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "AXR1-015. The UUID identifies a cycle loaded through the actor's portfolio. "
         "Creating a proposal requires the live action capability and locked version."
     ),
+    "portal-publication-detail": (
+        "AXR1-016. The UUID identifies a publication, not a bearer credential. "
+        "Authentication, the publication capability and RESTRICTIVE portal client "
+        "RLS protect its contents and the authenticated user's exact-digest receipt."
+    ),
+    "portal-publication-download": (
+        "AXR1-016. The UUIDs identify a publication and selected evidence link, not "
+        "bearer credentials. Authentication, transfer capability and client RLS "
+        "precede frozen revision/hash checks and the app-mediated download."
+    ),
+    "publication-withdraw": (
+        "AXR1-016. The UUID identifies a publication loaded through the actor's "
+        "portfolio, not a bearer credential. The live capability and locked version "
+        "authorize only creation of a new withdrawal proposal requiring approval."
+    ),
     "portal-request-detail": (
         "The UUID names an evidence request, not a bearer credential. "
         "Authentication and RESTRICTIVE portal client RLS authorize the SELECT."

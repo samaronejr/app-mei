@@ -44,6 +44,7 @@ from apps.cycles.effects.invalidation import (
 from apps.cycles.effects.manifest import ActionKind, EffectManifestV1
 from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.models import (
+    ActionExecution,
     ActionProposal,
     Approval,
     ApprovalDecision,
@@ -58,6 +59,7 @@ from apps.cycles.services.cycle import (
     tenant_id,
 )
 from apps.cycles.services.exceptions import open_exception
+from apps.delivery.models import OutboundMessage
 from apps.delivery.policy import BusinessIntent
 from apps.tenants.models import Tenant
 
@@ -80,6 +82,7 @@ class LockedScope:
     client: ClientCompany
     cycle: ServiceCycle
     actor_id: UUID
+    system: bool = False
 
     @property
     def actor(self) -> User:
@@ -120,11 +123,17 @@ def _recipient_users(spec: ProposalInput) -> set[UUID]:
 
 
 def _lock_scope(
-    actor: User, candidate: ServiceCycle, participants: set[UUID]
+    actor: User,
+    candidate: ServiceCycle,
+    participants: set[UUID],
+    *,
+    system: bool = False,
 ) -> LockedScope:
     authorities = lock_authorities(participants | {actor.pk}, tenant_id=tenant_id())
     fresh = authorities[actor.pk]
-    if not fresh.user.is_active or fresh.user.is_superuser or fresh.membership is None:
+    if not system and (
+        not fresh.user.is_active or fresh.user.is_superuser or fresh.membership is None
+    ):
         raise PermissionDenied
     # PLATFORM_QUERY_OK: a single explicit current tenant, after ordinary firm
     # membership discovery; all capability decisions are repeated under this fence.
@@ -141,12 +150,13 @@ def _lock_scope(
         .filter(client=client, user_id__in=participants | {actor.pk})
         .order_by("pk")
     )
-    load_client(fresh.user, tenant.pk, client.pk)
+    if not system:
+        load_client(fresh.user, tenant.pk, client.pk)
     cycle = ServiceCycle.objects.select_for_update(no_key=True).get(pk=candidate.pk)
     if cycle.client_id != client.pk:
         msg = "O contexto do ciclo mudou. Recarregue antes de decidir."
         raise VersionConflict(msg)
-    return LockedScope(authorities, tenant, client, cycle, actor.pk)
+    return LockedScope(authorities, tenant, client, cycle, actor.pk, system)
 
 
 def _cycle(cycle_id: UUID) -> ServiceCycle:
@@ -168,7 +178,7 @@ def _event(
         tenant=scope.tenant,
         client=scope.client,
         cycle=scope.cycle,
-        actor=scope.actor,
+        actor=None if scope.system else scope.actor,
         type=event_type,
         aggregate_type="ActionProposal",
         aggregate_id=proposal.pk,
@@ -182,18 +192,19 @@ def _event(
 
 
 def _locked_proposal(
-    actor: User, proposal_id: UUID, expected_version: int | None
+    actor: User | None, proposal_id: UUID, expected_version: int | None
 ) -> tuple[LockedScope, ActionProposal, ProposalInput, tuple[Approval, ...]]:
     require_enabled()
     candidate = ActionProposal.objects.filter(pk=proposal_id).first()
     if candidate is None:
         raise Http404
+    reader = actor if actor is not None else candidate.initiator
     spec = ProposalInput.from_data(candidate.input_spec)
     previous_ids = set(
         Approval.objects.filter(proposal=candidate).values_list("pk", flat=True)
     )
     participants = (
-        {candidate.initiator_id, actor.pk}
+        {candidate.initiator_id, reader.pk}
         | set(
             Approval.objects.filter(pk__in=previous_ids).values_list(
                 "approver_id", flat=True
@@ -201,7 +212,9 @@ def _locked_proposal(
         )
         | _recipient_users(spec)
     )
-    scope = _lock_scope(actor, _cycle(candidate.cycle_id), participants)
+    scope = _lock_scope(
+        reader, _cycle(candidate.cycle_id), participants, system=actor is None
+    )
     proposal = ActionProposal.objects.select_for_update(no_key=True).get(pk=proposal_id)
     if expected_version is not None:
         check_version(proposal.version, expected_version)
@@ -261,7 +274,7 @@ def _invalidate(
         actor=None,
         cycle_id=scope.cycle.pk,
         expected_version=scope.cycle.version,
-        owner=scope.actor,
+        owner=scope.cycle.owner or scope.actor,
         review_on=now.astimezone(ZoneInfo("America/Sao_Paulo")).date(),
     )
     scope.cycle.refresh_from_db()
@@ -343,6 +356,21 @@ def _intent(cycle: ServiceCycle, spec: ProposalInput) -> str:
     ).key(cycle.tenant_id)
 
 
+def _unstarted(proposal: ActionProposal) -> None:
+    """Read under proposal/authority fences, never invert message -> cycle locks."""
+    internal_effect = (
+        ActionExecution.objects.filter(proposal=proposal)
+        .exclude(action_kind=ActionKind.EMAIL_NOTICE)
+        .exists()
+    )
+    dispatch_started = OutboundMessage.objects.filter(
+        proposal_id=proposal.pk, send_started_at__isnull=False
+    ).exists()
+    if internal_effect or dispatch_started:
+        msg = "Este efeito já foi iniciado. Cancelar a proposta não desfaz a execução."
+        raise IllegalTransition(msg)
+
+
 @transaction.atomic
 def propose(
     actor: User,
@@ -376,6 +404,7 @@ def propose(
             msg = "Revise a proposta existente antes de criar outra versão."
             raise VersionConflict(msg)
         check_version(previous.version, draft.previous_version)
+        _unstarted(previous)
         if previous.initiator_id != actor.pk and not is_policy_owner(
             scope.authorities[actor.pk]
         ):
@@ -557,6 +586,7 @@ def cancel(actor: User, proposal_id: UUID, *, expected_version: int) -> Decision
     if proposal.state in TERMINAL_STATES:
         msg = "Esta proposta já está encerrada."
         raise IllegalTransition(msg)
+    _unstarted(proposal)
     proposal.state = ProposalState.CANCELLED
     proposal.version += 1
     proposal.save(update_fields=["state", "version"])
@@ -566,21 +596,41 @@ def cancel(actor: User, proposal_id: UUID, *, expected_version: int) -> Decision
 
 @transaction.atomic
 def revalidate(
-    actor: User, proposal_id: UUID, *, expected_version: int | None = None
+    actor: User | None, proposal_id: UUID, *, expected_version: int | None = None
 ) -> DecisionResult:
-    """Rebuild from locked live facts; callers may compose an outer transaction."""
+    """Rebuild under locks; None is the trusted dispatcher's non-impersonating read."""
     scope, proposal, spec, decisions = _locked_proposal(
         actor, proposal_id, expected_version
     )
     authority = scope.authorities[scope.actor_id]
-    if not (
+    if actor is not None and not (
         authority.permits(APPROVE, scope.client.pk, scope.tenant.pk)
         or authority.permits(
             initiation_capability(spec.action_kind), scope.client.pk, scope.tenant.pk
         )
     ):
         raise PermissionDenied
-    return _revalidate(scope, proposal, spec, decisions)
+    result = _revalidate(scope, proposal, spec, decisions)
+    if result.executable:
+        approved = [
+            row for row in decisions if row.decision == ApprovalDecision.APPROVE
+        ]
+        separated = not (
+            scope.tenant.allow_self_approval
+            and active_staff_count(scope.tenant.pk) == 1
+        )
+        if len(
+            {row.approver_id for row in approved}
+        ) < scope.tenant.approval_quorum or (
+            separated
+            and any(row.approver_id == proposal.initiator_id for row in approved)
+        ):
+            reasons = (
+                InvalidationReason("approval_quorum_missing", Impact.INVALIDATE),
+            )
+            _invalidate(scope, proposal, reasons, now=timezone.now())
+            return DecisionResult(proposal, reasons)
+    return result
 
 
 @transaction.atomic

@@ -17,13 +17,18 @@ from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.services.cycle import require_enabled, tenant_id
 from apps.delivery.errors import VersionConflict
-from apps.delivery.models import AutomationPause, MessageState, OutboundMessage
+from apps.delivery.models import (
+    AutomationPause,
+    MessageState,
+    OutboundMessage,
+)
 from apps.delivery.services import (
     AUTOMATIONS_MANAGE,
     decide,
     remaining_quota,
     set_pause,
 )
+from apps.delivery.timeline import message_history
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -125,6 +130,7 @@ def communication(request: AuthenticatedRequest) -> HttpResponse:
         "delivery/queue.html",
         {
             "page": page,
+            "communications": message_history(list(page.object_list)),
             "states": MessageState.choices,
             "selected": selected,
             "selected_message": message_id,

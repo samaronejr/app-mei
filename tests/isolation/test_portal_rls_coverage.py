@@ -60,9 +60,9 @@ RUNTIME_ROLE = "app_runtime"
 # cycles_{extractedfield,review} (todo 13) are firm-only extraction and review rows.
 # T14's private exception companion carries instructions and evidence references.
 # T15 adds two exact-effect tables, client-paired and independently portal-denied.
-EXPECTED_TENANT_TABLE_COUNT = 44
+EXPECTED_TENANT_TABLE_COUNT = 47
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
-    {"cycles_actionproposal", "cycles_approval"}
+    {"cycles_actionproposal", "cycles_approval", "cycles_actionexecution"}
 )
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
@@ -410,6 +410,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_review",
         "cycles_actionproposal",
         "cycles_approval",
+        "cycles_actionexecution",
+        "cycles_clientpublication",
         "delivery_outboundmessage",
         "delivery_deliveryattempt",
         "delivery_deliveryeffect",
@@ -444,6 +446,10 @@ CLIENT_PAIRING_EXEMPT: Final[dict[str, str]] = {
         "accounts_user again (cycles_cycleevent, todo 11): the event's actor is a "
         "platform-level account; the event's own client_id confines the row"
     ),
+    "user_id": (
+        "accounts_user again (cycles_clientacknowledgement, todo 16): the user is "
+        "platform-level; the receipt's client_id and exact publication FK confine it"
+    ),
 }
 
 # Portal-writable tables the portal deliberately cannot read back. cycles_cycleevent
@@ -454,6 +460,10 @@ INSERT_WITHOUT_SELECT: Final[dict[str, str]] = {
     "cycles_cycleevent": (
         "append-only timeline shared with firm-side events; the portal writes its "
         "submission event and never reads the timeline"
+    ),
+    "cycles_clientacknowledgement": (
+        "append-only exact-version receipt; the portal inserts its authenticated "
+        "user's receipt and the firm reads the acknowledgement independently of SMTP"
     ),
 }
 

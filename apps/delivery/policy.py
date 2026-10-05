@@ -12,6 +12,7 @@ from django.core.validators import validate_email
 from django.template.loader import render_to_string
 
 from apps.clients.models import ClientContact
+from apps.cycles.effects.manifest import normalize_email
 from apps.cycles.models import CycleState
 from apps.delivery.models import OutboundMessage
 
@@ -116,6 +117,10 @@ def render_body(message: OutboundMessage, secrets: dict[str, str] | None = None)
     Without `secrets` this is the digest-bound public body; with them, the body
     actually sent. Templates must render a secret only when it is present.
     """
+    if message.kind in {"approved_email", "approved_publication_notice"}:
+        # The protected proposal digest in body_ref binds the frozen MIME. There
+        # is no template to re-render or ORM read outside the dispatch transaction.
+        return ""
     return render_to_string(
         KINDS[message.kind].template,
         {"portal_url": message.portal_url, **(secrets or {})},
@@ -143,18 +148,26 @@ def still_valid(message: OutboundMessage) -> tuple[bool, str]:
     definition = KINDS.get(message.kind)
     if definition is None:
         return False, "unregistered_kind"
+    approved = message.kind in {"approved_email", "approved_publication_notice"}
+    if approved:
+        valid, reason = definition.still_valid(message)
+        if not valid:
+            return valid, reason
     try:
         contact = resolve_recipient(message.client_id, message.contact_id)
     except ValidationError:
         return False, "recipient_not_allowed"
-    if message.recipients_json != [contact.email]:
+    address = normalize_email(contact.email) if approved else contact.email
+    if message.recipients_json != [address]:
         return False, "recipient_changed"
     if message.cycle is not None and message.cycle.state in {
         CycleState.COMPLETED,
         CycleState.CANCELLED,
         CycleState.WITH_PENDING,
     }:
-        return False, "cycle_closed"
-    if message.content_digest != content_digest(message):
-        return False, "content_changed"
-    return definition.still_valid(message)
+        reason = "cycle_closed"
+    elif message.content_digest != content_digest(message):
+        reason = "content_changed"
+    else:
+        return (True, "") if approved else definition.still_valid(message)
+    return False, reason

@@ -3,8 +3,14 @@
 from django.urls import path
 
 from apps.cycles import approval_views, cycle_views, document_views, review_views, views
+from apps.cycles.publication_views import publication_withdraw
 
 urlpatterns = [
+    path(
+        "publicacoes/<uuid:pk>/retirar/",
+        publication_withdraw,
+        name="publication-withdraw",
+    ),
     path("acoes/<uuid:pk>/", approval_views.approval_card, name="approval-card"),
     path(
         "ciclos/<uuid:pk>/propor/",

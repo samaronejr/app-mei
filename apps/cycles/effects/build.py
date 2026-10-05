@@ -1,13 +1,9 @@
 """Load selected live facts under their real writers' transaction fences."""
 
-import base64
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from email.generator import BytesGenerator
-from email.utils import format_datetime
-from io import BytesIO
 from uuid import UUID
 
 from django.conf import settings
@@ -19,6 +15,7 @@ from django.db.models import Q
 from apps.authz.approvals import Authority, active_staff_count
 from apps.clients.models import ClientContact, Engagement, TaxProfile
 from apps.cycles.effects.inputs import ProposalInput
+from apps.cycles.effects.mail import freeze_mail, smtp_account
 from apps.cycles.effects.manifest import (
     BOUND_COLLECTIONS,
     ActionKind,
@@ -34,12 +31,15 @@ from apps.cycles.effects.manifest import (
 )
 from apps.cycles.evidence import PORTAL_SERVABLE_STATES, ReviewDecision
 from apps.cycles.models import (
+    ActionExecution,
     ActionProposal,
+    ClientPublication,
     DocumentIntake,
     EvidenceLink,
     EvidenceRequest,
     ExtractedField,
     PlaybookVersion,
+    PublicationState,
     Review,
     ServiceCycle,
 )
@@ -105,6 +105,19 @@ def lock_sources(cycle: ServiceCycle, spec: ProposalInput) -> LiveSources:
     if len(contacts) != len(contact_ids):
         code = "recipient_unavailable"
         raise BuildError(code)
+    if spec.withdraw_publication_id is not None:
+        target = (
+            ClientPublication.objects.select_for_update(no_key=True)
+            .filter(
+                pk=spec.withdraw_publication_id,
+                client_id=cycle.client_id,
+                cycle=cycle,
+            )
+            .first()
+        )
+        if target is None:
+            code = "publication_unavailable"
+            raise BuildError(code)
     engagement = Engagement.objects.select_for_update(no_key=True).get(
         pk=cycle.engagement_id, client_id=cycle.client_id
     )
@@ -193,18 +206,17 @@ def _recipients(
                 code = "recipient_ineligible"
                 raise BuildError(code)
             channel, address = "portal", str(membership.user_id)
-        else:
-            if not contact.channel_email_allowed:
-                code = "recipient_ineligible"
-                raise BuildError(code)
-            try:
-                validate_email(address)
-            except ValidationError as error:
-                code = "recipient_ineligible"
-                raise BuildError(code) from error
-            if "\r" in address or "\n" in address:
-                code = "recipient_ineligible"
-                raise BuildError(code)
+        if not contact.channel_email_allowed:
+            code = "recipient_ineligible"
+            raise BuildError(code)
+        try:
+            validate_email(contact.email)
+        except ValidationError as error:
+            code = "recipient_ineligible"
+            raise BuildError(code) from error
+        if "\r" in contact.email or "\n" in contact.email:
+            code = "recipient_ineligible"
+            raise BuildError(code)
         result.append(
             {
                 "role": "to",
@@ -213,6 +225,15 @@ def _recipients(
                 "address": address,
             }
         )
+        if kind is ActionKind.CLIENT_PUBLICATION:
+            result.append(
+                {
+                    "role": "notice",
+                    "contact_id": str(contact.pk),
+                    "channel": "email",
+                    "address": contact.email,
+                }
+            )
     return tuple(result)
 
 
@@ -386,37 +407,76 @@ def build_manifest(
         "body": spec.body,
         "reason": spec.reason,
     }
+    if spec.action_kind is ActionKind.CYCLE_COMPLETION:
+        payload["completion_state"] = spec.completion_state
     recipients = _recipients(sources, spec.action_kind, authorities)
     if spec.action_kind is ActionKind.EMAIL_NOTICE:
         provider = "smtp"
-        identity = [
-            settings.EMAIL_HOST,
-            str(settings.EMAIL_PORT),
-            settings.EMAIL_HOST_USER,
-            settings.DEFAULT_FROM_EMAIL,
-        ]
-        account_id = hashlib.sha256(canonicalize(identity)).hexdigest()
-        payload["from"] = settings.DEFAULT_FROM_EMAIL
-        message = EmailMessage(
-            subject=spec.subject,
-            body=spec.body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=sorted(normalize_email(row["address"]) for row in recipients),
-            headers={
-                "Date": format_datetime(
-                    proposal.created_at.astimezone(UTC), usegmt=True
+        account_id = smtp_account()
+        payload.update(
+            freeze_mail(
+                proposal,
+                EmailMessage(
+                    subject=spec.subject,
+                    body=spec.body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    to=sorted(normalize_email(row["address"]) for row in recipients),
                 ),
-                "Message-ID": f"<{proposal.pk}@outbox.local>",
-            },
-        ).message()
-        buffer = BytesIO()
-        BytesGenerator(buffer, mangle_from_=False).flatten(message, linesep="\r\n")
-        wire = buffer.getvalue()
-        payload["headers"] = {key: str(value) for key, value in message.items()}
-        payload["mime_base64"] = base64.b64encode(wire).decode("ascii")
-        payload["mime_sha256"] = hashlib.sha256(wire).hexdigest()
+            )
+        )
     else:
         provider, account_id = "axorim", str(tenant.pk)
+    if spec.action_kind is ActionKind.CLIENT_PUBLICATION:
+        from apps.delivery.outbox import portal_home_url  # noqa: PLC0415
+
+        target_id = spec.withdraw_publication_id or proposal.pk
+        url = f"{portal_home_url(tenant.slug)}publicacoes/{target_id}/"
+        notice_subject = (
+            "Publicação retirada pelo escritório"
+            if spec.withdraw_publication_id
+            else "Nova publicação no portal do cliente"
+        )
+        notice_body = f"{notice_subject}.\nAcesse o portal: {url}"
+        notice: dict[str, JSONValue] = {
+            "subject": notice_subject,
+            "body": notice_body,
+            "url": url,
+            "account_id": smtp_account(),
+            **freeze_mail(
+                proposal,
+                EmailMessage(
+                    subject=notice_subject,
+                    body=notice_body,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    to=sorted(
+                        normalize_email(row["address"])
+                        for row in recipients
+                        if row["channel"] == "email"
+                    ),
+                ),
+            ),
+        }
+        payload["notice"] = notice
+        if spec.withdraw_publication_id is not None:
+            target = ClientPublication.objects.get(pk=spec.withdraw_publication_id)
+            version = target.version
+            if target.state == PublicationState.WITHDRAWN and (
+                ActionExecution.objects.filter(
+                    proposal=proposal, digest=proposal.digest
+                ).exists()
+            ):
+                # This exact committed effect advanced the target once. Rebuild
+                # its approved precondition while still rechecking every live
+                # recipient, authority and source before the notice dispatch.
+                version -= 1
+            elif target.state != PublicationState.PUBLISHED:
+                code = "publication_unavailable"
+                raise BuildError(code)
+            payload["withdrawal"] = {
+                "publication_id": str(target.pk),
+                "digest": target.publication_digest,
+                "version": version,
+            }
     return EffectManifestV1(
         tenant_id=str(proposal.tenant_id),
         client_id=str(proposal.client_id),

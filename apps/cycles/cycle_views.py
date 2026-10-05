@@ -50,6 +50,7 @@ from apps.cycles.services.exceptions import (
     assign_exception,
     transition_exception,
 )
+from apps.cycles.services.proposed_transitions import propose_completion, propose_waiver
 from apps.cycles.services.requests import (
     RequestFields,
     client_status,
@@ -58,7 +59,6 @@ from apps.cycles.services.requests import (
     remind_request,
     send_requests,
     update_request,
-    waive_request,
 )
 from apps.cycles.workspace import (
     available_actions,
@@ -175,6 +175,18 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             data = form.cleaned_data
             try:
                 if data["action"] == "transition":
+                    if data["to_state"] in {
+                        CycleState.COMPLETED,
+                        CycleState.WITH_PENDING,
+                    }:
+                        proposal = propose_completion(
+                            request.user,
+                            pk,
+                            to_state=data["to_state"],
+                            reason=data["reason"],
+                            expected_version=data["expected_version"],
+                        )
+                        return redirect("approval-card", pk=proposal.pk)
                     transition_cycle(
                         request.user,
                         pk,
@@ -386,12 +398,13 @@ def cycle_request_action(request: AuthenticatedRequest, pk: UUID) -> HttpRespons
                     request.user, target.pk, fields, expected_version=version
                 )
             elif data["action"] == "waive":
-                waive_request(
+                proposal = propose_waiver(
                     request.user,
                     target.pk,
                     reason=data["reason"],
                     expected_version=version,
                 )
+                return redirect("approval-card", pk=proposal.pk)
             else:
                 remind_request(request.user, target.pk, expected_version=version)
     except VersionConflict as exc:
