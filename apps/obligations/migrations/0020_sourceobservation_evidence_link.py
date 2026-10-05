@@ -26,7 +26,7 @@ from apps.core.migrations._composite_fk import add_client_composite_fk
 class Migration(migrations.Migration):
     dependencies = [
         ("clients", "0015_import_batches_and_versions"),
-        ("cycles", "0009_receipt_binding"),
+        ("cycles", "0010_receipt_binding"),
         ("obligations", "0019_document_client_upload"),
         ("tenants", "0010_approval_authority"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
