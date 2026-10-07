@@ -16,6 +16,11 @@ prefixes, versioning and lifecycle configuration.
 | Communication bodies | `delivery_outboundmessage`, communication proposals, `cycles_clientpublication` | **2 calendar years** | Redacts subject/body and rendered MIME copies, preserving the envelope, original digest, execution and acknowledgement identities. It does not rebind old acknowledgements to later publications. | Same purge job and exact redaction guards for frozen records |
 | AI-derived content | `cycles_extractedfield` explicitly classified `ai_derived` | **1 calendar year or removal with its source** | No live model integration is enabled by this classification. Existing deterministic extraction remains `fiscal_evidence`. | Same purge job |
 | Evidence ZIPs | `cycles_evidenceexport`, storage prefix `exports/` | **30 days after generation** | Disposable copies of the evidence, not additional originals. Download expires at the timestamp even while a hold delays byte deletion. | Same eligibility/hold decision and purge job; originals are not deleted by export expiry |
+| AI-derived shadow output | `automation_agentrun.output` | **Until source deletion or 365 days** | Private derived content, never raw prompts or user-visible results; OD-05 and professional retention review remain open. | Source-removal trigger + `apps.automation.tasks.purge_agent_outputs`; receipt IDs, hashes and reserved cost remain so erasure cannot reset budgets. |
+
+T24 stores no raw document prompts. Disabling `ai_shadow` does not disable content
+expiry. `automation_evalrun` stores synthetic aggregate metrics only. See
+`docs/ai-shadow.md` for the closed provider gate and reservation semantics.
 
 `RetentionClass` is stored on originals, evidence links, messages and extracted
 fields. Unrecognized original classifications fail closed. Evidence links and

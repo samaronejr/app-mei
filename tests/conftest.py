@@ -26,9 +26,11 @@ RUNTIME_ROLE = "app_runtime"
 PORTAL_ROLE = "app_portal"
 
 # Explicit NONE decisions, mirroring the PORTAL_NONE declarations in roles.sql.
-# No grant is issued; each migration also installs a restrictive portal policy
-# (DenyPortalAccess, or the client-anchored one on a table carrying client_id).
+# No grant is issued. Tenant-scoped tables also carry a restrictive portal policy.
+# EvalRun is platform-only synthetic metrics, with no tenant content or portal grant.
 PORTAL_DENIED_TABLES = (
+    "automation_agentrun",
+    "automation_evalrun",
     "authz_usercapabilitygrant",
     "clients_importbatch",
     "clients_importrow",

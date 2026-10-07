@@ -182,6 +182,9 @@ $$;
 -- PORTAL_NONE: delivery_deliveryattempt
 -- PORTAL_NONE: delivery_deliveryeffect
 -- PORTAL_NONE: delivery_automationpause
+-- PORTAL_NONE: automation_agentrun
+-- PORTAL_NONE: automation_evalrun
+-- T24: hidden AI observations and synthetic evaluation metrics have no portal grant.
 -- Message contents, SMTP receipts and operational controls are firm-private.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord

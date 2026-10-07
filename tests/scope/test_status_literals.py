@@ -69,6 +69,22 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         'PENDING = "pending", "Na fila"',
     ): "T22 AccountExportState declaration, not an obligation or onboarding state.",
     LiteralPin(
+        "apps/automation/types.py",
+        "pending",
+        'PENDING = "pending"',
+    ): (
+        "AXR1-024: RunState declares the private AI reservation lifecycle, not "
+        "an onboarding or reader-facing review status."
+    ),
+    LiteralPin(
+        "apps/automation/types.py",
+        "unknown",
+        'UNKNOWN = "unknown"',
+    ): (
+        "AXR1-024: DocType declares the provider document-category vocabulary, "
+        "not verification confidence or a client's fiscal regime."
+    ),
+    LiteralPin(
         "apps/cycles/cycle_views.py",
         "owner",
         ').select_related("client", "engagement", "owner", "playbook", "tax_profile")',

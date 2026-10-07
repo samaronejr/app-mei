@@ -56,6 +56,8 @@ NFSE_ALLOWED_FILES = frozenset(
         # audit action or capability: the forbidden files below stay at zero.
         "apps/cycles/extraction/__init__.py",
         "apps/cycles/extraction/nfse_xml.py",
+        # AXR1-024: synthetic XML generator only; no issuance or invoice workflow.
+        "apps/automation/dataset.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -93,6 +95,8 @@ NFE_READ_ONLY_FILES = frozenset(
     {
         "apps/cycles/extraction/__init__.py",
         "apps/cycles/extraction/nfe_xml.py",
+        # AXR1-024: synthetic XML generator only.
+        "apps/automation/dataset.py",
     },
 )
 

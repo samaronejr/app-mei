@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "allauth.mfa",
     "apps.core",
     "apps.accounts",
+    "apps.automation",
     "apps.clients",
     "apps.briefing",
     "apps.cycles",
@@ -646,6 +647,18 @@ PORTAL_UPLOAD_MAX_BYTES = PORTAL_DOCUMENT_MAX_BYTES
 # apps.core.flags.FEATURES; an unknown slug disables nothing, which fails safe.
 AXORIM_DISABLED_FEATURES = env.list("AXORIM_DISABLED_FEATURES", default=[])
 
+# T24 ships offline. Provider selection/DPA approval (OD-05) stays independent
+# from the per-tenant ai_shadow flag and the global operational kill switch.
+AI_PROVIDER = env.str("AI_PROVIDER", default="")
+AI_GLOBAL_DISABLED = env.bool("AI_GLOBAL_DISABLED", default=True)
+AI_REAL_DATA_APPROVED = env.bool("AI_REAL_DATA_APPROVED", default=False)
+AI_MODEL = env.str("AI_MODEL", default="")
+AI_API_KEY = env.str("AI_API_KEY", default="")
+AI_INPUT_BRL_PER_MILLION = env.str("AI_INPUT_BRL_PER_MILLION", default="0")
+AI_OUTPUT_BRL_PER_MILLION = env.str("AI_OUTPUT_BRL_PER_MILLION", default="0")
+AI_SHADOW_TENANT_DAILY_CALLS = env.int("AI_SHADOW_TENANT_DAILY_CALLS", default=100)
+AI_SHADOW_TENANT_DAILY_BRL = env.str("AI_SHADOW_TENANT_DAILY_BRL", default="5.00")
+
 # The name the product shell shows a customer. "app-mei" until the new name is
 # cleared for public use; the switch is this setting, never a template edit, so no
 # customer-facing screen can adopt a name ahead of that decision.
@@ -739,6 +752,10 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "materialize-receipt-observations": {
         "task": "apps.obligations.tasks.materialize_receipt_observations",
         "schedule": 60.0,
+    },
+    "purge-agent-outputs": {
+        "task": "apps.automation.tasks.purge_agent_outputs",
+        "schedule": crontab(hour=3, minute=45),
     },
     # Every five minutes, and /healthz alarms after fifteen. The scheduler's failure
     # mode is silence: when beat stops, no task raises and nothing reaches Sentry,

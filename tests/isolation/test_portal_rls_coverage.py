@@ -65,7 +65,9 @@ RUNTIME_ROLE = "app_runtime"
 # T20 adds BulkOperation and BulkItem: 56 + 2 = 58 tenant tables.
 # T22 adds six tenant-private account, metering, notification and export tables:
 # 58 + 6 = 64 tenant tables.
-EXPECTED_TENANT_TABLE_COUNT = 64
+# T24 adds one client-paired, independently portal-denied shadow observation table:
+# 64 + 1 = 65 tenant tables.
+EXPECTED_TENANT_TABLE_COUNT = 65
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -81,6 +83,7 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         # Personal feedback carries the same client-isolation + deny-all backstop.
         "cycles_briefingfeedback",
         "cycles_bulkitem",
+        "automation_agentrun",
     }
 )
 
@@ -402,6 +405,7 @@ def test_the_conftest_allow_list_matches_the_production_artifact() -> None:
 # coverage, or quietly gaining a write grant, turns the meta-test red.
 STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
     {
+        "automation_agentrun",
         "audit_event",
         "authz_usercapabilitygrant",
         "clients_clientassignment",

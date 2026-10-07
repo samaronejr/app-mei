@@ -10,6 +10,7 @@ from celery import shared_task
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.automation.tasks import enqueue_shadow
 from apps.clients.models import Engagement
 from apps.core.flags import tenant_has
 from apps.core.tasks import (
@@ -26,6 +27,7 @@ from apps.cycles.bulk_runner import (
     execute_claim,
 )
 from apps.cycles.extraction.service import (
+    ExtractionOutcome,
     due_divergent_links,
     due_extractions,
     extract_intake,
@@ -212,9 +214,11 @@ def scan_quarantine(self: PlatformTask) -> int:
 )
 def extract_document(tenant_id: UUID | str, intake_id: UUID | str) -> str:
     """Extract one verified intake; a soft-limit hit is recorded as interrupted."""
-    return extract_intake(
-        UUID(str(tenant_id)), UUID(str(intake_id)), now=timezone.now()
-    ).value
+    tenant_pk, intake_pk = UUID(str(tenant_id)), UUID(str(intake_id))
+    outcome = extract_intake(tenant_pk, intake_pk, now=timezone.now())
+    if outcome is ExtractionOutcome.CLASSIFIED:
+        enqueue_shadow(tenant_pk, intake_pk)
+    return outcome.value
 
 
 @shared_task(base=PlatformTask, bind=True)
