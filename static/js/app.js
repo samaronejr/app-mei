@@ -12,8 +12,8 @@
  * It is presentation only — server-side Post/Redirect/Get is what makes the second
  * request harmless, and it holds with this file deleted.
  *
- * The fourth is the product shell's Alpine components (`dialog`, `uploadList`,
- * `unsavedGuard`, `dismissable`), registered on `alpine:init`. That event fires once,
+ * The fourth is the product shell's Alpine components (`dialog`, `palette`,
+ * `uploadList`, `unsavedGuard`, `dismissable`), registered on `alpine:init`. That event fires once,
  * when Alpine starts, so under the product shell `templates/base.html` loads Alpine
  * after this file; see the note there.
  *
@@ -166,6 +166,15 @@
     return null;
   }
 
+  /*
+   * A region marked data-swap-keeps-focus is refreshed while the user is typing
+   * somewhere else -- the command palette's results, under its combobox. Moving
+   * focus there would pull the caret out of the field mid-word, so such a swap
+   * only clears the failure notice; the component that owns the region says what
+   * changed in its own polite status line.
+   */
+  var KEEPS_FOCUS = "[data-swap-keeps-focus]";
+
   function onAfterSwap(event) {
     var target = event.target;
     if (!target || target.nodeType !== 1) {
@@ -174,7 +183,7 @@
     hideFallback();
     // Passive progress already has a polite live region. Its timer must not
     // move keyboard focus or announce an unrelated page heading every two seconds.
-    if (target.hasAttribute("data-passive-poll")) {
+    if (target.hasAttribute("data-passive-poll") || target.closest(KEEPS_FOCUS)) {
       return;
     }
     var marked = focusDestination(target);
@@ -685,8 +694,142 @@
     }
   });
 
+  /*
+   * The command palette (templates/partials/ui/palette.html, AXR1-021). A combobox
+   * in a native modal <dialog>: Ctrl/Cmd+K opens it from anywhere on the page, HTMX
+   * fills #palette-results as the user types, and the arrow keys walk the options
+   * by aria-activedescendant -- focus never leaves the field, which is what lets
+   * the user keep typing to narrow the list. Enter or a click follows the active
+   * option's data-href, a path the server built with reverse().
+   */
+  var PALETTE_UPDATED = "Resultados atualizados.";
+  var PALETTE_EMPTY = "Nenhum resultado.";
+  var PALETTE_KEY = "k";
+
+  function palette() {
+    return {
+      expanded: false,
+      activeId: null,
+      opener: null,
+      shortcut: null,
+
+      init: function () {
+        var state = this;
+        this.shortcut = function (event) {
+          if (
+            (event.ctrlKey || event.metaKey) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            event.key &&
+            event.key.toLowerCase() === PALETTE_KEY
+          ) {
+            event.preventDefault();
+            state.show();
+          }
+        };
+        document.addEventListener("keydown", this.shortcut);
+        this.$refs.results.addEventListener("htmx:afterSwap", function () {
+          state.onResults();
+        });
+        this.$refs.results.addEventListener("click", function (event) {
+          var option = event.target.closest('[role="option"]');
+          if (option) {
+            state.follow(option);
+          }
+        });
+      },
+
+      destroy: function () {
+        document.removeEventListener("keydown", this.shortcut);
+      },
+
+      show: function () {
+        var element = this.$refs.dialog;
+        if (!element.open) {
+          this.opener = document.activeElement;
+          element.showModal();
+        }
+        this.$refs.input.focus();
+        this.$refs.input.select();
+      },
+
+      close: function () {
+        this.$refs.dialog.close();
+      },
+
+      restoreFocus: function () {
+        var opener = this.opener;
+        this.opener = null;
+        if (opener && opener.isConnected && typeof opener.focus === "function") {
+          opener.focus();
+        }
+      },
+
+      options: function () {
+        return Array.prototype.slice.call(
+          this.$refs.results.querySelectorAll('[role="option"]')
+        );
+      },
+
+      onResults: function () {
+        var count = this.options().length;
+        this.activeId = null;
+        this.expanded = count > 0;
+        this.$refs.status.textContent = count > 0 ? PALETTE_UPDATED : PALETTE_EMPTY;
+      },
+
+      activate: function (options, index) {
+        options.forEach(function (option, position) {
+          option.setAttribute("aria-selected", position === index ? "true" : "false");
+        });
+        this.activeId = options[index].id;
+        options[index].scrollIntoView({ block: "nearest" });
+      },
+
+      move: function (step) {
+        var options = this.options();
+        if (options.length === 0) {
+          return;
+        }
+        var activeId = this.activeId;
+        var index = options.findIndex(function (option) {
+          return option.id === activeId;
+        });
+        if (index < 0) {
+          index = step > 0 ? 0 : options.length - 1;
+        } else {
+          index = (index + step + options.length) % options.length;
+        }
+        this.activate(options, index);
+      },
+
+      follow: function (option) {
+        var href = option.dataset.href || "";
+        // Only a same-origin path: the attribute is server-built, and this keeps a
+        // future template mistake from ever following a scheme or another host.
+        if (href.charAt(0) === "/" && href.charAt(1) !== "/") {
+          window.location.assign(href);
+        }
+      },
+
+      onKeydown: function (event) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          this.move(1);
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          this.move(-1);
+        } else if (event.key === "Enter" && this.activeId) {
+          event.preventDefault();
+          this.follow(document.getElementById(this.activeId));
+        }
+      },
+    };
+  }
+
   document.addEventListener("alpine:init", function () {
     window.Alpine.data("dialog", dialog);
+    window.Alpine.data("palette", palette);
     window.Alpine.data("dismissable", dismissable);
     window.Alpine.data("unsavedGuard", unsavedGuard);
     window.Alpine.data("uploadList", uploadList);

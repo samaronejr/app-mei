@@ -103,7 +103,8 @@ flagged firm is never offered a link that leads nowhere.
 
 ### Alpine components
 
-`dialog` (native `<dialog>`, focus returned to the opener), `uploadList`
+`dialog` (native `<dialog>`, focus returned to the opener), `palette` (the
+`Ctrl/Cmd+K` search combobox, below), `uploadList`
 (preview, size and type refusals, removal), `unsavedGuard` (the browser's own
 leave-page prompt) and `dismissable` (toasts) live in `static/js/app.js` and register
 on `alpine:init`. That event fires once, when Alpine starts, so under the product
@@ -113,7 +114,21 @@ by its component, so a page without script offers no dead button.
 
 After any HTMX swap, focus moves to the element the server marked with
 `data-focus-after-swap` (then the marker is removed), or to the swapped region when
-nothing is marked.
+nothing is marked. A region marked `data-swap-keeps-focus` is the exception: it is
+refreshed while the user types elsewhere, so focus stays where it is and the owning
+component announces the change in its own polite status line.
+
+### Search and the command palette
+
+The header carries a visible search form (a plain GET to `/busca/`, which renders a
+page of links) and `partials/ui/palette.html`, a native modal `<dialog>` that
+`Ctrl/Cmd+K` opens. Its field is an ARIA combobox: HTMX fetches the listbox fragment
+as the user types (`input changed delay:250ms`), the arrow keys move
+`aria-activedescendant` through the options while focus stays in the field, and Enter
+or a click follows the option's `data-href`. Results come from
+`apps.core.search.search`, scoped through `visible_clients`, at most five per kind and
+never with a total (ADR 0005). Both are drawn only for an account the endpoint
+answers; the portal has no search.
 
 ### Browser tests
 

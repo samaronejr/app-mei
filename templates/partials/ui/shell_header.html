@@ -19,6 +19,14 @@ it, and the current page marked -- so it still works when no bundle loads. At
 
 The toast region lives here, permanent and empty at load, because a live region
 announces changes made after it exists; see `partials/ui/toast.html`.
+
+The search form is the visible, script-free way into the same search the
+`Ctrl/Cmd+K` palette runs (S5.6, AXR1-021): a plain GET to the results page. It
+and the palette are drawn only when `r1_shell.searchable` -- the account may
+reach the client registry, the capability the search endpoint requires -- so no
+one is offered a control that refuses them. With the field in the bar, the
+signed-in address is shown from `2xl` only, so Sair stays on the first row at
+desktop widths.
 {% endcomment %}<header class="shell-header" data-shell="r1">
     <div class="shell-bar">
       <p class="shell-brand">
@@ -35,8 +43,13 @@ announces changes made after it exists; see `partials/ui/toast.html`.
           {% endfor %}
         </nav>
       </details>{% endif %}
+      {% if r1_shell.searchable %}<form role="search" method="get" action="{% url 'search' %}" class="shell-search" aria-label="{% translate 'Busca' %}">
+        <label for="shell-search-q" class="visually-hidden">{% translate "Buscar" %}</label>
+        <input id="shell-search-q" type="search" name="q" class="shell-search-input" placeholder="{% translate 'Buscar (Ctrl+K)' %}" autocomplete="off">
+        <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Buscar" %}</button>
+      </form>{% endif %}
       <div class="shell-account">
-        <span class="hidden truncate sm:inline">{{ request.user.email }}</span>
+        <span class="shell-account-email">{{ request.user.email }}</span>
         <form method="post" action="{% url 'account_logout' %}">
           {% csrf_token %}
           <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Sair" %}</button>
@@ -44,4 +57,5 @@ announces changes made after it exists; see `partials/ui/toast.html`.
       </div>
     </div>
   </header>
+  {% if r1_shell.searchable %}{% include "partials/ui/palette.html" %}{% endif %}
   <div id="toasts" class="toast-region" role="status" aria-live="polite"></div>
