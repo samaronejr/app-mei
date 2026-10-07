@@ -28,7 +28,6 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Confirmação da senha",
         "Contato principal",
         "Código IBGE do município",
-        "Competência",
         "Data de abertura",
         "Depende de",
         "Destinatários",
