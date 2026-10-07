@@ -416,8 +416,37 @@ and `tests/browser/test_coverage_panels.py`. Evidence:
 `-n1-full-gates.txt` and the reviewers' `t17-rv2` and `t17-rv3` artifacts. Every
 owner/operator gate remains **open**.
 
+`AXR1-018` (justified completion, amendments, evidence index, bundle export and
+retention classes; `cycles.0011`-`0015`, `delivery.0003`, `obligations.0021`) is
+recorded on the final `AXR1-017` branch. Completion has one authority: the
+cycle page shows a linked checklist of request, exact-effect and evidence-index
+guards, and "encerrado com pendências" needs a reason for each item that is
+unmet at that moment. The reason is keyed by guard, subject and revision, and
+the set is recomputed under the cycle lock. Amendments never rewrite the frozen
+completion generation, and reopening needs `cycles.reopen` and a separate
+approver. The evidence index validates against
+`apps/cycles/schemas/evidence_index_v1.json`. The bundle export is a phased
+tenant task: a committed `building` claim, storage I/O outside any transaction
+with byte caps on actual bytes, and a fenced finalize. Download goes through
+the app only, for the firm only, and the bundle is never labelled a
+certificate, an official audit or tamper-proof. Retention classes, legal holds
+and `purge_expired_content` (dry-run by default, counts only) cover documents,
+links, messages and AI-derived content, and `docs/retention.md` lists the
+streams.
+
+The independent gate review confirmed `cae2ba6` (tree `5c16466`) with zero
+blockers. All eleven attacks passed, as did real-role probes of the narrow
+SECURITY DEFINER retention trigger: fixed search_path, revoked EXECUTE, RLS and
+hostile-shadow attempts. Seven populated migration round trips preserved rows
+and grants. The guard-test audit covered 29 registrations and six existing-test
+edits. Removing the open-exception guard made the completion tests fail, and
+restoring it passed them. A real 101,355-byte bundle download matched its hash
+and manifest. Evidence: `.evidence/AXR1-018-happy.txt`, `-failure.txt`,
+`-gates-placed.txt` and the reviewer's `-rv-*` artifacts. OG-04, OG-08 and every
+owner/operator gate remain **open**; purge stays dry-run.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 18 to 29 and the final verification wave remain open.
+Todos 19 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -518,14 +547,22 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3558 passing**
+implementation head. The current default-suite baseline is **3721 passing**
+(68 deselected), independently verified at `AXR1-018` code `cae2ba6` (tree
+`5c16466`), on final `AXR1-017` code `1902cf7`: the **3558** below plus
+**163** net-new default-suite cases. The same serial review passed isolation
+(**270**), CNPJ (**29**), browser (**68**), lint, format, mypy, migration-drift
+and a clean rebuilt-static check. Evidence: `.evidence/AXR1-018-rv-gates.txt`
+and `.evidence/AXR1-018-gates-placed.txt`. This status-only commit does not
+change the reviewed code; it sits on the `AXR1-017` status commit `29a2678`.
+
+The previous default-suite baseline was **3558 passing**
 (68 deselected), verified at `AXR1-017` code `1902cf7` (tree `146169b`), on
 final `AXR1-016` (`a3a8b4b`): the **3438** below plus **120** net-new
 default-suite cases. The same serial run passed isolation (**245**), CNPJ
 (**29**), browser (**68**), lint, format, mypy, migration-drift and a clean
 rebuilt-static check, and the independent confirmation review checked that
-log. Evidence: `.evidence/AXR1-017-n1-full-gates.txt`. This status-only commit
-does not change the reviewed code.
+log. Evidence: `.evidence/AXR1-017-n1-full-gates.txt`.
 
 The previous default-suite baseline was **3438 passing**
 (60 deselected), independently verified at `AXR1-016` code `75272c6`
