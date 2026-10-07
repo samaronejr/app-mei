@@ -172,6 +172,11 @@
       return;
     }
     hideFallback();
+    // Passive progress already has a polite live region. Its timer must not
+    // move keyboard focus or announce an unrelated page heading every two seconds.
+    if (target.hasAttribute("data-passive-poll")) {
+      return;
+    }
     var marked = focusDestination(target);
     if (marked) {
       marked.removeAttribute("data-focus-after-swap");

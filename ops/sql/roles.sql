@@ -162,6 +162,9 @@ $$;
 -- PORTAL_NONE: cycles_savedview
 -- PORTAL_NONE: cycles_briefingfeedback
 -- Personal briefing filters and dismissal reasons are firm-private (T19).
+-- PORTAL_NONE: cycles_bulkoperation
+-- PORTAL_NONE: cycles_bulkitem
+-- Bulk snapshots, recipient lists and item results are firm-private.
 -- Exact recipients, frozen payloads and approval authority are firm-private.
 -- T9 exposes no internal work. T14 grants SELECT on cycles_exception (allow-list
 -- below) under a policy that also requires client_visible; instructions and evidence

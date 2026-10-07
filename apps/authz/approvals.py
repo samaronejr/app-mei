@@ -32,6 +32,8 @@ AUTHORITY_CAPABILITIES: Final = (
     "cycles.complete",
     "cycles.review",
     APPROVE,
+    # Bulk approval composes this same fence; its final can() stays locked too.
+    "bulk.run",
     VIEW_ALL,
     VIEW_ASSIGNED,
 )

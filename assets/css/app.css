@@ -797,6 +797,27 @@
     @apply border-b border-ink-200 px-4 py-2.5 text-sm font-semibold text-ink-800;
   }
 
+  /* Processing is not verified delivery: never use the native green fill. */
+  [data-passive-poll] progress {
+    appearance: none;
+    border: 0;
+    height: 0.5rem;
+    background-color: var(--color-ink-100);
+    color: var(--color-brand-700);
+  }
+
+  [data-passive-poll] progress::-webkit-progress-bar {
+    background-color: var(--color-ink-100);
+  }
+
+  [data-passive-poll] progress::-webkit-progress-value {
+    background-color: var(--color-brand-700);
+  }
+
+  [data-passive-poll] progress::-moz-progress-bar {
+    background-color: var(--color-brand-700);
+  }
+
   /* `.link` in the brand ink: underlined at rest for the same WCAG 1.4.1 reason. */
   .ui-link {
     @apply rounded-field font-medium text-brand-700 underline decoration-ink-300

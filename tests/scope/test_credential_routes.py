@@ -80,6 +80,10 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "evidence-export-download",
         # T19: a user- and tenant-owned saved selection, never a bearer credential.
         "briefing-delete-view",
+        # T20: private operation IDs, scoped before preview/results/CSV access.
+        "bulk-detail",
+        "bulk-progress",
+        "bulk-report-csv",
         "admin:*",
     },
 )

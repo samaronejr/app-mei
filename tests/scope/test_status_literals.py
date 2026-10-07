@@ -34,6 +34,26 @@ class LiteralPin:
 
 APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
     LiteralPin(
+        "apps/cycles/bulk.py",
+        "pending",
+        'PENDING = "pending", "Pendente"',
+    ): "The bulk item state declaration, independent of onboarding status.",
+    LiteralPin(
+        "apps/cycles/bulk.py",
+        "done",
+        'DONE = "done", "Processado"',
+    ): "The bulk item state declaration, not an onboarding completion branch.",
+    LiteralPin(
+        "apps/cycles/bulk_views.py",
+        "active",
+        '"active": operation.state in ACTIVE_OPERATIONS,',
+    ): "A template polling/control flag, not a client status comparison.",
+    LiteralPin(
+        "apps/cycles/services/cycle.py",
+        "owner",
+        '"owner",',
+    ): "The ORM update_fields entry for the migrated task owner relation.",
+    LiteralPin(
         "apps/cycles/cycle_views.py",
         "owner",
         ').select_related("client", "engagement", "owner", "playbook", "tax_profile")',

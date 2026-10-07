@@ -98,9 +98,15 @@ NFE_READ_ONLY_FILES = frozenset(
 
 # Row 7. T-033 commissioned the client CSV export. AXR1-018 explicitly commissions
 # per-cycle evidence bundles (.omo/plans/axorim-pivot-r1.md:1839), including their
-# status and download routes. Portfolio Reports v1 and an audit UI remain excluded.
+# status and download routes. AXR1-020/S7.3 commissions the private per-item bulk
+# result CSV. Portfolio Reports v1 and an audit UI remain excluded.
 EXPORT_URL_NAMES = frozenset(
-    {"clients-export-csv", "evidence-export-detail", "evidence-export-download"}
+    {
+        "clients-export-csv",
+        "evidence-export-detail",
+        "evidence-export-download",
+        "bulk-report-csv",
+    }
 )
 
 # Row 4. The fiscal app is a municipal registry, full stop.
@@ -273,9 +279,9 @@ def test_row_7_no_reports_v1_and_no_audit_ui() -> None:
         name for name in names if re.search(r"report|kpi|export", name, re.IGNORECASE)
     }
 
-    # Then the only reporting-shaped route is T-033's commissioned client CSV export.
+    # Then only the explicitly commissioned CSV exports are reachable.
     assert reporting == set(EXPORT_URL_NAMES), _report(
-        "reporting route beyond the commissioned client export",
+        "reporting route beyond the commissioned CSV exports",
         sorted(reporting - set(EXPORT_URL_NAMES)),
     )
 

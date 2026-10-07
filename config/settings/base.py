@@ -382,6 +382,19 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "requesting user's ownership are required; another user's or tenant's id "
         "is 404. Deletion checks the rendered version under the row lock."
     ),
+    "bulk-detail": (
+        "AXR1-020. The UUID identifies a firm-private bulk snapshot, not a bearer "
+        "credential. Session, bulk capability and full portfolio scope authorize "
+        "access; commands also bind the locked operation version."
+    ),
+    "bulk-progress": (
+        "AXR1-020. The UUID identifies a private bulk operation. Every progress "
+        "request rechecks the session, bulk capability and snapshot portfolio."
+    ),
+    "bulk-report-csv": (
+        "AXR1-020. The UUID identifies a private bulk operation, not a download "
+        "credential. Session, bulk capability and portfolio authorize its item CSV."
+    ),
     "portal-request-detail": (
         "The UUID names an evidence request, not a bearer credential. "
         "Authentication and RESTRICTIVE portal client RLS authorize the SELECT."
@@ -640,6 +653,10 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "retention-content": {
         "task": "apps.cycles.retention_tasks.purge_expired_content",
         "schedule": crontab(hour=3, minute=45),
+    },
+    "resume-bulk-operations": {
+        "task": "apps.cycles.tasks.resume_bulk_operations",
+        "schedule": 60.0,
     },
     "dispatch-outbox": {
         "task": "apps.delivery.tasks.dispatch_outbox",

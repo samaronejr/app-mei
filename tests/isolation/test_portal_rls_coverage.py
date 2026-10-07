@@ -62,7 +62,8 @@ RUNTIME_ROLE = "app_runtime"
 # T15 adds two exact-effect tables, client-paired and independently portal-denied.
 # T18 adds seven private completion, export and retention tables with both policies.
 # T19 adds tenant-owned SavedView and client-paired private BriefingFeedback.
-EXPECTED_TENANT_TABLE_COUNT = 56
+# T20 adds BulkOperation and BulkItem: 56 + 2 = 58 tenant tables.
+EXPECTED_TENANT_TABLE_COUNT = 58
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -77,6 +78,7 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "cycles_contentpurgeclaim",
         # Personal feedback carries the same client-isolation + deny-all backstop.
         "cycles_briefingfeedback",
+        "cycles_bulkitem",
     }
 )
 
@@ -436,6 +438,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_savedview",
         "cycles_briefingfeedback",
         "cycles_clientpublication",
+        "cycles_bulkoperation",
+        "cycles_bulkitem",
         "delivery_outboundmessage",
         "delivery_deliveryattempt",
         "delivery_deliveryeffect",

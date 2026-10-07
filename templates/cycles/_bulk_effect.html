@@ -1,0 +1,27 @@
+{% if kind == 'open_cycles' %}
+<p class="mt-3">Abrir ciclo de {{ item.effect.playbook_name }}, versão {{ item.effect.target_number }}.</p>
+{% elif kind == 'migrate_open_cycles_to_version' %}
+<p class="mt-3">{{ item.effect.playbook_name }}: versão {{ item.effect.previous_number }} para {{ item.effect.target_number }}.</p>
+<ul class="mt-2 grid gap-1 text-sm">{% for step in item.effect.steps %}<li>{{ step.label }}</li>{% endfor %}</ul>
+{% elif kind == 'send_request_notices' %}
+<div class="mt-4 grid min-w-0 gap-4 sm:grid-cols-2">
+  <section class="min-w-0"><h4 class="font-semibold">Solicitações conferidas</h4><ul class="mt-2 grid gap-2 text-sm">{% for request in item.effect.requests %}<li><p class="break-words">{{ request.title }}</p>{% if request.client_note %}<p class="break-words text-ink-600">{{ request.client_note }}</p>{% endif %}<p class="text-ink-600">Revisão {{ request.version }}</p></li>{% empty %}<li>Nenhum rascunho.</li>{% endfor %}</ul></section>
+  <section class="min-w-0"><h4 class="font-semibold">Destinatários exatos</h4><ul class="mt-2 grid gap-2 text-sm">{% for recipient in item.effect.recipients %}<li class="break-all">{{ recipient.email }}{% if recipient.access == 'invite' %}<span class="block text-ink-600">Acesso por convite pendente.</span>{% endif %}</li>{% empty %}<li>Nenhum destinatário elegível.</li>{% endfor %}</ul>{% for recipient in item.effect.ineligible_recipients %}<p class="mt-2 break-all text-sm text-ink-600">{{ recipient.email }}: sem acesso ao portal ou convite válido; não receberá aviso.</p>{% endfor %}</section>
+</div>
+<p class="mt-4 font-semibold break-words">{{ item.effect.subject }}</p><pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm">{{ item.effect.body }}</pre>
+{% elif kind == 'approve_items' %}
+{% with frozen=item.effect.frozen %}
+<div class="mt-4 grid min-w-0 gap-4" data-bulk-approval>
+  <h4 class="font-semibold">{{ item.effect.action_label }} · revisão {{ frozen.proposal_revision }}</h4>
+  <div><p class="text-sm font-semibold">Destinatários exatos</p><ul class="mt-1 grid gap-1 text-sm">{% for recipient in frozen.recipients %}<li class="break-all">{{ recipient.address }} · {{ recipient.channel }}</li>{% empty %}<li>Sem destinatários externos.</li>{% endfor %}</ul></div>
+  {% if frozen.payload.subject %}<p class="font-semibold break-words">{{ frozen.payload.subject }}</p>{% endif %}
+  {% if frozen.payload.from %}<p class="break-all text-sm">Remetente: {{ frozen.payload.from }}</p>{% endif %}
+  {% if frozen.payload.body %}<pre class="whitespace-pre-wrap break-words font-sans text-sm" data-frozen-body>{{ frozen.payload.body }}</pre>{% endif %}
+  {% if frozen.payload.reason %}<p class="break-words text-sm">{{ frozen.payload.reason }}</p>{% endif %}
+  <div><p class="text-sm font-semibold">Valores e documentos</p><ul class="mt-1 grid gap-2 text-sm">{% for amount in frozen.money %}<li>{{ amount.decimal }} {{ amount.currency }} · {{ amount.rounding_rule }}</li>{% endfor %}{% for document in frozen.documents %}<li class="min-w-0"><a class="ui-link break-all" href="{% url 'document-review' document.link_id %}">Conferir documento {{ document.document_id }}</a><p>Vínculo {{ document.link_revision }} · {{ document.size }} bytes</p><code class="block break-all text-xs">{{ document.sha256 }}</code></li>{% empty %}<li>Nenhum documento selecionado.</li>{% endfor %}</ul></div>
+  <div><p class="text-sm font-semibold">Condições desta decisão</p><p class="mt-1 text-sm">Exige {{ frozen.approval_rule.quorum }} aprovação(ões). {% if frozen.approval_rule.separation_of_duties %}Quem propôs não pode aprovar.{% else %}Autoaprovação somente no cartão individual.{% endif %}</p><p class="mt-1 text-sm break-words">Destino: {{ frozen.destination.provider }} · {{ item.effect.action_label }}.</p></div>
+  <div><p class="text-sm font-semibold">Resumo criptográfico deste item</p><code class="mt-1 block break-all text-xs" data-bulk-digest>{{ item.effect.proposal_digest }}</code></div>
+  <a class="ui-link" href="{% url 'approval-card' item.subject_ref %}">Conferir todas as fontes, prazos e decisões deste cartão</a>
+</div>
+{% endwith %}
+{% endif %}

@@ -4,6 +4,7 @@ from django.urls import path
 
 from apps.cycles import (
     approval_views,
+    bulk_views,
     cycle_views,
     document_views,
     export_views,
@@ -31,6 +32,18 @@ urlpatterns = [
         "publicacoes/<uuid:pk>/retirar/",
         publication_withdraw,
         name="publication-withdraw",
+    ),
+    path("ciclos/lotes/", bulk_views.bulk_start, name="bulk-start"),
+    path("ciclos/lotes/<uuid:pk>/", bulk_views.bulk_detail, name="bulk-detail"),
+    path(
+        "ciclos/lotes/<uuid:pk>/progresso/",
+        bulk_views.bulk_progress,
+        name="bulk-progress",
+    ),
+    path(
+        "ciclos/lotes/<uuid:pk>/relatorio.csv",
+        bulk_views.bulk_csv,
+        name="bulk-report-csv",
     ),
     path("acoes/<uuid:pk>/", approval_views.approval_card, name="approval-card"),
     path(

@@ -23,6 +23,7 @@ from apps.authz.services import can, require_can
 from apps.clients.maintenance import load_client
 from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
+from apps.core.flags import tenant_has
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.completion_checks import completion_items
 from apps.cycles.errors import IllegalTransition, VersionConflict
@@ -179,6 +180,9 @@ def cycle_list(request: AuthenticatedRequest) -> HttpResponse:
             "regime": regime,
             "owner_filter": str(owner) if owner else "",
             "filter_query": params.urlencode(),
+            "may_bulk": tenant_has(tenant_id(), "bulk_r1")
+            and not request.user.is_superuser
+            and can(request.user, "bulk.run", tenant_id=tenant_id()),
         },
     )
 
