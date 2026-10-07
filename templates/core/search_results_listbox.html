@@ -15,8 +15,8 @@ Context: the same as core/search.html. No total, only what is shown.
   {% for kind, label, hits in groups %}<div role="group" class="palette-group" aria-label="{{ label }}">
     <div class="palette-group-title" aria-hidden="true">{{ label }}</div>
     {% for hit in hits %}<div role="option" id="palette-{{ kind }}-{{ forloop.counter }}" class="palette-option" aria-selected="false" data-kind="{{ hit.kind }}" data-href="{{ hit.url }}">
-      <span class="palette-option-label">{{ hit.label }}</span>
-      {% if hit.detail %}<span class="palette-option-detail">{{ hit.detail }}</span>{% endif %}
+      <span class="palette-option-label break-words">{{ hit.label }}</span>
+      {% if hit.detail %}<span class="palette-option-detail break-words">{{ hit.detail }}</span>{% endif %}
     </div>{% endfor %}
   </div>{% endfor %}
 </div>{% else %}<p class="palette-hint">{% translate "Nenhum resultado na sua carteira." %}</p>{% endif %}

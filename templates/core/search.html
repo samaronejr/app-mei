@@ -31,8 +31,8 @@ page does not show.
         <h2 id="busca-{{ kind }}" class="search-group-title">{{ label }}</h2>
         <ul class="search-list">
           {% for hit in hits %}<li class="search-item" data-kind="{{ hit.kind }}">
-            <a class="link" href="{{ hit.url }}">{{ hit.label }}</a>
-            {% if hit.detail %}<span class="search-detail">{{ hit.detail }}</span>{% endif %}
+            <a class="link min-w-0 break-words" href="{{ hit.url }}">{{ hit.label }}</a>
+            {% if hit.detail %}<span class="search-detail min-w-0 break-words">{{ hit.detail }}</span>{% endif %}
           </li>{% endfor %}
         </ul>
       </section>
