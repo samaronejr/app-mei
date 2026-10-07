@@ -18,7 +18,7 @@ from apps.core.migrations._operations import (
 class Migration(migrations.Migration):
     dependencies = [
         ("clients", "0015_import_batches_and_versions"),
-        ("cycles", "0010_receipt_binding"),
+        ("cycles", "0015_retained_provenance_metadata"),
         ("tenants", "0010_approval_authority"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
