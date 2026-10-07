@@ -445,8 +445,41 @@ and manifest. Evidence: `.evidence/AXR1-018-happy.txt`, `-failure.txt`,
 `-gates-placed.txt` and the reviewer's `-rv-*` artifacts. OG-04, OG-08 and every
 owner/operator gate remain **open**; purge stays dry-run.
 
+`AXR1-019` ("Hoje": morning briefing and explainable exception queue;
+`cycles.0016`) is recorded on the final `AXR1-018` branch. For tenants with
+`briefing_r1`, providers for obligations, overdue requests, exceptions,
+approvals waiting, delivery outcomes, divergent documents and stale coverage
+each yield a `BriefingItem`, ranked by `BRIEFING_RULES_V1` factors with a stable
+tie-break and keyset pagination. Items and counts come only from
+`visible_clients`. Saved views are re-authorized at render. A "Não relevante"
+dismissal needs a reason, applies only to the acting user, and expires when the
+underlying fact changes. The page shows "Calculado às HH:MM", "Mudanças desde
+ontem", loading and stale-view states, and a 403 drops stale counts. Tenants
+without the flag keep the old dashboard byte-identical. With 1,000 clients, the
+whole Hoje request takes exactly **25** statements, under the plan's
+`django_assert_max_num_queries(25)`. The repaired base started at 8,032. No
+authorization answer is cached or shared. Eight existing exact query-count
+registrations went down because their counts really fell; none went up.
+
+The independent gate review found two blockers at `0fc87e3`: one stale
+coverage item raised the 1,000-client Hoje request to 26 statements, and a
+maximum-length client name widened the page sideways. Repair `3c8e5e2` reuses
+the engagement batch the coverage reader already loads and wraps the client
+line; a scale test in which every provider has items, stale and
+refresh-failed coverage included, failed at 26 and now stays within 25, and a
+long-name browser test failed and now passes at both viewports. No query-count
+registration changed. An independent confirmation review of the unchanged
+`3c8e5e2` returned **confirmed** with zero blockers: richer 1,000-client
+requests each used exactly 25 statements, hostile and maximum-length names fit
+both viewports, and removing the fix makes the new scale test reject 26
+statements. Evidence:
+`.evidence/AXR1-019-happy.txt`, `-failure.txt`, `-gates-placed.txt`,
+`-adversarial.txt`, `-fix-red.txt`, `-fix-red-overflow.txt`, `-fix-green.txt`,
+`-fix-green-overflow.txt`, `-fix-gates.txt` and the reviewers' `T19-RV-*` and
+`T19-RV2-*` artifacts. Every owner/operator gate remains **open**.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 19 to 29 and the final verification wave remain open.
+Todos 20 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -547,14 +580,26 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3721 passing**
+implementation head. The current default-suite baseline is **3826 passing**
+(74 deselected), verified at `AXR1-019` repaired code `3c8e5e2` (tree
+`e734580`), on final `AXR1-018` code `cae2ba6`: the **3721** below plus
+**105** net-new default-suite cases. The same serial run passed isolation
+(**276**), CNPJ (**29**), browser (**74**), lint, format, mypy,
+migration-drift and a clean rebuilt-static check. The confirmation reviewer
+audited that run and reran 500 targeted tests, isolation (**276**), the six
+`AXR1-019` browser cases and the restored scale test. Evidence:
+`.evidence/AXR1-019-fix-gates.txt` and `.evidence/T19-RV2-gates.txt`. This
+status-only commit does
+not change the reviewed code; it sits on the `AXR1-018` status commit
+`637305e`.
+
+The previous default-suite baseline was **3721 passing**
 (68 deselected), independently verified at `AXR1-018` code `cae2ba6` (tree
 `5c16466`), on final `AXR1-017` code `1902cf7`: the **3558** below plus
 **163** net-new default-suite cases. The same serial review passed isolation
 (**270**), CNPJ (**29**), browser (**68**), lint, format, mypy, migration-drift
 and a clean rebuilt-static check. Evidence: `.evidence/AXR1-018-rv-gates.txt`
-and `.evidence/AXR1-018-gates-placed.txt`. This status-only commit does not
-change the reviewed code; it sits on the `AXR1-017` status commit `29a2678`.
+and `.evidence/AXR1-018-gates-placed.txt`.
 
 The previous default-suite baseline was **3558 passing**
 (68 deselected), verified at `AXR1-017` code `1902cf7` (tree `146169b`), on
@@ -670,7 +715,7 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **68** cases: the **24** passing at the T3
+`browser` job. The suite now contains **74** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
@@ -681,7 +726,9 @@ viewports), plus the two `AXR1-011` portal-upload/staff-request cases, plus the
 two `AXR1-013` document-review cases, plus the four `AXR1-014` exception cases,
 plus the eight `AXR1-015` approval-card cases, plus the two `AXR1-016`
 publication-receipt cases, plus the eight `AXR1-017` coverage-panel cases
-(four journeys at two viewports). Every test in
+(four journeys at two viewports), plus the six `AXR1-019` briefing cases
+(two briefing-state journeys and one long-client-name journey at two
+viewports). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
