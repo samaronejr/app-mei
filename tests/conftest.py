@@ -56,6 +56,8 @@ PORTAL_DENIED_TABLES = (
     "cycles_completionjustification",
     "cycles_legalhold",
     "cycles_contentpurgeclaim",
+    "cycles_savedview",
+    "cycles_briefingfeedback",
     "delivery_outboundmessage",
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",

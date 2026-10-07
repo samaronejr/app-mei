@@ -99,6 +99,9 @@ class AuditAction(models.TextChoices):
     IMPORT_COMMIT_FAILED = "import_commit_failed", _("client import commit failed")
     IMPORT_COMMITTED = "import_committed", _("client import committed")
     IMPORT_ROLLED_BACK = "import_rolled_back", _("client import rolled back")
+    BRIEFING_VIEW_SAVED = "briefing_view_saved", _("briefing view saved")
+    BRIEFING_VIEW_DELETED = "briefing_view_deleted", _("briefing view deleted")
+    BRIEFING_DISMISSED = "briefing_dismissed", _("briefing item dismissed")
 
 
 class Event(TenantScopedModel):

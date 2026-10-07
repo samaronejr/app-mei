@@ -28,6 +28,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from apps.core.models import TenantScopedModel
+from apps.cycles.briefing_records import BriefingFeedback, SavedView
 from apps.cycles.completion_records import CompletionGeneration, CompletionJustification
 from apps.cycles.effects.records import (
     ActionProposal,
@@ -80,6 +81,7 @@ __all__ = [
     "ActionProposal",
     "Approval",
     "ApprovalDecision",
+    "BriefingFeedback",
     "ClientAcknowledgement",
     "ClientPublication",
     "CompletionGeneration",
@@ -115,6 +117,7 @@ __all__ = [
     "RequestState",
     "Review",
     "ReviewDecision",
+    "SavedView",
     "ServiceCycle",
     "StepKind",
     "TaskState",

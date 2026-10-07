@@ -6,6 +6,7 @@ Context:
   checked_at   -- aware datetime of the last successful check; rendered in BRT
                   by the shared `data_hora` filter, with a machine-readable
                   `datetime` attribute.
+  checked_label -- optional label when the timestamp describes a read, not a check.
   message      -- optional: which source is behind, and what that means.
   refresh_url  -- optional plain link that asks for a fresh check.
   refresh_label -- its pt-BR label; defaults to "Verificar novamente".
@@ -14,7 +15,7 @@ Stale is not unknown: the value exists and is shown, it is just old. The dashed
 edge and the clock glyph say so without relying on the hue.
 {% endcomment %}<div class="ui-state ui-state-stale" data-ui-state="stale">
   <p class="ui-state-title">{% include "partials/pure/icons/clock-fading.html" %}<span>{% if title %}{{ title }}{% else %}{% translate "Desatualizado" %}{% endif %}</span></p>
-  {% if checked_at %}<p>{% translate "Última verificação:" %} <time datetime="{{ checked_at|date:'c' }}">{{ checked_at|data_hora }}</time></p>{% endif %}
+  {% if checked_at %}<p>{% if checked_label %}{{ checked_label }}{% else %}{% translate "Última verificação:" %}{% endif %} <time datetime="{{ checked_at|date:'c' }}">{{ checked_at|data_hora }}</time></p>{% endif %}
   {% if message %}<p>{{ message }}</p>{% endif %}
   {% if refresh_url %}<a class="ui-btn ui-btn-quiet" href="{{ refresh_url }}">{% if refresh_label %}{{ refresh_label }}{% else %}{% translate "Verificar novamente" %}{% endif %}</a>{% endif %}
 </div>

@@ -78,6 +78,8 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "evidence-index",
         "evidence-export-detail",
         "evidence-export-download",
+        # T19: a user- and tenant-owned saved selection, never a bearer credential.
+        "briefing-delete-view",
         "admin:*",
     },
 )

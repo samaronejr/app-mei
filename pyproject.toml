@@ -177,6 +177,7 @@ minversion = "8.0"
 addopts = ["-ra", "--strict-config", "--strict-markers", "-m", "not browser"]
 markers = [
   "browser: drives a real Chromium against a live server (tests/browser); deselected by default",
+  "scale: exercises the active 1,000-client portfolio envelope; included in CI",
 ]
 filterwarnings = ["error"]
 pythonpath = ["."]

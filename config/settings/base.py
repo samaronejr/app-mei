@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.clients",
+    "apps.briefing",
     "apps.cycles",
     "apps.delivery",
     "apps.fiscal",
@@ -374,6 +375,12 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "is scoped through load_export, load_cycle and visible_clients. Only a ready, "
         "unexpired archive yields an authorized storage descriptor; the byte-only "
         "iterator has no ORM access and the UUID itself grants no download authority."
+    ),
+    "briefing-delete-view": (
+        "AXR1-019. The UUID identifies a personal SavedView, not a bearer credential. "
+        "A firm-side authenticated session, live capability, tenant RLS and the "
+        "requesting user's ownership are required; another user's or tenant's id "
+        "is 404. Deletion checks the rendered version under the row lock."
     ),
     "portal-request-detail": (
         "The UUID names an evidence request, not a bearer credential. "

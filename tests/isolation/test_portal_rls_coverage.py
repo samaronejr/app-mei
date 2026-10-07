@@ -61,7 +61,8 @@ RUNTIME_ROLE = "app_runtime"
 # T14's private exception companion carries instructions and evidence references.
 # T15 adds two exact-effect tables, client-paired and independently portal-denied.
 # T18 adds seven private completion, export and retention tables with both policies.
-EXPECTED_TENANT_TABLE_COUNT = 54
+# T19 adds tenant-owned SavedView and client-paired private BriefingFeedback.
+EXPECTED_TENANT_TABLE_COUNT = 56
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -74,6 +75,8 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "cycles_completionjustification",
         "cycles_legalhold",
         "cycles_contentpurgeclaim",
+        # Personal feedback carries the same client-isolation + deny-all backstop.
+        "cycles_briefingfeedback",
     }
 )
 
@@ -430,6 +433,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_completionjustification",
         "cycles_legalhold",
         "cycles_contentpurgeclaim",
+        "cycles_savedview",
+        "cycles_briefingfeedback",
         "cycles_clientpublication",
         "delivery_outboundmessage",
         "delivery_deliveryattempt",

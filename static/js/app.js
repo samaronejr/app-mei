@@ -182,7 +182,25 @@
     announce(nameOf(target));
   }
 
-  function onFailure() {
+  function onFailure(event) {
+    var source = event.target;
+    var briefing = source && source.nodeType === 1
+      ? source.closest("#briefing-content")
+      : null;
+    var xhr = event.detail && event.detail.xhr;
+    var stale = briefing && briefing.querySelector("#briefing-stale");
+    if (briefing) {
+      if (xhr && xhr.status === 403) {
+        briefing.textContent = "";
+        window.location.reload();
+        return;
+      }
+      if (stale) {
+        stale.removeAttribute("hidden");
+        stale.scrollIntoView({ block: "nearest" });
+        return;
+      }
+    }
     showFallback();
     announce(FAILURE);
   }
@@ -228,7 +246,7 @@
 
   function onSubmit(event) {
     var form = event.target;
-    if (!form || form.nodeType !== 1) {
+    if (!form || form.nodeType !== 1 || form.hasAttribute("hx-disabled-elt")) {
       return;
     }
     var controls = form.querySelectorAll(SUBMITTERS);

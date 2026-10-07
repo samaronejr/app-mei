@@ -166,7 +166,8 @@ class BrowserPage:
             return None
         path = Path(directory) / f"{name}-{self.viewport}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.page.screenshot(path=str(path), full_page=True)
+        # Hiding the caret leaves empty inline styles that HTMX history re-parses.
+        self.page.screenshot(path=str(path), full_page=True, caret="initial")
         return path
 
 

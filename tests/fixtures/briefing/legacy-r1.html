@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  
+  <meta name="htmx-config" content='{"allowEval": false, "includeIndicatorStyles": false}'>
+  <title>Painel</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  
+  <script src="/static/js/htmx.min.js" defer></script>
+  
+  
+  <script src="/static/js/app.js" defer></script>
+  <script src="/static/js/alpine-csp.min.js" defer></script>
+  
+</head>
+<body class="min-h-screen shell-r1">
+  
+  <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+
+  <header class="shell-header" data-shell="r1">
+    <div class="shell-bar">
+      <p class="shell-brand">
+        <a class="shell-wordmark" href="/">app-mei</a>
+        <span class="shell-tenant" title="T19-Byte-Baseline Contabilidade">T19-Byte-Baseline Contabilidade</span>
+      </p>
+      <details class="shell-disclosure">
+        <summary class="shell-summary">
+          <svg xmlns="http://www.w3.org/2000/svg" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h16"/></svg>
+
+          <span>Menu</span>
+        </summary>
+        <nav aria-label="Navegação principal" class="shell-nav">
+          <a class="shell-link" href="/" aria-current="page">Hoje</a>
+          <a class="shell-link" href="/clientes/">Clientes</a>
+          <a class="shell-link" href="/ciclos/">Ciclos</a>
+          <a class="shell-link" href="/documentos/">Documentos</a>
+          <a class="shell-link" href="/comunicacao/">Comunicação</a>
+          <a class="shell-link" href="/gestao/playbooks/">Playbooks</a>
+          <a class="shell-link" href="/equipe/">Gestão</a>
+          
+        </nav>
+      </details>
+      <div class="shell-account">
+        <span class="hidden truncate sm:inline">owner@t19-byte-baseline.example.com</span>
+        <form method="post" action="/accounts/logout/">
+          <input type="hidden" name="csrfmiddlewaretoken" value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
+          <button type="submit" class="ui-btn ui-btn-quiet">Sair</button>
+        </form>
+      </div>
+    </div>
+  </header>
+  <div id="toasts" class="toast-region" role="status" aria-live="polite"></div>
+
+
+  
+  <div id="htmx-announce" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
+
+  
+  <main id="conteudo" tabindex="-1" class="mx-auto max-w-7xl px-6 py-8">
+    
+    <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+      <h1 class="text-2xl font-semibold tracking-tight text-ink-900">Painel</h1>
+      
+    </div>
+
+    
+    <div id="htmx-error-fallback" class="notice notice-error mb-6" hidden>
+      <p>
+        Não foi possível carregar esta parte da página.
+        <a class="underline" href="/">Tentar novamente</a>
+      </p>
+    </div>
+
+    
+    <div id="messages" role="status" aria-live="polite">
+      
+        <div class="grid gap-3 pb-6">
+          
+            
+              
+<div class="notice notice-success" role="status">
+  
+  <p>Conectado com sucesso como owner@t19-byte-baseline.example.com.</p>
+</div>
+
+
+            
+          
+        </div>
+      
+    </div>
+
+    
+
+  <section aria-labelledby="filas" class="mb-8">
+    <h2 id="filas" class="mb-3 text-sm font-semibold text-ink-700">Filas de trabalho</h2>
+    
+
+<div id="contagens"
+     class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+     hx-get="/filas/contagens/"
+     hx-trigger="every 60s"
+     hx-swap="outerHTML"
+     hx-sync="this:replace">
+  
+    <a class="metric" href="/filas/vencendo/" data-count-due-soon="0">
+      <span class="metric-value">0</span>
+      <span class="metric-label">Vencendo em 7 dias</span>
+    </a>
+  
+    <a class="metric" href="/filas/atrasadas/" data-count-overdue="1">
+      <span class="metric-value">1</span>
+      <span class="metric-label">Atrasadas</span>
+    </a>
+  
+    <a class="metric" href="/filas/onboarding/" data-count-onboarding-blocked="0">
+      <span class="metric-value">0</span>
+      <span class="metric-label">Onboarding travado</span>
+    </a>
+  
+    <a class="metric" href="/filas/limite/" data-count-threshold-warning="0">
+      <span class="metric-value">0</span>
+      <span class="metric-label">Limite de faturamento</span>
+    </a>
+  
+</div>
+
+  </section>
+
+  <section aria-labelledby="carteira" class="mb-8">
+    <h2 id="carteira" class="mb-3 text-sm font-semibold text-ink-700">
+      Carteira (1 clientes)
+    </h2>
+    
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      
+        <div class="metric" data-portfolio-onboarding="0">
+          <span class="metric-value">0</span>
+          <span class="metric-label">Em onboarding</span>
+        </div>
+      
+        <div class="metric" data-portfolio-active="1">
+          <span class="metric-value">1</span>
+          <span class="metric-label">Ativo</span>
+        </div>
+      
+        <div class="metric" data-portfolio-suspended="0">
+          <span class="metric-value">0</span>
+          <span class="metric-label">Suspenso</span>
+        </div>
+      
+        <div class="metric" data-portfolio-closed="0">
+          <span class="metric-value">0</span>
+          <span class="metric-label">Encerrado</span>
+        </div>
+      
+    </div>
+  </section>
+
+  <section aria-labelledby="calendario" class="mb-8">
+    <h2 id="calendario" class="mb-3 text-sm font-semibold text-ink-700">Calendário do DAS — 12 meses</h2>
+
+    
+    <form method="get" class="mb-4 flex flex-wrap items-end gap-3"
+          hx-get="/"
+          hx-target="#calendario-strip"
+          hx-select="#calendario-strip"
+          hx-swap="outerHTML"
+          hx-trigger="change"
+          hx-sync="this:replace"
+          hx-indicator="#calendario-indicator">
+      <div class="field">
+        <label class="field-label" for="cliente">Cliente</label>
+        <select id="cliente" name="cliente" class="field-input">
+          
+            <option value="01900000-0000-7000-8000-000000000019" selected>Cliente de referência</option>
+          
+        </select>
+      </div>
+      <noscript><button type="submit" class="btn btn-primary">Aplicar</button></noscript>
+      <span id="calendario-indicator"
+            class="htmx-indicator inline-flex items-center gap-2 text-sm text-ink-500"
+            aria-hidden="true">
+        <svg xmlns="http://www.w3.org/2000/svg" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M16 14v2.2l1.6 1"/><path d="M16 2v3"/><path d="M21 7.338V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h2.338"/><path d="M3 9h5.859"/><path d="M8 2v3"/><circle cx="16" cy="16" r="6"/></svg>
+
+        Atualizando…
+      </span>
+    </form>
+
+    
+    <div id="calendario-strip" class="card p-5"
+         role="region"
+         aria-label="Calendário do DAS">
+      
+        <p class="mb-4 text-sm text-ink-600">
+          <a class="link" href="/clientes/01900000-0000-7000-8000-000000000019/">Cliente de referência</a> — 11.222.333/0001-81
+        </p>
+      
+      
+        <ol class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          
+            <li class="calendar-cell border-warn-line bg-warn-soft">
+              <span class="calendar-month text-warn-ink">ago/2026</span>
+              <time class="calendar-due text-warn-ink"
+                    datetime="2026-09-21"
+                    data-competence="2026-08">21/09/2026</time>
+              
+                <span class="calendar-rolled text-warn-ink">adiado de 20/09/2026</span>
+              
+            </li>
+          
+            <li class="calendar-cell border-ink-200">
+              <span class="calendar-month text-ink-500">set/2026</span>
+              <time class="calendar-due text-ink-900"
+                    datetime="2026-10-20"
+                    data-competence="2026-09">20/10/2026</time>
+              
+            </li>
+          
+            <li class="calendar-cell border-warn-line bg-warn-soft">
+              <span class="calendar-month text-warn-ink">out/2026</span>
+              <time class="calendar-due text-warn-ink"
+                    datetime="2026-11-23"
+                    data-competence="2026-10">23/11/2026</time>
+              
+                <span class="calendar-rolled text-warn-ink">adiado de 20/11/2026</span>
+              
+            </li>
+          
+            <li class="calendar-cell border-warn-line bg-warn-soft">
+              <span class="calendar-month text-warn-ink">nov/2026</span>
+              <time class="calendar-due text-warn-ink"
+                    datetime="2026-12-21"
+                    data-competence="2026-11">21/12/2026</time>
+              
+                <span class="calendar-rolled text-warn-ink">adiado de 20/12/2026</span>
+              
+            </li>
+          
+            <li class="calendar-cell border-ink-200">
+              <span class="calendar-month text-ink-500">dez/2026</span>
+              <time class="calendar-due text-ink-900"
+                    datetime="2027-01-20"
+                    data-competence="2026-12">20/01/2027</time>
+              
+            </li>
+          
+            <li class="calendar-cell border-warn-line bg-warn-soft">
+              <span class="calendar-month text-warn-ink">jan/2027</span>
+              <time class="calendar-due text-warn-ink"
+                    datetime="2027-02-22"
+                    data-competence="2027-01">22/02/2027</time>
+              
+                <span class="calendar-rolled text-warn-ink">adiado de 20/02/2027</span>
+              
+            </li>
+          
+            <li class="calendar-cell border-warn-line bg-warn-soft">
+              <span class="calendar-month text-warn-ink">fev/2027</span>
+              <time class="calendar-due text-warn-ink"
+                    datetime="2027-03-22"
+                    data-competence="2027-02">22/03/2027</time>
+              
+                <span class="calendar-rolled text-warn-ink">adiado de 20/03/2027</span>
+              
+            </li>
+          
+            <li class="calendar-cell border-ink-200">
+              <span class="calendar-month text-ink-500">mar/2027</span>
+              <time class="calendar-due text-ink-900"
+                    datetime="2027-04-20"
+                    data-competence="2027-03">20/04/2027</time>
+              
+            </li>
+          
+            <li class="calendar-cell border-ink-200">
+              <span class="calendar-month text-ink-500">abr/2027</span>
+              <time class="calendar-due text-ink-900"
+                    datetime="2027-05-20"
+                    data-competence="2027-04">20/05/2027</time>
+              
+            </li>
+          
+            <li class="calendar-cell border-warn-line bg-warn-soft">
+              <span class="calendar-month text-warn-ink">mai/2027</span>
+              <time class="calendar-due text-warn-ink"
+                    datetime="2027-06-21"
+                    data-competence="2027-05">21/06/2027</time>
+              
+                <span class="calendar-rolled text-warn-ink">adiado de 20/06/2027</span>
+              
+            </li>
+          
+            <li class="calendar-cell border-ink-200">
+              <span class="calendar-month text-ink-500">jun/2027</span>
+              <time class="calendar-due text-ink-900"
+                    datetime="2027-07-20"
+                    data-competence="2027-06">20/07/2027</time>
+              
+            </li>
+          
+            <li class="calendar-cell border-ink-200">
+              <span class="calendar-month text-ink-500">jul/2027</span>
+              <time class="calendar-due text-ink-900"
+                    datetime="2027-08-20"
+                    data-competence="2027-07">20/08/2027</time>
+              
+            </li>
+          
+        </ol>
+      
+    </div>
+
+  </section>
+
+  <section aria-labelledby="limite">
+    <h2 id="limite" class="mb-3 text-sm font-semibold text-ink-700">Clientes perto do limite</h2>
+    
+    <div class="card">
+      <div class="table-wrap" tabindex="0" role="region" aria-labelledby="limite">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Cliente</th>
+              <th scope="col">Faturado</th>
+              <th scope="col">Teto</th>
+              <th scope="col">Consumido</th>
+              <th scope="col">Faixa</th>
+            </tr>
+          </thead>
+          <tbody>
+            
+              <tr><td colspan="5" class="empty-state">Nenhum cliente perto do limite.</td></tr>
+            
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  </main>
+
+  <footer class="mx-auto max-w-7xl px-6 py-8 text-xs text-ink-500">
+    <p>
+      Horários em BRT (America/Sao_Paulo).
+      <a class="underline" href="/lgpd/solicitacao/">Direitos do titular de dados (LGPD)</a>
+    </p>
+  </footer>
+</body>
+</html>

@@ -17,6 +17,7 @@ urlpatterns = [
     path("accounts/", include("allauth.urls")),
     path("", include("apps.accounts.urls")),
     path("", include("apps.clients.urls")),
+    path("", include("apps.briefing.urls")),
     path("", include("apps.cycles.urls")),
     path("", include("apps.delivery.urls")),
     path("", include("apps.lgpd.urls")),
