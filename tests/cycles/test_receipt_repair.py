@@ -6,6 +6,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from apps.clients.maintenance import EngagementData, save_engagement
 from apps.clients.models import ClientAssignment
 from apps.core.tenancy import tenant_context
 from apps.cycles import receipt_observations
@@ -17,13 +18,15 @@ from apps.cycles.evidence import (
     EvidenceLink,
     EvidenceRequest,
     IntakeState,
+    RequestInternal,
     Review,
     ScanVerdict,
 )
-from apps.cycles.models import ActionExecution, ProposalState
+from apps.cycles.models import ActionExecution, CycleEvent, ProposalState
 from apps.cycles.receipt_observations import settle_link, settle_pending
 from apps.cycles.services import approvals
 from apps.cycles.services.requests import RequestFields, create_request, send_requests
+from apps.obligations.coverage import coverage_for
 from apps.obligations.models import SourceObservation
 from apps.obligations.observations import retract_staff_fact
 from apps.tenants.models import Tenant
@@ -43,6 +46,103 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 class ReceiptInterruptionError(RuntimeError):
     """A forced interruption after the real insertion but before commit."""
+
+
+@pytest.mark.parametrize("rebind", [False, True], ids=["create", "draft-rebind"])
+@pytest.mark.parametrize(
+    ("start_offset", "end_offset", "allowed"),
+    [(0, None, True), (1, None, False), (-1, 0, False), (-1, 1, True)],
+    ids=["starts-at", "starts-after", "ends-at", "ends-after"],
+)
+def test_receipt_binding_requires_the_engagement_window(
+    receipt_case: PortalSetup,
+    start_offset: int,
+    end_offset: int | None,
+    allowed: bool,
+    rebind: bool,
+) -> None:
+    graph = receipt_case.graph
+    subject = payment_subject(receipt_case)
+    payload = {
+        "action": "create",
+        "title": "Comprovante da competência",
+        "kind": "comprovante",
+        "obligation_id": str(subject.pk),
+        "instructions": "Conferir o comprovante.",
+    }
+    # Given a real engagement edit after the cycle (and any draft) already exists.
+    with tenant_context(graph.tenant.pk):
+        if rebind:
+            draft = create_request(
+                graph.actor,
+                receipt_case.cycle.pk,
+                RequestFields("Documento em rascunho", instructions="Preservar."),
+                expected_version=receipt_case.cycle.version,
+            )
+            payload.update(
+                action="update",
+                request_id=str(draft.pk),
+                expected_version=str(draft.version),
+            )
+        receipt_case.cycle.refresh_from_db()
+        if not rebind:
+            payload["expected_version"] = str(receipt_case.cycle.version)
+        save_engagement(
+            actor=graph.actor,
+            tenant_id=graph.tenant.pk,
+            client_id=graph.client.pk,
+            data=EngagementData(
+                service_kind=graph.engagement.service_kind,
+                starts_on=PERIOD + timedelta(days=start_offset),
+                ends_on=None
+                if end_offset is None
+                else PERIOD + timedelta(days=end_offset),
+                responsible_id=graph.actor.pk,
+            ),
+            engagement_id=graph.engagement.pk,
+            expected_version=graph.engagement.version,
+        )
+        requests = EvidenceRequest.objects.filter(cycle=receipt_case.cycle).order_by(
+            "pk"
+        )
+        internals = RequestInternal.objects.filter(
+            request__cycle=receipt_case.cycle
+        ).order_by("pk")
+        events = CycleEvent.objects.filter(cycle=receipt_case.cycle).order_by("pk")
+        before = (
+            list(requests.values()),
+            list(internals.values()),
+            list(events.values()),
+            receipt_case.cycle.version,
+        )
+
+    # When the real HTTP command binds the actual obligation for that competence.
+    response = receipt_case.firm().post(
+        f"/ciclos/{receipt_case.cycle.pk}/solicitacoes/", payload
+    )
+
+    # Then refusal is atomic, while both applicable edges retain historical reads.
+    with tenant_context(graph.tenant.pk):
+        receipt_case.cycle.refresh_from_db()
+        coverage = coverage_for(graph.actor, graph.client, PERIOD)
+        if allowed:
+            assert response.status_code == 302
+            assert len(coverage) == 1
+            assert requests.count() == len(before[0]) + (0 if rebind else 1)
+            assert internals.count() == len(before[1]) + (0 if rebind else 1)
+            assert events.count() == len(before[2]) + 1
+            bound = requests.get(title=payload["title"])
+            assert (bound.kind, bound.obligation_id) == ("comprovante", subject.pk)
+            assert receipt_case.cycle.version == before[3] + (0 if rebind else 1)
+        else:
+            assert response.status_code == 422
+            assert coverage == []
+            assert (
+                list(requests.values()),
+                list(internals.values()),
+                list(events.values()),
+                receipt_case.cycle.version,
+            ) == before
 
 
 def test_clean_receipt_has_an_explicit_unselected_payment_control(

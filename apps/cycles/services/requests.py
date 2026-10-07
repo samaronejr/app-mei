@@ -134,7 +134,13 @@ def _bind_obligation(
         or obligation.competence_month != cycle.period_start
     ):
         raise Http404
-    codes = SERVICE_OBLIGATIONS.get(cycle.engagement.service_kind)
+    engagement = cycle.engagement
+    if engagement.starts_on > cycle.period_start or (
+        engagement.ends_on is not None and cycle.period_start >= engagement.ends_on
+    ):
+        msg = "Este serviço não se aplica à competência desta solicitação."
+        raise ValidationError(msg)
+    codes = SERVICE_OBLIGATIONS.get(engagement.service_kind)
     if not codes or obligation.obligation_type_id not in codes:
         msg = "Este serviço não tem uma obrigação mapeada para esta solicitação."
         raise ValidationError(msg)
