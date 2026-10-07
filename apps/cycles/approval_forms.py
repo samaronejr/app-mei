@@ -10,9 +10,11 @@ from apps.clients.models import ClientContact
 from apps.cycles.effects.inputs import MoneyBinding, ProposalDraft, ProposalInput
 from apps.cycles.effects.manifest import ActionKind
 from apps.cycles.models import (
+    ClientPublication,
     EvidenceLink,
     EvidenceRequest,
     ExtractedField,
+    PublicationState,
     ServiceCycle,
 )
 from apps.obligations.models import (
@@ -82,6 +84,14 @@ class ProposalForm(forms.Form):
         initial="concluido",
         required=False,
     )
+    supersedes_publication_id = forms.ChoiceField(
+        label="Publicação anterior revisada",
+        required=False,
+        help_text=(
+            "Selecione apenas ao publicar uma revisão. "
+            "Os recebimentos antigos ficam preservados."
+        ),
+    )
     recipients = forms.MultipleChoiceField(
         label="Destinatários", required=False, widget=forms.CheckboxSelectMultiple
     )
@@ -135,6 +145,17 @@ class ProposalForm(forms.Form):
 
     def set_choices(self, cycle: ServiceCycle) -> None:
         """Constrain selections to this already-authorized cycle and client."""
+        cast("forms.ChoiceField", self.fields["supersedes_publication_id"]).choices = [
+            ("", "Sem publicação anterior"),
+            *[
+                (str(row.pk), row.title)
+                for row in ClientPublication.objects.filter(
+                    cycle=cycle,
+                    state=PublicationState.PUBLISHED,
+                    revisions__isnull=True,
+                ).order_by("-published_at", "pk")
+            ],
+        ]
         cast("forms.MultipleChoiceField", self.fields["recipients"]).choices = [
             (str(row.pk), f"{row.name} · {row.email}")
             for row in ClientContact.objects.filter(client_id=cycle.client_id).order_by(
@@ -217,6 +238,11 @@ class ProposalForm(forms.Form):
                 body=data["body"],
                 reason=data["reason"],
                 completion_state=data["completion_state"] or "concluido",
+                supersedes_publication_id=(
+                    UUID(data["supersedes_publication_id"])
+                    if data["supersedes_publication_id"]
+                    else None
+                ),
             ),
             data["expires_at"],
             not_before=data["not_before"],

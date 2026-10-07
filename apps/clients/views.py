@@ -24,6 +24,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.paginator import EmptyPage, Page, Paginator
 from django.db.models import Model, QuerySet
 from django.http import Http404, HttpRequest, HttpResponse
+from django.http.response import HttpResponseBase
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
@@ -92,9 +93,9 @@ def _tenant(request: AuthenticatedRequest) -> Tenant:
     return resolved
 
 
-def require_tenant[**P](
-    view: Callable[Concatenate[AuthenticatedRequest, P], HttpResponse],
-) -> Callable[Concatenate[AuthenticatedRequest, P], HttpResponse]:
+def require_tenant[R: HttpResponseBase, **P](
+    view: Callable[Concatenate[AuthenticatedRequest, P], R],
+) -> Callable[Concatenate[AuthenticatedRequest, P], R]:
     """Resolve the firm before the capability is consulted, or 404.
 
     **The position of this decorator is load-bearing and reordering it reintroduces an
@@ -124,7 +125,7 @@ def require_tenant[**P](
         /,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> HttpResponse:
+    ) -> R:
         _tenant(request)
         return view(request, *args, **kwargs)
 

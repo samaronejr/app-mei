@@ -28,7 +28,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.files.storage import default_storage
 from django.core.paginator import EmptyPage, Page, Paginator
-from django.db.models import Count, Q, QuerySet
+from django.db.models import Count, Exists, OuterRef, Q, QuerySet
 from django.http import (
     Http404,
     HttpRequest,
@@ -259,9 +259,13 @@ def portal_home(request: HttpRequest) -> HttpResponse:
         from apps.cycles.models import ClientPublication  # noqa: PLC0415
 
         publications = list(
-            ClientPublication.objects.order_by("-published_at", "pk").values(
-                "id", "title", "state", "published_at"
-            )[:12]
+            ClientPublication.objects.annotate(
+                revised=Exists(
+                    ClientPublication.objects.filter(supersedes_id=OuterRef("pk"))
+                )
+            )
+            .order_by("-published_at", "pk")
+            .values("id", "title", "state", "published_at", "revised")[:12]
         )
     return render(
         request,

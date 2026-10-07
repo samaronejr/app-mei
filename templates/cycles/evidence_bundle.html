@@ -1,0 +1,5 @@
+{% extends "cycles/evidence/base.html" %}{% block content %}<p>Registro operacional do escritório. Os resumos SHA-256 permitem conferir os arquivos; não representam validação fiscal ou confirmação de uma autoridade.</p>
+<h2>Arquivos originais</h2>
+<ul>{% for original in originals %}<li><a href="{{ original.member }}">{{ original.filename }}</a></li>{% empty %}<li>Nenhum original vinculado a este índice.</li>{% endfor %}</ul>
+<h2>Identidades, decisões e proveniência</h2>
+<pre>{{ index_text }}</pre>{% endblock %}

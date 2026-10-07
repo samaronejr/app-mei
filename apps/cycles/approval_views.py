@@ -187,11 +187,17 @@ def _card(
         for row in frozen["observations"]
     ]
     execution = ActionExecution.objects.filter(proposal=proposal).first()
+    action_label = (
+        "Reabrir ciclo"
+        if frozen["payload"].get("reopen")
+        else proposal.get_action_kind_display()
+    )
     return render(
         request,
         "cycles/approval_card.html",
         {
             "proposal": proposal,
+            "action_label": action_label,
             "execution": execution,
             "may_execute": (
                 controls.propose
@@ -221,7 +227,7 @@ def _card(
             "open": proposal.state in {ProposalState.AWAITING, ProposalState.APPROVED},
             "effects": [
                 {
-                    "label": proposal.get_action_kind_display(),
+                    "label": action_label,
                     "detail": (
                         "Somente os destinatários, documentos e valores "
                         "congelados abaixo."

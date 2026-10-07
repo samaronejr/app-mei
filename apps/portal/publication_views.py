@@ -36,6 +36,7 @@ def publication_detail(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
     """Record a view as an event and require the explicit digest POST for receipt."""
     _require_flag(request)
     publication = get_object_or_404(ClientPublication.objects, pk=pk)
+    revision = ClientPublication.objects.filter(supersedes=publication).first()
     published = publication.state == PublicationState.PUBLISHED
     error, status = "", 200
     receipts = request.session.get("publication_receipts", {})
@@ -113,6 +114,7 @@ def publication_detail(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
                 "published_at": publication.published_at,
                 "withdrawn_at": publication.withdrawn_at,
                 "published": published,
+                "revision_id": revision.pk if revision else None,
             },
             "documents": [
                 {"id": link.pk, "name": link.document.original_filename}

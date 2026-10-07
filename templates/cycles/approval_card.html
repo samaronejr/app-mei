@@ -6,7 +6,7 @@
   <header class="min-w-0">
     <a class="ui-link" href="{% url 'cycle-detail' proposal.cycle_id %}">Voltar ao ciclo</a>
     <p class="mt-4 text-sm text-ink-600">{{ proposal.client.legal_name }} · CNPJ {{ proposal.client.cnpj|cnpj_mask }} · competência {{ proposal.cycle.period_start|date:'m/Y' }}</p>
-    <h2 class="mt-2 text-xl font-semibold text-ink-900">{{ proposal.get_action_kind_display }}</h2>
+    <h2 class="mt-2 text-xl font-semibold text-ink-900">{{ action_label }}</h2>
     <p class="mt-2"><span class="status-badge status-pending" data-proposal-state="{{ proposal.state }}">{{ proposal.get_state_display }}</span> · versão {{ proposal.revision }} · proposta por {{ proposal.initiator }}</p>
     <p class="mt-2 text-sm text-ink-600">Este cartão mostra os efeitos congelados desta versão. Aprovar registra uma decisão; não envia mensagens, não publica arquivos e não comprova execução.</p>
   </header>
@@ -25,7 +25,19 @@
   </section>
   <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-message">
     <h2 id="frozen-message" class="ui-panel-heading">Conteúdo congelado</h2>
-    {% if frozen.payload.completion_state %}<p class="mt-3 font-semibold">Resultado autorizado: {% if frozen.payload.completion_state == 'encerrado_com_pendencias' %}encerrar com pendências justificadas{% else %}concluir o ciclo, se todas as condições forem atendidas{% endif %}.</p>{% endif %}
+    {% if frozen.payload.reopen %}
+    <p class="mt-3 font-semibold">Resultado autorizado: reabrir o ciclo com uma nova emenda.</p>
+    <p class="mt-2 break-all text-sm">Conclusão preservada: {{ frozen.payload.reopen.generation_id }}</p>
+    <ul class="mt-2 text-sm">{% for subject in frozen.payload.reopen.affected_scope %}<li class="break-all">Escopo: {{ subject }}</li>{% endfor %}</ul>
+    {% elif frozen.payload.completion_state %}<p class="mt-3 font-semibold">Resultado autorizado: {% if frozen.payload.completion_state == 'encerrado_com_pendencias' %}encerrar com pendências justificadas{% else %}concluir o ciclo, se todas as condições forem atendidas{% endif %}.</p>{% endif %}
+    {% if frozen.payload.completion_reasons %}
+    <dl class="mt-3 grid gap-3 text-sm">{% for key, reason in frozen.payload.completion_reasons.items %}<div><dt class="break-all font-semibold">{{ key }}</dt><dd class="mt-1 whitespace-pre-wrap break-words">{{ reason }}</dd></div>{% endfor %}</dl>
+    {% endif %}
+    {% if frozen.payload.supersedes %}
+    <p class="mt-3 font-semibold">Esta publicação revisa uma versão anterior.</p>
+    <p class="mt-2 break-all text-sm">Publicação: {{ frozen.payload.supersedes.publication_id }} · revisão {{ frozen.payload.supersedes.version }}</p>
+    <p class="mt-1 break-all text-xs">SHA-256 preservado: {{ frozen.payload.supersedes.digest }}</p>
+    {% endif %}
     {% if frozen.payload.subject %}<p class="mt-3 font-semibold break-words" data-frozen-subject>{{ frozen.payload.subject }}</p>{% endif %}
     {% if frozen.payload.from %}<p class="mt-1 text-sm break-all">Remetente: {{ frozen.payload.from }}</p>{% endif %}
     {% if frozen.payload.body %}<pre class="mt-3 whitespace-pre-wrap break-words font-sans text-sm" data-frozen-body>{{ frozen.payload.body }}</pre>{% else %}<p class="mt-3 text-sm">Esta ação não contém mensagem externa.</p>{% endif %}
@@ -88,7 +100,7 @@
       <div><dt class="font-semibold">Válida até</dt><dd>{{ dates.expires_at|data_hora }} · America/Sao_Paulo</dd></div>
       {% if dates.not_before %}<div><dt class="font-semibold">Não executar antes de</dt><dd>{{ dates.not_before|data_hora }}</dd></div>{% endif %}
       <div><dt class="font-semibold">Política</dt><dd>Revisão {{ frozen.policy.version }}<code class="block break-all text-xs">{{ frozen.policy.hash }}</code></dd></div>
-      <div><dt class="font-semibold">Destino</dt><dd>{{ proposal.get_action_kind_display }} · {{ frozen.destination.provider }}<code class="block break-all text-xs">{{ frozen.destination.account_id }}</code><span class="text-xs">{{ frozen.destination.operation }}</span></dd></div>
+      <div><dt class="font-semibold">Destino</dt><dd>{{ action_label }} · {{ frozen.destination.provider }}<code class="block break-all text-xs">{{ frozen.destination.account_id }}</code><span class="text-xs">{{ frozen.destination.operation }}</span></dd></div>
       <div><dt class="font-semibold">Identidade desta versão</dt><dd><code class="block break-all text-xs">{{ proposal.pk }}</code>Revisão {{ proposal.revision }}</dd></div>
       <div><dt class="font-semibold">Resumo criptográfico dos efeitos</dt><dd class="break-all font-mono text-xs" data-frozen-digest>{{ proposal.digest }}</dd></div>
     </dl>
@@ -122,7 +134,7 @@
       <form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ proposal.version }}"><button class="ui-btn ui-btn-quiet" name="action" value="revalidate" type="submit">Conferir validade agora</button></form>
       {% if may_cancel %}<form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ proposal.version }}"><button class="ui-btn ui-btn-quiet" name="action" value="cancel" type="submit">Cancelar proposta</button></form>{% endif %}
     </div>{% endif %}
-    {% if may_propose %}<p class="mt-4"><a class="ui-link" href="{% url 'proposal-create' proposal.cycle_id %}?revisao_de={{ proposal.pk }}">Criar nova versão com efeitos atualizados</a></p>{% endif %}
+    {% if may_propose %}<p class="mt-4">{% if frozen.payload.reopen %}<a class="ui-link" href="{% url 'cycle-detail' proposal.cycle_id %}#cycle-summary">Propor nova revisão da emenda</a>{% else %}<a class="ui-link" href="{% url 'proposal-create' proposal.cycle_id %}?revisao_de={{ proposal.pk }}">Criar nova versão com efeitos atualizados</a>{% endif %}</p>{% endif %}
   </section>
 </div>
 {% endblock %}

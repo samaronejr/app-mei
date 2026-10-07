@@ -5,6 +5,7 @@ from typing import Any, Final, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import sentry_sdk
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
 from django.conf import settings
 from django.urls import Resolver404, resolve
@@ -290,6 +291,13 @@ STORAGES = {
             # A repeated storage key must not silently clobber the earlier document;
             # keys are random, so a collision means something is wrong.
             "file_overwrite": False,
+            "max_memory_size": 16 * 1024 * 1024,
+            "transfer_config": TransferConfig(
+                max_concurrency=1,
+                max_io_queue=1,
+                io_chunksize=65536,
+                use_threads=False,
+            ),
             # One Config object, not the individual signature_version/addressing_style
             # options: django-storages only builds its default config when
             # client_config is None, so those settings would be silently dead here.

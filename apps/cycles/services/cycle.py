@@ -322,17 +322,9 @@ def open_cycle(
 
 def completion_unmet(cycle: ServiceCycle) -> list[str]:
     """Completion is a conjunction, including integrations not installed yet."""
-    unmet = []
-    if cycle.tasks.exclude(state__in=[TaskState.ACCEPTED, TaskState.WAIVED]).exists():
-        unmet.append("tasks")
-    if cycle.exceptions.filter(
-        blocks_completion=True, state__in=["aberta", "em_tratamento"]
-    ).exists():
-        unmet.append("exceptions")
-    if "evidence_index" not in COMPLETION_GUARDS:
-        unmet.append("evidence_index")
-    unmet.extend(key for key, check in COMPLETION_GUARDS.items() if not check(cycle))
-    return unmet
+    from apps.cycles.completion_checks import completion_items  # noqa: PLC0415
+
+    return list(dict.fromkeys(item.code for item in completion_items(cycle)))
 
 
 def transition_cycle(
@@ -355,6 +347,9 @@ def transition_cycle(
             else CYCLES_OPERATE
         )
         require_actor(actor, capability)
+        if to_state in {CycleState.COMPLETED, CycleState.WITH_PENDING}:
+            msg = "Execute a proposta aprovada para encerrar este ciclo."
+            raise IllegalTransition(msg)
         if to_state not in TRANSITIONS[cycle.state]:
             msg = "Esta transição não é permitida."
             raise IllegalTransition(msg)

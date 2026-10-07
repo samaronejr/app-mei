@@ -22,14 +22,13 @@ from apps.cycles.models import (
     CycleEvent,
     EvidenceRequest,
     PublicationState,
-    ServiceCycle,
 )
 from apps.cycles.services.approvals import _locked_proposal, revalidate
+from apps.cycles.services.completion import apply_completion, freeze_completion
 from apps.cycles.services.cycle import (
     check_version,
     require_actor,
     tenant_id,
-    transition_cycle,
 )
 from apps.cycles.services.requests import waive_request
 from apps.delivery.errors import IntentConflict
@@ -87,6 +86,7 @@ def _publish(proposal: ActionProposal) -> None:
             documents=data["documents"],
             publication_digest=proposal.digest,
             business_intent_key=proposal.business_intent_key,
+            supersedes_id=payload.get("supersedes", {}).get("publication_id"),
         )
         event_type = "publication.published"
     CycleEvent.objects.create(
@@ -202,14 +202,7 @@ def execute(
                 expected_version=request.version,
             )
         case ActionKind.CYCLE_COMPLETION:
-            cycle = ServiceCycle.objects.get(pk=proposal.cycle_id)
-            transition_cycle(
-                fresh_actor,
-                cycle.pk,
-                spec.completion_state,
-                expected_version=cycle.version,
-                reason=spec.reason,
-            )
+            apply_completion(fresh_actor, proposal)
         case unknown:
             assert_never(unknown)
     proposal.version += 1
@@ -227,4 +220,6 @@ def execute(
         aggregate_version=proposal.version,
         payload={"digest": proposal.digest, "intent": proposal.business_intent_key},
     )
+    if spec.action_kind is ActionKind.CYCLE_COMPLETION:
+        freeze_completion(fresh_actor, proposal)
     return ExecutionResult(proposal, executed=True)

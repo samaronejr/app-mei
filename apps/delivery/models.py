@@ -7,6 +7,7 @@ from django.db import models
 from django.utils import timezone
 
 from apps.core.models import TenantScopedModel
+from apps.core.retention import RetentionClass
 from apps.cycles.records import ClientRecord
 
 
@@ -66,6 +67,13 @@ class OutboundMessage(ClientRecord):
     decision_note = models.TextField(blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(default=timezone.now)
+    retention_class = models.CharField(
+        max_length=24,
+        choices=RetentionClass.choices,
+        default=RetentionClass.COMMUNICATION_BODY,
+        db_default=RetentionClass.COMMUNICATION_BODY,
+    )
+    redacted_at = models.DateTimeField(null=True)
 
     class Meta(ClientRecord.Meta):
         """Both caller and natural keys are private to the client."""

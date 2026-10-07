@@ -59,6 +59,7 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Permitir autoaprovação quando houver uma única pessoa ativa",
         "Pode receber e-mails",
         "Prazo",
+        "Publicação anterior revisada",
         "Razão social",
         "Regime",
         "Regimes",

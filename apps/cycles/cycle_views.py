@@ -24,6 +24,7 @@ from apps.clients.maintenance import load_client
 from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_OPERATE
+from apps.cycles.completion_checks import completion_items
 from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.evidence import SUSPENDED_STATES, DocumentIntake, ReviewDecision
 from apps.cycles.exception_context import EXCEPTION_ACTION_LABELS, exception_rows
@@ -41,7 +42,6 @@ from apps.cycles.models import Exception as CycleException
 from apps.cycles.services.cycle import (
     TASK_TRANSITIONS,
     add_note,
-    completion_unmet,
     load_cycle,
     open_cycle,
     require_enabled,
@@ -211,7 +211,15 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                             request.user,
                             pk,
                             to_state=data["to_state"],
-                            reason=data["reason"],
+                            reason={
+                                key.removeprefix("pending_reason:"): str(
+                                    request.POST[key]
+                                )
+                                for key in request.POST
+                                if key.startswith("pending_reason:")
+                                and str(request.POST[key]).strip()
+                            }
+                            or data["reason"],
                             expected_version=data["expected_version"],
                         )
                         return redirect("approval-card", pk=proposal.pk)
@@ -277,6 +285,38 @@ def _render_detail(
             key=lambda task: steps[task.step_key].position,
         )
     ]
+    missing_items = completion_items(cycle)
+    unmet = list(dict.fromkeys(item.code for item in missing_items))
+    checklist = [
+        {
+            "label": label,
+            "passed": code not in unmet,
+            "href": href,
+        }
+        for code, label, href in (
+            ("tasks", "Tarefas aceitas ou dispensadas", "#graph-title"),
+            (
+                "requests",
+                "Solicitações obrigatórias aceitas ou dispensadas com aprovação",
+                "#solicitacoes",
+            ),
+            (
+                "exceptions",
+                "Nenhuma pendência aberta bloqueia a conclusão",
+                "#pendencias",
+            ),
+            (
+                "actions",
+                "Efeitos e comunicações com resultado definido",
+                "#cycle-proposals",
+            ),
+            (
+                "evidence_index",
+                "Índice de evidências atualizado",
+                reverse("evidence-index", args=[cycle.pk]),
+            ),
+        )
+    ]
     return render(
         request,
         "cycles/cycle_detail.html",
@@ -292,10 +332,14 @@ def _render_detail(
             "tasks": tasks,
             "actions": [
                 (value, CycleState(value).label)
-                for value in available_actions(request.user, cycle)
+                for value in available_actions(request.user, cycle, unmet=unmet)
             ],
             "may_operate": can(request.user, CYCLES_OPERATE, tenant_id=tenant_id()),
-            "unmet": completion_unmet(cycle),
+            "unmet": unmet,
+            "completion_checklist": checklist,
+            "completion_items": missing_items,
+            "may_reopen": cycle.state in {CycleState.COMPLETED, CycleState.WITH_PENDING}
+            and can(request.user, "cycles.reopen", tenant_id=tenant_id()),
             "notes": cycle.notes.select_related("author").order_by("created_at", "pk"),
             "proposals": cycle.proposals.order_by("-created_at", "-pk"),
             "exceptions": exception_rows(

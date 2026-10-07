@@ -352,6 +352,29 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "portfolio, not a bearer credential. The live capability and locked version "
         "authorize only creation of a new withdrawal proposal requiring approval."
     ),
+    "cycle-reopen": (
+        "AXR1-018. Staff session, cycles.reopen and completion-proposal authority "
+        "are required. The cycle UUID is resolved through visible_clients by "
+        "load_cycle; the domain command rechecks capability and version under lock "
+        "and creates a proposal requiring a separate approver."
+    ),
+    "evidence-index": (
+        "AXR1-018. Staff session and evidence.export are required. The cycle UUID "
+        "is resolved through visible_clients by load_cycle; historical generations "
+        "remain confined to that cycle, and index/export commands recheck the "
+        "authorized scope and rendered version under lock."
+    ),
+    "evidence-export-detail": (
+        "AXR1-018. Staff session and evidence.export are required. The export UUID "
+        "identifies one cycle-bound record; load_export and load_cycle resolve its "
+        "client through visible_clients before returning its state metadata."
+    ),
+    "evidence-export-download": (
+        "AXR1-018. Staff session and evidence.export are required. The export UUID "
+        "is scoped through load_export, load_cycle and visible_clients. Only a ready, "
+        "unexpired archive yields an authorized storage descriptor; the byte-only "
+        "iterator has no ORM access and the UUID itself grants no download authority."
+    ),
     "portal-request-detail": (
         "The UUID names an evidence request, not a bearer credential. "
         "Authentication and RESTRICTIVE portal client RLS authorize the SELECT."
@@ -600,8 +623,17 @@ CLAMD_TIMEOUT_SECONDS = env.float("CLAMD_TIMEOUT_SECONDS", default=30.0)
 # Closed until the operator verifies the real SMTP route and journal storage.
 DELIVERY_PAUSED = env.bool("DELIVERY_PAUSED", default=True)
 DELIVERY_DAILY_CAP = env.int("DELIVERY_DAILY_CAP", default=100)
+RETENTION_PURGE_DRY_RUN = env.bool("RETENTION_PURGE_DRY_RUN", default=True)
 
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
+    "evidence-exports": {
+        "task": "apps.cycles.export_tasks.sweep_evidence_exports",
+        "schedule": 60.0,
+    },
+    "retention-content": {
+        "task": "apps.cycles.retention_tasks.purge_expired_content",
+        "schedule": crontab(hour=3, minute=45),
+    },
     "dispatch-outbox": {
         "task": "apps.delivery.tasks.dispatch_outbox",
         "schedule": 60.0,

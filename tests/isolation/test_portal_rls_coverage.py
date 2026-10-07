@@ -60,9 +60,21 @@ RUNTIME_ROLE = "app_runtime"
 # cycles_{extractedfield,review} (todo 13) are firm-only extraction and review rows.
 # T14's private exception companion carries instructions and evidence references.
 # T15 adds two exact-effect tables, client-paired and independently portal-denied.
-EXPECTED_TENANT_TABLE_COUNT = 47
+# T18 adds seven private completion, export and retention tables with both policies.
+EXPECTED_TENANT_TABLE_COUNT = 54
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
-    {"cycles_actionproposal", "cycles_approval", "cycles_actionexecution"}
+    {
+        "cycles_actionproposal",
+        "cycles_approval",
+        "cycles_actionexecution",
+        "cycles_evidenceindex",
+        "cycles_evidenceexport",
+        "cycles_exportattempt",
+        "cycles_completiongeneration",
+        "cycles_completionjustification",
+        "cycles_legalhold",
+        "cycles_contentpurgeclaim",
+    }
 )
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
@@ -411,6 +423,13 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_actionproposal",
         "cycles_approval",
         "cycles_actionexecution",
+        "cycles_evidenceindex",
+        "cycles_evidenceexport",
+        "cycles_exportattempt",
+        "cycles_completiongeneration",
+        "cycles_completionjustification",
+        "cycles_legalhold",
+        "cycles_contentpurgeclaim",
         "cycles_clientpublication",
         "delivery_outboundmessage",
         "delivery_deliveryattempt",

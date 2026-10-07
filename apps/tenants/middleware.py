@@ -32,6 +32,7 @@ from django.urls import Resolver404, resolve
 
 from apps.core.flags import open_flag_cache, prime_flag_cache
 from apps.core.tenancy import current_tenant_id
+from apps.cycles.archive_response import EvidenceArchiveResponse
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.models import Membership, Tenant
 
@@ -204,7 +205,7 @@ class TenantMiddleware:
                     prime_flag_cache(tenant)
                 self._apply_guc(tenant)
                 response = self.get_response(request)
-                self._reject_streaming(response, tenant)
+                self._reject_streaming(response, tenant, request)
                 self._render_inside_transaction(response)
             return response
         finally:
@@ -221,9 +222,17 @@ class TenantMiddleware:
             cursor.execute("SELECT set_config(%s, %s, true)", [TENANT_GUC, value])
 
     @staticmethod
-    def _reject_streaming(response: HttpResponseBase, tenant: Tenant | None) -> None:
+    def _reject_streaming(
+        response: HttpResponseBase,
+        tenant: Tenant | None,
+        request: HttpRequest | None = None,
+    ) -> None:
         if tenant is None or not isinstance(response, StreamingHttpResponse):
             return
+        if type(response) is EvidenceArchiveResponse and request is not None:
+            match = resolve(request.path_info)
+            if match.url_name == "evidence-export-download":
+                return
         # A streaming iterator is consumed by the WSGI server AFTER all middleware
         # returns, by which time this block has exited and the GUC is gone. Every lazy
         # query in the generator would return zero rows, producing a file that

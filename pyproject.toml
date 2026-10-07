@@ -44,6 +44,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "boto3-stubs[s3]",
   "aiosmtpd>=1.4.6",
   # Browser + accessibility harness (tests/browser, run with `-m browser`). Pinned
   # exactly: the axe rule set ships inside this package, so an unpinned upgrade can
@@ -51,6 +52,7 @@ dev = [
   "axe-playwright-python==0.1.8",
   "django-stubs",
   "hypothesis",
+  "jsonschema>=4.26",
   "model-bakery",
   "mypy",
   "pre-commit",
@@ -61,6 +63,7 @@ dev = [
   "ruff",
   "types-defusedxml>=0.7.0.20260504",
   "types-openpyxl>=3.1.5.20260827",
+  "types-jsonschema",
 ]
 
 [tool.uv]
@@ -112,6 +115,7 @@ python_version = "3.13"
 strict = true
 show_error_codes = true
 plugins = ["mypy_django_plugin.main"]
+mypy_path = "typings"
 
 [tool.django-stubs]
 django_settings_module = "config.settings.test"

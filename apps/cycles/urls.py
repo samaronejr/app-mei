@@ -2,10 +2,31 @@
 
 from django.urls import path
 
-from apps.cycles import approval_views, cycle_views, document_views, review_views, views
+from apps.cycles import (
+    approval_views,
+    cycle_views,
+    document_views,
+    export_views,
+    review_views,
+    views,
+)
 from apps.cycles.publication_views import publication_withdraw
 
 urlpatterns = [
+    path(
+        "ciclos/<uuid:pk>/evidencias/", export_views.index_page, name="evidence-index"
+    ),
+    path("ciclos/<uuid:pk>/reabrir/", export_views.reopen_cycle, name="cycle-reopen"),
+    path(
+        "evidencias/arquivos/<uuid:pk>/",
+        export_views.export_detail,
+        name="evidence-export-detail",
+    ),
+    path(
+        "evidencias/arquivos/<uuid:pk>/baixar/",
+        export_views.export_download,
+        name="evidence-export-download",
+    ),
     path(
         "publicacoes/<uuid:pk>/retirar/",
         publication_withdraw,

@@ -41,6 +41,10 @@ class ClientPublication(ClientRecord):
     published_at = models.DateTimeField(default=timezone.now)
     withdrawn_at = models.DateTimeField(null=True, blank=True)
     version = models.PositiveIntegerField(default=1)
+    redacted_at = models.DateTimeField(null=True)
+    supersedes = models.ForeignKey(
+        "self", on_delete=models.PROTECT, related_name="revisions", null=True
+    )
 
     class Meta(ClientRecord.Meta):
         """Every natural and exact-version identity includes the client."""
@@ -54,6 +58,10 @@ class ClientPublication(ClientRecord):
             models.UniqueConstraint(
                 fields=["tenant", "client", "id", "publication_digest"],
                 name="publication_digest_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "client", "supersedes"],
+                name="publication_single_revision",
             ),
             models.CheckConstraint(
                 condition=models.Q(state__in=PublicationState.values, version__gt=0),

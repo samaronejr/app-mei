@@ -96,9 +96,12 @@ NFE_READ_ONLY_FILES = frozenset(
     },
 )
 
-# Row 7. The only URL name matching `report|kpi|export` is T-033's client CSV export,
-# which the plan commissioned. Anything else is Reports v1 arriving early.
-EXPORT_URL_NAMES = frozenset({"clients-export-csv"})
+# Row 7. T-033 commissioned the client CSV export. AXR1-018 explicitly commissions
+# per-cycle evidence bundles (.omo/plans/axorim-pivot-r1.md:1839), including their
+# status and download routes. Portfolio Reports v1 and an audit UI remain excluded.
+EXPORT_URL_NAMES = frozenset(
+    {"clients-export-csv", "evidence-export-detail", "evidence-export-download"}
+)
 
 # Row 4. The fiscal app is a municipal registry, full stop.
 FISCAL_MODEL_NAMES = frozenset({"Municipality", "MunicipalityCapability"})

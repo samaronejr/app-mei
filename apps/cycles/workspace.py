@@ -56,7 +56,9 @@ def parse_period(value: str | None) -> date:
     return date.fromisoformat(f"{value}-01")
 
 
-def available_actions(actor: User, cycle: ServiceCycle) -> tuple[str, ...]:
+def available_actions(
+    actor: User, cycle: ServiceCycle, *, unmet: list[str] | None = None
+) -> tuple[str, ...]:
     """UI only; transition_cycle repeats each decision under the lock."""
     gates = {CYCLES_OPERATE, CYCLES_REVIEW, CYCLES_COMPLETE}
     allowed = {gate: can(actor, gate, tenant_id=cycle.tenant_id) for gate in gates}
@@ -70,7 +72,8 @@ def available_actions(actor: User, cycle: ServiceCycle) -> tuple[str, ...]:
             else CYCLES_OPERATE
         )
         if allowed[gate] and (
-            target != CycleState.COMPLETED or not completion_unmet(cycle)
+            target != CycleState.COMPLETED
+            or not (completion_unmet(cycle) if unmet is None else unmet)
         ):
             result.append(target)
     return tuple(result)

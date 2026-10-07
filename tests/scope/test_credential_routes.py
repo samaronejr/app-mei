@@ -73,6 +73,11 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "portal-publication-detail",
         "portal-publication-download",
         "publication-withdraw",
+        # T18: explicit staff-session/capability/portfolio decisions for object IDs.
+        "cycle-reopen",
+        "evidence-index",
+        "evidence-export-detail",
+        "evidence-export-download",
         "admin:*",
     },
 )

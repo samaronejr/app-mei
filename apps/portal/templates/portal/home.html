@@ -69,7 +69,7 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
         <h2 id="publications" class="text-sm font-semibold text-ink-700">Publicações do escritório</h2>
         <ul class="space-y-3">{% for publication in publications %}<li class="min-w-0">
           <a class="ui-link break-words" href="{% url 'portal-publication-detail' publication.id %}">{{ publication.title }}</a>
-          <p class="text-sm text-ink-600">{{ publication.published_at|data_hora }}{% if publication.state == 'retirada' %} · Retirada pelo escritório{% endif %}</p>
+          <p class="text-sm text-ink-600">{{ publication.published_at|data_hora }}{% if publication.state == 'retirada' %} · Retirada pelo escritório{% endif %}{% if publication.revised %} · Revisada{% endif %}</p>
         </li>{% endfor %}</ul>
       </section>{% endif %}
       {% endif %}{% if cycles %}
