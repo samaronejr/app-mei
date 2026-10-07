@@ -359,10 +359,35 @@ resources were removed. Nonblocking reason-formatting, UUID recipient labels
 and inherited default error pages remain documented; owner/operator gates
 remain **open**. No production effect or pilot authorization is claimed.
 
-The latest execution instruction is to finish only the already-running
-`AXR1-014` and `AXR1-015`, then pause. Both are recorded; no later feature or
-new child task is authorized by that instruction. Todos 16 to 29 and the final
-verification wave remain open.
+`AXR1-016` (approved client publications, email notices and acknowledgements;
+`cycles.0009`) is recorded on the final `AXR1-015` branch. The four
+consequential executors (publication, email notice, cycle completion and
+request waiver) rebuild live facts and rerun exact-effect revalidation before
+their first write, and authorization holds through the durable dispatch-start
+write; SMTP I/O happens outside the transaction through the existing outbox
+gateway, one envelope recipient per message, and an unknown outcome is never
+resent. `ClientPublication` is portal-readable; `ClientAcknowledgement` is
+portal insert-only and append-only and binds the exact publication digest. An
+authenticated portal GET inserts a viewed event (HEAD, prefetch and anonymous
+requests do not), and the explicit receipt is independent of the SMTP outcome.
+The firm queue shows provider outcome and receipt separately and never claims
+"entregue" or "lida". Withdrawal needs a new approved proposal; the waiver and
+completion forms now propose instead of bypassing approval. Ordinary completion
+still requires the inherited evidence-index guard owned by `AXR1-018`.
+
+The independent gate confirmed `75272c6`: both revocation/dispatch orderings
+against a real SMTP peer, a biting revalidation-removal mutation, populated
+reverse/forward preserving 20 inherited tables, and inspected desktop/mobile
+keyboard journeys. Tests include `tests/cycles/test_publication_flow.py`,
+`test_approval_revocation.py`, `test_dispatch_race.py`,
+`test_ack_independent_of_smtp.py`, `tests/isolation/test_publication_scope.py`
+and `tests/browser/test_publication_ack.py`. Evidence:
+`.evidence/AXR1-016-gates.txt`, `-failure.txt`, `-adversarial.txt` and the
+reviewer's `-rv-*` artifacts. OG-03, OG-04 and every owner/operator gate remain
+**open**; only a local fake SMTP peer was used.
+
+Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
+Todos 17 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -463,7 +488,15 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3372 passing**
+implementation head. The current default-suite baseline is **3438 passing**
+(60 deselected), independently verified at `AXR1-016` code `75272c6`
+(tree `ab532c7`), on final `AXR1-015` (`3d519e7`): the **3372** below plus
+**66** net-new default-suite cases. The same serial review passed isolation
+(**245**), CNPJ (**29**), browser (**60**), lint, format, mypy, migration-drift
+and a clean rebuilt-static check. Evidence: `.evidence/AXR1-016-rv-std.txt`.
+This status-only commit does not change the approved code.
+
+The previous default-suite baseline was **3372 passing**
 (58 deselected), independently verified at `AXR1-015` code `6089575`
 (tree `c2c0c83`), on final `AXR1-014` (`eb566a8`): the **3098** below plus
 **274** net-new default-suite cases. The same serial review passed isolation
@@ -573,7 +606,7 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **58** cases: the **24** passing at the T3
+`browser` job. The suite now contains **60** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
@@ -582,7 +615,8 @@ workspace/portal and distinct-client context cases (two journeys at two
 viewports), plus the two `AXR1-010` Comunicação queue cases (one journey at two
 viewports), plus the two `AXR1-011` portal-upload/staff-request cases, plus the
 two `AXR1-013` document-review cases, plus the four `AXR1-014` exception cases,
-plus the eight `AXR1-015` approval-card cases. Every test in
+plus the eight `AXR1-015` approval-card cases, plus the two `AXR1-016`
+publication-receipt cases. Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
