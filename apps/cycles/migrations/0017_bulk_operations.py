@@ -74,7 +74,7 @@ DROP FUNCTION cycles_guard_bulkoperation();
 class Migration(migrations.Migration):
     dependencies = [
         ("clients", "0015_import_batches_and_versions"),
-        ("cycles", "0008_exact_effect_approvals"),
+        ("cycles", "0016_briefing_preferences"),
         ("tenants", "0010_approval_authority"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
