@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import pytest
 from playwright.sync_api import expect
+from pytest_django.fixtures import SettingsWrapper
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -12,7 +13,11 @@ from apps.cycles.bulk import BulkItem, BulkKind, BulkOperation
 from apps.cycles.models import ServiceCycle
 from apps.cycles.tasks import run_bulk_operation
 from tests.browser.harness import BrowserPage, LiveFirm, assert_policed_roles, axe_check
-from tests.cycles.bulk_fixtures import BulkSetup, bulk_setup
+from tests.cycles.bulk_fixtures import (
+    BulkSetup,
+    bulk_setup,
+    notice_preview_with_reservations,
+)
 from tests.support import enrol_totp
 from tests.ui.factories import Firm
 
@@ -106,3 +111,30 @@ def test_count_exclusion_and_committed_results_are_visible_and_accessible(
     assert download.value.suggested_filename.endswith(".csv")
     assert_policed_roles()
     assert all("status of 422" in error for error in opened.console_errors)
+
+
+def test_notice_preview_shows_the_remaining_daily_quota_of_the_queue(
+    browser_server: LiveServer, open_page: OpenPage, settings: SettingsWrapper
+) -> None:
+    settings.DELIVERY_DAILY_CAP = 100
+    setup, preview = notice_preview_with_reservations("bulk-browser-quota", reserved=97)
+    graph = setup.graph
+    firm = Firm(
+        tenant=graph.tenant,
+        owner=graph.actor,
+        accountant=graph.staff,
+        clients=[graph.client],
+    )
+    live = LiveFirm(firm=firm, port=browser_server.thread.port)
+    opened = open_page(live, graph.actor)
+    page = opened.page
+    opened.goto(live.url("/comunicacao/"))
+    expect(page.get_by_text("Reservas disponíveis hoje: 3.")).to_be_visible()
+    opened.goto(live.url(f"/ciclos/lotes/{preview.pk}/"))
+    quota = page.locator("[data-bulk-quota]")
+    expect(quota).to_be_visible()
+    expect(quota).to_have_text("3")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    axe_check(page)
+    opened.screenshot("t20-notice-quota")
+    opened.assert_clean_console()

@@ -15,8 +15,14 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.bulk import BulkItem, BulkKind, BulkOperation
 from apps.cycles.bulk_forms import BulkConfigForm
 from apps.cycles.tasks import run_bulk_operation
+from apps.delivery.models import AutomationPause
 from tests.browser.harness import mfa_session_cookie
-from tests.cycles.bulk_fixtures import BulkSetup, bulk_setup, confirm
+from tests.cycles.bulk_fixtures import (
+    BulkSetup,
+    bulk_setup,
+    confirm,
+    notice_preview_with_reservations,
+)
 from tests.support import enrol_totp
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -146,6 +152,34 @@ def test_http_expired_preview_does_not_create_items(
     assert response.status_code == HTTPStatus.CONFLICT
     with tenant_context(preview.tenant_id):
         assert not BulkItem.objects.exists()
+
+
+def test_notice_preview_shows_the_queue_remaining_daily_quota(
+    settings: SettingsWrapper,
+) -> None:
+    settings.ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".localhost"]
+    settings.DELIVERY_DAILY_CAP = 100
+    setup, preview = notice_preview_with_reservations("bulk-http-quota", reserved=97)
+    host = f"{setup.graph.tenant.slug}.localhost"
+    session = Client(SERVER_NAME=host)
+    cookie = mfa_session_cookie(setup.graph.actor, f"http://{host}/")
+    assert "name" in cookie
+    assert "value" in cookie
+    session.cookies[cookie["name"]] = cookie["value"]
+    queue = session.get("/comunicacao/")
+    detail = session.get(f"/ciclos/lotes/{preview.pk}/")
+    assert queue.status_code == HTTPStatus.OK
+    assert detail.status_code == HTTPStatus.OK
+    shown = re.search(r"Reservas disponíveis hoje: (\d+)\.", queue.content.decode())
+    previewed = re.search(
+        r"<strong[^>]*data-bulk-quota[^>]*>(\d+)</strong>", detail.content.decode()
+    )
+    assert shown is not None
+    assert previewed is not None
+    assert previewed[1] == shown[1] == "3"
+    # Showing the capacity must not reserve any of it.
+    with tenant_context(setup.graph.tenant.pk):
+        assert AutomationPause.objects.get().reserved_today == 97
 
 
 def test_http_scope_and_csv_never_expose_another_firms_operation(

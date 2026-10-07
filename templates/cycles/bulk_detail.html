@@ -18,7 +18,8 @@
     <section class="ui-panel p-4" aria-labelledby="preview-summary">
       <h2 id="preview-summary" class="ui-panel-heading">{{ eligible_count }} elegíveis de {{ total_count }} registros</h2>
       <p class="mt-2 text-sm text-ink-600">A execução usa somente esta seleção congelada. Marque os itens que deseja excluir e digite a quantidade restante de elegíveis.</p>
-      {% if operation.kind == 'send_request_notices' %}<p class="mt-2 text-sm">{{ operation.snapshot_json.estimated_messages }} aviso(s) previsto(s) antes das exclusões. Custo não estimado; nenhum e-mail foi enviado.</p>{% endif %}
+      {% if operation.kind == 'send_request_notices' %}<p class="mt-2 text-sm">{{ operation.snapshot_json.estimated_messages }} aviso(s) previsto(s) antes das exclusões. Custo não estimado; nenhum e-mail foi enviado.</p>
+      <p class="mt-2 text-sm">Reservas de envio disponíveis hoje, no cálculo da prévia: <strong class="tabular-nums" data-bulk-quota>{{ operation.snapshot_json.remaining_daily_quota }}</strong>. É o limite diário configurado no Axorim, não a cota do provedor de e-mail; avisos além dele aguardam na fila.</p>{% endif %}
       {% if operation.kind == 'migrate_open_cycles_to_version' %}<p class="mt-2 text-sm">Ciclos encerrados não mudam. Etapas removidas ou alterações em trabalho já iniciado são recusadas por item, preservando o histórico.</p>{% endif %}
       {% if operation.kind == 'approve_items' %}<p class="mt-2 text-sm">Cada cartão abaixo é uma decisão independente, vinculada ao seu próprio resumo criptográfico. Aprovar não executa nem envia estes efeitos.</p>{% endif %}
     </section>

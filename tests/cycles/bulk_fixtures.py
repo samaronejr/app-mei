@@ -6,6 +6,7 @@ from datetime import timedelta
 from uuid import UUID
 
 from django.db import connection, connections
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, Engagement, TaxProfile
@@ -15,7 +16,10 @@ from apps.cycles.bulk_contracts import PreviewExpectation, Selection
 from apps.cycles.models import ServiceCycle
 from apps.cycles.services.bulk import preview_bulk, run_bulk
 from apps.cycles.services.cycle import open_cycle
+from apps.cycles.services.requests import RequestFields, create_request
+from apps.delivery.models import AutomationPause
 from tests.cycles.cycle_fixtures import PERIOD, CycleSetup, cycle_setup
+from tests.portal.request_fixtures import PortalSetup, portal_setup
 from tests.ui.factories import make_cnpj
 
 
@@ -83,6 +87,31 @@ def bulk_setup(slug: str = "bulk-contract", *, count: int = 3) -> BulkSetup:
                 provenance="staff_entry",
             )
     return BulkSetup(graph, tuple(engagements))
+
+
+def notice_preview_with_reservations(
+    slug: str, *, reserved: int
+) -> tuple[PortalSetup, BulkOperation]:
+    """Preview one draft request notice after `reserved` of today's sends."""
+    setup = portal_setup(slug)
+    graph = setup.graph
+    graph.tenant.features = ["cycles_r1", "bulk_r1"]
+    graph.tenant.save(update_fields=["features"])
+    with tenant_context(graph.tenant.pk):
+        create_request(
+            graph.actor,
+            setup.cycle.pk,
+            RequestFields(title="Extrato adicional"),
+            expected_version=setup.cycle.version,
+        )
+        AutomationPause.objects.update_or_create(
+            tenant=graph.tenant,
+            defaults={"quota_day": timezone.localdate(), "reserved_today": reserved},
+        )
+        preview = preview_bulk(
+            graph.actor, BulkKind.SEND_REQUEST_NOTICES, Selection((setup.cycle.pk,))
+        )
+    return setup, preview
 
 
 def confirm(
