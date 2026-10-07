@@ -5,13 +5,14 @@ from datetime import timedelta
 from uuid import UUID, uuid4
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
+from apps.authz.approvals import lock_authorities
 from apps.clients.maintenance import load_client
 from apps.core.flags import tenant_has
 from apps.core.tasks import assert_no_transaction
@@ -393,7 +394,15 @@ def set_pause(actor: User, *, paused: bool, expected_version: int) -> Automation
     require_enabled()
     with transaction.atomic():
         control = _control()
-        require_actor(actor, AUTOMATIONS_MANAGE)
+        authority = lock_authorities(
+            {actor.pk},
+            tenant_id=tenant_id(),
+            extra_capabilities=(AUTOMATIONS_MANAGE,),
+        )[actor.pk]
+        fresh_actor = authority.user
+        if not fresh_actor.is_active:
+            raise PermissionDenied
+        require_actor(fresh_actor, AUTOMATIONS_MANAGE)
         if control.version != expected_version:
             msg = "Este registro mudou. Recarregue antes de salvar."
             raise VersionConflict(msg)
@@ -402,7 +411,7 @@ def set_pause(actor: User, *, paused: bool, expected_version: int) -> Automation
         control.save()
         record_event(
             action="delivery.pause_changed",
-            actor=actor,
+            actor=fresh_actor,
             obj=ObjectRef("AutomationPause", str(control.pk)),
             metadata={"paused": paused, "version": control.version},
         )

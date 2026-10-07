@@ -33,6 +33,13 @@ class OutboundMessage(ClientRecord):
         "cycles.ServiceCycle", on_delete=models.PROTECT, null=True, blank=True
     )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    retry_of = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="retries",
+    )
     # T11: the portal invitation a `portal_invite` message delivers, or the one a
     # request notice embeds for a contact without a seat. The token is minted at
     # dispatch and never stored here; this is only the reference.
@@ -88,11 +95,27 @@ class OutboundMessage(ClientRecord):
                 fields=["tenant", "client", "idempotency_key"],
                 name="outbound_idempotency_uniq",
             ),
+            models.UniqueConstraint(
+                fields=["tenant", "client", "retry_of"],
+                name="outbound_retry_parent_uniq",
+            ),
         ]
         indexes: ClassVar[list[models.Index]] = [
             *ClientRecord.Meta.indexes,
             models.Index(
                 fields=["tenant", "state", "next_attempt_at"], name="outbound_queue_idx"
+            ),
+            models.Index(
+                fields=["tenant", "state", "created_at"],
+                condition=models.Q(
+                    state__in=[
+                        MessageState.QUEUED,
+                        MessageState.TEMPORARY,
+                        MessageState.REJECTED,
+                        MessageState.UNKNOWN,
+                    ]
+                ),
+                name="outbound_health_idx",
             ),
         ]
 

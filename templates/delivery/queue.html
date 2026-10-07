@@ -9,6 +9,7 @@
   <p>Reservas disponíveis hoje: {{ quota }}. Cada tentativa consome uma reserva.</p>
   {% if control.paused %}<p>Os envios deste escritório estão pausados.</p>{% endif %}
   {% if can_pause %}
+  <p class="mt-3"><a class="ui-link" href="{% url 'automations' %}">Gerenciar automações</a></p>
   <form method="post" class="mt-3">{% csrf_token %}
     <input type="hidden" name="expected_version" value="{{ control.version|default:1 }}">
     {% if control.paused %}<button class="ui-btn ui-btn-quiet" name="action" value="unpause">Retomar envios do escritório</button>{% else %}<button class="ui-btn ui-btn-quiet" name="action" value="pause">Pausar envios do escritório</button>{% endif %}

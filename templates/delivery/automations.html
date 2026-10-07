@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Automações{% endblock %}
+{% block heading %}Automações{% endblock %}
+{% block content %}
+<p class="mb-6 max-w-prose text-ink-600">Acompanhe as rotinas e trate os envios que precisam de uma decisão. As mensagens abaixo pertencem à sua carteira de clientes.</p>
+{% if error %}<div role="alert" class="ui-panel mb-6 p-4">{{ error }}</div>{% endif %}
+
+<section class="ui-panel mb-6 p-4" aria-labelledby="delivery-controls">
+  <h2 id="delivery-controls" class="text-xl font-semibold">Envios deste escritório</h2>
+  <p class="mt-2 font-medium" data-tenant-paused="{{ control.paused|yesno:'true,false,false' }}">{% if control.paused %}Pausados pelo escritório{% else %}Liberados pelo escritório{% endif %}</p>
+  {% if global_paused %}
+  <p class="mt-2" data-global-paused="true">O operador mantém o bloqueio global ativo. Retomar aqui não libera os envios enquanto esse bloqueio estiver ativo.</p>
+  {% endif %}
+  <form method="post" class="mt-4">{% csrf_token %}
+    <input type="hidden" name="expected_version" value="{{ control.version|default:1 }}">
+    {% if control.paused %}
+    <button type="submit" class="ui-btn ui-btn-quiet min-h-11" name="action" value="unpause">Retomar envios do escritório</button>
+    {% else %}
+    <button type="submit" class="ui-btn ui-btn-quiet min-h-11" name="action" value="pause">Pausar envios do escritório</button>
+    {% endif %}
+  </form>
+  <p class="mt-3 max-w-prose text-sm text-ink-600">A pausa impede novos envios, mas não desfaz uma transmissão já iniciada. As demais rotinas continuam no agendamento da plataforma.</p>
+</section>
+
+<section class="mb-8" aria-labelledby="dead-letters">
+  <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <h2 id="dead-letters" class="text-xl font-semibold">Envios que exigem atenção</h2>
+    <a class="ui-link" href="{% url 'delivery-queue' %}">Ver a Comunicação</a>
+  </div>
+  <p class="mb-4 max-w-prose text-sm text-ink-600">Repetir cria uma nova tentativa com o mesmo conteúdo e mantém o histórico. Destinatário, permissões e aprovação são verificados novamente antes de enviar.</p>
+  <div class="space-y-4">
+  {% for message in page %}
+    <article class="ui-panel min-w-0 p-4" data-message-id="{{ message.pk }}" aria-labelledby="message-{{ message.pk }}">
+      <h3 id="message-{{ message.pk }}" class="break-words font-semibold">{{ message.client.legal_name }}</h3>
+      <p class="mt-2 font-medium" data-state="{{ message.state }}">{{ message.get_state_display }}</p>
+      <p class="mt-1 text-sm text-ink-600">{{ message.updated_at|date:'d/m/Y H:i' }} · Tentativas: {{ message.attempts }}</p>
+      {% if message.last_error_code %}<p class="mt-2 break-words text-sm">Código: {{ message.last_error_code }}</p>{% endif %}
+      {% if message.state == 'resultado_incerto' %}
+      <p class="mt-3 max-w-prose">O envio pode ter ocorrido. Verifique o histórico e registre uma decisão humana na Comunicação. Não há repetição automática.</p>
+      {% elif message.has_retry %}
+      <p class="mt-3">Uma nova tentativa já foi registrada para este envio.</p>
+      {% else %}
+      <form method="post" class="mt-4 flex flex-wrap gap-3">{% csrf_token %}
+        <input type="hidden" name="message_id" value="{{ message.pk }}">
+        <input type="hidden" name="expected_version" value="{{ message.version }}">
+        <button type="submit" class="ui-btn ui-btn-primary min-h-11" name="action" value="retry">Repetir tentativa</button>
+        <button type="submit" class="ui-btn ui-btn-quiet min-h-11" name="action" value="cancel">Encerrar sem reenviar</button>
+      </form>
+      {% endif %}
+      <p class="mt-3"><a class="ui-link" href="{% url 'delivery-queue' %}?mensagem={{ message.pk }}">Revisar histórico do envio</a></p>
+    </article>
+  {% empty %}
+    <div class="ui-panel p-6"><h3 class="font-semibold">Nenhum envio exige decisão nesta carteira</h3><p class="mt-2">Consulte a Comunicação para acompanhar a fila e os retornos do servidor de e-mail.</p></div>
+  {% endfor %}
+  </div>
+  <nav class="mt-4 flex gap-4" aria-label="Páginas de envios que exigem atenção">
+    {% if page.has_previous %}<a class="ui-link" href="?pagina={{ page.previous_page_number }}">Anterior</a>{% endif %}
+    {% if page.has_next %}<a class="ui-link" href="?pagina={{ page.next_page_number }}">Próxima</a>{% endif %}
+  </nav>
+</section>
+
+<section aria-labelledby="scheduled-jobs">
+  <h2 id="scheduled-jobs" class="text-xl font-semibold">Rotinas da plataforma</h2>
+  <p class="mb-4 mt-2 max-w-prose text-sm text-ink-600">Sinais globais das tarefas registradas nesta versão, não uma confirmação de execução para cada cliente. A próxima execução é uma previsão do agendamento; atrasos e indisponibilidades podem alterá-la.</p>
+  <div class="ui-panel divide-y divide-ink-200">
+  {% for job in jobs %}
+    <article class="grid gap-3 p-4 md:grid-cols-3" data-job="{{ job.name }}">
+      <div class="min-w-0"><h3 class="break-words font-semibold">{{ job.label }}</h3>{% if not job.enabled %}<p class="mt-1 text-sm">Sem próxima execução ativa</p>{% endif %}</div>
+      <div><p class="text-sm text-ink-600">Última conclusão registrada</p><p>{% if job.last_completed_at %}<time>{{ job.last_completed_at|date:'d/m/Y H:i' }}</time>{% else %}Sem conclusão registrada{% endif %}</p></div>
+      <div><p class="text-sm text-ink-600">Próxima execução prevista</p><p>{% if job.due %}Execução devida{% elif job.next_run_at %}<time>{{ job.next_run_at|date:'d/m/Y H:i' }}</time>{% else %}Sem previsão{% endif %}</p></div>
+    </article>
+  {% empty %}
+    <p class="p-4">Nenhuma rotina está registrada nesta versão.</p>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

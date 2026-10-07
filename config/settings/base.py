@@ -13,6 +13,7 @@ from typing import Any
 import django_stubs_ext
 import environ
 from celery.schedules import crontab
+from django.core.exceptions import ImproperlyConfigured
 
 # Makes Django's generic classes subscriptable at runtime, so shipped code can write
 # ModelAdmin[Tenant] and Manager[User] rather than losing the parameter to a bare name.
@@ -683,6 +684,12 @@ ENGAGEMENT_OFFBOARDING_GRACE_DAYS = env.int(
 # Prices remain unknown until operator evidence supplies them. Missing is not zero;
 # the owner sees an incomplete estimate rather than an invented monthly cost.
 USAGE_UNIT_PRICES_BRL = env.json("USAGE_UNIT_PRICES_BRL", default={})
+# Public readiness budgets. Pausing delivery does not hide an aging backlog.
+OUTBOX_MAX_QUEUED_AGE_SECONDS = env.int("OUTBOX_MAX_QUEUED_AGE_SECONDS", default=900)
+OUTBOX_MAX_DEAD_LETTERS = env.int("OUTBOX_MAX_DEAD_LETTERS", default=0)
+if OUTBOX_MAX_QUEUED_AGE_SECONDS < 0 or OUTBOX_MAX_DEAD_LETTERS < 0:
+    _outbox_threshold_error = "Outbox readiness thresholds must be non-negative."
+    raise ImproperlyConfigured(_outbox_threshold_error)
 
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "record-firm-usage": {

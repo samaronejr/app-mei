@@ -119,6 +119,9 @@ the alerting drills, all under `.evidence/`. Host commands assume the preamble a
 | UptimeRobot M1d, keyword `"disk": "ok"` absent while M1b is UP | Keyword pinned by the same test. Low disk on its own has never been drilled; M1d went DOWN in the beat drills as part of the scheduler cascade | [low-disk](#low-disk). **If M1b is also DOWN**, `disk` reads `unknown` because the stalled scheduler stopped refreshing it, and the fault is [stale-scheduler](#stale-scheduler) | `df -h /` |
 | UptimeRobot M1n reads **UP** | M1n read DOWN in the inventory of 2026-09-22 (`PILOT2-406`). DOWN is its required state | None while DOWN. If UP, keyword matching has stopped and M1a to M1d prove nothing: check the monitors themselves | Read the UptimeRobot monitor list |
 | UptimeRobot M2, keyword `"database": "ok", "redis": "ok"` absent on public `/readyz` | Live body matched, and local negatives for each field wrong or missing failed as required (`PILOT2-406`, monitor contract check). No live outage drill | `database: error` is [database-outage](#database-outage); `redis: error` is [redis-outage](#redis-outage) | `curl -s -w '\n%{http_code}\n' https://samaronefialho.dev/readyz` |
+| `/readyz` HTTP 503 with `reason: outbox_oldest_queued_age`, even when database and Redis are `ok` | `tests/test_readyz.py` and the local AXR1-027 threshold-zero control; no production drill | [outbox-backlog](#outbox-backlog) | Open Automações in the authorized firm context; inspect pause status and the dispatcher heartbeat |
+| `/readyz` HTTP 503 with `reason: outbox_dead_letters` | The same readiness tests, with rejected and uncertain envelopes; no production drill | [outbox-dead-letters](#outbox-dead-letters) | Open the scoped attention list in Automações and distinguish known refusal from `resultado_incerto` |
+| A registered task has no completion heartbeat or an overdue estimate in Automações | Schedule/heartbeat projection tests; absence is shown explicitly, never as success | [stale-scheduler](#stale-scheduler), then the owning task's exception | Compare the registered cadence with the last completion; inspect worker/beat diagnostics through the existing procedure |
 | UptimeRobot M3, keyword `"release"` pinned to the full SHA of the last verified deploy, absent on public `/versionz` | Refreshed three times and read back UP, latest `92cf94a` on 2026-09-25 (`PILOT2-406`) | After an unannounced change or drift, [rollback-steps](#rollback-steps). After a deploy you made, update the pin to the new `/versionz` value | `curl -s https://samaronefialho.dev/versionz; git ls-remote origin refs/heads/main` |
 | UptimeRobot M4, the four healthy `/healthz` fields as one literal, absent on the portal host | Live body matched, and eight local negatives failed as required (`PILOT2-406`). Still on the placeholder host | The matching M1 entry, scoped to the portal host | `curl -s -w '\n%{http_code}\n' https://pilot-portal.samaronefialho.dev/healthz` |
 | Healthchecks `app-mei-backup-lightsail` DOWN, by silence or by a `/$rc` failure ping | Missed-run drill: mail `DOWN-app-mei-backup-lightsail` at 2026-09-25 08:04:08 UTC, both checks UP again at 08:05:00 (`PILOT2-504`) | [stale-backup](#stale-backup) | `systemctl list-timers app-mei-backup.timer --no-pager` |
@@ -132,6 +135,14 @@ are in the same module. `/healthz` deliberately does **not** return 503 for a st
 backup or low disk — it reports them in the body and stays 200, because flapping the
 container healthcheck would cause a worse outage than the one being reported. Read
 the body, not the status code, for those three fields.
+
+An outbox budget can make **M2** DOWN on HTTP 503 while its database/Redis
+keyword still matches. Read `reason` before restarting either dependency.
+`OUTBOX_MAX_QUEUED_AGE_SECONDS` defaults to 900 seconds and
+`OUTBOX_MAX_DEAD_LETTERS` to 0 unresolved rejected/uncertain envelopes.
+Only values *above* a budget trip it; zero is not an off switch. Both settings
+reach web, worker and beat through Compose. `/healthz` bytes, M1's keyword
+blocks and the permanently-DOWN negative control are unchanged.
 
 **M1 is four monitors, not one, because UptimeRobot cannot evaluate JSONPath.** Its only
 body-inspection primitive is a plain substring match, so each field gets its own keyword
@@ -296,6 +307,48 @@ recorded. The user-report surface raises nothing; the Resend dashboard is read b
 **First response** — determine which of the three you have. A silent non-delivery and
 a raised `SMTPException` have opposite causes and opposite fixes.
 
+### Outbox backlog {#outbox-backlog}
+
+**Detection signal** — `/readyz` returns 503 with
+`reason: outbox_oldest_queued_age`. It measures queued and temporarily failed
+messages, including backoff; pausing delivery does not hide their age.
+
+**First response** — open `/gestao/automacoes/` in the firm's authorized
+context and inspect its pause plus the global operator switch. A global
+`DELIVERY_PAUSED=true` cannot be cleared by a tenant's Retomar button.
+
+**Then:** check the dispatch completion heartbeat, the existing worker/beat
+diagnostics, SMTP availability and the daily attempt cap. Fix the cause before
+resuming. A next-run time is an estimate, not evidence that a job completed.
+Only registered schedules are listed, so a missing retention job must be
+investigated in the deployed registration rather than assumed to exist.
+Do not raise the threshold merely to turn an unexplained alert green.
+
+### Outbox dead letters {#outbox-dead-letters}
+
+**Detection signal** — `/readyz` returns 503 with `reason: outbox_dead_letters`.
+The public signal names no tenant or recipient. Automações lists only the
+current actor's portfolio; use the authorized incident/support process for
+another firm's records, never a forged client or tenant parameter.
+
+**First response** — separate a known SMTP refusal from `resultado_incerto`.
+The latter may already have caused an external effect and has no retry button.
+
+**Then:**
+
+1. Inspect the history in Comunicação. For uncertainty, check independent
+   receipts and record a human decision with its basis; a staff statement is
+   not server acceptance and cannot authorize an automatic resend.
+2. For a known refusal, fix the recipient/transport problem first. A manager
+   with `automations.manage` may repeat the unchanged effect or close it
+   without sending. Repetition creates one successor and preserves the old
+   receipt. A withdrawn invitation needs the normal reissue workflow.
+3. If the form reports a version conflict, reload and inspect the newer
+   decision. Replaying the old form is not an incident workaround.
+4. After a restore, follow **Axorim restore** in `ops/RESTORE.md`: global pause
+   first, database/object recovery, both reconciliation commands, uncertainty
+   review, then unpause. The live operator drill OG-06 remains OPEN.
+
 ### Raised SMTP error
 
 1. The user already saw an honest error page; the invitation was not created. Do not
@@ -392,7 +445,7 @@ row lock". So:
 **Any upgrade of `sentry-sdk` re-runs the credential-canary suite before it merges:**
 
 ```sh
-uv run pytest tests/security/test_credential_log_hygiene.py -q
+uv run pytest tests/security/test_credential_log_hygiene.py tests/security/test_outbox_log_hygiene.py -q
 ```
 
 That suite pins the `before_send` scrubber, the event-scrubber denylist extension, the
@@ -479,7 +532,7 @@ credentials, network, bucket policy, and the refusal control are all intact.
 **Detection signal** — `/readyz` returns `database: error` and HTTP 503, and UptimeRobot
 M2 goes DOWN: its keyword `"database": "ok", "redis": "ok"` is absent. That keyword was
 proven against a local `database: error` body, not a live outage
-(`.evidence/PILOT2-406-operator.txt`). `/readyz` runs `SELECT 1` under the
+(`.evidence/PILOT2-406-operator.txt`). `/readyz` runs one fixed outbox aggregate under the
 `transaction.non_atomic_requests` decorator and catches `DatabaseError` at exactly that
 boundary, so `database: error` is a real connection or query failure, not a broad
 swallow.

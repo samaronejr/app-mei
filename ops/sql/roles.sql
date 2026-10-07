@@ -211,6 +211,17 @@ BEGIN
 END
 $$;
 
+-- The identifier-free readiness aggregate is runtime-only, including after an
+-- ownership-pinned logical restore that deliberately omits dump ACLs.
+DO $$
+BEGIN
+    IF to_regprocedure('public.delivery_outbox_health()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.delivery_outbox_health() FROM PUBLIC, app_portal;
+        GRANT EXECUTE ON FUNCTION public.delivery_outbox_health() TO app_runtime;
+    END IF;
+END
+$$;
+
 -- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
 -- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
 -- hashes), mfa_authenticator (TOTP secrets) and django_session, none of which the
