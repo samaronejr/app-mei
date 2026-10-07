@@ -25,6 +25,8 @@
  * root, so v4's automatic content detection has to be told about them. */
 @source "../../templates";
 @source "../../apps";
+/* The frozen R1 assertion fixture must not control production stylesheet output. */
+@source not "../../tests/fixtures/briefing/legacy-r1.html";
 
 @theme {
   --font-sans:
