@@ -23,8 +23,13 @@ the render policy forbids: a manual claim is informed, never "confirmado".
   </p>
 {% elif row.payment_state == 'stale' %}
   <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="stale">
-    <span class="badge badge-neutral">{% translate "Desatualizado" %}</span>
-    {% translate "A última verificação está desatualizada. Peça uma nova conferência à sua contadora." %}
+    {% if row.payment_verification == 'refresh_failed' or row.payment_outcome == 'refresh_failed' %}
+      <span class="badge badge-neutral">{% translate "Falha na conferência" %}</span>
+      {% translate "Não foi possível atualizar a informação de pagamento. Peça uma nova conferência à sua contadora." %}
+    {% else %}
+      <span class="badge badge-neutral">{% translate "Desatualizado" %}</span>
+      {% translate "Esta informação de pagamento está desatualizada. Peça uma nova conferência à sua contadora." %}
+    {% endif %}
   </p>
 {% elif row.payment_verification == 'not_applicable' %}
   <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="not_applicable">

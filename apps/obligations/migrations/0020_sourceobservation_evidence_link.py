@@ -6,7 +6,7 @@ nullable: staff-recorded facts may cite no file at all.
 
 Three guards, each for a different failure:
 
-* the partial UNIQUE on (tenant, client, evidence_link) makes a submission's
+* the submission-only UNIQUE on (tenant, client, evidence_link) makes a submission's
   observation replay-safe even when two materializers race a retry window --
   the second sees the row under the subject lock, and the constraint is the
   floor if it ever didn't;
@@ -62,7 +62,11 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="sourceobservation",
             constraint=models.UniqueConstraint(
-                condition=models.Q(("evidence_link__isnull", False)),
+                condition=models.Q(
+                    ("evidence_link__isnull", False),
+                    ("kind", "payment"),
+                    ("source_kind", "client_submitted"),
+                ),
                 fields=("tenant", "client", "evidence_link"),
                 name="sourceobservation_evidence_link_uniq",
             ),

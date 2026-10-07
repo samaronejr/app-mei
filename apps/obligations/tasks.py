@@ -19,7 +19,7 @@ from apps.obligations.heartbeat import record_heartbeat
 from apps.obligations.rules import DueRuleCache
 
 
-@shared_task(base=PlatformTask, bind=True)
+@shared_task(base=PlatformTask, bind=True, ignore_result=True)
 def materialize_receipt_observations(self: PlatformTask) -> int:
     """Materialize receipt submissions that lack their observation (T17).
 

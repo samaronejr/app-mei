@@ -232,13 +232,15 @@ class SourceObservation(TenantScopedModel):
                 fields=["tenant", "client", "id"],
                 name="sourceobservation_tenant_client_id_uniq",
             ),
-            # T17: one observation chain may cite a link at most once -- the
-            # submission it was created from. A second assertion about the same
-            # link (the review's outcome) supersede-chains off it rather than
-            # duplicating the submission identity.
+            # One client submission per link. Review successors and optional
+            # staff evidence must retain this same paired provenance FK.
             models.UniqueConstraint(
                 fields=["tenant", "client", "evidence_link"],
-                condition=models.Q(evidence_link__isnull=False),
+                condition=models.Q(
+                    evidence_link__isnull=False,
+                    kind=ObservationKind.PAYMENT,
+                    source_kind=ObservationSourceKind.CLIENT_SUBMITTED,
+                ),
                 name="sourceobservation_evidence_link_uniq",
             ),
         ]

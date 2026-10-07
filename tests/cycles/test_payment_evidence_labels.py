@@ -3,7 +3,7 @@
 A `comprovante` request binds to the obligation it pays for while still a
 draft; a portal upload against it produces one pending-review submission
 observation (client_submitted — the file is evidence, never a verification);
-and the review writes the outcome as a staff_recorded sibling: accepted stays
+and the review writes the outcome as a staff_recorded successor: accepted stays
 manual, rejected supersedes to nothing, and the portal badge is honest about
 all three. The races below run the review and the materializer against each
 other deterministically and prove the chain ends with exactly one outcome.
@@ -317,7 +317,7 @@ def test_a_second_independent_receipt_corroborates_as_a_sibling(
         version = EvidenceRequest.objects.get(pk=setup.receipt.pk).version
     _review(setup, second, decision="aceito", version=version, payment_relevant=True)
 
-    # Then the corroborating file is a sibling root, never a replacement
+    # Each acceptance succeeds its own submission, never the other receipt.
     with tenant_context(setup.base.graph.tenant.pk):
         first_accepted = SourceObservation.objects.get(
             kind="payment",
@@ -329,8 +329,14 @@ def test_a_second_independent_receipt_corroborates_as_a_sibling(
             value_json__link_id=str(second.pk),
             outcome="accepted",
         )
-        assert first_accepted.supersedes_id is None
-        assert second_accepted.supersedes_id is None
+        first_submission = SourceObservation.objects.get(
+            evidence_link=first, outcome="submitted"
+        )
+        second_submission = SourceObservation.objects.get(
+            evidence_link=second, outcome="submitted"
+        )
+        assert first_accepted.supersedes_id == first_submission.pk
+        assert second_accepted.supersedes_id == second_submission.pk
     body = _payments_page(setup)
     assert 'data-payment-state="manual"' in body
 
@@ -389,7 +395,13 @@ def test_race_review_versus_materializer_one_submission_one_outcome(
         two.result(timeout=30)
 
     with tenant_context(setup.base.graph.tenant.pk):
-        assert SourceObservation.objects.filter(evidence_link_id=link.pk).count() == 1
+        assert SourceObservation.objects.filter(evidence_link_id=link.pk).count() == 2
+        assert (
+            SourceObservation.objects.filter(
+                evidence_link_id=link.pk, outcome="submitted"
+            ).count()
+            == 1
+        )
         assert (
             SourceObservation.objects.filter(
                 kind="payment",
@@ -455,7 +467,13 @@ def test_race_blocked_on_subject_lock_converges_after_commit(
 
     with tenant_context(setup.base.graph.tenant.pk):
         assert settled is not None
-        assert SourceObservation.objects.filter(evidence_link_id=link.pk).count() == 1
+        assert SourceObservation.objects.filter(evidence_link_id=link.pk).count() == 2
+        assert (
+            SourceObservation.objects.filter(
+                evidence_link_id=link.pk, outcome="submitted"
+            ).count()
+            == 1
+        )
         assert (
             SourceObservation.objects.filter(
                 kind="payment",

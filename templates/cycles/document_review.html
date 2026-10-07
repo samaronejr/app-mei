@@ -51,10 +51,14 @@ a field, and every action is also an ordinary button or link.
   </div>
 </section>
 {% if not decided %}
+{% if payment_eligible %}<fieldset class="ui-panel p-4" data-receipt-review>
+  <legend class="ui-panel-heading">Comprovante de pagamento</legend>
+  <label class="mt-2 flex min-h-11 cursor-pointer items-center gap-3" for="payment_relevant"><input type="checkbox" id="payment_relevant" name="payment_relevant" value="1"><span>Este documento informa o pagamento desta obrigação</span></label>
+  <p class="mt-1 text-sm text-ink-600">Ao marcar, o pagamento será registrado como informação manual. Aceitar o documento não é uma verificação junto à Receita.</p>
+</fieldset>{% endif %}
 {% if divergent %}<fieldset class="ui-panel p-4">
   <legend class="ui-panel-heading">Documento de outra empresa</legend>
   <p class="mt-1 text-sm">Para aceitar mesmo assim, marque abaixo e registre a justificativa interna. O documento continua deste cliente; ele nunca é transferido para outro.</p>
-  {% if evidence_request.kind == 'comprovante' %}<div class="mt-2 flex items-center gap-2" data-receipt-review><input type="checkbox" id="payment_relevant" name="payment_relevant" value="1" checked><label for="payment_relevant">Vale como comprovante de pagamento desta obrigação</label></div>{% endif %}
   <div class="mt-2 flex items-center gap-2"><input type="checkbox" id="third_party" name="third_party" value="1"><label for="third_party">Documento de terceiro relevante</label></div>
   <div class="ui-field mt-2"><label class="ui-field-label" for="override_reason">Justificativa interna</label><textarea class="ui-field-input" id="override_reason" name="override_reason" maxlength="2000" rows="2"></textarea></div>
 </fieldset>{% endif %}

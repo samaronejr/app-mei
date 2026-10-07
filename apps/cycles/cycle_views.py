@@ -72,9 +72,9 @@ from apps.cycles.workspace_views import client_workspace
 from apps.obligations.coverage import coverage_for
 from apps.obligations.models import Obligation
 from apps.obligations.observations import (
+    StaffFact,
     StaleObservationError,
-    record_staff_fact,
-    retract_staff_fact,
+    record_cycle_fact,
 )
 from apps.portal.request_views import client_help
 from apps.portal.views import PortalVaultRequest
@@ -107,6 +107,7 @@ class ChangeForm(forms.Form):
     )
     head_id = forms.UUIDField(required=False)
     source_ref = forms.CharField(required=False, max_length=255)
+    evidence_link_id = forms.UUIDField(required=False)
 
 
 class OpenForm(forms.Form):
@@ -324,25 +325,18 @@ def _observation_action(
     if data["subject_id"] is None or not data["op"] or not data["kind"]:
         msg = "Informe a obrigação, o fato e a ação."
         raise ValidationError(msg)
-    if data["op"] == "retract":
-        if data["head_id"] is None:
-            msg = "Informe o registro a retirar."
-            raise ValidationError(msg)
-        retract_staff_fact(
-            actor,
+    record_cycle_fact(
+        actor,
+        cycle.pk,
+        StaffFact(
             subject_id=data["subject_id"],
             kind=data["kind"],
-            period=cycle.period_start,
+            operation=data["op"],
+            source_ref=data["source_ref"],
             expected_head_id=data["head_id"],
-        )
-        return
-    record_staff_fact(
-        actor,
-        subject_id=data["subject_id"],
-        kind=data["kind"],
-        period=cycle.period_start,
-        source_ref=data["source_ref"],
-        expected_head_id=data["head_id"] if data["op"] == "correct" else None,
+            evidence_link_id=data["evidence_link_id"],
+        ),
+        expected_version=data["expected_version"],
     )
 
 
@@ -407,6 +401,16 @@ def _requests_context(
             for row in rows
         ],
         "draft_count": sum(1 for row in rows if row.state == RequestState.DRAFT),
+        "observation_evidence": [
+            {
+                "id": link.pk,
+                "obligation_id": row.obligation_id,
+                "filename": link.document.original_filename,
+                "created_at": link.created_at,
+            }
+            for row in rows
+            for link in links.get(row.pk, [])
+        ],
         "recipients": preview_recipients(request.user, cycle.pk),
         # The only legal receipt bindings — the service re-checks inside the
         # aggregate lock; this list just keeps the form honest.

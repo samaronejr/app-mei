@@ -5,17 +5,16 @@ story, and all three are observations rather than statuses:
 
 * the submission itself — `client_submitted` / `pending_review`, written once
   per link (the partial unique on `evidence_link` is the replay floor);
-* an acceptance — `staff_recorded` / `accepted`, still an unverified manual
-  claim because accepting a file is not checking it against Receita;
+* an acceptance — a `staff_recorded` successor of that exact submission,
+  still an unverified manual claim, with the real Review/link provenance;
 * a rejection — `staff_recorded` / `unsupported` / `rejected`, which *supersedes*
   the submission so the file stops counting while its observation stays
   readable in the chain.
 
 `apply_review` writes the second and third inside `record_review`'s locks.
-`settle_link` is the materializer's version: it re-takes the same locks in the
-same order (request, link, intake — the document row is never touched, so the
-scanner's intake→document hold is not contested), decides from the link's
-current review state, and is idempotent at every point.
+`settle_link` takes client, cycle, request, link and then subject locks.
+Submission materialization never locks intake or document: finalizers hold
+those before acquiring the cycle, and a submission asserts only the link.
 """
 
 from datetime import date
@@ -23,21 +22,34 @@ from typing import Final
 from uuid import UUID
 
 import sentry_sdk
-from django.db import IntegrityError, transaction
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import Exists, OuterRef, QuerySet
-from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.clients.models import ClientCompany
+from apps.core.flags import tenant_has
 from apps.cycles.capabilities import CYCLES_REVIEW
+from apps.cycles.errors import VersionConflict
 from apps.cycles.evidence import (
+    DocumentIntake,
     EvidenceLink,
     EvidenceRequest,
+    IntakeState,
     RequestKind,
+    Review,
     ReviewDecision,
+    ScanVerdict,
 )
-from apps.cycles.models import DocumentIntake
-from apps.cycles.services.cycle import require_actor
-from apps.obligations.models import ObservationVerificationStatus, SourceObservation
+from apps.cycles.extraction import DIVERGENT
+from apps.cycles.models import ServiceCycle
+from apps.cycles.services.cycle import require_actor, tenant_id
+from apps.obligations.models import (
+    ObservationKind,
+    ObservationSourceKind,
+    ObservationVerificationStatus,
+    SourceObservation,
+)
 from apps.obligations.models.observations import ObservationOutcome
 from apps.obligations.observations import assert_fact, lock_subjects
 from apps.tenants.models import Tenant
@@ -47,17 +59,19 @@ SUBMISSION_OUTCOME: Final = "submitted"
 
 
 def _pending_links(queryset: QuerySet[EvidenceLink]) -> QuerySet[EvidenceLink]:
-    """Receipt-bound links with no observation citing them yet.
-
-    The partial unique on `(tenant, client, evidence_link)` makes "has an
-    observation" equivalent to "materialized", so `Exists` is the whole
-    predicate — a decided link whose outcome row is missing is still skipped
-    and the review path's own write covers it.
-    """
+    """Advisory inventory; the subject-fenced unit repeats submission dedupe."""
     return queryset.filter(
         request__kind=RequestKind.COMPROVANTE,
         request__obligation__isnull=False,
-    ).exclude(Exists(SourceObservation.objects.filter(evidence_link_id=OuterRef("pk"))))
+    ).exclude(
+        Exists(
+            SourceObservation.objects.filter(
+                evidence_link_id=OuterRef("pk"),
+                kind=ObservationKind.PAYMENT,
+                source_kind=ObservationSourceKind.CLIENT_SUBMITTED,
+            )
+        )
+    )
 
 
 def _submission_period(request: EvidenceRequest) -> date:
@@ -82,47 +96,73 @@ def _write_submission(
     if request.obligation_id is None:  # pragma: no cover - binding is enforced upstream
         msg = "Receipt request missing obligation binding."
         raise RuntimeError(msg)
-    try:
-        with transaction.atomic():
-            return assert_fact(
-                tenant_id=request.tenant_id,
-                client_id=request.client_id,
-                subject_id=request.obligation_id,
-                kind="payment",
-                period=_submission_period(request),
-                source_kind="client_submitted",
-                observed_at=link.created_at,
-                value=_submission_value(link),
-                verification_status="pending_review",
-                outcome=SUBMISSION_OUTCOME,
-                evidence_link_id=link.pk,
-            )
-    except IntegrityError:
-        # The partial unique on evidence_link arbitrated a concurrent write:
-        # "already materialized" is the same answer, never an error.
-        existing = SourceObservation.objects.filter(evidence_link_id=link.pk).first()
-        if existing is None:
-            raise
-        return existing
+    return assert_fact(
+        tenant_id=request.tenant_id,
+        client_id=request.client_id,
+        subject_id=request.obligation_id,
+        kind=ObservationKind.PAYMENT,
+        period=_submission_period(request),
+        source_kind=ObservationSourceKind.CLIENT_SUBMITTED,
+        observed_at=link.created_at,
+        value=_submission_value(link),
+        verification_status=ObservationVerificationStatus.PENDING_REVIEW,
+        outcome=SUBMISSION_OUTCOME,
+        recorded_by=link.submitted_by,
+        evidence_link_id=link.pk,
+    )
+
+
+def _submission(request: EvidenceRequest, link: EvidenceLink) -> SourceObservation:
+    """Lock the actual scoped subject before binding checks and dedupe."""
+    if request.obligation_id is None:
+        msg = "Vincule a obrigação deste comprovante."
+        raise ValidationError(msg)
+    subjects = lock_subjects([request.obligation_id], client_id=request.client_id)
+    if not subjects or subjects[0].competence_month != _submission_period(request):
+        msg = "O comprovante não pertence à obrigação desta competência."
+        raise ValidationError(msg)
+    existing = SourceObservation.objects.filter(
+        client_id=request.client_id,
+        subject_ref_id=request.obligation_id,
+        kind=ObservationKind.PAYMENT,
+        period=_submission_period(request),
+        source_kind=ObservationSourceKind.CLIENT_SUBMITTED,
+        evidence_link_id=link.pk,
+    ).first()
+    return existing or _write_submission(request=request, link=link)
+
+
+def payment_evidence_eligible(
+    request: EvidenceRequest, link: EvidenceLink, intake: DocumentIntake | None
+) -> bool:
+    """Document acceptance alone never qualifies a receipt as payment evidence."""
+    return bool(
+        request.kind == RequestKind.COMPROVANTE
+        and request.obligation_id is not None
+        and link.request_id == request.pk
+        and link.client_id == request.client_id
+        and intake is not None
+        and intake.document_id == link.document_id
+        and intake.client_id == request.client_id
+        and intake.verdict == ScanVerdict.CLEAN
+        and intake.state in {IntakeState.CLASSIFIED, IntakeState.LINKED}
+        # A third-party acceptance changes state to LINKED, not provenance.
+        and intake.reason != DIVERGENT
+    )
 
 
 def _outcome_assertion(
-    request: EvidenceRequest, link: EvidenceLink
+    request: EvidenceRequest, link: EvidenceLink, review: Review
 ) -> SourceObservation | None:
-    """Find the review outcome row for this link, if a writer already wrote it.
-
-    Decided links carry their outcome as a sibling assertion whose value names
-    the link — never through `evidence_link` itself, which the unique reserves
-    for the submission. A materializer arriving after the review must not
-    write a second acceptance.
-    """
+    """Replay the actual Review identity, not a portal-visible decision flag."""
     return (
         SourceObservation.objects.filter(
             subject_ref_id=request.obligation_id,
-            kind="payment",
+            client_id=request.client_id,
+            kind=ObservationKind.PAYMENT,
             period=_submission_period(request),
-            value_json__link_id=str(link.pk),
-            outcome__in={"accepted", "rejected"},
+            evidence_link_id=link.pk,
+            value_json__review_id=str(review.pk),
         )
         .order_by("observed_at", "pk")
         .last()
@@ -133,9 +173,8 @@ def apply_review(
     *,
     request: EvidenceRequest,
     link: EvidenceLink,
-    decision: str,
-    payment_relevant: bool,
-    actor: User | None,
+    review: Review,
+    intake: DocumentIntake | None,
 ) -> SourceObservation | None:
     """Write the review's observation under `record_review`'s held locks.
 
@@ -145,106 +184,89 @@ def apply_review(
     """
     if request.kind != RequestKind.COMPROVANTE or request.obligation_id is None:
         return None
-    submission = SourceObservation.objects.filter(evidence_link_id=link.pk).first()
-    lock_subjects([request.obligation_id])
-    if submission is None:
-        submission = _write_submission(request=request, link=link)
-    prior = _outcome_assertion(request, link)
+    if review.link_id != link.pk or review.document_sha256 != link.document.sha256:
+        msg = "A revisão não corresponde ao comprovante selecionado."
+        raise ValidationError(msg)
+    submission = _submission(request, link)
+    require_review_actor(review.reviewer)
+    prior = _outcome_assertion(request, link, review)
     if prior is not None:
         return prior
-    if decision == ReviewDecision.REJECTED:
-        return assert_fact(
-            tenant_id=request.tenant_id,
-            client_id=request.client_id,
-            subject_id=request.obligation_id,
-            kind="payment",
-            period=_submission_period(request),
-            source_kind="staff_recorded",
-            observed_at=timezone.now(),
-            value=_submission_value(link),
-            verification_status="unsupported",
-            outcome="rejected",
-            recorded_by=actor,
-            supersedes=submission,
-            evidence_link_id=None,
-        )
-    if not payment_relevant:
+    rejecting = review.decision == ReviewDecision.REJECTED
+    if not rejecting and not (
+        review.decision == ReviewDecision.ACCEPTED
+        and review.payment_relevant
+        and not review.third_party
+        and payment_evidence_eligible(request, link, intake)
+    ):
         return None
+    if SourceObservation.objects.filter(
+        supersedes=submission,
+        subject_ref_id=request.obligation_id,
+        kind=ObservationKind.PAYMENT,
+        period=submission.period,
+    ).exists():
+        msg = "O registro deste comprovante mudou. Recarregue antes de revisar."
+        raise VersionConflict(msg)
     return assert_fact(
         tenant_id=request.tenant_id,
         client_id=request.client_id,
         subject_id=request.obligation_id,
-        kind="payment",
+        kind=ObservationKind.PAYMENT,
         period=_submission_period(request),
-        source_kind="staff_recorded",
-        observed_at=timezone.now(),
-        value=_submission_value(link),
-        verification_status=ObservationVerificationStatus.UNKNOWN,
-        outcome=ObservationOutcome.ACCEPTED,
-        recorded_by=actor,
-        supersedes=None,
-        evidence_link_id=None,
+        source_kind=ObservationSourceKind.STAFF_RECORDED,
+        observed_at=review.reviewed_at,
+        value={
+            **_submission_value(link),
+            "review_id": str(review.pk),
+            "submission_id": str(submission.pk),
+        },
+        verification_status=(
+            ObservationVerificationStatus.UNSUPPORTED
+            if rejecting
+            else ObservationVerificationStatus.UNKNOWN
+        ),
+        outcome=(
+            ObservationOutcome.REJECTED if rejecting else ObservationOutcome.ACCEPTED
+        ),
+        recorded_by=review.reviewer,
+        supersedes=submission,
+        evidence_link_id=link.pk,
     )
 
 
-def settle_link(
-    link_id: UUID,
-    *,
-    actor: User | None = None,
-) -> SourceObservation | None:
+def settle_link(link_id: UUID) -> SourceObservation | None:
     """Materialize one receipt link's observation; the materializer's unit.
 
-    Lock order mirrors `record_review`: request first, then the link's own row
-    (`of=("self",)` — a full lock would take the document row the scanner
-    holds), then intake, then the subject. The review decision is re-read
-    under the request lock, so a decision that lands mid-materialization is
-    folded into the same transaction instead of racing it.
+    Lock each outer aggregate explicitly, never through an unordered joined
+    locking SELECT. Intake/document are read-only here, just as they are in
+    T16 source revalidation; scan/extraction finalization owns their locks.
     """
+    if not tenant_has(tenant_id(), "cycles_r1"):
+        return None
     link = EvidenceLink.objects.filter(pk=link_id).first()
     if link is None:
         return None
     with transaction.atomic():
-        request = (
-            EvidenceRequest.objects.select_for_update()
-            .select_related("cycle")
-            .get(pk=link.request_id)
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=link.client_id)
+        cycle = ServiceCycle.objects.select_for_update(no_key=True).get(
+            pk=link.request.cycle_id, client_id=link.client_id
         )
+        request = EvidenceRequest.objects.select_for_update(
+            no_key=True, of=("self",)
+        ).get(pk=link.request_id, client_id=link.client_id, cycle=cycle)
+        request.cycle = cycle
         if request.kind != RequestKind.COMPROVANTE or request.obligation_id is None:
             return None
         link = (
-            EvidenceLink.objects.select_for_update(of=("self",))
+            EvidenceLink.objects.select_for_update(no_key=True, of=("self",))
             .select_related("document")
             .get(pk=link_id)
         )
-        # The intake row gates nothing here — the submission observation cites
-        # the link, not the scan result — but the scanner may be finalizing the
-        # same intake, so we never take a lock it holds in the other order.
-        DocumentIntake.objects.select_for_update(of=("self",)).filter(
-            document_id=link.document_id
-        ).first()
-        existing = SourceObservation.objects.filter(evidence_link_id=link.pk).first()
-        lock_subjects([request.obligation_id])
-        if existing is None:
-            submission = _write_submission(request=request, link=link)
-            decision = link.review_decision
-        else:
-            submission = existing
-            decision = link.review_decision
-        if decision == ReviewDecision.NONE:
-            return submission
-        review = link.reviews.order_by("-reviewed_at").first()
-        if review is None:
-            return submission
-        # Fold the recorded decision into the same locked transaction; the
-        # decision the review service wrote wins over anything the link row
-        # happened to show before the locks were taken.
-        return apply_review(
-            request=request,
-            link=link,
-            decision=review.decision,
-            payment_relevant=review.payment_relevant,
-            actor=actor or review.reviewer,
-        )
+        # Review commits the submission and its qualified successor atomically.
+        # A late job only finds that original submission; it cannot reinterpret
+        # a later intake state or a forged portal decision as a staff Review.
+        return _submission(request, link)
 
 
 def settle_pending(tenant: Tenant, *, limit: int = 200) -> int:

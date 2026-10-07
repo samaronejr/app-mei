@@ -14,31 +14,47 @@ Three entry points, all converging on `assert_fact` under the subject lock:
   `apps.cycles.receipt_observations`, which hold the request and subject locks
   already.
 
-Lock discipline: the subject row is locked `NO KEY UPDATE` (mirroring
-`effects/build.py`) so the observation's `FOR KEY SHARE` fence trigger never
-transfers a lock onto it. Every writer takes that lock before reading the
-chain, so two writers cannot both read "no head" and insert competing roots.
+Lock discipline: the mutable subject is locked `NO KEY UPDATE`, like the
+T15 source reader and INSERT fence. The explicit lock must precede the head
+read: a trigger that locks only at INSERT cannot protect an earlier decision.
 """
 
 import re
 from collections.abc import Mapping
-from datetime import date, datetime, time, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Final
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Q
 from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.authz.approvals import lock_authorities
 from apps.authz.portfolio import visible_clients
+from apps.clients.maintenance import load_client
+from apps.clients.models import ClientAssignment, ClientCompany, Engagement, TaxRegime
+from apps.clients.services import profile_at
 from apps.cycles.capabilities import CYCLES_OPERATE
-from apps.cycles.services.cycle import require_actor, tenant_id
+from apps.cycles.errors import IllegalTransition
+from apps.cycles.evidence import EvidenceLink, EvidenceRequest
+from apps.cycles.models import ServiceCycle
+from apps.cycles.services.cycle import (
+    OPEN_STATES,
+    check_version,
+    emit,
+    load_cycle,
+    require_actor,
+    require_enabled,
+    tenant_id,
+)
+from apps.obligations.coverage import SERVICE_OBLIGATIONS
 from apps.obligations.models import (
     Obligation,
+    ObservationKind,
     ObservationVerificationStatus,
     SourceObservation,
 )
@@ -57,29 +73,23 @@ OUTCOME_SCHEDULED: Final = "scheduled"
 SOURCE_DETERMINISTIC_RULE: Final = "deterministic_rule"
 SOURCE_STAFF_RECORDED: Final = "staff_recorded"
 
-# The calendar assertion is stamped at a fixed local time two days before the
-# resolved deadline: deterministic in content and timestamp, and early enough
-# to satisfy "scheduled no later than two days before".
-_CALENDAR_OBSERVED_HOUR: Final = 9
-_CALENDAR_OBSERVED_LEAD_DAYS: Final = 2
-_LOCAL_ZONE: Final = ZoneInfo("America/Sao_Paulo")
-
 
 class StaleObservationError(ValidationError):
     """The expected chain head moved since the caller's snapshot."""
 
 
-def lock_subjects(subject_ids: list[UUID]) -> QuerySet[Obligation]:
+def lock_subjects(
+    subject_ids: list[UUID], *, client_id: UUID | None = None
+) -> list[Obligation]:
     """Take the observation subject locks in id order, NO KEY UPDATE.
 
     Returns the locked rows. Callers MUST be inside a transaction: the locks are
     row-scoped and die with it.
     """
-    return (
-        Obligation.objects.filter(pk__in=list(subject_ids))
-        .select_for_update(no_key=True)
-        .order_by("pk")
-    )
+    queryset = Obligation.objects.filter(pk__in=subject_ids)
+    if client_id is not None:
+        queryset = queryset.filter(client_id=client_id)
+    return list(queryset.select_for_update(no_key=True, of=("self",)).order_by("pk"))
 
 
 def _scoped_subject(actor: User, subject_id: UUID) -> Obligation | None:
@@ -88,6 +98,81 @@ def _scoped_subject(actor: User, subject_id: UUID) -> Obligation | None:
         pk=subject_id,
         client_id__in=visible_clients(actor, tenant_id=tenant_id()).values("pk"),
     ).first()
+
+
+def _staff_scope(actor: User, client_id: UUID) -> User:
+    """Hold fresh authority and the portfolio fence before any aggregate lock."""
+    require_enabled()
+    authority = lock_authorities({actor.pk}, tenant_id=tenant_id())[actor.pk]
+    if (
+        not authority.user.is_active
+        or authority.user.is_superuser
+        or authority.membership is None
+        or not authority.membership.is_active
+    ):
+        raise PermissionDenied
+    client = (
+        ClientCompany.objects.select_for_update(no_key=True)
+        .filter(pk=client_id)
+        .first()
+    )
+    if client is None:
+        raise Http404
+    list(
+        ClientAssignment.objects.select_for_update(no_key=True)
+        .filter(client=client, user=authority.user)
+        .order_by("pk")
+    )
+    load_client(authority.user, tenant_id(), client.pk)
+    require_actor(authority.user, CYCLES_OPERATE)
+    return authority.user
+
+
+def _check_staff_identity(subject: Obligation, kind: str, period: date) -> None:
+    if kind not in {ObservationKind.PAYMENT, ObservationKind.GUIDE_ISSUED}:
+        msg = "Informe pagamento ou emissão de guia."
+        raise ValidationError(msg)
+    if subject.competence_month != period:
+        raise Http404
+
+
+def _staff_evidence(
+    subject: Obligation,
+    evidence_id: UUID | None,
+    *,
+    cycle: ServiceCycle | None = None,
+) -> UUID | None:
+    """Bind optional evidence before the subject lock, with no cross-cycle drift."""
+    if evidence_id is None:
+        return None
+    candidate = (
+        EvidenceLink.objects.filter(pk=evidence_id, client_id=subject.client_id)
+        .select_related("request")
+        .first()
+    )
+    if candidate is None or (
+        cycle is not None and candidate.request.cycle_id != cycle.pk
+    ):
+        raise Http404
+    if cycle is None:
+        cycle = ServiceCycle.objects.select_for_update(no_key=True).get(
+            pk=candidate.request.cycle_id, client_id=subject.client_id
+        )
+    request = EvidenceRequest.objects.select_for_update(no_key=True).get(
+        pk=candidate.request_id, client_id=subject.client_id, cycle=cycle
+    )
+    link = (
+        EvidenceLink.objects.select_for_update(no_key=True, of=("self",))
+        .filter(pk=evidence_id, client_id=subject.client_id, request=request)
+        .first()
+    )
+    if (
+        link is None
+        or cycle.period_start != subject.competence_month
+        or request.obligation_id not in {None, subject.pk}
+    ):
+        raise Http404
+    return link.pk
 
 
 def chain_heads(
@@ -103,18 +188,19 @@ def chain_heads(
     """
     queryset = SourceObservation.objects.filter(subject_ref_id=subject_id, kind=kind)
     queryset = (
-        queryset.filter(period=period)
+        queryset.filter(Q(period=period) | Q(period__isnull=True))
         if period is not None
         else queryset.filter(period__isnull=True)
     )
     rows = list(queryset)
     if not rows:
         return []
-    superseded = set(
-        SourceObservation.objects.filter(
-            supersedes_id__in=[row.pk for row in rows]
-        ).values_list("supersedes_id", flat=True)
-    )
+    by_id = {row.pk: row for row in rows}
+    superseded = {
+        row.supersedes_id
+        for row in rows
+        if row.supersedes_id in by_id and by_id[row.supersedes_id].period == row.period
+    }
     return [row for row in rows if row.pk not in superseded]
 
 
@@ -179,6 +265,7 @@ def record_staff_fact(  # noqa: PLR0913 - the write contract names every argumen
     value: Mapping[str, object] | None = None,
     source_ref: str = "",
     expected_head_id: UUID | None = None,
+    evidence_link_id: UUID | None = None,
 ) -> SourceObservation:
     """Record a staff fact, or supersede the named head with a correction.
 
@@ -190,23 +277,30 @@ def record_staff_fact(  # noqa: PLR0913 - the write contract names every argumen
         subject = _scoped_subject(actor, subject_id)
         if subject is None:
             raise Http404
-        require_actor(actor, CYCLES_OPERATE)
-        lock_subjects([subject.pk])
+        fresh_actor = _staff_scope(actor, subject.client_id)
+        evidence_id = _staff_evidence(subject, evidence_link_id)
+        locked = lock_subjects([subject.pk], client_id=subject.client_id)
+        if not locked:
+            raise Http404
+        subject = locked[0]
+        _check_staff_identity(subject, kind, period)
+        require_actor(fresh_actor, CYCLES_OPERATE)
         supersedes = _expected_head(subject.pk, kind, period, expected_head_id)
         return assert_fact(
             tenant_id=subject.tenant_id,
             client_id=subject.client_id,
             subject_id=subject.pk,
             kind=kind,
-            period=period,
+            period=supersedes.period if supersedes is not None else period,
             source_kind=SOURCE_STAFF_RECORDED,
             observed_at=timezone.now(),
             value=value or {},
             verification_status=verification_status,
             outcome=OUTCOME_CORRECTED if supersedes is not None else OUTCOME_RECORDED,
             source_ref=source_ref,
-            recorded_by=actor,
+            recorded_by=fresh_actor,
             supersedes=supersedes,
+            evidence_link_id=evidence_id,
         )
 
 
@@ -230,23 +324,118 @@ def retract_staff_fact(
         subject = _scoped_subject(actor, subject_id)
         if subject is None:
             raise Http404
-        require_actor(actor, CYCLES_OPERATE)
-        lock_subjects([subject.pk])
+        fresh_actor = _staff_scope(actor, subject.client_id)
+        locked = lock_subjects([subject.pk], client_id=subject.client_id)
+        if not locked:
+            raise Http404
+        subject = locked[0]
+        _check_staff_identity(subject, kind, period)
+        require_actor(fresh_actor, CYCLES_OPERATE)
         supersedes = _expected_head(subject.pk, kind, period, expected_head_id)
         return assert_fact(
             tenant_id=subject.tenant_id,
             client_id=subject.client_id,
             subject_id=subject.pk,
             kind=kind,
-            period=period,
+            period=supersedes.period if supersedes is not None else period,
             source_kind=SOURCE_STAFF_RECORDED,
             observed_at=timezone.now(),
             value={},
             verification_status="unsupported",
             outcome=OUTCOME_RETRACTED,
-            recorded_by=actor,
+            recorded_by=fresh_actor,
             supersedes=supersedes,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class StaffFact:
+    """The intent and observation identity carried by the rendered cycle form."""
+
+    subject_id: UUID
+    kind: str
+    operation: str
+    expected_head_id: UUID | None = None
+    source_ref: str = ""
+    evidence_link_id: UUID | None = None
+
+
+def record_cycle_fact(
+    actor: User, cycle_id: UUID, fact: StaffFact, *, expected_version: int
+) -> SourceObservation:
+    """Commit a scoped fact, cycle revision and event as one rendered command."""
+    with transaction.atomic():
+        candidate = load_cycle(actor, cycle_id)
+        fresh_actor = _staff_scope(actor, candidate.client_id)
+        cycle = ServiceCycle.objects.select_for_update(no_key=True).get(
+            pk=candidate.pk, client_id=candidate.client_id
+        )
+        check_version(cycle.version, expected_version)
+        require_actor(fresh_actor, CYCLES_OPERATE)
+        if cycle.state not in OPEN_STATES:
+            msg = "Este ciclo está encerrado."
+            raise IllegalTransition(msg)
+        engagement = Engagement.objects.select_for_update(no_key=True).get(
+            pk=cycle.engagement_id, client_id=cycle.client_id
+        )
+        subject = Obligation.objects.filter(
+            pk=fact.subject_id,
+            client_id=cycle.client_id,
+            competence_month=cycle.period_start,
+            obligation_type_id__in=SERVICE_OBLIGATIONS.get(engagement.service_kind, ()),
+        ).first()
+        profile = profile_at(cycle.client, cycle.period_start)
+        if (
+            subject is None
+            or engagement.starts_on > cycle.period_start
+            or (
+                engagement.ends_on is not None
+                and engagement.ends_on <= cycle.period_start
+            )
+            or profile is None
+            or profile.regime != TaxRegime.MEI
+        ):
+            raise Http404
+        if fact.operation in {"correct", "retract"} and fact.expected_head_id is None:
+            msg = "Informe o registro atual para corrigir ou retirar."
+            raise ValidationError(msg)
+        evidence_id = _staff_evidence(subject, fact.evidence_link_id, cycle=cycle)
+        match fact.operation:
+            case "retract":
+                if fact.expected_head_id is None:
+                    msg = "Informe o registro a retirar."
+                    raise ValidationError(msg)
+                observation = retract_staff_fact(
+                    fresh_actor,
+                    subject_id=subject.pk,
+                    kind=fact.kind,
+                    period=cycle.period_start,
+                    expected_head_id=fact.expected_head_id,
+                )
+            case "record" | "correct":
+                observation = record_staff_fact(
+                    fresh_actor,
+                    subject_id=subject.pk,
+                    kind=fact.kind,
+                    period=cycle.period_start,
+                    source_ref=fact.source_ref,
+                    expected_head_id=(
+                        fact.expected_head_id if fact.operation == "correct" else None
+                    ),
+                    evidence_link_id=evidence_id,
+                )
+            case _:
+                msg = "Ação de registro desconhecida."
+                raise ValidationError(msg)
+        cycle.version += 1
+        cycle.save(update_fields=["version"])
+        emit(
+            cycle,
+            fresh_actor,
+            "observation.recorded",
+            payload={"observation_id": str(observation.pk), "kind": fact.kind},
+        )
+        return observation
 
 
 def _expected_head(
@@ -289,15 +478,7 @@ def calendar_value(subject: Obligation) -> dict[str, str]:
     }
 
 
-def _calendar_observed_at(subject: Obligation) -> datetime:
-    deadline = min(subject.nominal_due_date, subject.resolved_due_date)
-    return datetime.combine(
-        deadline - timedelta(days=_CALENDAR_OBSERVED_LEAD_DAYS),
-        time(_CALENDAR_OBSERVED_HOUR),
-        tzinfo=_LOCAL_ZONE,
-    )
-
-
+@transaction.atomic
 def emit_calendar_assertions(subjects: list[Obligation]) -> int:
     """Assert the stored schedule of each subject; replay-safe and locked.
 
@@ -309,7 +490,7 @@ def emit_calendar_assertions(subjects: list[Obligation]) -> int:
     rows = list(subjects)
     if not rows:
         return 0
-    lock_subjects([subject.pk for subject in rows])
+    rows = lock_subjects([subject.pk for subject in rows])
     pending = list(
         SourceObservation.objects.filter(
             subject_ref_id__in=[subject.pk for subject in rows],
@@ -349,9 +530,9 @@ def emit_calendar_assertions(subjects: list[Obligation]) -> int:
             kind="calendar_scheduled",
             period=subject.competence_month,
             source_kind=SOURCE_DETERMINISTIC_RULE,
-            observed_at=_calendar_observed_at(subject),
+            observed_at=subject.created_at,
             value=value,
-            verification_status="verified",
+            verification_status=ObservationVerificationStatus.UNKNOWN,
             outcome=OUTCOME_SCHEDULED,
             supersedes=heads[0] if heads else None,
         )

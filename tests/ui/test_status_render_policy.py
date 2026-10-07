@@ -3,6 +3,8 @@ import inspect
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Final, cast
@@ -13,7 +15,15 @@ from django.template import Context, Template
 from django.template.loader import render_to_string
 
 from apps.core.templatetags import ptbr
+from apps.core.tenancy import tenant_context
+from apps.obligations.coverage import CoverageItem
+from apps.obligations.models import SourceObservation
 from apps.obligations.presentation import payment_state
+from tests.cycles import observation_fixtures
+from tests.cycles.observation_fixtures import payment_claim, payment_subject
+from tests.portal.request_fixtures import PortalSetup
+
+receipt_case = observation_fixtures.receipt_case
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 TEMPLATES_ROOT: Final[Path] = PROJECT_ROOT / "templates"
@@ -93,6 +103,10 @@ STATUS_RENDER_SITES: Final[dict[str, RenderSite]] = {
         frozenset(),
         frozenset({"get_status_display"}),
     ),
+    "portal/partials/payment_observation.html": RenderSite(
+        frozenset(),
+        frozenset({"get_status_display"}),
+    ),
 }
 
 
@@ -166,10 +180,14 @@ def _markup_only(source: str) -> str:
 
 
 def _template_sources() -> dict[str, str]:
-    return {
-        str(path.relative_to(TEMPLATES_ROOT)): path.read_text(encoding="utf-8")
-        for path in sorted(TEMPLATES_ROOT.rglob("*.html"))
-    }
+    sources: dict[str, str] = {}
+    roots = [TEMPLATES_ROOT, *sorted((PROJECT_ROOT / "apps").glob("*/templates"))]
+    for root in roots:
+        for path in sorted(root.rglob("*.html")):
+            name = str(path.relative_to(root))
+            assert name not in sources, f"duplicate template root entry: {name}"
+            sources[name] = path.read_text(encoding="utf-8")
+    return sources
 
 
 def _source_helper_offenders(
@@ -439,3 +457,174 @@ def test_coverage_badge_maps_every_state_through_the_shared_component() -> None:
     )
     assert "status-confirmed" not in html
     assert "status-manual" not in html
+
+
+class ClaimMarkup(HTMLParser):
+    """Inspect rendered semantic text and classes, not adapter constants."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.positive_classes: set[str] = set()
+        self.affirmations: list[str] = []
+        self.raw_states: list[str] = []
+        self.times: list[datetime] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = dict(attrs).get("class") or ""
+        self.positive_classes.update(
+            set(classes.split()) & {"status-confirmed", "badge-ok"}
+        )
+        if tag == "time" and (value := dict(attrs).get("datetime")):
+            self.times.append(datetime.fromisoformat(value))
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip().lower()
+        if re.match(r"^(?:pagamento )?(?:confirmad[oa]|verificad[oa])\b", text):
+            self.affirmations.append(text)
+        if text in {
+            "verified",
+            "unknown",
+            "pending_review",
+            "refresh_failed",
+            "manual",
+        }:
+            self.raw_states.append(text)
+
+
+def _assert_unverified_markup(html: str) -> None:
+    parsed = ClaimMarkup()
+    parsed.feed(html)
+    assert not parsed.positive_classes, parsed.positive_classes
+    assert not parsed.affirmations, parsed.affirmations
+    assert not parsed.raw_states, parsed.raw_states
+
+
+def _populated_surfaces(setup: PortalSetup) -> dict[str, str]:
+    firm = setup.firm()
+    surfaces = {}
+    for name, url in (
+        ("workspace", f"/clientes/{setup.graph.client.pk}/?periodo=2026-09"),
+        ("cycle", f"/ciclos/{setup.cycle.pk}/"),
+    ):
+        response = firm.get(url)
+        assert response.status_code == 200
+        body = response.content.decode()
+        assert 'id="cobertura"' in body
+        panel = body.split('id="cobertura"', 1)[1].split("</section>", 1)[0]
+        assert "data-coverage-item" in panel
+        surfaces[name] = panel
+    portal = setup.portal().get("/pagamentos/")
+    assert portal.status_code == 200
+    surfaces["portal"] = portal.content.decode()
+    return surfaces
+
+
+def test_source_scanner_includes_the_portal_template_root() -> None:
+    sources = _template_sources()
+
+    assert "partials/cycles/coverage_item.html" in sources
+    assert "portal/partials/payment_observation.html" in sources
+    planted = {
+        **sources,
+        "portal/repair-planted.html": "<span>{{ row.get_status_display }}</span>",
+    }
+    offenders = _site_offenders(planted, STATUS_RENDER_SITES, enum_policies())
+    assert any("portal/repair-planted.html" in offender for offender in offenders)
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "source",
+    ["staff_recorded", "client_submitted", "legacy_status", "deterministic_rule"],
+)
+def test_populated_manual_sources_never_render_positive_claims(
+    receipt_case: PortalSetup, source: str
+) -> None:
+    payment_claim(
+        payment_subject(receipt_case),
+        source=source,
+        verification="verified",
+        outcome="accepted",
+    )
+
+    for html in _populated_surfaces(receipt_case).values():
+        _assert_unverified_markup(html)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_populated_coverage_renders_the_actual_source_reference_and_clock(
+    receipt_case: PortalSetup,
+) -> None:
+    subject = payment_subject(receipt_case)
+    observed = datetime(2026, 9, 20, 16, 10, tzinfo=UTC)
+    reference = '<script id="t17-reference">untrusted</script>'
+    with tenant_context(subject.tenant_id):
+        fact = SourceObservation.objects.create(
+            tenant_id=subject.tenant_id,
+            client_id=subject.client_id,
+            subject_ref=subject,
+            kind="payment",
+            period=subject.competence_month,
+            source_kind="staff_recorded",
+            verification_status="unknown",
+            observed_at=observed,
+            source_ref=reference,
+        )
+
+    surfaces = _populated_surfaces(receipt_case)
+
+    for name in ("workspace", "cycle"):
+        html = surfaces[name]
+        assert f'data-observation-id="{fact.pk}"' in html
+        parsed = ClaimMarkup()
+        parsed.feed(html)
+        assert observed in parsed.times
+        assert 'data-source-kind="staff_recorded"' in html
+        assert '<script id="t17-reference">' not in html
+        assert "&lt;script" in html
+        _assert_unverified_markup(html)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_populated_official_source_is_a_positive_style_control(
+    receipt_case: PortalSetup,
+) -> None:
+    payment_claim(
+        payment_subject(receipt_case),
+        source="official_api",
+        verification="verified",
+        outcome="accepted",
+    )
+
+    for html in _populated_surfaces(receipt_case).values():
+        parsed = ClaimMarkup()
+        parsed.feed(html)
+        assert parsed.positive_classes
+        assert parsed.affirmations
+
+
+@pytest.mark.django_db(transaction=True)
+def test_populated_guard_detects_a_manual_only_positive_style_injection(
+    receipt_case: PortalSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payment_claim(payment_subject(receipt_case))
+    for html in _populated_surfaces(receipt_case).values():
+        _assert_unverified_markup(html)
+    original = Template.render
+
+    def inject(template: Template, context: Context) -> str:
+        html = original(template, context)
+        item = context.get("item")
+        if (
+            template.name == "partials/cycles/coverage_item.html"
+            and isinstance(item, CoverageItem)
+            and item.state == "manual"
+        ):
+            return html + '<span class="status-confirmed badge-ok">Confirmado</span>'
+        return html
+
+    monkeypatch.setattr(Template, "render", inject)
+    surfaces = _populated_surfaces(receipt_case)
+    for name in ("workspace", "cycle"):
+        with pytest.raises(AssertionError):
+            _assert_unverified_markup(surfaces[name])

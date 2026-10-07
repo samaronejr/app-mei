@@ -30,6 +30,7 @@ APPROVE: Final = "actions.approve"
 AUTHORITY_CAPABILITIES: Final = (
     "cycles.operate",
     "cycles.complete",
+    "cycles.review",
     APPROVE,
     VIEW_ALL,
     VIEW_ASSIGNED,

@@ -62,7 +62,7 @@ from apps.obligations.models import (
     ObservationSubjectKind,
     SourceObservation,
 )
-from apps.obligations.presentation import payment_state
+from apps.obligations.presentation import current_observation, payment_state
 from apps.obligations.queries import SETTLED
 from apps.portal.middleware import PortalHttpRequest
 
@@ -341,44 +341,35 @@ def _latest_payment_source(
     subject_ids = [row["id"] for row in obligations]
     if not subject_ids:
         return {}
-    rows = (
+    rows = list(
         SourceObservation.objects.filter(
             subject_kind=ObservationSubjectKind.OBLIGATION,
             kind=ObservationKind.PAYMENT,
             subject_ref_id__in=subject_ids,
-        )
-        .order_by("observed_at", "pk")
-        .values_list(
-            "pk",
-            "subject_ref_id",
-            "source_kind",
-            "verification_status",
-            "outcome",
-            "supersedes_id",
-            "period",
-        )
+        ).order_by("observed_at", "pk")
     )
-    heads: dict[UUID, list[tuple[object, str, str, str, object]]] = {}
-    superseded = {row[5] for row in rows if row[5]}
-    for pk, subject, source, verification, outcome, _supersedes, period in rows:
-        if pk not in superseded:
-            heads.setdefault(subject, []).append(
-                (pk, source, verification, outcome, period)
-            )
     answers: dict[UUID, tuple[str, str, str, str]] = {}
-    for subject, chain in heads.items():
-        usable = [
-            row
-            for row in chain
-            if row[2] != "unsupported" and row[3] not in {"rejected", "retracted"}
-        ]
-        head = usable[-1] if usable else chain[-1]
-        _pk, source_s, verification_s, outcome_s, _period = head
-        answers[subject] = (
-            source_s,
-            verification_s,
-            outcome_s,
-            payment_state(source_s, verification_s, outcome_s),
+    moment = timezone.now()
+    for obligation in obligations:
+        head = current_observation(
+            rows,
+            subject_id=obligation["id"],
+            period=obligation["competence_month"],
+            kind=ObservationKind.PAYMENT,
+        )
+        if head is None:
+            continue
+        answers[obligation["id"]] = (
+            head.source_kind,
+            head.verification_status,
+            head.outcome,
+            payment_state(
+                head.source_kind,
+                head.verification_status,
+                head.outcome,
+                observed_at=head.observed_at,
+                now=moment,
+            ),
         )
     return answers
 

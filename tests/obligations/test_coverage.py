@@ -151,18 +151,16 @@ def test_calendar_producer_writes_once_and_replays_cleanly() -> None:
             subject_ref=subject, kind="calendar_scheduled"
         )
 
-        # Then exactly one verified deterministic assertion exists, scheduled
-        # no later than two days before the deadline it asserts
+        # The stored schedule is asserted at its actual creation time, without
+        # claiming official verification or inventing an SLA timestamp.
         assert rows.count() == 1
         head = rows.get()
         assert head.source_kind == "deterministic_rule"
-        assert head.verification_status == "verified"
-        assert head.observed_at.date() <= min(
-            subject.nominal_due_date, subject.resolved_due_date
-        ) - timedelta(days=2)
+        assert head.verification_status == "unknown"
+        assert head.observed_at == subject.created_at
         # And the calendar fact asserts the schedule only — never guia/payment
         assert _item(setup).facets == {
-            "calendar": CoverageState.VERIFIED,
+            "calendar": CoverageState.UNKNOWN,
             "guide": CoverageState.UNKNOWN,
             "payment": CoverageState.UNKNOWN,
         }

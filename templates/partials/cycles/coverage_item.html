@@ -19,33 +19,43 @@ that can ever wear `confirmed`.
   {% if item.state == 'unknown_scope' %}
     <p class="text-sm text-ink-600">Este serviço não declara quais obrigações acompanha.</p>
   {% else %}
+    <div class="mt-2 flex flex-wrap items-center gap-2">{% if item.state != 'manual' %}<span class="text-sm font-medium">Pagamento</span>{% endif %}{% include "partials/cycles/coverage_state.html" with state=item.state manual_label='Pagamento informado' only %}</div>
     {% if item.state == 'verified' %}
-      {% include "partials/ui/status_badge.html" with state='confirmed' label='Pagamento verificado' only %}
       <p class="text-sm text-ink-600">Verificação oficial dentro da validade.</p>
     {% elif item.state == 'manual' %}
-      {% include "partials/ui/status_badge.html" with state='manual' label='Pagamento informado' only %}
       <p class="text-sm text-ink-600">Registro manual — ainda não verificado junto à Receita.</p>
     {% elif item.state == 'pending_review' %}
-      {% include "partials/ui/status_badge.html" with state='pending' label='Aguardando conferência' only %}
       <p class="text-sm text-ink-600">Comprovante enviado pelo cliente — ainda não conferido.</p>
     {% elif item.state == 'stale' %}
-      {% include "partials/ui/status_badge.html" with state='stale' label='Desatualizado' only %}
-      <p class="text-sm text-ink-600">A última verificação oficial saiu da validade.</p>
+      <p class="text-sm text-ink-600">Esta informação está desatualizada. Faça uma nova conferência.</p>
     {% elif item.state == 'refresh_failed' %}
-      {% include "partials/ui/status_badge.html" with state='stale' label='Falha na verificação' only %}
       <p class="text-sm text-ink-600">A última tentativa de verificação falhou.</p>
     {% elif item.state == 'not_applicable' %}
-      {% include "partials/ui/status_badge.html" with state='unknown' label='Não se aplica' only %}
       <p class="text-sm text-ink-600">O perfil fiscal desta competência não pede esta obrigação.</p>
     {% else %}
-      {% include "partials/ui/status_badge.html" with state='unknown' label='Sem informação' only %}
       <p class="text-sm text-ink-600">Nenhuma fonte informou o pagamento desta obrigação.</p>
     {% endif %}
-    <p class="mt-1 text-xs text-ink-600" data-facets>
-      Agenda: <span data-facet="calendar">{{ item.facets.calendar }}</span> ·
-      Guia: <span data-facet="guide">{{ item.facets.guide }}</span> ·
-      Pagamento: <span data-facet="payment">{{ item.facets.payment }}</span>
-    </p>
+    {% if item.facets %}
+    <div class="mt-3 grid gap-4 sm:grid-cols-3" data-facets>
+      <div class="min-w-0" data-facet="calendar">
+        <h4 class="mb-1 text-sm font-semibold">Agenda</h4>
+        {% if item.covered_by.calendar.source_kind == 'deterministic_rule' %}
+          {% include "partials/ui/status_badge.html" with state='unknown' label='Agenda calculada' only %}
+        {% else %}{% include "partials/cycles/coverage_state.html" with state=item.facets.calendar only %}{% endif %}
+        {% include "partials/cycles/coverage_source.html" with observation=item.covered_by.calendar only %}
+      </div>
+      <div class="min-w-0" data-facet="guide">
+        <h4 class="mb-1 text-sm font-semibold">Guia</h4>
+        {% include "partials/cycles/coverage_state.html" with state=item.facets.guide only %}
+        {% include "partials/cycles/coverage_source.html" with observation=item.covered_by.guide only %}
+      </div>
+      <div class="min-w-0" data-facet="payment">
+        <h4 class="mb-1 text-sm font-semibold">Pagamento</h4>
+        {% include "partials/cycles/coverage_state.html" with state=item.facets.payment only %}
+        {% include "partials/cycles/coverage_source.html" with observation=item.covered_by.payment only %}
+      </div>
+    </div>
+    {% endif %}
   {% endif %}
   {% comment %}Actions post to the cycle's own page; on the workspace (no
 cycle context) the panel is read-only and the form cannot be drawn.{% endcomment %}
@@ -58,6 +68,7 @@ cycle context) the panel is read-only and the form cannot be drawn.{% endcomment
         <input type="hidden" name="expected_version" value="{{ cycle.version }}">
         <input type="hidden" name="kind" value="payment">
         <div><label class="ui-field-label" for="ref-{{ item.obligation_id }}-pay">Referência (guia, comprovante, protocolo)</label><input class="ui-field-input" id="ref-{{ item.obligation_id }}-pay" name="source_ref" maxlength="255"></div>
+        {% include "partials/cycles/observation_evidence.html" with choices=observation_evidence subject_id=item.obligation_id field_key='pay' only %}
         <div><button class="ui-btn ui-btn-quiet" type="submit">Registrar pagamento informado</button></div>
       </form>
       <form method="post" action="{% url 'cycle-detail' cycle.pk %}" class="mt-2 grid gap-2">{% csrf_token %}
@@ -67,6 +78,7 @@ cycle context) the panel is read-only and the form cannot be drawn.{% endcomment
         <input type="hidden" name="expected_version" value="{{ cycle.version }}">
         <input type="hidden" name="kind" value="guide_issued">
         <div><label class="ui-field-label" for="ref-{{ item.obligation_id }}-guide">Referência da emissão</label><input class="ui-field-input" id="ref-{{ item.obligation_id }}-guide" name="source_ref" maxlength="255"></div>
+        {% include "partials/cycles/observation_evidence.html" with choices=observation_evidence subject_id=item.obligation_id field_key='guide' only %}
         <div><button class="ui-btn ui-btn-quiet" type="submit">Registrar guia emitida</button></div>
       </form>
       {% if item.correctable %}
@@ -77,6 +89,8 @@ cycle context) the panel is read-only and the form cannot be drawn.{% endcomment
           <input type="hidden" name="expected_version" value="{{ cycle.version }}">
           <input type="hidden" name="kind" value="payment">
           <input type="hidden" name="head_id" value="{{ item.head_id }}">
+          <div><label class="ui-field-label" for="ref-{{ item.obligation_id }}-correct">Referência corrigida</label><input class="ui-field-input" id="ref-{{ item.obligation_id }}-correct" name="source_ref" value="{{ item.covered_by.payment.source_ref }}" maxlength="255"></div>
+          {% include "partials/cycles/observation_evidence.html" with choices=observation_evidence subject_id=item.obligation_id field_key='correct' selected=item.covered_by.payment.evidence_link_id only %}
           <div><button class="ui-btn ui-btn-quiet" type="submit">Corrigir o registro atual</button></div>
         </form>
         <form method="post" action="{% url 'cycle-detail' cycle.pk %}" class="mt-2 grid gap-2">{% csrf_token %}

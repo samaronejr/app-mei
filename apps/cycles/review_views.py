@@ -50,6 +50,7 @@ from apps.cycles.evidence import (
     ReviewDecision,
 )
 from apps.cycles.extraction import FIELD_LABELS, KIND_FIELDS, XML_LAYOUTS, kind_for
+from apps.cycles.receipt_observations import payment_evidence_eligible
 from apps.cycles.services.cycle import require_enabled, tenant_id
 from apps.cycles.services.review import FieldCorrection, record_review
 from apps.cycles.serving import document_response
@@ -371,6 +372,9 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             "note": _note(intake),
             "divergent": intake is not None and intake.state == IntakeState.DIVERGENT,
             "clean": clean,
+            "payment_eligible": payment_evidence_eligible(
+                evidence_request, link, intake
+            ),
             "inline_image": clean and link.document.content_type in IMAGE_TYPES,
             "decided": bool(link.review_decision),
             "next_link": following,
