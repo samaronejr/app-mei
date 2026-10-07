@@ -39,6 +39,7 @@ from apps.cycles.services.cycle import open_cycle
 from apps.delivery.models import MessageState, OutboundMessage
 from apps.obligations.models import (
     Document,
+    Obligation,
     ObservationVerificationStatus,
 )
 from apps.obligations.models.observations import ObservationOutcome
@@ -95,8 +96,10 @@ def second_client(setup: CycleSetup) -> CycleSetup:
     )
 
 
-def provider_graph(setup: CycleSetup) -> ProviderGraph:
-    obligation = due_obligation(setup)
+def provider_graph(
+    setup: CycleSetup, *, obligation: Obligation | None = None
+) -> ProviderGraph:
+    obligation = obligation or due_obligation(setup)
     with tenant_context(setup.tenant.pk):
         ref = open_cycle(
             setup.actor,

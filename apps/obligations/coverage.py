@@ -246,15 +246,33 @@ def coverage_for_clients(
     The entitlement read is cached by firm requests, or costs one extra query
     outside them. Neither data nor entitlement query count grows with clients.
     """
+    answers, _engagements = coverage_and_engagements_for_clients(
+        clients, period, now=now
+    )
+    return answers
+
+
+def coverage_and_engagements_for_clients(
+    clients: Iterable[ClientCompany],
+    period: date,
+    *,
+    now: datetime | None = None,
+) -> tuple[dict[UUID, list[CoverageItem]], dict[UUID, Engagement]]:
+    """Read the same batch, also returning its engagement rows by primary key.
+
+    Each engagement already carries its responsible user, so a caller that labels
+    the answers needs no second engagement read.
+    """
     answers: dict[UUID, list[CoverageItem]] = {client.pk: [] for client in clients}
+    loaded: dict[UUID, Engagement] = {}
     if not answers:
-        return answers
+        return answers, loaded
     tenant = current_tenant_id.get()
     if tenant is None:
         msg = "Coverage requires an established tenant context."
         raise MissingTenantContext(msg)
     if not tenant_has(tenant, "cycles_r1"):
-        return answers
+        return answers, loaded
     client_ids = tuple(answers)
     moment = now or timezone.now()
     engagements: dict[UUID, list[Engagement]] = {}
@@ -263,9 +281,11 @@ def coverage_for_clients(
             tenant_id=tenant, client_id__in=client_ids, starts_on__lte=period
         )
         .filter(Q(ends_on__isnull=True) | Q(ends_on__gt=period))
+        .select_related("responsible")
         .order_by("pk")
     ):
         engagements.setdefault(engagement.client_id, []).append(engagement)
+        loaded[engagement.pk] = engagement
     profiles: dict[UUID, list[TaxProfile]] = {}
     for profile_row in TaxProfile.objects.filter(
         tenant_id=tenant, client_id__in=client_ids
@@ -303,4 +323,4 @@ def coverage_for_clients(
             )
             for engagement in engagements.get(client_id, [])
         ]
-    return answers
+    return answers, loaded
