@@ -65,8 +65,8 @@ INDEXES = (
 class Migration(migrations.Migration):
     dependencies = [
         ("clients", "0015_import_batches_and_versions"),
-        ("cycles", "0008_exact_effect_approvals"),
-        ("obligations", "0019_document_client_upload"),
+        ("cycles", "0017_bulk_operations"),
+        ("obligations", "0021_document_purged_at_document_retention_class"),
     ]
 
     operations = [
