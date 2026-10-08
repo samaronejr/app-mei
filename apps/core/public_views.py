@@ -79,9 +79,12 @@ HELP_PAGES: Final[tuple[HelpPage, ...]] = (
         _("Para a empresa cliente: como responder às solicitações da contabilidade."),
     ),
     HelpPage(
-        "acesso-de-suporte",
+        "acesso-da-plataforma",
         _("Acesso de suporte"),
-        _("Como o suporte pode ajudar sem acesso invisível aos seus dados."),
+        _(
+            "Como a equipe da plataforma entra na sua conta só com aprovação "
+            "e por tempo limitado."
+        ),
     ),
     HelpPage(
         "encerramento-da-conta",

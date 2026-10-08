@@ -2,11 +2,12 @@
 {% block article %}
   {% comment %}
     Approval behaviour as T15/T16 shipped it: exact-effect approval, invalidation on
-    change, revocation before dispatch.
+    change, revocation before dispatch. Recipient names on the card are T25's
+    (apps/cycles/approval_views.py).
   {% endcomment %}
   <section class="card p-6 space-y-3" aria-labelledby="regra">
     <h2 id="regra" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}A regra{% endblocktranslate %}</h2>
-    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Nada sai para o cliente sem que alguém com permissão aprove exatamente o que vai sair: o texto, os destinatários e os documentos anexados. O cartão de aprovação mostra tudo isso antes dos botões de decisão.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Nada sai para o cliente sem que alguém com permissão aprove exatamente o que vai sair: o texto, os destinatários e os documentos anexados. O cartão de aprovação mostra tudo isso antes dos botões de decisão, com cada destinatário pelo nome do contato.{% endblocktranslate %}</p>
   </section>
   <section class="card p-6 space-y-3" aria-labelledby="mudou">
     <h2 id="mudou" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando algo muda depois da aprovação{% endblocktranslate %}</h2>

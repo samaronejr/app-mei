@@ -2,7 +2,8 @@
 {% block article %}
   {% comment %}
     Written for the client company, in plain Portuguese. Routes described: the portal
-    home, request upload, company switch, publications and payments of apps/portal/urls.py.
+    home, request upload, company switch, publications and payments of apps/portal/urls.py,
+    and the refusal page of templates/403.html (T25) a client meets once access ends.
   {% endcomment %}
   <section class="card p-6 space-y-3" aria-labelledby="acesso">
     <h2 id="acesso" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Seu acesso{% endblocktranslate %}</h2>
@@ -24,6 +25,10 @@
     <h2 id="publicacoes" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Publicações e pagamentos{% endblocktranslate %}</h2>
     <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Publicações são documentos que a contabilidade deixa para você, como guias. Quando você abre ou baixa uma publicação, a contabilidade fica sabendo.{% endblocktranslate %}</p>
     <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Um pagamento que você informa aparece como informado até a contabilidade conferir. Isso não é uma confirmação da Receita.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="fim">
+    <h2 id="fim" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando o acesso termina{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Se a contabilidade encerra o serviço da sua empresa, o acesso ao portal termina depois de um prazo. A partir daí, o portal mostra a página Acesso não permitido. Se você acha que o acesso deveria continuar, fale com a sua contabilidade.{% endblocktranslate %}</p>
   </section>
   <section class="card p-6 space-y-3" aria-labelledby="duvidas">
     <h2 id="duvidas" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Dúvidas{% endblocktranslate %}</h2>

@@ -27,7 +27,7 @@ person or decision reads `open (needs …)` until its evidence exists. It's neve
 | OG-05 | ClamAV sidecar fits host memory and freshclam is updating | Malware scanning on | `.evidence/AXR1-012-operator.txt` | open (needs host sizing, OD-11, and a live freshclam check) |
 | OG-06 | Restore-replay drill on an isolated host | Restore claims | `.evidence/AXR1-027-operator.txt` | open (needs isolated host and drill window) |
 | OG-07 | Design-partner sessions run per protocol, with the pass bar met | Cohort 3 and general availability | `.evidence/AXR1-029-OG07-sessions.txt` (anonymized session notes) | open (needs recruited partner firms and moderated sessions) |
-| OG-08 | Professional legal, LGPD and accounting review of terms, DPA, retention periods and lawful bases, including employee and counterparty personal data | Purge activation, paid launch | `.evidence/AXR1-029-OG08-review.txt` (signed review note) | open (needs professional reviewer) |
+| OG-08 | Professional legal, LGPD and accounting review of terms, DPA, retention periods and lawful bases, including employee and counterparty personal data and platform support access (owner-approved grants of at most 72 hours, AXR1-023) | Purge activation, paid launch | `.evidence/AXR1-029-OG08-review.txt` (signed review note) | open (needs professional reviewer) |
 | OG-09 | Owner go/no-go per cohort | Each cohort | The cohort lines below | open (needs owner decision per cohort) |
 
 ## Owner decisions
@@ -53,6 +53,7 @@ contract, so they're listed here rather than dropped.
 | id | item | evidence | status |
 | --- | --- | --- | --- |
 | OG-10 | `btree_gist`, `unaccent`, `pg_trgm` created on the live pilot database | `.evidence/AXR1-005-operator.txt` | open (needs operator read-back of the evidence) |
+| A11Y | Manual screen-reader run of `ops/AXORIM-A11Y-CHECKLIST.md` (NVDA + Firefox, VoiceOver + iOS Safari) on the synthetic-data tenant (AXR1-025) | `.evidence/AXR1-025-operator.txt` | open (needs an operator run on real assistive technology) |
 | OD-11 | Pilot host upsize for the ClamAV sidecar | Lightsail bundle price recorded with OG-05 | open (needs owner approval and cost record) |
 | OD-12 | Split the cohort gate (cohort 2 before the full launch set) | Partner feedback | open (needs owner decision) |
 | Contact | A public contact channel for the pricing page | Owner-supplied address or form | open (needs owner to choose the channel) |

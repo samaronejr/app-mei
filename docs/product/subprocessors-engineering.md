@@ -28,6 +28,23 @@ there, this list changes in the same pull request.
 | Cloudflare | DNS for the domain and inbound email routing for addresses at the domain | DNS queries; mail sent to addresses at the domain (for example the LGPD channel), never product data |
 | GitHub | Source code, CI and the deploy pipeline | Code and synthetic test data only. Production data never goes to CI. |
 
+## Platform staff access (not an external service)
+
+Platform staff reach a firm's data only through a support grant (AXR1-023), never
+through a standing account. It's listed here because the legal review (OG-08) has to
+cover it alongside the external services.
+
+- A staff account opens a request with a stated purpose. The firm's account owner
+  approves it on `/configuracoes/suporte/`, choosing the scope (read only, or read plus
+  firm settings), the visible clients and a duration of 1 to 72 hours. A database
+  constraint rejects any longer window, and an ended grant is never extended.
+- A grant with no clients selected shows firm-level data only, with no client
+  records. Document bytes can't be previewed or downloaded, message subjects and staff
+  notes are masked, and approvals, sends and review decisions are refused.
+- The grant row is re-read on every request, so a revocation or expiry takes effect on
+  the next request. Every request under a grant writes one platform audit row and one
+  row in the firm's own audit log.
+
 ## Not in use
 
 - **AI providers.** No customer data goes to any model provider. The R1 evaluation
