@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timedelta
+from enum import StrEnum, auto
 from http import HTTPStatus
 from typing import Any
 from uuid import UUID
@@ -170,13 +171,23 @@ REDACTED_PAYLOAD_FIELDS = frozenset(
 )
 
 
+class BadgeState(StrEnum):
+    """The states partials/ui/status_badge.html draws that an approval card uses."""
+
+    PENDING = auto()
+    MANUAL = auto()
+    BLOCKED = auto()
+    STALE = auto()
+    UNKNOWN = auto()
+
+
 # An approval is a human decision, never verification, so no state borrows green.
-PROPOSAL_STATE_BADGES: dict[str, str] = {
-    ProposalState.AWAITING: "pending",
-    ProposalState.APPROVED: "manual",
-    ProposalState.REJECTED: "blocked",
-    ProposalState.INVALIDATED: "stale",
-    ProposalState.CANCELLED: "blocked",
+PROPOSAL_STATE_BADGES: dict[str, BadgeState] = {
+    ProposalState.AWAITING: BadgeState.PENDING,
+    ProposalState.APPROVED: BadgeState.MANUAL,
+    ProposalState.REJECTED: BadgeState.BLOCKED,
+    ProposalState.INVALIDATED: BadgeState.STALE,
+    ProposalState.CANCELLED: BadgeState.BLOCKED,
 }
 
 
@@ -277,7 +288,9 @@ def _card(
                 and expires_at > now
             ),
             "frozen": frozen,
-            "state_badge": PROPOSAL_STATE_BADGES.get(proposal.state, "unknown"),
+            "state_badge": PROPOSAL_STATE_BADGES.get(
+                proposal.state, BadgeState.UNKNOWN
+            ),
             "recipients": recipients,
             "dates": dates,
             "expired": expires_at <= now,
