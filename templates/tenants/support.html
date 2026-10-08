@@ -7,7 +7,7 @@
   <section class="card p-6" aria-labelledby="pendentes">
     <h2 id="pendentes" class="mb-3 text-lg font-semibold">{% translate "Solicitações pendentes" %}</h2>
     <p class="mb-5 text-sm text-ink-600">{% translate "A equipe da plataforma só acessa a sua firma quando você autoriza aqui, dentro do prazo e do escopo escolhidos." %}</p>
-    {% for grant in pending_requests %}
+    {% for grant, client_field in pending_requests %}
       <article class="border-t border-ink-200 py-4" data-grant="{{ grant.pk }}">
         <p class="font-semibold">{{ grant.requested_by.email }}</p>
         <p class="mt-1 text-sm">{{ grant.purpose }}</p>

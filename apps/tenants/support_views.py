@@ -89,6 +89,7 @@ class SupportApprovalForm(forms.Form):
         label=gettext_lazy("Clientes visíveis (vazio = somente dados do escritório)"),
         queryset=ClientCompany.objects.none(),
         required=False,
+        widget=forms.CheckboxSelectMultiple,
     )
 
 
@@ -130,9 +131,13 @@ def support_request_view(request: HttpRequest) -> HttpResponse:
     )
 
 
-def _client_bound_field(tenant: Tenant) -> forms.BoundField:
-    """Build a bound checkbox list of exactly this firm's clients for the template."""
-    form = SupportApprovalForm()
+def _client_bound_field(tenant: Tenant, grant_id: UUID) -> forms.BoundField:
+    """Build one request's checkbox list of exactly this firm's clients.
+
+    The ids carry the grant id, so with several requests pending each label still
+    ticks the checkbox in its own request's form.
+    """
+    form = SupportApprovalForm(auto_id=f"id_%s_{grant_id}")
     field: Any = form.fields["client_ids"]
     field.queryset = ClientCompany.objects.filter(tenant=tenant).order_by("legal_name")
     return form["client_ids"]
@@ -152,9 +157,11 @@ def support_view(request: AuthenticatedRequest) -> HttpResponse:
         "tenants/support.html",
         {
             "firm": tenant,
-            "pending_requests": pending_support_grants(tenant.pk),
+            "pending_requests": [
+                (grant, _client_bound_field(tenant, grant.pk))
+                for grant in pending_support_grants(tenant.pk)
+            ],
             "decided": decided_support_grants(tenant.pk),
-            "client_field": _client_bound_field(tenant),
             "scope_choices": SupportScope.choices,
             "max_hours": MAX_HOURS,
         },

@@ -10,6 +10,7 @@ writes NONE, `billing.manage` only under `read_write_settings`.
 RLS layer, which are meaningless inside a surrounding test transaction.
 """
 
+import re
 from datetime import timedelta
 from http import HTTPStatus
 from uuid import UUID
@@ -221,6 +222,26 @@ def test_owner_page_lists_and_approves_a_request() -> None:
     assert grant.expires_at is not None
     assert grant.starts_at is not None
     assert grant.expires_at - grant.starts_at == timedelta(hours=2)
+
+
+def test_each_pending_request_names_its_own_client_choices() -> None:
+    """Two pending requests: every id is unique and each label ticks its own form."""
+    firm = enabled_firm("support-two-requests")
+    first = _pending(firm.tenant, _staff())
+    second = _pending(firm.tenant, _staff(email="support-second@platform.example.com"))
+
+    owner = _session_for(firm.owner, _firm_host(firm))
+    html = owner.get("/configuracoes/suporte/").content.decode()
+
+    ids = re.findall(r'\bid="([^"]+)"', html)
+    assert len(ids) == len(set(ids)), sorted({i for i in ids if ids.count(i) > 1})
+    for grant in (first, second):
+        article = html.split(f'data-grant="{grant.pk}"', 1)[1].split("</article>", 1)[0]
+        boxes = re.findall(
+            r'<input type="checkbox" name="client_ids"[^>]*\bid="([^"]+)"', article
+        )
+        assert len(boxes) == len(firm.clients), article
+        assert all(f'for="{box}"' in article for box in boxes), article
 
 
 def test_only_the_owner_can_decide() -> None:
