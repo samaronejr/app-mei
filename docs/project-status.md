@@ -478,8 +478,49 @@ statements. Evidence:
 `-fix-green-overflow.txt`, `-fix-gates.txt` and the reviewers' `T19-RV-*` and
 `T19-RV2-*` artifacts. Every owner/operator gate remains **open**.
 
+`AXR1-020` (bulk operations with an eligibility preview, per-item results,
+cancel and resume; `cycles.0017`) is recorded on the final `AXR1-019` branch.
+For tenants with `bulk_r1`, a `BulkOperation` freezes its preview as a
+snapshot with a digest and an expiry, and execution uses only that snapshot.
+An expired or changed preview is refused, and confirming requires typing the
+exact item count. Each `BulkItem` is unique per tenant, client, operation and
+subject. That key is also the runner's claim and idempotency key. The runner
+processes each item in its own tenant transaction, with a fenced claim and
+per-item capability and version checks. A changed record is skipped as
+changed, cancel stops before the next claim, and resume after a crash creates
+no duplicate effect. Bulk approval delegates every item to the `AXR1-015`
+per-item digest and revalidation. The results page polls and stops at a
+terminal state. It says "Concluído com falhas: N" whenever an item failed, and
+its CSV export is formula-safe. Published playbook versions are labelled with
+the playbook name and version number, and the preview shows how much of the
+daily quota remains.
+
+The independent gate review found one blocker at `da8da54`: notice previews
+did not show the remaining daily quota the plan requires (with a cap of 100
+and 97 sends reserved, the preview omitted the 3 left). Repair `1bec524` read
+the same `remaining_quota()` helper the Comunicação queue uses, but stored the
+value when the preview was created; its confirmation review found that
+reloading a preview after reservations rose to 100 still showed 3 while the
+queue showed 0. Repair `549d202` reads the remaining quota live on every
+render of the preview (one read per render, none per item and none on the
+progress poll), says when the previewed notices exceed it and that the excess
+waits in the queue until reservations renew, and removes the stored value.
+Previewing reserves nothing; execution still uses the frozen item snapshot
+and the send-time quota. Tests failed before each repair and pass after it,
+and rendering a stale or capped value makes them fail again.
+An independent confirmation of repair 2 returned **confirmed**
+with zero blockers: the same preview showed 3 at 97/100, stayed 3 after
+another firm's reservations and reloaded to 0 after its own; a confirmed run
+used the frozen digest, version and audience, queued one notice and made no
+send attempt; and rendering the stale value makes the HTTP test fail. Evidence:
+`.evidence/AXR1-020-happy-placed.txt`, `-failure.txt`, `-rv-quota.md`,
+`-fix-red.txt`, `-fix-green.txt`, `-fix-mutation.txt`, `-fix2-red.txt`,
+`-fix2-green.txt`, `-fix2-mutation.txt`, `-fix2-gates.txt` and the reviewers'
+`T20-RV*` artifacts. Every owner/operator gate remains
+**open**.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 20 to 29 and the final verification wave remain open.
+Todos 21 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -580,7 +621,19 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3826 passing**
+implementation head. The current default-suite baseline is **3889 passing**
+(78 deselected), verified at `AXR1-020` repaired code `549d202` (tree
+`f9ee6d4`), on `AXR1-019` repaired code `3c8e5e2`: the **3826** below plus
+**63** net-new default-suite cases. The same serial run passed isolation
+(**282**), CNPJ (**29**), browser (**78**), lint, format, mypy,
+migration-drift and a clean rebuilt-static check. The confirmation
+reviewer reran lint, format, mypy and migration drift, the bulk and delivery
+modules (118), isolation (282), the bulk browser tests (4) and the static
+rebuild, all green. Evidence: `.evidence/AXR1-020-fix2-gates.txt` and
+`.evidence/T20-RV3-gates.txt`. This status-only commit does not change the reviewed
+code; it sits on the `AXR1-019` status commit `4ef0611`.
+
+The previous default-suite baseline was **3826 passing**
 (74 deselected), verified at `AXR1-019` repaired code `3c8e5e2` (tree
 `e734580`), on final `AXR1-018` code `cae2ba6`: the **3721** below plus
 **105** net-new default-suite cases. The same serial run passed isolation
@@ -588,10 +641,7 @@ implementation head. The current default-suite baseline is **3826 passing**
 migration-drift and a clean rebuilt-static check. The confirmation reviewer
 audited that run and reran 500 targeted tests, isolation (**276**), the six
 `AXR1-019` browser cases and the restored scale test. Evidence:
-`.evidence/AXR1-019-fix-gates.txt` and `.evidence/T19-RV2-gates.txt`. This
-status-only commit does
-not change the reviewed code; it sits on the `AXR1-018` status commit
-`637305e`.
+`.evidence/AXR1-019-fix-gates.txt` and `.evidence/T19-RV2-gates.txt`.
 
 The previous default-suite baseline was **3721 passing**
 (68 deselected), independently verified at `AXR1-018` code `cae2ba6` (tree
@@ -715,7 +765,7 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **74** cases: the **24** passing at the T3
+`browser` job. The suite now contains **78** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
@@ -728,7 +778,8 @@ plus the eight `AXR1-015` approval-card cases, plus the two `AXR1-016`
 publication-receipt cases, plus the eight `AXR1-017` coverage-panel cases
 (four journeys at two viewports), plus the six `AXR1-019` briefing cases
 (two briefing-state journeys and one long-client-name journey at two
-viewports). Every test in
+viewports), plus the four `AXR1-020` bulk-operation cases (the bulk journey
+and the remaining-quota preview at two viewports). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
