@@ -554,8 +554,50 @@ pre-repair layout failed its four new tests. Evidence: `.evidence/AXR1-021-failu
 `-fix-visual.md`, `-fix-gates.txt` and the reviewers' `t21-rv-*` and
 `T21-RV2-*` artifacts. Every owner/operator gate remains **open**.
 
+`AXR1-022` (firm onboarding, settings, entitlements, usage, manual billing path,
+export and offboarding; `authz.0008`, `tenants.0011`) is recorded on the final
+`AXR1-021` branch. The admin "Nova firma" flow creates a tenant, an owner
+invitation through the outbox and the default flags, and writes a
+`PlatformEvent`. Behind `firm_settings_r1`, `/configuracoes/` covers firm profile
+and branding, team and capability grants, entitlements, per-user daily summary
+e-mail, retention classes and legal holds, account export and cancellation. A
+tenant quota fence serializes every client writer before the client lock;
+exceeding the active-client limit is a soft block, and the import preview shows
+the limit. The account export is an asynchronous, owner-only ZIP of CSV metadata
+with a documents manifest and a SHA-256 manifest, built by the `AXR1-018`
+`PhasedTenantTask` machinery. Cancellation makes the firm read-only after the end
+date, keeps export open for 90 days and then runs the per-class purge, which stays
+a dry run until OG-08. The manual `BillingAccount` is operator-maintained:
+`past_due` shows the owner a banner and `suspended` makes the firm read-only with
+export still allowed; no card data is stored. Append-only `UsageRecord`s, written
+nightly, feed an owner-only monthly cost estimate that is labelled as an estimate
+and marked incomplete while any unit price is unknown. Ending an engagement
+deactivates the client's portal memberships after a 30-day grace period. The new
+owner-only capability `tenants.account` guards export, cancellation and the
+estimate.
+
+The independent gate review at the placed head `6a78683` attacked placement fidelity, the
+guard registrations, the active-client limit under a race, cancellation and suspension, owner-only
+export, usage and billing, offboarding and the header. Its own serial gates passed (4072, isolation
+306, CNPJ 29, browser 90). It returned **needs-fix** with one blocker: with `firm_settings_r1` on, at 1280 px with a classic scrollbar,
+an ordinary 22-character firm name left only 2-6 px of spare room in the header row.
+Repair `b05d7af` lets the firm name shrink and truncate between xl and 2xl, keeping
+the full name accessible and 16 px reserved before search. Repair `af8e053` holds the
+row at 1536 and 1920 px as well, where the text labels and e-mail return. The flag-off
+header stays byte-identical to `AXR1-021`. The confirmation review of both commits
+returned **confirmed** with zero blockers: the
+header held one row with at least 16 px spare in 90 measured cases from 1280 to 1920 px and at each
+breakpoint boundary, the flag-off bytes matched `AXR1-021`, removing the rule failed the test,
+and its own reruns passed (22 header, 471 UI and 77 briefing tests, static equality). The first full run's five failures
+were guard registrations for T22's additions (capability count, a no-edit trigger,
+a composite-key anchor, four platform-query justifications, fourteen labels); no
+guard was weakened. Evidence: `.evidence/AXR1-022-happy.txt`, `-failure.txt`,
+`-failure-restored.txt`, `-fix-redgreen.txt`, `-gates-final.txt`,
+`-placement.md`, `-gates-placed.txt` and the reviewer's `T22-RV*` artifacts.
+OD-04 and OG-08 remain **open**, as does every other owner/operator gate.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 22 to 29 and the final verification wave remain open.
+Todos 23 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -656,7 +698,18 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3918 passing**
+implementation head. The current default-suite baseline is **4072 passing** (92 deselected),
+verified at repaired `AXR1-022` code `af8e053` (tree `a5dbdfd`) on `AXR1-021`
+code `d8963b8`: the **3918** below plus **154** net-new
+default-suite cases. The same serial run passed isolation (**306**), CNPJ
+(**29**), browser (**92**), lint, format, mypy, migration drift and a clean
+rebuilt-static check. The placed head `6a78683` had passed the same gates (4072,
+isolation 306, CNPJ 29, browser 90). Evidence: `.evidence/AXR1-022-fix-gates.txt`,
+`.evidence/AXR1-022-gates-placed.txt` and the reviewers'
+`T22-RV-gates.txt` and `T22-RV2-confirm.md`. This status-only commit does not change the reviewed code;
+it sits on the `AXR1-021` status commit `0cb6ffe`.
+
+The previous default-suite baseline was **3918 passing**
 (86 deselected), verified at placed `AXR1-021` code `d8963b8` (tree `a294f13`) on
 `AXR1-020` repaired code `549d202`: the **3889** below plus **29** net-new
 default-suite cases. The same serial run passed isolation (**288**), CNPJ
@@ -664,8 +717,6 @@ default-suite cases. The same serial run passed isolation (**288**), CNPJ
 clean rebuilt-static check. The confirmation reviewer audited the repair's
 identical run at `51afd08` and reran the search and palette tests. Evidence:
 `.evidence/AXR1-021-gates-place3.txt` and `.evidence/T21-RV2-confirm.md`.
-This status-only commit does not change the reviewed code; it sits on the
-`AXR1-020` status commit `3e88991`.
 
 The previous default-suite baseline was **3889 passing**
 (78 deselected), verified at `AXR1-020` repaired code `549d202` (tree
@@ -810,7 +861,7 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **86** cases: the **24** passing at the T3
+`browser` job. The suite now contains **92** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
@@ -826,7 +877,9 @@ publication-receipt cases, plus the eight `AXR1-017` coverage-panel cases
 viewports), plus the four `AXR1-020` bulk-operation cases (the bulk journey
 and the remaining-quota preview at two viewports), plus the eight `AXR1-021`
 palette and search cases (the palette journeys at two viewports and the
-long-name reflow checks at 390 and 320 px). Every test in
+long-name reflow checks at 390 and 320 px), plus the six `AXR1-022`
+cases (the owner's profile, preference and account-export journey, staff not
+seeing owner billing or profile controls, and the two header-width checks). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
