@@ -18,7 +18,10 @@ dependency chain each case actually needs.
 from __future__ import annotations
 
 import importlib
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 import pytest
 from django.apps import apps as django_apps
@@ -37,10 +40,9 @@ from apps.core.tenancy import client_context, tenant_context
 from tests.conftest import PORTAL_TABLES
 from tests.isolation.axorim_seed import (
     CLIENT_PAIR_ONLY_MODELS,
-    NEW_CLIENT_MODELS,
-    NEW_OBLIGATION_MODELS,
     SeedContext,
     axorim_models,
+    client_paired_tables,
     make_seed_context,
     paired_parent_fks,
     paired_parent_targets,
@@ -58,18 +60,14 @@ MODELS: list[type[models.Model]] = axorim_models()
 SCOPED_MODELS: list[type[models.Model]] = [
     model for model in MODELS if issubclass(model, TenantScopedModel)
 ]
-# Client-scoped models: the swap probe applies to exactly these minus the tables
-# whose ONLY composite is the (tenant, client) pair itself, which are decisions
-# listed in CLIENT_PAIR_ONLY_MODELS.
+# Client-scoped models: rows carrying a client foreign key (field `client`,
+# column `client_id`). The swap probe applies to the subset whose table owns a
+# (tenant, client, parent) composite — named per-row from the live catalog by
+# client_paired_tables(), since parametrize lists cannot see the database.
 CLIENT_SCOPED_MODELS: list[type[models.Model]] = [
     model
     for model in SCOPED_MODELS
-    if any(field.name == "client_id" for field in model._meta.fields)
-]
-CLIENT_SWAP_MODELS: list[type[models.Model]] = [
-    model
-    for model in CLIENT_SCOPED_MODELS
-    if model._meta.db_table not in CLIENT_PAIR_ONLY_MODELS
+    if any(field.attname == "client_id" for field in model._meta.fields)
 ]
 
 
@@ -115,24 +113,36 @@ def test_the_enumeration_covers_every_axorim_model_and_nothing_else() -> None:
     # Given the registry plus the explicit additions lists
     assert_isolated_role()
 
-    # When the swept set is compared against the registry
+    # When the swept set is compared against the registry. The additions below
+    # are spelled out literally AGAIN — reading them from the constants the seed
+    # module defines would make the comparison tautological, and removing an
+    # entry from either side of the same constant would pass silently.
     labels = {m._meta.label for m in MODELS}
     expected = {
         m._meta.label
         for app in ("cycles", "delivery", "briefing", "automation")
         for m in django_apps.get_app_config(app).get_models()
     }
-    expected |= {f"clients.{n}" for n in NEW_CLIENT_MODELS}
-    expected |= {f"obligations.{n}" for n in NEW_OBLIGATION_MODELS}
+    expected |= {
+        "clients.ClientContact",
+        "clients.Engagement",
+        "clients.ImportBatch",
+        "clients.ImportRow",
+        "clients.TaxProfile",
+        "obligations.SourceObservation",
+        # AXR1-023's support-grant ledger.
+        "tenants.SupportGrant",
+    }
 
     # Then it is exactly the four new apps' full registry plus the named additions —
-    # a model added later without updating the lists fails HERE, named.
+    # a model added later without updating BOTH lists fails HERE, named.
     assert labels == expected, (
         "sweep list drifted from the registry; update NEW_CLIENT_MODELS / "
-        "NEW_OBLIGATION_MODELS so the addition is enumerated"
+        "NEW_OBLIGATION_MODELS / NEW_TENANT_MODELS and the literal set above so "
+        "the addition is enumerated"
     )
-    assert len(MODELS) == 44, (
-        f"expected 44 swept models as of cd19380, found {len(MODELS)}"
+    assert len(MODELS) == 45, (
+        f"expected 45 swept models as of 69f292f, found {len(MODELS)}"
     )
 
 
@@ -238,29 +248,93 @@ def test_the_row_exists_for_the_vacuity_check(
     assert count == 1, f"{table} seed did not land; the denial tests are vacuous"
 
 
-@pytest.mark.parametrize("model", CLIENT_SWAP_MODELS, ids=lambda m: m._meta.label)
+@pytest.fixture
+def client_paired() -> set[str]:
+    """Tables owning a (tenant, client, parent) composite, from the catalog."""
+    return client_paired_tables()
+
+
+@pytest.mark.parametrize("model", SCOPED_MODELS, ids=lambda m: m._meta.label)
 def test_a_paired_fk_rejects_the_cross_client_reference(
     model: type[models.Model],
     tenants: dict[str, SeedContext],
+    client_paired: set[str],
 ) -> None:
     # Given a child row pointing at alpha's client and alpha's parents
     assert_isolated_role()
+    table = model._meta.db_table
+    if table not in client_paired:
+        pytest.skip(f"{table} carries no client-bearing tenant composite")
     alpha = tenants["alpha"]
     row = seed_model(model, alpha)
     sibling = _sibling_client(alpha)
 
-    # When the row is moved to the OTHER client while its parent composites still
-    # name alpha's objects, the *_client_fk pairs must refuse the mismatch
-    with (
-        tenant_context(alpha.tenant.id),
-        pytest.raises(IntegrityError) as exc,
-        transaction.atomic(),
-    ):
-        _unscoped(model).filter(pk=row.pk).update(client_id=sibling.pk)
+    if table in _SWAP_INSERT_PROBES:
+        # These tables seed all-NULL client-paired columns, so an UPDATE probes
+        # no constraint. A fresh INSERT carrying the mismatched client and a
+        # real parent forces the composite on the write path it guards.
+        overrides: dict[str, object] = {"client": sibling}
+        overrides.update(_SWAP_INSERT_PROBES[table](model, alpha, row))
+        with (
+            tenant_context(alpha.tenant.id),
+            client_context(sibling.id),
+            pytest.raises((IntegrityError, ProgrammingError)) as exc,
+            transaction.atomic(),
+        ):
+            _clone_insert(model, row, alpha, overrides)
+    else:
+        # When the row is moved to the OTHER client while its parent composites
+        # still name alpha's objects, the *_client_fk pairs refuse the mismatch.
+        # Immutable ledgers answer earlier and harder: app_runtime holds no
+        # UPDATE grant on them at all (42501), which still proves the ORM path
+        # cannot retarget the row.
+        with (
+            tenant_context(alpha.tenant.id),
+            pytest.raises((IntegrityError, ProgrammingError)) as exc,
+            transaction.atomic(),
+        ):
+            _unscoped(model).filter(pk=row.pk).update(client_id=sibling.pk)
 
-    assert getattr(exc.value.__cause__, "sqlstate", None) == FK_VIOLATION, (
-        f"{model._meta.db_table} accepted a cross-client reference"
-    )
+    assert getattr(exc.value.__cause__, "sqlstate", None) in {
+        FK_VIOLATION,
+        PRIVILEGE_DENIED,
+    }, f"{model._meta.db_table} accepted a cross-client reference"
+
+
+# Tables where the swap must arrive as an INSERT, each with the extra columns a
+# usable clone needs: their seeded rows hold all-NULL client-paired columns, so
+# only a row born mismatched exercises the composite.
+def _agentrun_swap_parent(
+    model: type[models.Model], ctx: SeedContext, row: models.Model
+) -> dict[str, object]:
+    document = seed_model(django_apps.get_model("obligations", "Document"), ctx)
+    return {"document": document}
+
+
+def _taxprofile_swap_parent(
+    model: type[models.Model], ctx: SeedContext, row: models.Model
+) -> dict[str, object]:
+    return {"correction_of": row}
+
+
+def _deliveryeffect_swap_parent(
+    model: type[models.Model], ctx: SeedContext, row: models.Model
+) -> dict[str, object]:
+    message = seed_model(django_apps.get_model("delivery", "OutboundMessage"), ctx)
+    return {"message": message}
+
+
+_SWAP_INSERT_PROBES: dict[
+    str,
+    Callable[
+        [type[models.Model], SeedContext, models.Model],
+        dict[str, object],
+    ],
+] = {
+    "automation_agentrun": _agentrun_swap_parent,
+    "clients_taxprofile": _taxprofile_swap_parent,
+    "delivery_deliveryeffect": _deliveryeffect_swap_parent,
+}
 
 
 def _model_for_table(table: str) -> type[models.Model] | None:
@@ -390,12 +464,11 @@ def _clone_insert(
 
 def test_every_client_scoped_table_is_probed_or_decided(
     paired_fks: dict[tuple[str, str], str],
+    client_paired: set[str],
 ) -> None:
     # Given the catalog's composites over swept tables
     assert_isolated_role()
-    probed = set(_paired_targets(paired_fks)) | {
-        m._meta.db_table for m in CLIENT_SWAP_MODELS
-    }
+    probed = set(_paired_targets(paired_fks)) | client_paired
 
     # Then every client-scoped swept table is reached by at least one probe, or is
     # a declared pair-only table. A new table that composites on neither axis

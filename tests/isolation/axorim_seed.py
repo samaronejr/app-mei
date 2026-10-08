@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 
     from django.test import Client
 
-    from apps.cycles.effects.manifest import JSONValue
+    from apps.cycles.effects.manifest import DocumentEffect, JSONValue
+    from apps.cycles.records import ServiceCycle
 
 import hashlib
 import json
@@ -43,7 +44,11 @@ from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.core.models import TenantScopedModel
 from apps.core.tenancy import client_context, tenant_context
-from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.effects.manifest import (
+    ActionKind,
+    EffectManifestV1,
+    canonicalize,
+)
 from apps.tenants.models import Membership, Tenant, TenantRole
 
 PERIOD = dt.date(2026, 9, 1)
@@ -61,6 +66,8 @@ NEW_CLIENT_MODELS = (
     "TaxProfile",
 )
 NEW_OBLIGATION_MODELS = ("SourceObservation",)
+# AXR1-023: the support-grant ledger, tenant-scoped without a client column.
+NEW_TENANT_MODELS = ("SupportGrant",)
 
 # Client-scoped rows whose ONLY client-bearing constraint is the (tenant, client)
 # pair itself: swapping their client_id is schema-legal, so the cross-client probe
@@ -68,6 +75,7 @@ NEW_OBLIGATION_MODELS = ("SourceObservation",)
 # with a parent-scoped composite belongs on the probe side instead.
 CLIENT_PAIR_ONLY_MODELS = frozenset(
     {
+        "clients_clientcontact",
         "clients_engagement",
         "cycles_briefingfeedback",
         "cycles_contentpurgeclaim",
@@ -97,6 +105,9 @@ def axorim_models() -> list[type[models.Model]]:
     )
     selected.extend(
         django_apps.get_model("obligations", name) for name in NEW_OBLIGATION_MODELS
+    )
+    selected.extend(
+        django_apps.get_model("tenants", name) for name in NEW_TENANT_MODELS
     )
     return selected
 
@@ -281,33 +292,126 @@ def _collect_fields(
     return self_fk
 
 
+def _frozen_manifest(  # noqa: PLR0913, PLR0917 - one arg per manifest field
+    ctx: SeedContext,
+    cycle: ServiceCycle,
+    proposal_id: uuid6.UUID,
+    action_kind: ActionKind,
+    expires: dt.datetime,
+    not_before: dt.datetime | None,
+    payload: dict[str, JSONValue],
+    documents: tuple[DocumentEffect, ...] = (),
+) -> bytes:
+    """A seeded manifest through the real `EffectManifestV1.as_data()` path.
+
+    The frozen-proposal trigger only compares the identity/scalar fields, but
+    readers (the approval card, redaction, decision views) read every
+    collection key unconditionally. Hand-rolling the dict drifted once already
+    (missing `recipients` = KeyError in the card), so the bytes come from the
+    serializer itself with seeded-but-valid snapshots — any key a later
+    version adds is present the day it lands.
+    """
+    from apps.cycles.effects.build import (  # noqa: PLC0415
+        definition_hash,
+        initiation_capability,
+    )
+    from apps.cycles.effects.mail import smtp_account  # noqa: PLC0415
+
+    membership = Membership.objects.get(user=ctx.user, tenant=ctx.tenant)
+    policy: dict[str, JSONValue] = {
+        "allow_self_approval": ctx.tenant.allow_self_approval,
+        "quorum": ctx.tenant.approval_quorum,
+        "separation_of_duties": True,
+        "engagement_version": cycle.engagement.version,
+    }
+    manifest = EffectManifestV1(
+        tenant_id=str(ctx.tenant.id),
+        client_id=str(ctx.client.id),
+        engagement_id=str(cycle.engagement.pk),
+        cycle_id=str(cycle.pk),
+        cycle_revision=cycle.effect_revision,
+        amendment=cycle.amendment,
+        period_start=cycle.period_start,
+        period_end=cycle.period_end + dt.timedelta(days=1),
+        playbook_version_id=str(cycle.playbook_version.pk),
+        playbook_hash=definition_hash(cycle.playbook_version),
+        proposal_id=str(proposal_id),
+        proposal_revision=1,
+        business_intent_key=hashlib.sha256(
+            f"seed-{ctx.tag}-{proposal_id.hex[:12]}".encode()
+        ).hexdigest(),
+        action_kind=action_kind,
+        adapter_version="r1.1",
+        confirmation_contract_version="r1.1",
+        initiator_id=str(ctx.user.id),
+        destination={
+            "provider": (
+                "smtp" if action_kind is ActionKind.EMAIL_NOTICE else "axorim"
+            ),
+            "account_id": (
+                smtp_account()
+                if action_kind is ActionKind.EMAIL_NOTICE
+                else str(ctx.tenant.pk)
+            ),
+            "operation": action_kind,
+        },
+        payload=payload,
+        recipients=(),
+        money=(),
+        documents=documents,
+        evidence=(),
+        observations=(),
+        tax_profile_versions=(),
+        policy={
+            "id": str(ctx.tenant.pk),
+            "version": ctx.tenant.approval_policy_version,
+            "hash": hashlib.sha256(canonicalize(policy)).hexdigest(),
+        },
+        authorization={
+            "membership_id": str(membership.pk),
+            "membership_version": membership.version,
+            "portfolio_assignment_id": None,
+            "grants": (),
+        },
+        approval_rule={
+            "required_capability": initiation_capability(action_kind),
+            "quorum": ctx.tenant.approval_quorum,
+            "separation_of_duties": True,
+        },
+        not_before=not_before,
+        expires_at=expires,
+    )
+    return manifest.canonical_bytes()
+
+
 def _seed_action_proposal(model: type[models.Model], ctx: SeedContext) -> models.Model:
     """ActionProposal whose manifest_bytes the frozen-proposal trigger accepts.
 
-    The trigger compares manifest fields to the row's own columns, so the row is
-    built first (minus manifest/digest) and the manifest mirrors it verbatim.
+    The trigger compares manifest fields to the row's own columns, so the row
+    columns are copied verbatim into the manifest the serializer emits.
     """
     proposal_id = uuid6.uuid7()
     expires = timezone.now() + dt.timedelta(days=30)
     not_before = timezone.now() - dt.timedelta(minutes=1)
-    cycle = seed_model(django_apps.get_model("cycles", "ServiceCycle"), ctx)
-    intent = f"seed-{ctx.tag}-{proposal_id.hex[:12]}"
-    manifest = {
-        "schema": "axorim.effect.v1",
-        "tenant_id": str(ctx.tenant.id),
-        "client_id": str(ctx.client.id),
-        "cycle_id": str(cycle.pk),
-        "proposal_id": str(proposal_id),
-        "proposal_revision": 1,
-        "initiator_id": str(ctx.user.id),
-        "business_intent_key": intent,
-        "action_kind": ActionKind.EMAIL_NOTICE.value,
-        "expires_at": expires.isoformat(),
-        "not_before": not_before.isoformat(),
-        "payload": {},
-        "observations": [],
-    }
-    body = json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode()
+    cycle = cast(
+        "ServiceCycle",
+        seed_model(django_apps.get_model("cycles", "ServiceCycle"), ctx),
+    )
+    body = _frozen_manifest(
+        ctx,
+        cycle,
+        proposal_id,
+        ActionKind.EMAIL_NOTICE,
+        expires,
+        not_before,
+        {
+            "subject": f"aviso {ctx.tag}",
+            "body": "corpo",
+            "reason": "periodo",
+        },
+    )
+    # The manifest stores the key's hash; the column keeps the digest itself.
+    intent = json.loads(body)["business_intent_key"]
     with tenant_context(ctx.tenant.id), client_context(ctx.client.id):
         return _manager(model).create(
             id=proposal_id,
@@ -336,38 +440,41 @@ def _seed_client_publication(
     subject/body mirroring title/body_ptbr, payload documents identical to the
     row's documents column, and no 'withdrawal' key in payload.
     """
-    cycle = seed_model(django_apps.get_model("cycles", "ServiceCycle"), ctx)
-    intent = f"pub-{ctx.tag}-{uuid6.uuid7().hex[:12]}"
-    documents: list[dict[str, str]] = [
-        {"id": "d1", "sha256": "a" * 64, "name": "doc.pdf"}
-    ]
+    cycle = cast(
+        "ServiceCycle",
+        seed_model(django_apps.get_model("cycles", "ServiceCycle"), ctx),
+    )
     title = f"pub {ctx.tag}"
     body_ptbr = "corpo"
     expires = timezone.now() + dt.timedelta(days=30)
     not_before = timezone.now() - dt.timedelta(minutes=1)
     proposal_id = uuid6.uuid7()
-    manifest = {
-        "schema": "axorim.effect.v1",
-        "tenant_id": str(ctx.tenant.id),
-        "client_id": str(ctx.client.id),
-        "cycle_id": str(cycle.pk),
-        "proposal_id": str(proposal_id),
-        "proposal_revision": 1,
-        "initiator_id": str(ctx.user.id),
-        "business_intent_key": intent,
-        "action_kind": ActionKind.CLIENT_PUBLICATION.value,
-        "expires_at": expires.isoformat(),
-        "not_before": not_before.isoformat(),
-        "payload": {
-            "subject": title,
-            "body": body_ptbr,
-        },
-        "documents": documents,
-        "observations": [],
-    }
-    manifest_bytes = json.dumps(
-        manifest, separators=(",", ":"), sort_keys=True
-    ).encode()
+    # One frozen document row; the publication's documents column must equal
+    # the manifest's rendered array verbatim (trigger compares JSON equality).
+    manifest_bytes = _frozen_manifest(
+        ctx,
+        cycle,
+        proposal_id,
+        ActionKind.CLIENT_PUBLICATION,
+        expires,
+        not_before,
+        {"subject": title, "body": body_ptbr},
+        documents=(
+            {
+                "document_id": str(uuid6.uuid7()),
+                "sha256": "a" * 64,
+                "size": 128,
+                "intake_state": "accepted",
+                "scan_id": "clean",
+                "link_id": str(uuid6.uuid7()),
+                "link_revision": 1,
+                "review_state": "accepted",
+            },
+        ),
+    )
+    frozen = json.loads(manifest_bytes)
+    intent = frozen["business_intent_key"]
+    documents = frozen["documents"]
     proposal_model = django_apps.get_model("cycles", "ActionProposal")
     with tenant_context(ctx.tenant.id), client_context(ctx.client.id):
         proposal = _manager(proposal_model).create(
@@ -659,6 +766,31 @@ def paired_parent_fks() -> dict[tuple[str, str], str]:
     return pairs
 
 
+def client_paired_tables() -> set[str]:
+    """Tables carrying a `FOREIGN KEY (tenant_id, client_id, ...)` composite.
+
+    The client-swap probe applies to exactly these: only a constraint that
+    rebinds client_id to a same-client parent can refuse a client change.
+    Tables whose (tenant, client) pair stands alone — the pair-only decisions —
+    are absent from this catalog view and skip as schema truth, not by list.
+    """
+    tables: set[str] = set()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT conrelid::regclass::text
+              FROM pg_constraint
+             WHERE contype = 'f'
+               AND connamespace = 'public'::regnamespace
+               AND pg_get_constraintdef(oid)
+                       LIKE 'FOREIGN KEY (tenant_id, client_id,%%'
+            """
+        )
+        for (table,) in cursor.fetchall():
+            tables.add(str(table))
+    return tables
+
+
 def paired_parent_targets() -> dict[tuple[str, str], tuple[str, str]]:
     """{(table, fk_column): (parent_table, parent_column)}.
 
@@ -709,7 +841,7 @@ def signed_in_client(user: User, host: str) -> Client:
     `force_login` alone never records the authentication method, so a view or
     middleware that asks whether a second factor was used reads the session as
     stale and redirects — the caller would exercise the redirect, not the route.
-    The user must already hold a TOTP authenticator (`tests.support.enrol_totp`).
+    The user must already hold a TOTP authenticator (`enrol_totp` in tests/support.py).
     """
     import time  # noqa: PLC0415
 

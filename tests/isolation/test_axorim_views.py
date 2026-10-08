@@ -15,6 +15,7 @@ so a route converted to POST-only cannot silently leave this sweep.
 
 from __future__ import annotations
 
+import datetime as dt
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -31,6 +32,7 @@ from django.conf import settings
 from django.http import HttpResponse
 from django.test import Client
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.core.tenancy import client_context, tenant_context
@@ -60,6 +62,9 @@ class Route:
     name: str
     kwargs: dict[str, str]
     control_own_object: bool = True
+    # POST-only views that fold a refused lookup into a message + redirect
+    # (AXR1-023's support decisions answer 302 to the console, not 404).
+    accept_redirect: bool = False
 
 
 # Every URL name the pivot added, mapped to the model each path kwarg names. A new
@@ -142,6 +147,18 @@ FIRM_ROUTES: Final = (
     Route("firm-hold-release", {"hold_id": "cycles.legalhold"}),
     Route("member-review-toggle", {"pk": "tenants.membership"}),
     Route("portal-invite-issue", {"pk": "clients.clientcompany"}),
+    # AXR1-023: the owner-side support-grant decisions; both POST-only and
+    # both refuse by redirecting to the console with a flash, per support_views.
+    Route(
+        "firm-suporte-approve",
+        {"grant_id": "tenants.supportgrant"},
+        accept_redirect=True,
+    ),
+    Route(
+        "firm-suporte-revoke",
+        {"grant_id": "tenants.supportgrant"},
+        accept_redirect=True,
+    ),
 )
 
 # Paramless additions: asserted for marker absence on firm A's own render.
@@ -164,6 +181,9 @@ FIRM_PARAMLESS: Final = (
     "account-export-request",
     "invite-issue",
     "invite-issued",
+    # AXR1-027's operations page and AXR1-023's owner console.
+    "automations",
+    "firm-suporte",
 )
 
 # Portal routes take a portal session on `<slug>-portal.localhost`; the object
@@ -360,9 +380,10 @@ def test_a_firm_route_never_serves_tenant_bs_object(
     response = _request(alpha_session, route.name, beta_kwargs)
 
     # Then the object is never disclosed, and its ids never counted in the body
-    assert response.status_code in DENIED, (
-        f"{route.name} answered {response.status_code} for tenant B ids"
+    denied = response.status_code in DENIED or (
+        route.accept_redirect and response.status_code == HTTPStatus.FOUND
     )
+    assert denied, f"{route.name} answered {response.status_code} for tenant B ids"
     _assert_no_markers(response, tenants["beta"], *beta_kwargs.values())
 
     # Positive control where the route renders the object: firm A's own row must
@@ -482,6 +503,52 @@ def test_a_portal_route_never_serves_tenant_bs_object(
         f"{route.name} answered {response.status_code} for tenant B ids"
     )
     _assert_no_markers(response, tenants["beta"], *beta_kwargs.values())
+
+
+def test_a_support_grant_for_firm_a_admits_nothing_on_firm_b(
+    tenants: dict[str, SeedContext],
+) -> None:
+    # Given a platform staff account the alpha owner actively admitted
+    assert_isolated_role()
+    from apps.authz.support import resolve_support_grant  # noqa: PLC0415
+    from apps.tenants.models import SupportGrant  # noqa: PLC0415
+
+    alpha, beta = tenants["alpha"], tenants["beta"]
+    staff = User.objects.create_user(
+        email=f"support@{alpha.tag}.example.test", is_staff=True
+    )
+    with tenant_context(alpha.tenant.id):
+        SupportGrant.all_objects.create(
+            tenant=alpha.tenant,
+            requested_by=staff,
+            approved_by_owner=alpha.user,
+            purpose="cross-firm probe",
+            client_ids=[str(alpha.client.pk)],
+            starts_at=timezone.now() - dt.timedelta(hours=1),
+            expires_at=timezone.now() + dt.timedelta(hours=1),
+            approved_at=timezone.now(),
+        )
+    # Sanity: the row is live for firm A — the denial below is not vacuous.
+    assert resolve_support_grant(staff.pk, alpha.tenant.pk) is not None
+    assert resolve_support_grant(staff.pk, beta.tenant.pk) is None
+
+    # When the same staff session is carried onto firm B's host. The hostile
+    # request reuses the session cookie; a fresh force_login would only mint a
+    # second, honest session.
+    enrol_totp(staff)
+    session = _signed_in_client(staff, f"{alpha.tenant.slug}.localhost").session
+    hostile = Client(SERVER_NAME=f"{beta.tenant.slug}.localhost")
+    hostile.cookies[settings.SESSION_COOKIE_NAME] = str(session.session_key)
+
+    # Then every firm route on B's host refuses before a view runs: the grant
+    # names firm A, and RLS hides it from B's context besides.
+    for route_name in ("cycle-list", "firm-settings", "firm-suporte"):
+        response = hostile.get(reverse(route_name))
+        assert response.status_code in DENIED, (
+            f"{route_name} answered {response.status_code} for a grant that "
+            "only names firm A"
+        )
+        _assert_no_markers(response, beta)
 
 
 def test_company_select_refuses_a_seat_the_account_does_not_hold(
@@ -609,6 +676,10 @@ def test_every_new_route_name_is_swept() -> None:
         "portal-invite-issue",
         "clients-export-csv",
         "clients-list",
+        "automations",
+        "firm-suporte",
+        "firm-suporte-approve",
+        "firm-suporte-revoke",
     }
 
     # Then every added name is swept or explicitly decided — a new URL added
