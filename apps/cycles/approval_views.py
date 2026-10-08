@@ -18,6 +18,7 @@ from apps.authz.approvals import may_configure_policy, proposal_controls
 from apps.authz.services import require_can
 from apps.authz.support import in_support_mode
 from apps.clients.maintenance import load_client
+from apps.clients.models import ClientContact
 from apps.clients.views import require_tenant
 from apps.cycles.approval_forms import (
     OBSERVATION_SOURCE_LABELS,
@@ -229,6 +230,23 @@ def _card(
         }
         for row in frozen["observations"]
     ]
+    # Names identify the frozen contacts for the reader; the frozen address stays
+    # the fact. A support visit resolves none, as it carries no addressee away.
+    names = (
+        {}
+        if in_support_mode()
+        else {
+            str(pk): name
+            for pk, name in ClientContact.objects.filter(
+                client_id=proposal.client_id,
+                pk__in={row["contact_id"] for row in frozen["recipients"]},
+            ).values_list("pk", "name")
+        }
+    )
+    recipients = [
+        {**row, "name": names.get(row["contact_id"], "")}
+        for row in frozen["recipients"]
+    ]
     execution = ActionExecution.objects.filter(proposal=proposal).first()
     action_label = (
         "Reabrir ciclo"
@@ -249,6 +267,7 @@ def _card(
                 and expires_at > now
             ),
             "frozen": frozen,
+            "recipients": recipients,
             "dates": dates,
             "expired": expires_at <= now,
             "observations": observations,

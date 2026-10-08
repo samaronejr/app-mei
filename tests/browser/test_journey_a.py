@@ -288,6 +288,10 @@ def test_journey_a_from_hoje_to_a_completed_cycle(  # noqa: PLR0915 - one journe
             "E-mail"
         )
         expect(recipients.filter(has_text="Acesso no portal")).to_have_count(1)
+        expect(recipients.filter(has_text="Acesso no portal")).not_to_contain_text(
+            str(setup.portal_user.pk)
+        )
+        expect(recipients.first).to_contain_text(setup.contact.name)
         record(staff, "a-08-publication-card")
 
         # 4. Owner approves and executes; the client acknowledges.

@@ -78,6 +78,15 @@ def test_card_is_a_read_only_view_of_frozen_facts_before_decisions(desk: Desk) -
         assert CycleEvent.objects.count() == event_count
 
 
+def test_card_names_each_frozen_recipient_beside_its_address(desk: Desk) -> None:
+    html = desk.owner.get(f"/acoes/{desk.setup.proposal.pk}/").content.decode()
+    section = html[
+        html.index('id="frozen-recipients"') : html.index('id="frozen-message"')
+    ]
+    assert desk.setup.contact.name in section
+    assert "recipient@example.test" in section
+
+
 def test_approve_post_persists_exact_decision_and_stale_post_is_409(desk: Desk) -> None:
     setup = desk.setup
     url = f"/acoes/{setup.proposal.pk}/"

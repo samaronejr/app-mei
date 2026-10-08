@@ -34,8 +34,8 @@ Empty collections share one compact line, and the technical identity of this ver
       {% if empty_sections %}<p class="ui-panel px-4 py-2.5 text-sm text-ink-700" data-empty-sections><span class="font-semibold text-ink-800">Não integram esta versão:</span> {{ empty_sections|join:", " }}.</p>{% endif %}
       {% if frozen.recipients %}<section class="ui-panel" aria-labelledby="frozen-recipients">
         <h2 id="frozen-recipients" class="ui-panel-heading">Destinatários exatos · {{ frozen.recipients|length }}</h2>
-        <ul class="grid gap-3 px-4 py-3">{% for recipient in frozen.recipients %}
-          <li class="min-w-0" data-frozen-recipient><p class="break-all font-semibold">{{ recipient.address }}</p><p class="text-sm text-ink-600">{% if recipient.channel == 'email' %}E-mail{% else %}Acesso no portal{% endif %} · destinatário direto</p></li>
+        <ul class="grid gap-3 px-4 py-3">{% for recipient in recipients %}
+          <li class="min-w-0" data-frozen-recipient><p class="break-words font-semibold">{{ recipient.name|default:"Contato do cliente" }}</p><p class="text-sm text-ink-600">{% if recipient.channel == 'email' %}<span class="break-all">{{ recipient.address }}</span> · E-mail{% else %}Acesso no portal{% endif %} · destinatário direto</p></li>
         {% endfor %}</ul>
       </section>{% endif %}
       <section class="ui-panel" aria-labelledby="frozen-message">
@@ -123,7 +123,7 @@ Empty collections share one compact line, and the technical identity of this ver
           {% if frozen.payload.supersedes %}<div class="min-w-0"><dt class="font-semibold">SHA-256 preservado da versão anterior</dt><dd><code class="block break-all text-xs">{{ frozen.payload.supersedes.digest }}</code></dd></div>{% endif %}
           <div class="min-w-0"><dt class="font-semibold">Política</dt><dd><code class="block break-all text-xs">{{ frozen.policy.hash }}</code></dd></div>
           <div class="min-w-0"><dt class="font-semibold">Conta de destino</dt><dd><code class="block break-all text-xs">{{ frozen.destination.account_id }}</code></dd></div>
-          {% for recipient in frozen.recipients %}<div class="min-w-0"><dt class="break-all font-semibold">Contato · {{ recipient.address }}</dt><dd><code class="block break-all text-xs">{{ recipient.contact_id }}</code></dd></div>{% endfor %}
+          {% for recipient in recipients %}<div class="min-w-0"><dt class="break-all font-semibold">Contato · {{ recipient.name|default:recipient.address }}</dt><dd><code class="block break-all text-xs">{{ recipient.contact_id }}</code></dd></div>{% endfor %}
           {% for document in frozen.documents %}<div class="min-w-0"><dt class="break-all font-semibold">Documento {{ document.document_id }}</dt><dd><span class="text-xs text-ink-600">SHA-256</span><code class="block break-all text-xs">{{ document.sha256 }}</code><span class="block break-all text-xs text-ink-600">Registro de verificação {{ document.scan_id }}</span></dd></div>{% endfor %}
           {% for source in observations %}<div class="min-w-0"><dt class="font-semibold">Observação · {{ source.source_label }}</dt><dd><code class="block break-all text-xs">{{ source.id }}</code></dd></div>{% endfor %}
         </dl>

@@ -340,6 +340,8 @@ def test_approvals_stay_denied_under_a_grant() -> None:
     session = _session_for(staff, f"{graph.tenant.slug}.localhost")
     card = session.get(f"/acoes/{scenario.proposal.pk}/")
     assert card.status_code == HTTPStatus.OK
+    # A support visit carries no addressee away: contact names stay unresolved.
+    assert scenario.contact.name not in card.content.decode()
 
     response = session.post(
         f"/acoes/{scenario.proposal.pk}/",
