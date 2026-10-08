@@ -29,6 +29,15 @@ JOB_LABELS: Final = {
     "materialize_receipt_observations": "Leitura de comprovantes",
     "record_scheduler_heartbeat": "Sinal do agendador",
     "refresh_das_calendars": "Atualização do calendário DAS",
+    "record_usage": "Registro diário de uso",
+    "offboard_expired_engagements": "Encerramentos após o prazo",
+    "queue_daily_summaries": "Resumo diário por e-mail",
+    "dispatch_firm_outbox": "Envios de avisos do escritório",
+    "sweep_account_exports": "Exportação da conta",
+    "sweep_evidence_exports": "Exportação de evidências",
+    "purge_expired_content": "Retenção de conteúdo",
+    "resume_bulk_operations": "Operações em lote",
+    "purge_agent_outputs": "Retenção de registros internos de processamento",
 }
 
 

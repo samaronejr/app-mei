@@ -6,9 +6,10 @@ from unittest.mock import patch
 import pytest
 from celery.schedules import crontab
 from django.apps import apps
+from django.conf import settings as project_settings
 from pytest_django.fixtures import SettingsWrapper
 
-from apps.delivery.jobs import registered_jobs
+from apps.delivery.jobs import JOB_LABELS, registered_jobs
 from apps.obligations.models import SchedulerHeartbeat
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -114,3 +115,15 @@ def test_newly_registered_job_appears_without_a_hard_coded_inventory(
     assert jobs[0].name == "future-registered-job"
     assert jobs[0].last_completed_at is None
     assert jobs[0].next_run_at == NOW + timedelta(seconds=73)
+
+
+def test_every_shipped_job_has_a_portuguese_label() -> None:
+    # Given every task the product actually registers with beat.
+    tasks = {
+        definition["task"].rsplit(".", 1)[-1]
+        for definition in project_settings.CELERY_BEAT_SCHEDULE.values()
+    }
+
+    # Then the Automações page names each one; the identifier fallback is only for
+    # registrations this version does not ship.
+    assert sorted(tasks - JOB_LABELS.keys()) == []
