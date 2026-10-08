@@ -13,7 +13,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.services import can
-from apps.authz.support import current_support
+from apps.authz.support import current_support, resolve_support_grant
 from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id
 from apps.tenants.account_state import require_writable
@@ -51,8 +51,6 @@ def lock_firm_settings(actor: User, tenant_id: UUID) -> tuple[User, Tenant]:
         # membership substitute here, re-checked live at the moment of the write
         # — never the request stash the middleware bound, which a revocation
         # landing between bind and write would leave stale.
-        from apps.authz.support import resolve_support_grant
-
         live = resolve_support_grant(fresh.pk, tenant_id)
         if (
             live is not None

@@ -11,6 +11,7 @@ the rendering Django performs inside it.
 """
 
 from collections.abc import Callable
+from typing import cast
 from uuid import UUID
 
 from django.conf import settings
@@ -26,7 +27,7 @@ from apps.authz.support import (
 )
 from apps.core.tenancy import tenant_context
 from apps.tenants.admin_tenancy import ADMIN_TENANT_SESSION_KEY, may_operate_as
-from apps.tenants.middleware import slug_from_host
+from apps.tenants.middleware import TenantHttpRequest, slug_from_host
 from apps.tenants.models import Membership, Tenant
 from apps.tenants.read_only import account_admission
 
@@ -76,7 +77,7 @@ class AdminTenantMiddleware:
             # Bind for the outer SupportRequestAuditMiddleware the same way the
             # firm-host middleware does, so admin-console requests under a grant
             # land in the dual audit stream too.
-            setattr(request, "support_grant", grant)
+            cast("TenantHttpRequest", request).support_grant = grant
             if grant is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
                 raise PermissionDenied
             binding = (

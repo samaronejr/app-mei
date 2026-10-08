@@ -16,18 +16,19 @@ from http import HTTPStatus
 from uuid import UUID
 
 import pytest
-from django.core.exceptions import PermissionDenied
-from django.http import Http404
 from django.db import IntegrityError, connection, transaction
+from django.http import Http404
 from django.test import Client
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event, PlatformEvent
+from apps.authz.support import SupportContext, current_support
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
 from apps.delivery.models import MessageState, OutboundMessage
 from apps.tenants.models import Tenant, TenantRole
+from apps.tenants.services import lock_firm_settings
 from apps.tenants.support import (
     SupportApproval,
     approve_support_grant,
@@ -600,8 +601,6 @@ def test_revoked_grant_cannot_write_mid_request() -> None:
     The stash is bound once per request; a revocation landing between bind and
     write must still fail closed. The stale-stash write proves it.
     """
-    from apps.tenants.services import lock_firm_settings
-
     firm = enabled_firm("support-revoke-write")
     staff = _staff()
     grant = _grant_for(
@@ -622,8 +621,6 @@ def test_revoked_grant_cannot_write_mid_request() -> None:
     # And a service call handed the stale stash must still fail closed: the
     # write path re-reads the grant row, never trusts the bound snapshot.
     with tenant_context(firm.tenant.pk):
-        from apps.authz.support import SupportContext, current_support
-
         stale = SupportContext(
             grant_id=grant.pk,
             tenant_id=firm.tenant.pk,

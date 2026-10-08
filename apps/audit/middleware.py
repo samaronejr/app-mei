@@ -8,7 +8,8 @@ outlive them.
 """
 
 from collections.abc import Callable
-from typing import cast
+from typing import Any, Protocol, cast
+from uuid import UUID
 
 from django.conf import settings
 from django.http import HttpRequest
@@ -26,7 +27,14 @@ from apps.audit.services import (
     record_platform_event,
 )
 from apps.core.netaddr import client_ip
-from apps.tenants.support_models import SupportGrant
+
+
+class _SupportGrant(Protocol):
+    """The two attributes the audit write reads off a live grant row."""
+
+    tenant_id: UUID
+    pk: UUID
+
 
 UA_MAX_LENGTH = 1024
 PATH_MAX_LENGTH = 2048
@@ -184,18 +192,19 @@ class SupportRequestAuditMiddleware:
 
     def __call__(self, request: HttpRequest) -> HttpResponseBase:
         """Serve the request, then dual-write it when a grant was attached."""
-        response = None
         try:
             response = self.get_response(request)
-            return response
-        finally:
-            grant = getattr(request, "support_grant", None)
-            if grant is not None and not self._is_exempt(request.path_info):
-                self._record(
-                    request,
-                    grant,
-                    response.status_code if response is not None else 500,
-                )
+        except Exception:
+            self._audit(request, 500)
+            raise
+        self._audit(request, response.status_code)
+        return response
+
+    def _audit(self, request: HttpRequest, status_code: int) -> None:
+        """Dual-write when a grant rode the request; exempts stay quiet."""
+        grant = getattr(request, "support_grant", None)
+        if grant is not None and not self._is_exempt(request.path_info):
+            self._record(request, grant, status_code)
 
     @staticmethod
     def _is_exempt(path: str) -> bool:
@@ -203,9 +212,9 @@ class SupportRequestAuditMiddleware:
         return path.startswith(tuple(settings.ACCESS_LOG_EXEMPT_PREFIXES))
 
     @staticmethod
-    def _record(request: HttpRequest, grant: object, status_code: int) -> None:
+    def _record(request: HttpRequest, grant: _SupportGrant, status_code: int) -> None:
         """Write one row into each audit stream for this request."""
-        grant = cast("SupportGrant", getattr(request, "support_grant"))
+        grant = cast("Any", request).support_grant
         metadata: dict[str, object] = {
             "method": request.method or "",
             "path": request.path_info[:PATH_MAX_LENGTH],
