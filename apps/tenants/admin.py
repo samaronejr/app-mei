@@ -16,8 +16,10 @@ from apps.audit.services import Origin, record_platform_event
 from apps.core.flags import FEATURES
 from apps.core.netaddr import client_ip
 from apps.core.templatetags.ptbr import TENANT_ROLE_LABELS, papel
+from apps.core.tenancy import tenant_context
 from apps.tenants.authority import lock_users
 from apps.tenants.models import (
+    BillingAccount,
     Invite,
     Membership,
     Tenant,
@@ -226,6 +228,9 @@ class TenantAdmin(admin.ModelAdmin[Tenant]):
         if change:
             obj.settings_version += 1
         super().save_model(request, obj, form, change)
+        if not change:
+            with tenant_context(obj.pk):
+                BillingAccount.objects.create(tenant=obj)
         record_platform_event(
             action=AuditAction.TENANT_UPDATED,
             origin=Origin(
