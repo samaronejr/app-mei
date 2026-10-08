@@ -74,7 +74,7 @@ def test_provider_failure_retains_deterministic_result(
         message = "unavailable"
         raise ProviderError(message)
 
-    monkeypatch.setattr(FakeLLM, "complete", fail)
+    monkeypatch.setattr(FakeLLM, "send", fail)
     assert run_shadow(setup.graph.tenant.pk, intake.pk) == "provider_error"
     with tenant_context(setup.graph.tenant.pk):
         assert list(ExtractedField.objects.values()) == before
@@ -129,7 +129,7 @@ def test_durable_caps_prevent_provider_calls(
     def unexpected(*args: object) -> None:
         pytest.fail("provider called after durable budget exhausted")
 
-    monkeypatch.setattr(FakeLLM, "complete", unexpected)
+    monkeypatch.setattr(FakeLLM, "send", unexpected)
     assert run_shadow(setup.graph.tenant.pk, intake.pk) == "skipped"
 
 
@@ -143,7 +143,7 @@ def test_changed_source_bytes_are_never_sent_to_provider(
     def unexpected(*args: object) -> None:
         pytest.fail("changed source reached provider")
 
-    monkeypatch.setattr(FakeLLM, "complete", unexpected)
+    monkeypatch.setattr(FakeLLM, "send", unexpected)
     assert run_shadow(setup.graph.tenant.pk, intake.pk) == "provider_error"
     with tenant_context(setup.graph.tenant.pk):
         assert AgentRun.objects.get().error_code == "source_integrity"
@@ -157,7 +157,7 @@ def test_provider_soft_limit_records_failure_without_refund(
     def timeout(*args: object) -> None:
         raise SoftTimeLimitExceeded
 
-    monkeypatch.setattr(FakeLLM, "complete", timeout)
+    monkeypatch.setattr(FakeLLM, "send", timeout)
     assert run_shadow(setup.graph.tenant.pk, intake.pk) == "provider_error"
     with tenant_context(setup.graph.tenant.pk):
         run = AgentRun.objects.get()

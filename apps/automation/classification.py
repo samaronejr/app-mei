@@ -30,6 +30,15 @@ URL: Final = re.compile(
     r"\b(?:\d{1,3}\.){3}\d{1,3}\b)",
     re.IGNORECASE,
 )
+# NFKC leaves the ideographic full stop; map every dot variant to ASCII.
+DOTS: Final = str.maketrans(dict.fromkeys("\u3002\uff0e\uff61\ufe52", "."))
+# A host in any script: letter/digit labels joined by dots and ending in a
+# label of two or more letters, e.g. exemplo.\u0440\u0444 or \u4f8b\u5b50.\u6d4b\u8bd5.
+LABEL: Final = r"[^\W_](?:[\w-]*[^\W_])?"
+WEB_HOST: Final = re.compile(
+    rf"(?<![\w-]){LABEL}(?:\.{LABEL})*\.[^\W\d_]{{2,}}(?![\w-])"
+)
+CANDIDATE: Final = re.compile(r"\S+")
 IDENTIFIER: Final = re.compile(
     r"[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}",
     re.IGNORECASE,
@@ -90,12 +99,31 @@ def _string(value: JSONValue, maximum: int) -> str:
     return value
 
 
+def _idna_reference(text: str) -> bool:
+    """Run the ASCII reference check on the punycode form of non-ASCII hosts."""
+    for candidate in CANDIDATE.findall(text):
+        if candidate.isascii() or "." not in candidate:
+            continue
+        try:
+            encoded = candidate.encode("idna").decode("ascii")
+        except UnicodeError:
+            continue
+        if URL.search(encoded):
+            return True
+    return False
+
+
 def _safe(value: str, client_cnpj: str) -> None:
     normalized = unicodedata.normalize("NFKC", unquote(value))
     normalized = "".join(
         char for char in normalized if unicodedata.category(char) != "Cf"
-    )
-    if URL.search(normalized) or IDENTIFIER.search(normalized):
+    ).translate(DOTS)
+    if (
+        URL.search(normalized)
+        or WEB_HOST.search(normalized)
+        or _idna_reference(normalized)
+        or IDENTIFIER.search(normalized)
+    ):
         message = "external_reference"
         raise UnsafeOutputError(message)
     # Output has a stricter boundary than document recognition: a label/prefix

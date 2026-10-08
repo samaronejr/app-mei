@@ -4,6 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from http.client import HTTPConnection
 from io import StringIO
 from threading import Barrier
 from uuid import UUID
@@ -22,12 +23,13 @@ from apps.automation.dataset import minimal_pdf
 from apps.automation.llm import FakeLLM
 from apps.automation.models import AgentRun, EvalRun
 from apps.automation.shadow import run_shadow
-from apps.automation.types import Budget, JSONObject, Message, ProviderError, Result
+from apps.automation.types import PreparedCall, ProviderError, Result
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake
 from apps.tenants.models import Tenant, UsageKind, UsageMetric, UsageRecord
 from apps.tenants.usage import cost_estimate
 from tests.ai.fixtures import single_company
+from tests.ai.test_provider import wire
 from tests.cycles.document_fixtures import reviewed
 from tests.portal.request_fixtures import PortalSetup, portal_setup
 from tests.support_threads import run_in_thread_as_runtime
@@ -93,18 +95,13 @@ def test_a_dispatched_run_is_metered_once_and_committed_before_the_call(
     tid = setup.graph.tenant.pk
     at(monkeypatch, instant)
     seen_by_another_session: list[int] = []
-    original = FakeLLM.complete
+    original = FakeLLM.send
 
-    def observe(
-        self: FakeLLM,
-        schema: JSONObject,
-        messages: tuple[Message, ...],
-        budget: Budget,
-    ) -> Result:
+    def observe(self: FakeLLM, prepared: PreparedCall) -> Result:
         seen_by_another_session.append(run_in_thread_as_runtime(tid, committed_calls))
-        return original(self, schema, messages, budget)
+        return original(self, prepared)
 
-    monkeypatch.setattr(FakeLLM, "complete", observe)
+    monkeypatch.setattr(FakeLLM, "send", observe)
     assert run_shadow(tid, intake.pk) == "completed"
     assert seen_by_another_session == [1]
     with tenant_context(tid):
@@ -171,7 +168,7 @@ def test_runs_that_end_before_dispatch_are_not_metered(
     def unexpected(*args: object) -> None:
         pytest.fail("provider called although a local decision ended the run")
 
-    monkeypatch.setattr(FakeLLM, "complete", unexpected)
+    monkeypatch.setattr(FakeLLM, "send", unexpected)
     expected = {
         "local_abstention": ("completed", ""),
         "changed_source": ("provider_error", "source_integrity"),
@@ -223,7 +220,7 @@ def test_a_failure_after_dispatch_is_still_metered(
 ) -> None:
     intake = single_company(setup)
     tid = setup.graph.tenant.pk
-    monkeypatch.setattr(FakeLLM, "complete", reply)
+    monkeypatch.setattr(FakeLLM, "send", reply)
     assert run_shadow(tid, intake.pk) == state
     with tenant_context(tid):
         run = AgentRun.objects.get()
@@ -319,3 +316,123 @@ def test_owner_estimate_sums_this_months_calls_and_needs_a_price(
     # Gauges were never measured and the other metrics have no price.
     assert not priced.complete
     assert priced.total is None
+
+
+def real_adapter(settings: SettingsWrapper) -> None:
+    settings.AI_PROVIDER = "openai"
+    settings.AI_REAL_DATA_APPROVED = True
+    settings.AI_MODEL = "synthetic-fixture"
+    settings.AI_API_KEY = "synthetic-not-a-key"
+    settings.AI_INPUT_BRL_PER_MILLION = "1"
+    settings.AI_OUTPUT_BRL_PER_MILLION = "1"
+
+
+@pytest.mark.parametrize(
+    ("refusal", "code"),
+    [
+        ("missing_key", "provider_gate_closed"),
+        ("unpriced", "pricing_required"),
+        ("call_ceiling", "call_budget_exceeded"),
+    ],
+)
+def test_local_adapter_refusals_record_no_usage(
+    setup: PortalSetup,
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+    refusal: str,
+    code: str,
+) -> None:
+    intake = single_company(setup)
+    tid = setup.graph.tenant.pk
+    real_adapter(settings)
+    if refusal == "missing_key":
+        settings.AI_API_KEY = ""
+    if refusal == "unpriced":
+        settings.AI_INPUT_BRL_PER_MILLION = "0"
+    if refusal == "call_ceiling":
+        settings.AI_INPUT_BRL_PER_MILLION = "1000000"
+
+    def no_transport(*args: object, **kwargs: object) -> None:
+        pytest.fail("a local refusal built an HTTP transport")
+
+    monkeypatch.setattr("apps.automation.provider.HTTPSConnection", no_transport)
+    assert run_shadow(tid, intake.pk) == "provider_error"
+    with tenant_context(tid):
+        run = AgentRun.objects.get()
+    assert (run.state, run.error_code) == ("provider_error", code)
+    assert run.finalized_at is not None
+    assert calls(tid) == []
+
+
+@pytest.mark.parametrize("failure", ["schema", "meter"])
+def test_an_unexpected_local_failure_finalizes_the_run_without_dispatch(
+    setup: PortalSetup, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    intake = single_company(setup)
+    tid = setup.graph.tenant.pk
+
+    def broken(*args: object) -> None:
+        message = f"synthetic {failure} failure"
+        raise RuntimeError(message)
+
+    def dispatched(*args: object) -> None:
+        pytest.fail("the provider was reached after a local failure")
+
+    monkeypatch.setattr(
+        shadow, "schema" if failure == "schema" else "record_dispatch", broken
+    )
+    monkeypatch.setattr(FakeLLM, "send", dispatched)
+    with pytest.raises(RuntimeError, match=f"synthetic {failure} failure"):
+        run_shadow(tid, intake.pk)
+    with tenant_context(tid):
+        run = AgentRun.objects.get()
+    assert (run.state, run.error_code) == ("provider_error", "internal_error")
+    assert run.finalized_at is not None
+    assert calls(tid) == []
+
+
+class SilentTransport:
+    def __init__(self, host: str, timeout: int) -> None:
+        self.host, self.timeout = host, timeout
+
+    def request(self, *args: object) -> None:
+        message = "synthetic timeout"
+        raise TimeoutError(message)
+
+    def close(self) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    ("reply", "code"),
+    [(b"[]", "provider_response_invalid"), (None, "provider_unavailable")],
+    ids=["malformed-reply", "transport-timeout"],
+)
+def test_real_adapter_failures_after_dispatch_count_once(
+    setup: PortalSetup,
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: bytes | None,
+    code: str,
+) -> None:
+    intake = single_company(setup)
+    tid = setup.graph.tenant.pk
+    real_adapter(settings)
+    if reply is None:
+        monkeypatch.setattr("apps.automation.provider.HTTPSConnection", SilentTransport)
+        assert run_shadow(tid, intake.pk) == "provider_error"
+    else:
+        with wire(reply) as (server, bodies):
+
+            def transport(host: str, timeout: int) -> HTTPConnection:
+                return HTTPConnection("127.0.0.1", server.server_port, timeout=timeout)
+
+            monkeypatch.setattr("apps.automation.provider.HTTPSConnection", transport)
+            assert run_shadow(tid, intake.pk) == "provider_error"
+        assert len(bodies) == 1
+    with tenant_context(tid):
+        run = AgentRun.objects.get()
+    assert run.error_code == code
+    assert [(record.source_event, record.quantity) for record in calls(tid)] == [
+        (run.pk, 1)
+    ]

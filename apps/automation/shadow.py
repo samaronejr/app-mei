@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Final
 from uuid import UUID
@@ -81,6 +82,17 @@ def record_dispatch(tenant_id: UUID, run_id: UUID) -> bool:
     return created
 
 
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """How one run ends; its content survives only while the source is current."""
+
+    state: RunState
+    error: str = ""
+    output: JSONObject = field(default_factory=dict)
+    cost: Decimal | None = None
+    latency: int = 0
+
+
 def run_shadow(tenant_id: UUID, intake_id: UUID) -> str:
     """Failures are private records; never change deterministic fields or intake."""
     assert_no_transaction()
@@ -105,9 +117,13 @@ def run_shadow(tenant_id: UUID, intake_id: UUID) -> str:
             )
         else:
             client = configured_client(tenant_id)
-            messages = messages_for(ticket.client_cnpj, text, ticket.expected_documents)
+            prepared = client.prepare(
+                schema(),
+                messages_for(ticket.client_cnpj, text, ticket.expected_documents),
+                ticket.budget,
+            )
             record_dispatch(tenant_id, ticket.run_id)
-            result = client.complete(schema(), messages, ticket.budget)
+            result = client.send(prepared)
         cost, latency = result.cost_brl, result.latency_ms
         output = validate_output(result.output, ticket.client_cnpj).as_json()
     except UnsafeOutputError:
@@ -118,15 +134,24 @@ def run_shadow(tenant_id: UUID, intake_id: UUID) -> str:
         state, error = RunState.PROVIDER_ERROR, "source_unreadable"
     except SoftTimeLimitExceeded:
         state, error = RunState.PROVIDER_ERROR, "provider_timeout"
-    with tenant_context(tenant_id):
+    except Exception:
+        # Never strand the reservation as PENDING; the bug still surfaces.
+        _finalize(ticket, Outcome(RunState.PROVIDER_ERROR, "internal_error"))
+        raise
+    return _finalize(ticket, Outcome(state, error, output, cost, latency))
+
+
+def _finalize(ticket: Ticket, outcome: Outcome) -> str:
+    with tenant_context(ticket.tenant_id):
         run = AgentRun.objects.select_for_update().get(pk=ticket.run_id)
         if run.state != RunState.PENDING:
             return str(run.state)
+        state, error, output = outcome.state, outcome.error, outcome.output
         if run.document_id is None or run.expires_at <= timezone.now():
             output = {}
             state, error = RunState.DISCARDED, "source_removed_or_expired"
         run.state, run.error_code, run.output = state, error, output
-        run.cost_brl, run.latency_ms = cost, latency
+        run.cost_brl, run.latency_ms = outcome.cost, outcome.latency
         run.finalized_at = timezone.now()
         run.save(
             update_fields=[

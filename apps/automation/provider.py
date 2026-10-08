@@ -20,6 +20,7 @@ from apps.automation.types import (
     JSONObject,
     JSONValue,
     Message,
+    PreparedCall,
     ProviderError,
     Result,
 )
@@ -78,11 +79,10 @@ def _completion(data: bytes) -> tuple[str, int, int]:
 class OpenAIClient:
     """Transport-only adapter; never an owner provider/DPA decision."""
 
-    def complete(
+    def prepare(
         self, schema: JSONObject, messages: tuple[Message, ...], budget: Budget
-    ) -> Result:
-        """Call the fixed provider host after checking the conservative cost bound."""
-        assert_no_transaction()
+    ) -> PreparedCall:
+        """Check gates, pricing and the conservative cost bound; build offline."""
         if (
             settings.AI_GLOBAL_DISABLED
             or settings.AI_PROVIDER != "openai"
@@ -129,13 +129,34 @@ class OpenAIClient:
         if ceiling > budget.max_brl:
             message = "call_budget_exceeded"
             raise ProviderError(message)
+        return PreparedCall(
+            schema,
+            messages,
+            budget,
+            body=payload,
+            input_brl_per_million=input_rate,
+            output_brl_per_million=output_rate,
+        )
+
+    def complete(
+        self, schema: JSONObject, messages: tuple[Message, ...], budget: Budget
+    ) -> Result:
+        """Prepare and send in one step."""
+        return self.send(self.prepare(schema, messages, budget))
+
+    def send(self, prepared: PreparedCall) -> Result:
+        """Send one bounded HTTPS POST of an already checked request."""
+        assert_no_transaction()
+        budget = prepared.budget
+        input_rate = prepared.input_brl_per_million
+        output_rate = prepared.output_brl_per_million
         started = monotonic()
         try:
             with closing(HTTPSConnection("api.openai.com", timeout=15)) as transport:
                 transport.request(
                     "POST",
                     "/v1/chat/completions",
-                    payload,
+                    prepared.body,
                     {
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {settings.AI_API_KEY}",

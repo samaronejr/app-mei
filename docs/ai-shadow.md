@@ -26,7 +26,10 @@ Only clean, classified/linked documents with an EvidenceLink are eligible.
 Divergent, quarantined and unscanned sources are refused both before enqueue and
 at admission. Empty text, missing/multiple CNPJs produce a local abstention.
 The output parser rejects extra properties, duplicate keys, other client
-identifiers and URLs. Prompt delimiters are not the security boundary.
+identifiers and web references in any script: text is NFKC-normalized, dot
+variants (`。`, `．`, `｡`, `﹒`) become `.`, hosts whose labels are Unicode
+letters or digits are refused, and non-ASCII tokens are rechecked in punycode.
+Prompt delimiters are not the security boundary.
 
 Each attempt reserves R$0.025 in AgentRun before I/O. Admission holds a PostgreSQL
 transaction advisory lock while checking those durable records: at most two
@@ -45,10 +48,14 @@ failures cannot roll it back.
 
 Metering is separate from admission. Each run that reaches the provider writes one
 AXR1-022 `UsageRecord(metric=ai_shadow_calls, quantity=1, kind=confirmed)` keyed by
-the AgentRun id and dated by the Sao Paulo dispatch day. It commits in its own
-tenant-scoped step immediately before the call, after every local check, so local
-abstentions, gate changes and unreadable sources count nothing, while a provider
-error, timeout or rejected output still counts: the call may have been billed.
+the AgentRun id and dated by the Sao Paulo dispatch day. Clients split
+`prepare()` (gates, API key, pricing, schema, the request build and the call
+ceiling, with no I/O) from `send()` (the dispatch only). The record commits in its
+own tenant-scoped step between the two, so local abstentions, gate changes,
+unreadable sources and adapter refusals count nothing, while a provider error,
+timeout or rejected output after `send()` still counts: the call may have been
+billed. An unexpected local failure finalizes the run as `internal_error` and is
+re-raised, so no reservation is left pending.
 Redelivery cannot count twice, nothing is refunded, and `run_eval` never meters.
 The owner's cost estimate sums the month's records with the configured unit price.
 

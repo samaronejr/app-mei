@@ -10,8 +10,9 @@ from apps.automation.dataset import minimal_pdf
 from apps.automation.llm import Budget, FakeLLM
 from apps.automation.models import AgentRun
 from apps.automation.shadow import run_shadow
-from apps.automation.types import UnsafeOutputError
+from apps.automation.types import Result, UnsafeOutputError
 from apps.core.tenancy import tenant_context
+from tests.ai.fixtures import single_company
 from tests.cycles.document_fixtures import reviewed
 from tests.portal.request_fixtures import PortalSetup
 
@@ -109,3 +110,98 @@ def test_text_rejected_before_postgresql_json_storage(value: str) -> None:
     )
     with pytest.raises(UnsafeOutputError):
         validate_output(raw, CLIENT)
+
+
+def classified(value: str) -> str:
+    return json.dumps(
+        {
+            "doc_type": "receipt",
+            "fields": [{"name": "numero", "value": value, "source_span": value}],
+            "client_cnpj_seen": CLIENT,
+            "confidence_band": "high",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "attacker.\u0440\u0444",
+        "\u4f8b\u5b50.\u6d4b\u8bd5",
+        "\u0645\u062b\u0627\u0644.\u0645\u0635\u0631",
+        "attacker\u3002example",
+        "attacker\uff61example",
+        "\u4f8b\u5b50\u3002\u6d4b\u8bd5",
+        "\uff48\uff54\uff54\uff50\uff53://attacker.example/leak",
+        "\u0440\u0430ypal.com",
+        "leak.\u0440\u0444/path",
+        "\u2603.net/leak",
+    ],
+    ids=[
+        "cyrillic-tld",
+        "chinese",
+        "arabic",
+        "ideographic-stop",
+        "halfwidth-stop",
+        "chinese-ideographic-stop",
+        "fullwidth-scheme",
+        "mixed-script",
+        "cyrillic-path",
+        "symbol-label",
+    ],
+)
+def test_unicode_web_references_are_rejected_in_every_output_position(
+    value: str,
+) -> None:
+    for key in ("value", "source_span"):
+        field = {"name": "numero", "value": "1", "source_span": "1"}
+        field[key] = value
+        raw = json.dumps(
+            {
+                "doc_type": "receipt",
+                "fields": [field],
+                "client_cnpj_seen": CLIENT,
+                "confidence_band": "high",
+            }
+        )
+        with pytest.raises(UnsafeOutputError):
+            validate_output(raw, CLIENT)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Ltda. ME",
+        "S.A.",
+        "Sr. Jo\u00e3o da Silva",
+        "R$ 1.234,56",
+        "11.222.333/0001-81",
+        "N\u00ba 123. Total",
+        "S\u00e3o Paulo. Recibo",
+        "Rua Ita\u00fa, 1.000",
+        "09/2026",
+        "3.5",
+    ],
+)
+def test_plain_prose_with_dots_is_accepted(value: str) -> None:
+    parsed = validate_output(classified(value), CLIENT)
+    assert parsed.fields[0].value == value
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "value", ["attacker.\u0440\u0444", "\u4f8b\u5b50\u3002\u6d4b\u8bd5"]
+)
+def test_shadow_runner_never_persists_a_unicode_web_reference(
+    setup: PortalSetup, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    intake = single_company(setup)
+    monkeypatch.setattr(
+        "apps.automation.shadow.configured_client",
+        lambda tenant_id: FakeLLM(reply=Result(classified(value))),
+    )
+    assert run_shadow(setup.graph.tenant.pk, intake.pk) == "rejected"
+    with tenant_context(setup.graph.tenant.pk):
+        row = AgentRun.objects.get()
+        assert row.output == {}
+        assert row.error_code == "unsafe_output"

@@ -1,6 +1,6 @@
 """Typed values crossing the provider boundary."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from typing import TypedDict
@@ -58,6 +58,18 @@ class Budget:
 
     max_brl: Decimal = Decimal("0.025")
     max_tokens: int = 512
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedCall:
+    """Every local check passed and the request is built; only dispatch remains."""
+
+    schema: JSONObject = field(repr=False)
+    messages: tuple[Message, ...] = field(repr=False)
+    budget: Budget
+    body: bytes = field(default=b"", repr=False)
+    input_brl_per_million: Decimal = Decimal(0)
+    output_brl_per_million: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True, slots=True)

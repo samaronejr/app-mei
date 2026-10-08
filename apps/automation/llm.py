@@ -17,6 +17,7 @@ from apps.automation.types import (
     JSONObject,
     JSONValue,
     Message,
+    PreparedCall,
     ProviderError,
     Result,
 )
@@ -26,12 +27,26 @@ MONTH: Final = re.compile(r"compet[eê]ncia\s*[: ]\s*(\d{2}/\d{4})", re.IGNORECA
 
 
 class LLMClient(Protocol):
-    """One pure completion interface, without tool execution."""
+    """One pure completion interface, without tool execution.
+
+    prepare() runs every local check and builds the request without I/O; send()
+    only dispatches it. Metered callers record usage between the two.
+    """
+
+    def prepare(
+        self, schema: JSONObject, messages: tuple[Message, ...], budget: Budget
+    ) -> PreparedCall:
+        """Refuse locally (sanitized ProviderError) or return a ready request."""
+        ...
+
+    def send(self, prepared: PreparedCall) -> Result:
+        """Dispatch a prepared request; untrusted content or a provider error."""
+        ...
 
     def complete(
         self, schema: JSONObject, messages: tuple[Message, ...], budget: Budget
     ) -> Result:
-        """Return untrusted content and usage or a sanitized provider error."""
+        """Prepare and send in one step, for unmetered synthetic evaluation."""
         ...
 
 
@@ -49,16 +64,26 @@ class FakeLLM:
         self.follow_injections = follow_injections
         self.reply = reply
 
-    def complete(
+    def prepare(
         self, schema: JSONObject, messages: tuple[Message, ...], budget: Budget
-    ) -> Result:
-        """Classify simple synthetic text without reading ground-truth labels."""
+    ) -> PreparedCall:
+        """Apply the fixture's local schema and budget checks."""
         if schema.get("type") != "object" or budget.max_brl < Decimal("0.001"):
             message = "fake_budget_or_schema"
             raise ProviderError(message)
+        return PreparedCall(schema, messages, budget)
+
+    def complete(
+        self, schema: JSONObject, messages: tuple[Message, ...], budget: Budget
+    ) -> Result:
+        """Prepare and send in one step."""
+        return self.send(self.prepare(schema, messages, budget))
+
+    def send(self, prepared: PreparedCall) -> Result:
+        """Classify simple synthetic text without reading ground-truth labels."""
         if self.reply is not None:
             return self.reply
-        envelope: dict[str, str] = json.loads(messages[-1]["content"])
+        envelope: dict[str, str] = json.loads(prepared.messages[-1]["content"])
         text = envelope["document_data"]
         client = envelope["client_cnpj"]
         if self.follow_injections and "INJECTION_OUTPUT:" in text:
