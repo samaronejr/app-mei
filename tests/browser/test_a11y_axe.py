@@ -10,7 +10,8 @@ States that need a whole journey are swept there, through the same `record` step
 the invalidated and stale-409 approval card (test_journey_d_q), SMTP down and the
 cancelled reminder (test_journey_i), the divergent document (test_journey_b), the
 offline upload and its retry (test_upload_retry_slow_network), publication and
-acknowledgement (test_journey_a). Automações (T27) and Suporte (T23) join in stage 2.
+acknowledgement (test_journey_a), the support banner (test_journey_j). Automações
+(T27) and Suporte (T23, with a request awaiting the owner) are swept here.
 
 An axe pass is not a WCAG claim. The manual NVDA and VoiceOver passes in
 ops/AXORIM-A11Y-CHECKLIST.md are the operator's, and that gate stays open.
@@ -35,7 +36,7 @@ from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
 from apps.cycles.effects.manifest import ActionKind
 from apps.cycles.models import ActionProposal, EvidenceLink, ServiceCycle
 from apps.cycles.services.approvals import propose
-from apps.tenants.billing_models import BillingAccount
+from apps.tenants.support import request_support_grant
 from tests.browser.harness import (
     AxeViolationsError,
     BrowserPage,
@@ -86,6 +87,8 @@ class World:
             "comunicacao": reverse("delivery-queue"),
             "configuracoes": reverse("firm-settings"),
             "configuracoes-conta": reverse("firm-account"),
+            "automacoes": reverse("automations"),
+            "suporte": reverse("firm-suporte"),
         }
 
     def portal_screens(self) -> dict[str, str]:
@@ -126,9 +129,11 @@ def world(
             ),
             expected_version=cycle.version,
         )
-        # As firm onboarding does (apps/tenants/onboarding.py): the account page
-        # reads this row. A tenant without one is reported in AXR1-025 risks.
-        BillingAccount.objects.create(tenant=setup.graph.tenant)
+        request_support_grant(
+            User.objects.create_user(email="suporte@axe.example.com", is_staff=True),
+            setup.graph.tenant.pk,
+            purpose="Conferir a fila de comunicação",
+        )
         unserved = ClientCompany.objects.create(
             tenant=setup.graph.tenant,
             legal_name="Cliente sem serviço contratado",
