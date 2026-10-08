@@ -628,8 +628,33 @@ refused before storage, both mutations fail, and its targeted reruns passed (432
 `-gates-placed-17ccfe8.txt`, `-gates-final.txt` and the reviewers' `T24-RV*` artifacts.
 OD-05 and every other owner/operator gate remain **open**, and `ai_shadow` is off everywhere.
 
+`AXR1-027` (operational signals and the restore path for the delivery outbox; `delivery.0004`,
+`delivery.0005`) is recorded on the final `AXR1-024` branch.
+- **Readiness.** `/readyz` returns 503 with a `reason` key when the oldest queued message or the
+  dead-letter count passes its env-configured threshold. `/healthz` and its monitored keywords are
+  byte-identical.
+- **Automações page.** A capability-gated Automações page under Comunicação shows registered jobs
+  with their last and next runs. Every shipped job has a pt-BR label. The page lets the firm pause
+  and resume delivery, and retry or cancel dead letters: a retry creates one successor and cancels
+  the original, and a stale submission returns 409.
+- **Restore and runbooks.** `ops/RESTORE.md` adds the Axorim restore: pause delivery, restore,
+  `reconcile_documents`, `reconcile_effects`, review `resultado_incerto`, unpause.
+  `ops/PILOT-RUNBOOK.md` maps the new alerts to actions, and `docs/lgpd.md` documents the outbox kill
+  switches.
+- **Log hygiene.** The log scrubber's canaries cover outbox payloads.
+
+Placement onto T24 needed one label fix (`c1451a2`). The header is no worse than its parent in
+any of 312 measured cells. The independent gate review at `c1451a2` returned **confirmed** with zero
+blockers: readiness thresholds (503 with reason keys), byte-identical `/healthz`, the Automações controls at
+both viewports with tenant denials, restore reconciliation without replay, a biting mutation, and its own
+serial gates (4253, isolation 309, CNPJ 29, browser 94).
+Evidence: `.evidence/AXR1-027-*` (the worker's original gates and failure control, plus placement,
+geometry, labels red/green, adversarial probes, placed gates) and the reviewer's `T27-RV*`
+artifacts. OG-06, the operator restore drill on an isolated host, and every other
+owner/operator gate remain **open**.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 23 and 25 to 29 and the final verification wave remain open.
+Todos 23, 25, 26, 28 and 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -730,13 +755,18 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4204 passing** (92 deselected), verified at
+implementation head. The current default-suite baseline is **4253 passing** (94 deselected), verified at placed
+`AXR1-027` code `c1451a2` (tree `40373cd`) on `AXR1-024` code `cd19380`: the **4204** below plus **49** net-new default-suite cases. The same serial run passed isolation
+(**309**), CNPJ (**29**), browser (**94**), lint, format, mypy, migration drift and a
+clean rebuilt-static check. Evidence: `.evidence/AXR1-027-gates-placed.txt`. This status-only commit
+does not change the reviewed code; it sits on the `AXR1-024` status commit `b73ea98`.
+
+The previous default-suite baseline was **4204 passing** (92 deselected), verified at
 `AXR1-024` code `cd19380` (tree `c75f2a5`) on `AXR1-022` repaired code `af8e053`: the
 **4072** below plus **132** net-new default-suite cases. The same serial
 run passed isolation (**309**), CNPJ (**29**), browser (**92**), lint, format,
 mypy, migration drift and a clean rebuilt-static check. Evidence:
-`.evidence/AXR1-024-gates-final.txt`. This status-only commit does not change the reviewed
-code; it sits on the `AXR1-022` status commit `be11509`.
+`.evidence/AXR1-024-gates-final.txt`.
 
 The previous default-suite baseline was **4072 passing** (92 deselected),
 verified at repaired `AXR1-022` code `af8e053` (tree `a5dbdfd`) on `AXR1-021`
@@ -900,7 +930,7 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **92** cases: the **24** passing at the T3
+`browser` job. The suite now contains **94** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
@@ -918,7 +948,8 @@ and the remaining-quota preview at two viewports), plus the eight `AXR1-021`
 palette and search cases (the palette journeys at two viewports and the
 long-name reflow checks at 390 and 320 px), plus the six `AXR1-022`
 cases (the owner's profile, preference and account-export journey, staff not
-seeing owner billing or profile controls, and the two header-width checks). Every test in
+seeing owner billing or profile controls, and the two header-width checks), plus the two `AXR1-027`
+Automações cases (pause, resume and dead-letter retry/cancel at desktop and mobile). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must
