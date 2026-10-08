@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timedelta
 from http import HTTPStatus
+from typing import Any
 from uuid import UUID
 
 from django.contrib.auth.decorators import login_required
@@ -15,6 +16,7 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.approvals import may_configure_policy, proposal_controls
 from apps.authz.services import require_can
+from apps.authz.support import in_support_mode
 from apps.clients.maintenance import load_client
 from apps.clients.views import require_tenant
 from apps.cycles.approval_forms import (
@@ -148,6 +150,36 @@ def _decision(
     return None
 
 
+# Message bodies never reach a support session: the frozen manifest is the
+# proposal's own archive, and the support grant buys the page, not the mail.
+# Structural fields stay untouched — digests, identifiers and decisions are what
+# make the card audit-complete; bodies, headers and addressees are the payload
+# a support visit must not carry away.
+REDACTED_PAYLOAD_FIELDS = frozenset(
+    {"subject", "body", "from", "headers", "recipients"}
+)
+
+
+def _redact_frozen(frozen: dict[str, Any]) -> dict[str, Any]:
+    """Return a manifest copy with message bodies and addressees replaced."""
+    payload = frozen.get("payload")
+    if not isinstance(payload, dict):
+        return frozen
+    redacted = dict(payload)
+    for field in REDACTED_PAYLOAD_FIELDS:
+        if field in redacted:
+            redacted[field] = "•••" if field != "recipients" else []
+    notice = redacted.get("notice")
+    if isinstance(notice, dict):
+        redacted["notice"] = {
+            **notice,
+            **{
+                field: "•••" for field in ("subject", "body", "from") if field in notice
+            },
+        }
+    return {**frozen, "payload": redacted}
+
+
 def _card(
     request: AuthenticatedRequest,
     proposal: ActionProposal,
@@ -160,6 +192,8 @@ def _card(
         initiation_capability(ActionKind(proposal.action_kind)),
     )
     frozen = json.loads(bytes(proposal.manifest_bytes))
+    if in_support_mode():
+        frozen = _redact_frozen(frozen)
     expires_at = datetime.fromisoformat(frozen["expires_at"])
     now = timezone.now()
     dates = {

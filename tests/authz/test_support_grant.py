@@ -1,0 +1,495 @@
+"""Owner-approved, time-limited support grants — every denial proved over HTTP.
+
+The matrix asserts the architecture, not just the decoration: a support session
+is admitted ONLY when a live `SupportGrant` row exists, the row is re-read from
+the database on every request (never cached, never a session flag), and the
+capabilities a session inherits are the owner's decision — read surfaces FULL,
+writes NONE, `billing.manage` only under `read_write_settings`.
+
+`transaction=True` throughout: the denials below exercise `SET LOCAL` and the
+RLS layer, which are meaningless inside a surrounding test transaction.
+"""
+
+from datetime import timedelta
+from http import HTTPStatus
+from uuid import UUID
+
+import pytest
+from django.db import IntegrityError, connection, transaction
+from django.test import Client
+from django.utils import timezone
+
+from apps.accounts.models import User
+from apps.audit.models import AuditAction, Event, PlatformEvent
+from apps.clients.models import ClientContact
+from apps.core.tenancy import tenant_context
+from apps.delivery.models import MessageState, OutboundMessage
+from apps.tenants.models import Tenant, TenantRole
+from apps.tenants.support import (
+    SupportApproval,
+    approve_support_grant,
+    request_support_grant,
+    revoke_support_grant,
+)
+from apps.tenants.support_models import SupportGrant, SupportScope
+from tests.browser.harness import mfa_session_cookie
+from tests.cycles.approval_fixtures import approval_graph
+from tests.cycles.cycle_fixtures import CycleSetup, cycle_setup
+from tests.cycles.test_retention_dry_run import old_original
+from tests.isolation.rolecheck import assert_isolated_role
+from tests.support import enrol_totp
+from tests.tenants.test_cancellation_retention import enabled_firm
+from tests.ui.factories import PASSWORD, Firm, add_member
+
+pytestmark = pytest.mark.django_db(transaction=True)
+
+STAFF_EMAIL = "support@platform.example.com"
+PURPOSE = "Cliente não consegue baixar o DAS"
+
+
+def _staff(email: str = STAFF_EMAIL) -> User:
+    """A platform account: staff, never a member of any firm."""
+    return User.objects.create_user(email=email, password=PASSWORD, is_staff=True)
+
+
+def _session_for(user: User, host: str) -> Client:
+    """Sign `user` in by session cookie with a real enrolled second factor."""
+    from allauth.mfa.models import Authenticator  # noqa: PLC0415
+
+    if not Authenticator.objects.filter(
+        user=user, type=Authenticator.Type.TOTP
+    ).exists():
+        enrol_totp(user)
+    session = Client(SERVER_NAME=host)
+    cookie = mfa_session_cookie(user, f"http://{host}/")
+    session.cookies[cookie["name"]] = cookie["value"]
+    return session
+
+
+def _grant_for(  # noqa: PLR0913 — one decision per kwarg
+    tenant: Tenant,
+    owner: User,
+    staff: User,
+    *,
+    scope: str = SupportScope.READ_ONLY,
+    client_ids: tuple[UUID, ...] = (),
+    hours: int = 4,
+) -> SupportGrant:
+    """Create a live grant through the real request + approval services."""
+    with tenant_context(tenant.pk):
+        grant = request_support_grant(staff, tenant.pk, purpose=PURPOSE)
+        approve_support_grant(
+            owner,
+            tenant.pk,
+            grant.pk,
+            SupportApproval(scope=scope, client_ids=client_ids, hours=hours),
+        )
+        grant.refresh_from_db()
+    return grant
+
+
+def _pending(tenant: Tenant, staff: User) -> SupportGrant:
+    """A requested-but-undecided grant."""
+    with tenant_context(tenant.pk):
+        return request_support_grant(staff, tenant.pk, purpose=PURPOSE)
+
+
+def _firm_host(firm: Firm) -> str:
+    return f"{firm.tenant.slug}.localhost"
+
+
+def _contact_for(setup: CycleSetup) -> ClientContact:
+    """A real recipient row; OutboundMessage's contact FK is NOT NULL."""
+    with tenant_context(setup.tenant.pk):
+        return ClientContact.objects.create(
+            tenant=setup.tenant,
+            client=setup.client,
+            name="Contato",
+            email="contato@client.example",
+        )
+
+
+def _enabled_setup(slug: str) -> CycleSetup:
+    """cycle_setup with the settings feature T22's /configuracoes/ routes need."""
+    setup = cycle_setup(slug)
+    setup.tenant.features = [*setup.tenant.features, "firm_settings_r1"]
+    setup.tenant.save(update_fields=["features"])
+    return setup
+
+
+# ---------------------------------------------------------------- admission
+
+
+def test_no_grant_denies_the_firm_host() -> None:
+    """A platform account with no seat and no grant is refused with a 403."""
+    firm = enabled_firm("support-no-grant")
+    staff = _staff()
+    session = _session_for(staff, _firm_host(firm))
+    assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+
+
+def test_pending_grant_denies_until_the_owner_decides() -> None:
+    """The request alone admits nothing — approval is the gate."""
+    firm = enabled_firm("support-pending")
+    staff = _staff()
+    _pending(firm.tenant, staff)
+    session = _session_for(staff, _firm_host(firm))
+    assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+
+
+def test_expired_mid_session_denies_the_next_request() -> None:
+    """Expiry is re-read per request: past expires_at the session dies at once."""
+    firm = enabled_firm("support-expired")
+    staff = _staff()
+    grant = _grant_for(firm.tenant, firm.owner, staff, hours=1)
+    session = _session_for(staff, _firm_host(firm))
+    assert session.get("/").status_code == HTTPStatus.OK
+
+    with tenant_context(firm.tenant.pk):
+        # ALL_OBJECTS_OK: expiry is crossed deliberately by rewriting the row
+        # behind the same tenant context, not by asking the visible manager.
+        SupportGrant.all_objects.filter(pk=grant.pk).update(
+            # Shift the whole window into the past: expires_at alone would
+            # violate the positive-window half of support_grant_72h_window.
+            starts_at=timezone.now() - timedelta(hours=1),
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+    assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+
+
+def test_revoke_denies_the_next_request() -> None:
+    """The owner's revoke POST kills the session before the next page."""
+    firm = enabled_firm("support-revoke")
+    staff = _staff()
+    grant = _grant_for(firm.tenant, firm.owner, staff)
+    session = _session_for(staff, _firm_host(firm))
+    assert session.get("/").status_code == HTTPStatus.OK
+
+    owner = _session_for(firm.owner, _firm_host(firm))
+    assert (
+        owner.post(f"/configuracoes/suporte/{grant.pk}/revogar/").status_code
+        == HTTPStatus.FOUND
+    )
+    assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+
+
+def test_support_session_is_recorded_once_and_carries_the_banner() -> None:
+    """First page under a grant records support.session_started and the banner."""
+    firm = enabled_firm("support-session")
+    staff = _staff()
+    _grant_for(firm.tenant, firm.owner, staff)
+    session = _session_for(staff, _firm_host(firm))
+
+    first = session.get("/")
+    assert first.status_code == HTTPStatus.OK
+    assert b"data-support-banner" in first.content
+    assert "Acesso de suporte ativo" in first.content.decode()
+
+    assert session.get("/").status_code == HTTPStatus.OK
+
+    events = PlatformEvent.objects.filter(action=AuditAction.SUPPORT_SESSION_STARTED)
+    assert events.count() == 1
+    assert events.get().actor == staff
+
+
+def test_owner_page_lists_and_approves_a_request() -> None:
+    """The owner sees the pending request; approving it opens the support door."""
+    firm = enabled_firm("support-owner-page")
+    staff = _staff()
+    grant = _pending(firm.tenant, staff)
+
+    owner = _session_for(firm.owner, _firm_host(firm))
+    page = owner.get("/configuracoes/suporte/")
+    assert page.status_code == HTTPStatus.OK
+    html = page.content.decode()
+    assert STAFF_EMAIL in html
+    assert PURPOSE in html
+
+    response = owner.post(
+        f"/configuracoes/suporte/{grant.pk}/aprovar/",
+        {"scope": SupportScope.READ_ONLY, "hours": 2},
+    )
+    assert response.status_code == HTTPStatus.FOUND
+
+    with tenant_context(firm.tenant.pk):
+        grant.refresh_from_db()
+    assert grant.is_active()
+    assert grant.approved_by_owner == firm.owner
+    assert grant.expires_at is not None
+    assert grant.starts_at is not None
+    assert grant.expires_at - grant.starts_at == timedelta(hours=2)
+
+
+def test_only_the_owner_can_decide() -> None:
+    """A firm member who is not the owner cannot approve a grant."""
+    firm = enabled_firm("support-member-cannot")
+    staff = _staff()
+    grant = _pending(firm.tenant, staff)
+    member = add_member(
+        firm.tenant, "staff-member@firm.example.com", TenantRole.STAFF_ACCOUNTANT
+    )
+    member_session = _session_for(member, _firm_host(firm))
+
+    response = member_session.post(
+        f"/configuracoes/suporte/{grant.pk}/aprovar/",
+        {"scope": SupportScope.READ_ONLY, "hours": 2},
+    )
+    assert response.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)
+    with tenant_context(firm.tenant.pk):
+        grant.refresh_from_db()
+    assert grant.approved_by_owner is None
+
+
+def test_grant_is_per_person_not_per_tenant() -> None:
+    """A different staff account on the same firm gets nothing from another's grant."""
+    firm = enabled_firm("support-per-person")
+    _grant_for(firm.tenant, firm.owner, _staff())
+    other = _staff(email="support-other@platform.example.com")
+    session = _session_for(other, _firm_host(firm))
+    assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+
+
+# ---------------------------------------------------------------- writes
+
+
+def test_approvals_stay_denied_under_a_grant() -> None:
+    """actions.approve resolves NONE: a support session cannot approve."""
+    scenario = approval_graph("support-approve-denied")
+    graph = scenario.graph
+    graph.tenant.features = [*graph.tenant.features, "firm_settings_r1"]
+    graph.tenant.save(update_fields=["features"])
+    staff = _staff()
+    _grant_for(
+        graph.tenant,
+        graph.actor,
+        staff,
+        client_ids=(graph.client.pk,),
+    )
+
+    session = _session_for(staff, f"{graph.tenant.slug}.localhost")
+    card = session.get(f"/acoes/{scenario.proposal.pk}/")
+    assert card.status_code == HTTPStatus.OK
+
+    response = session.post(
+        f"/acoes/{scenario.proposal.pk}/",
+        {"action": "approve", "expected_version": scenario.proposal.version},
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+def test_document_download_denied_under_a_grant() -> None:
+    """documents.transfer resolves NONE: support never receives document bytes."""
+    setup = _enabled_setup("support-download")
+    with tenant_context(setup.tenant.pk):
+        document = old_original(setup)
+    staff = _staff()
+    _grant_for(setup.tenant, setup.actor, staff, client_ids=(setup.client.pk,))
+
+    session = _session_for(staff, f"{setup.tenant.slug}.localhost")
+    response = session.get(f"/documentos/{document.pk}/baixar/")
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+def test_preview_capability_is_denied_in_support_mode() -> None:
+    """The capability the preview sits behind resolves NONE inside a session."""
+    setup = _enabled_setup("support-preview")
+    staff = _staff()
+    _grant_for(setup.tenant, setup.actor, staff, client_ids=(setup.client.pk,))
+
+    from apps.authz.services import can as authz_can  # noqa: PLC0415
+    from apps.authz.support import (  # noqa: PLC0415
+        SupportContext,
+        current_support,
+    )
+
+    with tenant_context(setup.tenant.pk):
+        grant = SupportGrant.objects.get(requested_by=staff)
+        token = current_support.set(
+            SupportContext(
+                grant_id=grant.pk,
+                tenant_id=setup.tenant.pk,
+                scope=grant.scope,
+                client_ids=frozenset(grant.client_uuid_set()),
+                expires_at=grant.expires_at,
+            )
+        )
+        try:
+            assert (
+                authz_can(staff, "documents.transfer", tenant_id=setup.tenant.pk)
+                is False
+            )
+            assert (
+                authz_can(staff, "clients.view_assigned", tenant_id=setup.tenant.pk)
+                is True
+            )
+        finally:
+            current_support.reset(token)
+
+
+def test_message_subject_and_note_are_redacted_in_support_mode() -> None:
+    """The queue proves the timeline happened; subject and note are replaced."""
+    setup = _enabled_setup("support-redact")
+    staff = _staff()
+    _grant_for(setup.tenant, setup.actor, staff, client_ids=(setup.client.pk,))
+
+    contact = _contact_for(setup)
+    with tenant_context(setup.tenant.pk):
+        OutboundMessage.objects.create(
+            tenant=setup.tenant,
+            client=setup.client,
+            contact=contact,
+            created_by=setup.actor,
+            kind="notice",
+            idempotency_key="support-redact-1",
+            business_intent_key="support-redact-1",
+            content_digest="d" * 64,
+            recipients_json=[],
+            subject="PRIVATE SUBJECT CANARY",
+            body_ref="digest-body-ref",
+            portal_url="https://example.test/x",
+            state=MessageState.QUEUED,
+            decision_note="PRIVATE NOTE CANARY",
+        )
+
+    session = _session_for(staff, f"{setup.tenant.slug}.localhost")
+    page = session.get("/comunicacao/")
+    assert page.status_code == HTTPStatus.OK
+    html = page.content.decode()
+    assert "PRIVATE SUBJECT CANARY" not in html
+    assert "PRIVATE NOTE CANARY" not in html
+    assert "•••" in html
+
+
+def test_send_decision_post_is_denied_under_a_grant() -> None:
+    """cycles.operate resolves NONE: a support session cannot decide a send."""
+    setup = _enabled_setup("support-send-denied")
+    staff = _staff()
+    _grant_for(setup.tenant, setup.actor, staff, client_ids=(setup.client.pk,))
+
+    contact = _contact_for(setup)
+    with tenant_context(setup.tenant.pk):
+        message = OutboundMessage.objects.create(
+            tenant=setup.tenant,
+            client=setup.client,
+            contact=contact,
+            created_by=setup.actor,
+            kind="notice",
+            idempotency_key="support-send-1",
+            business_intent_key="support-send-1",
+            content_digest="e" * 64,
+            recipients_json=[],
+            subject="queued",
+            body_ref="ref",
+            portal_url="https://example.test/x",
+            state=MessageState.UNKNOWN,
+        )
+
+    session = _session_for(staff, f"{setup.tenant.slug}.localhost")
+    response = session.post(
+        "/comunicacao/",
+        {
+            "message_id": str(message.pk),
+            "expected_version": message.version,
+            "action": "sent",
+            "note": "marcar como enviado",
+        },
+    )
+    assert response.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.CONFLICT, 422)
+
+
+def test_client_ids_scope_intersects_visible_clients() -> None:
+    """Empty client_ids shows firm-level only; listed ids are the whole book."""
+    firm = enabled_firm("support-scope")
+    staff = _staff()
+    _grant_for(firm.tenant, firm.owner, staff, client_ids=(firm.clients[0].pk,))
+    empty_staff = _staff(email="support-empty@platform.example.com")
+    _grant_for(firm.tenant, firm.owner, empty_staff, client_ids=())
+
+    host = _firm_host(firm)
+    listed_page = _session_for(staff, host).get("/clientes/")
+    assert listed_page.status_code == HTTPStatus.OK
+    assert firm.clients[0].legal_name in listed_page.content.decode()
+
+    empty_session = _session_for(empty_staff, host)
+    assert empty_session.get("/").status_code == HTTPStatus.OK
+    empty_page = empty_session.get("/clientes/")
+    if empty_page.status_code == HTTPStatus.OK:
+        assert firm.clients[0].legal_name not in empty_page.content.decode()
+
+
+def test_superuser_still_needs_a_grant_for_tenant_data() -> None:
+    """Platform tables stay open; the firm's pages refuse without a grant."""
+    firm = enabled_firm("support-superuser")
+    admin = User.objects.create_superuser(
+        email="super@platform.example.com", password=PASSWORD
+    )
+    session = _session_for(admin, _firm_host(firm))
+    assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+    platform = _session_for(admin, "localhost")
+    assert platform.get("/admin/").status_code == HTTPStatus.OK
+
+
+def test_db_enforces_the_72_hour_window() -> None:
+    """The CHECK refuses a longer window no matter who writes the row."""
+    firm = enabled_firm("support-72h")
+    staff = _staff()
+    with tenant_context(firm.tenant.pk):
+        grant = request_support_grant(staff, firm.tenant.pk, purpose=PURPOSE)
+        grant.starts_at = timezone.now()
+        grant.expires_at = timezone.now() + timedelta(hours=73)
+        grant.approved_by_owner = firm.owner
+        grant.approved_at = timezone.now()
+        # Nested atomic so the CHECK's rollback lands on a savepoint and the
+        # tenant_context block's exit write still runs against a live tx.
+        with pytest.raises(IntegrityError), transaction.atomic():
+            grant.save()
+
+
+def test_support_grant_rows_are_rls_isolated() -> None:
+    """Raw SQL from another tenant's context sees nothing of this firm's grants."""
+    assert_isolated_role()
+    firm = enabled_firm("support-rls")
+    other = enabled_firm("support-rls-other")
+    staff = _staff()
+    _pending(firm.tenant, staff)
+
+    with tenant_context(other.tenant.pk), connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT count(*) FROM tenants_supportgrant WHERE tenant_id = %s",
+            [str(firm.tenant.pk)],
+        )
+        assert cursor.fetchone()[0] == 0
+
+    with tenant_context(firm.tenant.pk), connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT count(*) FROM tenants_supportgrant WHERE tenant_id = %s",
+            [str(firm.tenant.pk)],
+        )
+        assert cursor.fetchone()[0] == 1
+
+
+def test_owner_audit_trail_covers_request_approval_and_revoke() -> None:
+    """The firm's own Event log carries every transition, not just the platform."""
+    firm = enabled_firm("support-audit")
+    staff = _staff()
+    grant = _grant_for(firm.tenant, firm.owner, staff)
+
+    with tenant_context(firm.tenant.pk):
+        revoke_support_grant(firm.owner, firm.tenant.pk, grant.pk)
+        actions = set(
+            Event.objects.filter(
+                action__in=(
+                    AuditAction.SUPPORT_GRANT_REQUESTED,
+                    AuditAction.SUPPORT_GRANT_APPROVED,
+                    AuditAction.SUPPORT_GRANT_REVOKED,
+                )
+            ).values_list("action", flat=True)
+        )
+    assert AuditAction.SUPPORT_GRANT_REQUESTED in actions
+    assert AuditAction.SUPPORT_GRANT_APPROVED in actions
+    assert AuditAction.SUPPORT_GRANT_REVOKED in actions
+
+    assert PlatformEvent.objects.filter(
+        action=AuditAction.SUPPORT_GRANT_REQUESTED
+    ).exists()

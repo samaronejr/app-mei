@@ -13,6 +13,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.services import can
+from apps.authz.support import current_support
 from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id
 from apps.tenants.account_state import require_writable
@@ -20,6 +21,7 @@ from apps.tenants.authority import lock_users
 from apps.tenants.branding import validate_logo
 from apps.tenants.branding_updates import store_logo
 from apps.tenants.models import Membership, NotificationPreference, Tenant
+from apps.tenants.support_models import SupportScope
 
 
 class TenantConflictError(Exception):
@@ -43,12 +45,33 @@ def lock_firm_settings(actor: User, tenant_id: UUID) -> tuple[User, Tenant]:
     fresh = lock_users((actor.pk,)).get(actor.pk)
     if fresh is None or not fresh.is_active:
         raise PermissionDenied
-    tenant = (
-        Tenant.objects.for_user(fresh)
-        .select_for_update(no_key=True)
-        .filter(pk=tenant_id, is_active=True)
-        .first()
-    )
+    support = current_support.get()
+    if support is not None:
+        # The read_write_settings scope buys exactly this write: the grant IS the
+        # membership substitute here, re-checked live from the request stash the
+        # middleware bound, never from a role the platform account lacks anyway.
+        # PLATFORM_QUERY_OK: the stash proves this exact tenant was granted for
+        # this request; the row is then re-read under the shared lock.
+        if support.scope == SupportScope.READ_WRITE_SETTINGS and str(
+            support.tenant_id
+        ) == str(tenant_id):
+            tenant = (
+                # PLATFORM_QUERY_OK: the live support grant re-resolved into this
+                # request's stash names exactly this tenant; a support session has
+                # no membership row, so there is no portfolio to scope through.
+                Tenant.objects.select_for_update(no_key=True)
+                .filter(pk=tenant_id, is_active=True)
+                .first()
+            )
+        else:
+            tenant = None
+    else:
+        tenant = (
+            Tenant.objects.for_user(fresh)
+            .select_for_update(no_key=True)
+            .filter(pk=tenant_id, is_active=True)
+            .first()
+        )
     if tenant is None or not tenant_has(tenant_id, "firm_settings_r1"):
         raise Http404
     return fresh, tenant

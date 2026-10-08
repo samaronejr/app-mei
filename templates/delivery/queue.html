@@ -25,11 +25,11 @@
 {% for item in communications %}{% with message=item.message %}
 <article class="ui-panel p-4" aria-labelledby="message-{{ message.pk }}">
   <h2 class="font-semibold" id="message-{{ message.pk }}">{{ message.client.legal_name }}</h2>
-  <p>{{ message.subject }}</p>
+  <p>{{ item.display_subject }}</p>
   <p class="mt-2 font-medium" data-state="{{ message.state }}">{{ message.get_state_display }}</p>
   <p class="text-sm text-ink-600">{{ message.created_at|date:'d/m/Y H:i' }} · Tentativas: {{ message.attempts }}</p>
   {% if message.last_error_code %}<p class="text-sm">Código: {{ message.last_error_code }}</p>{% endif %}
-  {% if message.decision_note %}<p class="mt-2">Nota da equipe: {{ message.decision_note }}</p>{% endif %}
+  {% if item.display_note %}<p class="mt-2">Nota da equipe: {{ item.display_note }}</p>{% endif %}
   <ol class="mt-4 space-y-2 text-sm" aria-label="Histórico do envio">
     {% for entry in item.timeline %}<li><time>{{ entry.when|date:'d/m/Y H:i' }}</time> · {{ entry.label }}{% if entry.code %}<span class="text-ink-600"> · {{ entry.code }}</span>{% endif %}</li>{% endfor %}
   </ol>

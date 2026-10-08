@@ -11,8 +11,16 @@ from apps.cycles.workspace import TimelineEntry
 from apps.delivery.models import DeliveryAttempt, MessageState, OutboundMessage
 
 
-def message_history(messages: list[OutboundMessage]) -> list[dict[str, object]]:
-    """Project one already-authorized page, separating SMTP and client receipts."""
+def message_history(
+    messages: list[OutboundMessage], *, redact: bool = False
+) -> list[dict[str, object]]:
+    """Project one already-authorized page, separating SMTP and client receipts.
+
+    `redact` is the support-session rendering: the queue still proves the
+    timeline happened — states, attempts, codes — while the subject and the
+    staff note, which are free text that can carry client details, are replaced
+    rather than shown. The row itself is untouched; only the projection is.
+    """
     attempts: dict[UUID, list[dict[str, object]]] = {}
     labels = dict(MessageState.choices)
     for attempt in DeliveryAttempt.objects.filter(
@@ -34,6 +42,10 @@ def message_history(messages: list[OutboundMessage]) -> list[dict[str, object]]:
     return [
         {
             "message": row,
+            "display_subject": "•••" if redact else row.subject,
+            "display_note": (
+                "•••" if redact and row.decision_note else row.decision_note
+            ),
             "timeline": attempts.get(row.pk, []),
             "publication": (
                 publications.get(row.proposal_id)

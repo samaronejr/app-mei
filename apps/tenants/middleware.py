@@ -22,6 +22,7 @@ Both are load-bearing, and `core.E001`/`core.E005` fail startup if either is mis
 """
 
 from collections.abc import Callable
+from uuid import UUID
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
@@ -30,6 +31,11 @@ from django.http import HttpRequest, StreamingHttpResponse
 from django.http.response import HttpResponseBase
 from django.urls import Resolver404, resolve
 
+from apps.authz.support import (
+    SupportContext,
+    current_support,
+    resolve_support_grant,
+)
 from apps.core.flags import open_flag_cache, prime_flag_cache
 from apps.core.tenancy import current_tenant_id
 from apps.cycles.archive_response import EvidenceArchiveResponse
@@ -56,6 +62,7 @@ class TenantHttpRequest(HttpRequest):
 
     tenant: Tenant | None
     resolved_tenant: Tenant | None
+    support_grant: object | None
 
 
 class TenantMiddleware:
@@ -153,7 +160,9 @@ class TenantMiddleware:
         return Tenant.objects.filter(slug=slug, is_active=True).first()
 
     @staticmethod
-    def _grant_context(request: HttpRequest, resolved: Tenant | None) -> Tenant | None:
+    def _grant_context(
+        request: TenantHttpRequest, resolved: Tenant | None
+    ) -> Tenant | None:
         """Decide which tenant, if any, this request may actually operate as.
 
         Resolving a tenant from the hostname is routing; granting context is
@@ -182,6 +191,16 @@ class TenantMiddleware:
             is_active=True,
             client__isnull=True,
         ).exists():
+            # The single exception to "no seat, no entry": a platform staff
+            # account this firm's owner has admitted through an active
+            # SupportGrant, for this person and this window. The row is
+            # re-read from the database on EVERY request — never cached,
+            # never remembered in the session — so an owner revocation or a
+            # lapsed `expires_at` denies the very next request.
+            if user.is_staff:
+                request.support_grant = resolve_support_grant(user.pk, resolved.pk)
+                if request.support_grant is not None:
+                    return resolved
             msg = "This account has no active membership for this firm."
             raise PermissionDenied(msg)
         return resolved
@@ -206,14 +225,71 @@ class TenantMiddleware:
                     prime_flag_cache(tenant)
                 self._apply_guc(tenant)
                 refusal = account_admission(request, tenant)
-                response = (
-                    refusal if refusal is not None else self.get_response(request)
+                # The support stash is bound INSIDE the transaction the same way
+                # the GUC is: every query the view issues — and every capability
+                # resolve_level answers — runs against the owner's decision for
+                # this request and this request only.
+                grant = getattr(request, "support_grant", None)
+                binding = (
+                    current_support.set(
+                        SupportContext(
+                            grant_id=UUID(str(grant.pk)),
+                            tenant_id=UUID(str(tenant.pk)),
+                            scope=grant.scope,
+                            client_ids=frozenset(grant.client_uuid_set()),
+                            expires_at=grant.expires_at,
+                        )
+                    )
+                    if grant is not None and tenant is not None
+                    else None
                 )
+                try:
+                    if grant is not None and tenant is not None:
+                        self._record_support_session(request, tenant)
+                    response = (
+                        refusal if refusal is not None else self.get_response(request)
+                    )
+                finally:
+                    if binding is not None:
+                        current_support.reset(binding)
                 self._reject_streaming(response, tenant, request)
                 self._render_inside_transaction(response)
             return response
         finally:
             current_tenant_id.reset(token)
+
+    @staticmethod
+    def _record_support_session(request: TenantHttpRequest, tenant: Tenant) -> None:
+        """Audit the platform event once per session per grant, on first use.
+
+        The write is a `PlatformEvent` — a fact about the platform, not about the
+        firm — keyed on the session so a browsing support session costs one row,
+        not one per page. It lands inside the tenant transaction on purpose: a
+        request that rolls back is a request that never produced an observable
+        session, so the audit row should not outlive it either.
+        """
+        grant = getattr(request, "support_grant", None)
+        if grant is None:
+            return
+        key = f"support_session_recorded:{grant.pk}"
+        if request.session.get(key):
+            return
+        request.session[key] = True
+        from apps.audit.models import AuditAction  # noqa: PLC0415
+        from apps.audit.services import Origin, record_platform_event  # noqa: PLC0415
+
+        record_platform_event(
+            action=AuditAction.SUPPORT_SESSION_STARTED,
+            origin=Origin(actor=request.user),
+            tenant_id=tenant.pk,
+            metadata={
+                "grant_id": str(grant.pk),
+                "scope": grant.scope,
+                "expires_at": grant.expires_at.isoformat()
+                if grant.expires_at is not None
+                else "",
+            },
+        )
 
     @staticmethod
     def _apply_guc(tenant: Tenant | None) -> None:

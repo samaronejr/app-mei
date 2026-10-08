@@ -67,7 +67,8 @@ RUNTIME_ROLE = "app_runtime"
 # 58 + 6 = 64 tenant tables.
 # T24 adds one client-paired, independently portal-denied shadow observation table:
 # 64 + 1 = 65 tenant tables.
-EXPECTED_TENANT_TABLE_COUNT = 65
+# T23 places after T28 on this stack and adds tenants_supportgrant: 65 + 1 = 66.
+EXPECTED_TENANT_TABLE_COUNT = 66
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -459,6 +460,9 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "obligations_monthlyrevenue",
         "obligations_obligation",
         "obligations_sourceobservation",
+        # T23: support grants name the platform actor and the owner's decision —
+        # firm-internal by definition, so the portal never sees the table at all.
+        "tenants_supportgrant",
     },
 )
 

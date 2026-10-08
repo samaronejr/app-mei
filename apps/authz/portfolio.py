@@ -31,6 +31,7 @@ from django.db.models import QuerySet
 from apps.accounts.models import User
 from apps.authz.models import GrantLevel
 from apps.authz.services import Actor, granted_levels_with_role
+from apps.authz.support import support_clients
 from apps.clients.models import ClientCompany
 from apps.tenants.models import TenantRole
 
@@ -100,6 +101,12 @@ def visible_clients(
     filters onto it, and the tenant filter comes from the manager rather than from
     anything written here.
     """
+    # A support session's book is whatever the owner approved, intersected with
+    # the tenant scope the manager already enforces. Empty grant client_ids means
+    # firm-level metadata only, so the answer is `.none()`, never `.all()`.
+    granted = support_clients()
+    if granted is not None:
+        return granted
     scope = portfolio_scope(user, tenant_id=tenant_id)
     if scope is PortfolioScope.ALL:
         return ClientCompany.objects.all()

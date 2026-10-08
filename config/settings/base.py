@@ -461,6 +461,16 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "admin is staff-only, behind AdminTenantMiddleware, and those object ids are "
         "not bearer credentials."
     ),
+    "firm-suporte-approve": (
+        "AXR1-023. The UUID identifies a support grant row inside the firm's own "
+        "settings page; a live owner seat and the row's pending state decide the "
+        "transition, so the id names the object, not a credential."
+    ),
+    "firm-suporte-revoke": (
+        "AXR1-023. The UUID identifies a support grant row inside the firm's own "
+        "settings page; a live owner seat decides revocation, so the id names the "
+        "object, not a credential."
+    ),
 }
 
 # WebAuthn is out of scope for this phase. Recovery codes are on so that losing a

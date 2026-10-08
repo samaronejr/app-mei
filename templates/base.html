@@ -196,7 +196,25 @@
         </div>
       {% endif %}
     </div>
-
+{% if request.support_grant %}
+    {% comment %}
+      The support banner sits inside <main>, above every partial HTMX swaps:
+      the swapped regions live inside block content, so a banner here survives
+      every fragment update and stays visible for the whole session — which is
+      the point: a support visit must never look like an ordinary sign-in.
+    {% endcomment %}
+    <div class="notice notice-warn mb-6" role="status" data-support-banner>
+      <p class="font-semibold">{% translate "Acesso de suporte ativo" %}</p>
+      <p class="mt-1 text-sm">
+        {% if request.support_grant.scope == 'read_write_settings' %}
+          {% translate "A plataforma está acessando esta firma com aprovação do responsável, com permissão para ajustar configurações." %}
+        {% else %}
+          {% translate "A plataforma está acessando esta firma em modo somente leitura, com aprovação do responsável." %}
+        {% endif %}
+        {% if request.support_grant.expires_at %}{% translate "Encerra automaticamente às" %} {{ request.support_grant.expires_at|date:"d/m/Y H:i" }}.{% endif %}
+      </p>
+    </div>
+{% endif %}
     {% if firm_account.past_due %}<p class="notice notice-warn mb-6" data-billing-past-due>{% translate "Há uma cobrança em atraso. Fale com a operação da plataforma para regularizar. A consulta e a exportação permanecem disponíveis." %}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>

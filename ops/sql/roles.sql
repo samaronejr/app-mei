@@ -192,6 +192,7 @@ $$;
 -- PORTAL_NONE: tenants_firmoutboundmessage
 -- PORTAL_NONE: tenants_accountexport
 -- PORTAL_NONE: tenants_accountexportattempt
+-- PORTAL_NONE: tenants_supportgrant
 -- Firm account data is private even when a client belongs to the firm.
 DO $$
 DECLARE

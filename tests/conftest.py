@@ -72,6 +72,11 @@ PORTAL_DENIED_TABLES = (
     "tenants_firmoutboundmessage",
     "tenants_accountexport",
     "tenants_accountexportattempt",
+    # T23: a support grant names the platform actor and the owner's decision —
+    # firm-internal by definition, so the portal never sees the table at all.
+    # Mirrors `-- PORTAL_NONE: tenants_supportgrant` in ops/sql/roles.sql and the
+    # DenyPortalAccess policy in tenants.0012.
+    "tenants_supportgrant",
 )
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so

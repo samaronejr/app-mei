@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from apps.tenants import account_views, views
+from apps.tenants import account_views, support_views, views
 
 urlpatterns = [
     path("configuracoes/", views.settings_view, name="firm-settings"),
@@ -10,6 +10,21 @@ urlpatterns = [
         "configuracoes/preferencias/",
         views.preferences_view,
         name="firm-preferences",
+    ),
+    path(
+        "configuracoes/suporte/",
+        support_views.support_view,
+        name="firm-suporte",
+    ),
+    path(
+        "configuracoes/suporte/<uuid:grant_id>/aprovar/",
+        support_views.approve_support_view,
+        name="firm-suporte-approve",
+    ),
+    path(
+        "configuracoes/suporte/<uuid:grant_id>/revogar/",
+        support_views.revoke_support_view,
+        name="firm-suporte-revoke",
     ),
     path("configuracoes/conta/", account_views.account_view, name="firm-account"),
     path(

@@ -104,6 +104,12 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Valores extraídos",
         "Versão publicada",
         "Visível no portal",
+        # T23: owner-facing support-grant form labels in /configuracoes/suporte/.
+        "Firma",
+        "Finalidade do acesso",
+        "Tipo de acesso",
+        "Duração (horas)",
+        "Clientes visíveis (vazio = somente dados do escritório)",
     }
 )
 APPROVED_ENGLISH_LABELS: Final[dict[str, str]] = {}

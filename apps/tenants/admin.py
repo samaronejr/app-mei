@@ -25,6 +25,8 @@ from apps.tenants.models import (
     firm_role_choices,
 )
 from apps.tenants.operator_views import billing_view, new_firm_view
+from apps.tenants.support_models import SupportGrant
+from apps.tenants.support_views import support_request_view
 
 # The console is the one place a role name cannot be reached from a template of ours:
 # Django draws `list_display` and the filter sidebar itself, both out of the field's
@@ -196,6 +198,11 @@ class TenantAdmin(admin.ModelAdmin[Tenant]):
                 name="tenants_tenant_new_firm",
             ),
             path(
+                "suporte/",
+                self.admin_site.admin_view(support_request_view),
+                name="tenants_tenant_support_request",
+            ),
+            path(
                 "<uuid:tenant_id>/cobranca/",
                 self.admin_site.admin_view(billing_view),
                 name="tenants_tenant_billing",
@@ -324,3 +331,45 @@ class InviteAdmin(admin.ModelAdmin[Invite]):
     def role_name(self, obj: Invite) -> str:
         """Name the offered role in pt-BR, sorted by the value stored behind it."""
         return papel(obj.role)
+
+
+@admin.register(SupportGrant)
+class SupportGrantAdmin(admin.ModelAdmin[SupportGrant]):
+    """Read-only view of owner-approved support grants.
+
+    Read-only by construction: a grant's lifecycle lives on the firm's own
+    `/configuracoes/suporte/` page behind the owner seat, never on an admin
+    form where `save_model` could hand a platform operator the decision the
+    model exists to put in the owner's hands.
+    """
+
+    list_display = (
+        "tenant",
+        "requested_by",
+        "scope",
+        "approved_by_owner",
+        "starts_at",
+        "expires_at",
+        "revoked_at",
+    )
+    list_filter = ("scope",)
+    search_fields = ("requested_by__email", "tenant__slug", "purpose")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        """Refuse adding grants: they start as owner-facing requests only."""
+        del request
+        return False
+
+    def has_change_permission(
+        self, request: HttpRequest, obj: SupportGrant | None = None
+    ) -> bool:
+        """Refuse edits: the decision fields belong to the owner surface."""
+        del request, obj
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: SupportGrant | None = None
+    ) -> bool:
+        """Refuse deletion: the row IS the audit trail, revoked never erased."""
+        del request, obj
+        return False

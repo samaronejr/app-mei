@@ -49,6 +49,7 @@ from apps.tenants.notification_models import (
     FirmOutboundMessage,
     NotificationPreference,
 )
+from apps.tenants.support_models import SupportGrant
 from apps.tenants.validators import validate_tenant_slug
 
 if TYPE_CHECKING:
@@ -485,6 +486,7 @@ __all__ = [
     "Invite",
     "Membership",
     "NotificationPreference",
+    "SupportGrant",
     "Tenant",
     "TenantPlan",
     "TenantRole",
