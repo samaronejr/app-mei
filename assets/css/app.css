@@ -1019,6 +1019,29 @@
     @apply md:sr-only 2xl:not-sr-only;
   }
 
+  /* Under the same flag the firm's name is what gives way (AXR1-022). In the
+   * compact range, from `xl` until `2xl`, every action shares the first row, so
+   * there the bar does not wrap: the menu, the search field and the account actions
+   * keep their own width and never wrap, and the name shrinks to the ellipsis
+   * `.shell-tenant` already carries, whatever the firm is called (Tenant.name holds
+   * 255 characters). Its full text stays in the title and the accessibility tree.
+   * The menu keeps 1rem clear before the search field, so the row's spare room
+   * holds by construction rather than by the length of a name. */
+  @media (width >= theme(--breakpoint-xl)) and (width < theme(--breakpoint-2xl)) {
+    .shell-bar-fit {
+      @apply flex-nowrap;
+    }
+
+    .shell-bar-fit > :not(.shell-brand),
+    .shell-bar-fit .shell-wordmark {
+      @apply shrink-0 whitespace-nowrap;
+    }
+
+    .shell-bar-fit > .shell-disclosure {
+      @apply mr-4;
+    }
+  }
+
   .shell-search-input {
     @apply min-h-9 w-full min-w-0 rounded-field border border-ink-300 bg-surface
       px-2.5 text-sm text-ink-900 md:w-44 2xl:w-56;

@@ -1,15 +1,21 @@
 """Real profile, preference and account export flows at both supported viewports."""
 
+import os
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
-from playwright.sync_api import ViewportSize, expect
+import pytest
+from playwright.sync_api import BrowserType, ConsoleMessage, Error, ViewportSize, expect
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
+from apps.core import navigation
+from apps.core.navigation import NavItem
 from apps.core.tenancy import tenant_context
 from apps.tenants.export_tasks import build_account_export
 from apps.tenants.models import (
@@ -18,7 +24,14 @@ from apps.tenants.models import (
     FirmOutboundMessage,
     NotificationPreference,
 )
-from tests.browser.harness import DESKTOP, BrowserPage, LiveFirm, axe_check
+from tests.browser.harness import (
+    DESKTOP,
+    SCREENSHOT_DIR_ENV,
+    BrowserPage,
+    LiveFirm,
+    axe_check,
+    mfa_session_cookie,
+)
 from tests.ui.factories import add_client, client_base
 
 # With the settings entry beside T21's search field, brand, menu, field, Buscar,
@@ -53,6 +66,66 @@ HEADER_GEOMETRY_JS: Final = """() => {
     innerWidth: window.innerWidth,
     clientWidth: document.documentElement.clientWidth,
     scrollWidth: document.documentElement.scrollWidth,
+  };
+}"""
+
+# Under firm_settings_r1 the firm's name is what gives way (AXR1-022 review). From
+# `xl` the bar keeps one row whatever the firm is called -- Tenant.name holds 255
+# characters, of wide glyphs or one unbroken word: the name shrinks and ends in an
+# ellipsis, keeping its full text for assistive technology and in its title, while
+# every action keeps its own width on the first row with HEADER_SPARE_PX to spare.
+# The classic scrollbar is drawn for real (a Chromium launched without Playwright's
+# --hide-scrollbars) rather than charged: the name absorbs those 15 px, which a
+# charge on a scrollbar-free render would count twice. One injected menu item stands
+# in for the next module (T27).
+HEADER_FIT_NAMES: Final = (
+    "Reviewer synthetic firm",
+    ("WMWMWMW " * 32)[:255],
+    ("ContabilidadeHorizonte" * 12)[:255],
+)
+HEADER_FIT_VIEWPORTS: Final = (
+    (ViewportSize(width=1280, height=800), True),
+    (ViewportSize(width=1280, height=800), False),
+    (ViewportSize(width=1366, height=768), True),
+    (ViewportSize(width=1440, height=900), True),
+)
+HEADER_FIT_FIXED_ACTIONS: Final = ("field", "buscar", "settings", "sair")
+HEADER_FIT_EXTRA_ITEM: Final = NavItem("Automações", "team", "users.create")
+HEADER_FIT_JS: Final = """() => {
+  const header = document.querySelector("header.shell-header");
+  const bar = header.querySelector(".shell-bar");
+  const box = (element) => element.getBoundingClientRect();
+  const tenant = header.querySelector(".shell-tenant");
+  const search = header.querySelector("form.shell-search");
+  const actions = [
+    ...[...header.querySelectorAll(".shell-link")].map(
+      (link) => [link.textContent.trim(), link],
+    ),
+    ["field", header.querySelector("#shell-search-q")],
+    ["buscar", search.querySelector('button[type="submit"]')],
+    ["settings", header.querySelector('.shell-account a[href="/configuracoes/"]')],
+    ["sair", header.querySelector(".shell-account form button")],
+  ];
+  const brandBottom = box(header.querySelector(".shell-brand")).bottom;
+  const root = document.documentElement;
+  return {
+    height: box(header).height,
+    spare: box(search).left - box(header.querySelector(".shell-disclosure")).right
+      - parseFloat(getComputedStyle(bar).columnGap),
+    barOverflow: bar.scrollWidth - bar.clientWidth,
+    pageOverflow: root.scrollWidth - root.clientWidth,
+    innerWidth: window.innerWidth,
+    clientWidth: root.clientWidth,
+    links: header.querySelectorAll(".shell-link").length,
+    offRow: actions.filter(([, element]) => box(element).top >= brandBottom)
+      .map(([key]) => key),
+    widths: Object.fromEntries(
+      actions.map(([key, element]) => [key, box(element).width]),
+    ),
+    title: tenant.title,
+    text: tenant.textContent,
+    clipped: tenant.scrollWidth > tenant.clientWidth,
+    textOverflow: getComputedStyle(tenant).textOverflow,
   };
 }"""
 
@@ -154,6 +227,209 @@ def test_profile_preference_and_account_zip(
         assert "documents.csv" in archive.namelist()
         assert "manifest.sha256" in archive.namelist()
         assert live.firm.clients[0].cnpj.encode() in archive.read("clients.csv")
+    opened.assert_clean_console()
+
+
+@contextmanager
+def _classic_scrollbar_page(
+    browser_type: BrowserType, launch_args: dict[str, Any], live: LiveFirm
+) -> Iterator[BrowserPage]:
+    """Sign the owner in on a desktop Chromium that draws a classic scrollbar.
+
+    Playwright starts headless Chromium with --hide-scrollbars. A window that draws
+    the classic 15 px bar is the narrowest real desktop layout, so this one is
+    launched without that switch, and closed with the test.
+    """
+    browser = browser_type.launch(
+        **launch_args, ignore_default_args=["--hide-scrollbars"]
+    )
+    try:
+        context = browser.new_context(
+            viewport=DESKTOP, locale="pt-BR", timezone_id="America/Sao_Paulo"
+        )
+        context.add_cookies([mfa_session_cookie(live.firm.owner, live.url("/"))])
+        opened = BrowserPage(page=context.new_page(), viewport="desktop")
+
+        def on_console(message: ConsoleMessage) -> None:
+            if message.type == "error":
+                opened.console_errors.append(message.text)
+
+        def on_page_error(error: Error) -> None:
+            opened.console_errors.append(f"uncaught: {error}")
+
+        opened.page.on("console", on_console)
+        opened.page.on("pageerror", on_page_error)
+        yield opened
+    finally:
+        browser.close()
+
+
+@dataclass
+class _HeaderFitRun:
+    """Render the flag-on bar for each firm name and record what breaks."""
+
+    pages: dict[bool, BrowserPage]
+    live: LiveFirm
+    flag_off_height: float
+    short_name_widths: dict[tuple[int, bool, str], dict[str, float]] = field(
+        default_factory=dict
+    )
+    rows: list[str] = field(default_factory=list)
+    failures: list[str] = field(default_factory=list)
+
+    def rename(self, name: str) -> None:
+        tenant = self.live.firm.tenant
+        tenant.name = name
+        tenant.save(update_fields=["name"])
+
+    def size(self, size: ViewportSize, *, scrollbar: bool) -> None:
+        self.pages[scrollbar].page.set_viewport_size(size)
+
+    def check(
+        self,
+        index: int,
+        path: str,
+        size: ViewportSize,
+        *,
+        scrollbar: bool,
+        extra_item: bool = False,
+    ) -> None:
+        name = HEADER_FIT_NAMES[index]
+        drawn = "shown" if scrollbar else "hidden"
+        case = f"{'extra-item-' if extra_item else ''}name{index}-{path.strip('/')}"
+        where = f"{case} {size['width']}x{size['height']} {drawn}"
+        opened = self.pages[scrollbar]
+        page = opened.page
+        opened.goto(self.live.url(path))
+        page.evaluate("() => { document.documentElement.style.overflowY = 'scroll'; }")
+        geometry: dict[str, Any] = page.evaluate(HEADER_FIT_JS)
+        # The case is only what it says when the scrollbar really is (or is not) drawn.
+        drawn_px = CLASSIC_SCROLLBAR_PX if scrollbar else 0
+        assert geometry["clientWidth"] == geometry["innerWidth"] - drawn_px, geometry
+        opened.screenshot(f"header-fit-{case}-{size['width']}-{drawn}")
+        key = (size["width"], scrollbar, path)
+        if index == 0 and not extra_item:
+            self.short_name_widths[key] = geometry["widths"]
+        short = self.short_name_widths[key]
+        problems = _header_fit_problems(
+            geometry,
+            name=name,
+            flag_off_height=self.flag_off_height,
+            widths=short if index else None,
+        )
+        links = len(short) - len(HEADER_FIT_FIXED_ACTIONS) + int(extra_item)
+        if geometry["links"] != links:
+            problems.append(f"{geometry['links']} menu items drawn, not {links}")
+        self.rows.append(f"{where} spare={geometry['spare']} {problems or 'OK'}")
+        self.failures.extend(f"{where}: {problem}" for problem in problems)
+
+    def report(self) -> str:
+        table = "\n".join(self.rows)
+        directory = os.environ.get(SCREENSHOT_DIR_ENV)
+        if directory:
+            Path(directory, "header-fit.txt").write_text(table + "\n")
+        return "\n".join([*self.failures, "", table])
+
+
+def _header_fit_problems(
+    geometry: dict[str, Any],
+    *,
+    name: str,
+    flag_off_height: float,
+    widths: dict[str, float] | None,
+) -> list[str]:
+    """Name every way this render breaks the one-row, name-gives-way contract."""
+    problems = []
+    if geometry["offRow"]:
+        problems.append(f"off the first row: {geometry['offRow']}")
+    if geometry["height"] != flag_off_height:
+        problems.append(f"height {geometry['height']} != flag-off {flag_off_height}")
+    if geometry["spare"] < HEADER_SPARE_PX:
+        problems.append(f"spare {geometry['spare']} < {HEADER_SPARE_PX}")
+    if geometry["barOverflow"] > 0 or geometry["pageOverflow"] > 0:
+        problems.append(
+            f"horizontal overflow bar={geometry['barOverflow']} "
+            f"page={geometry['pageOverflow']}"
+        )
+    if geometry["title"] != name or geometry["text"] != name:
+        problems.append("the firm's full name is not its title and text")
+    if widths is not None:
+        if not geometry["clipped"] or geometry["textOverflow"] != "ellipsis":
+            problems.append(
+                f"long name not ended with an ellipsis: clipped={geometry['clipped']} "
+                f"text-overflow={geometry['textOverflow']}"
+            )
+        shrunk = {
+            key: (width, geometry["widths"][key])
+            for key, width in widths.items()
+            if abs(geometry["widths"][key] - width) > 0.5
+        }
+        if shrunk:
+            problems.append(f"actions changed width (short name, now): {shrunk}")
+    return problems
+
+
+def test_firm_name_gives_way_to_header_actions(
+    live_firm: Callable[..., LiveFirm],
+    open_page: Callable[[LiveFirm, User | None], BrowserPage],
+    monkeypatch: pytest.MonkeyPatch,
+    browser_type: BrowserType,
+    browser_type_launch_args: dict[str, Any],
+) -> None:
+    live = live_firm("browser-header-fit", features=("cycles_r1", "firm_settings_r1"))
+    opened = open_page(live, None)
+    if opened.viewport != "desktop":
+        # Below `xl` the bar wraps as it always has; at 390 px a long name still ends
+        # inside the page.
+        for name in HEADER_FIT_NAMES:
+            live.firm.tenant.name = name
+            live.firm.tenant.save(update_fields=["name"])
+            opened.goto(live.url("/clientes/"))
+            geometry = opened.page.evaluate(HEADER_FIT_JS)
+            assert geometry["pageOverflow"] <= 0, (name, geometry)
+            assert geometry["title"] == geometry["text"] == name, geometry
+        opened.assert_clean_console()
+        return
+
+    # The flag-off bar (T21's, unchanged) keeps one row only for a name as short as
+    # the reviewer's, so its height is read with that name.
+    reference = live_firm("browser-header-fit-off")
+    reference.firm.tenant.name = HEADER_FIT_NAMES[0]
+    reference.firm.tenant.save(update_fields=["name"])
+    flag_off = open_page(reference, None)
+    flag_off.goto(reference.url("/clientes/"))
+    flag_off_height = flag_off.page.evaluate(
+        "() => document.querySelector('header.shell-header')"
+        ".getBoundingClientRect().height"
+    )
+    with _classic_scrollbar_page(browser_type, browser_type_launch_args, live) as bar:
+        run = _HeaderFitRun(
+            pages={False: opened, True: bar}, live=live, flag_off_height=flag_off_height
+        )
+        for index, name in enumerate(HEADER_FIT_NAMES):
+            run.rename(name)
+            for size, scrollbar in HEADER_FIT_VIEWPORTS:
+                run.size(size, scrollbar=scrollbar)
+                for path in HEADER_ROW_PATHS:
+                    run.check(index, path, size, scrollbar=scrollbar)
+            brand = opened.page.locator("header .shell-brand").aria_snapshot()
+            if name not in brand:
+                run.failures.append(f"name{index}: full name not in a11y tree: {brand}")
+
+        # Headroom: one more menu item than the bar holds today still keeps the row.
+        monkeypatch.setattr(
+            navigation, "NAV_R1", (*navigation.NAV_R1, HEADER_FIT_EXTRA_ITEM)
+        )
+        size, scrollbar = HEADER_FIT_VIEWPORTS[0]
+        run.size(size, scrollbar=scrollbar)
+        for index, name in enumerate(HEADER_FIT_NAMES):
+            run.rename(name)
+            for path in HEADER_ROW_PATHS:
+                run.check(index, path, size, scrollbar=scrollbar, extra_item=True)
+        bar.assert_clean_console()
+    opened.page.set_viewport_size(DESKTOP)
+    report = run.report()
+    assert not run.failures, report
     opened.assert_clean_console()
 
 
