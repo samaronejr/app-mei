@@ -245,6 +245,54 @@ def test_each_pending_request_names_its_own_client_choices() -> None:
         assert all(f'for="{box}"' in article for box in boxes), article
 
 
+def _active_grant(firm: Firm, staff: User) -> SupportGrant:
+    grant = _grant_for(firm.tenant, firm.owner, staff)
+    session = _session_for(staff, _firm_host(firm))
+    session.get("/")
+    return grant
+
+
+def test_owner_sees_the_support_audit_trail() -> None:
+    """B5: the grant's own page lists every request made under it.
+
+    Owner-only, RLS-scoped, and newest first — requests, plus the lifecycle
+    transitions the grant has already crossed.
+    """
+    firm = enabled_firm("support-trail-owner")
+    staff = _staff()
+    grant = _active_grant(firm, staff)
+    session = _session_for(firm.owner, _firm_host(firm))
+
+    page = session.get(f"/configuracoes/suporte/{grant.pk}/trilha/")
+    assert page.status_code == HTTPStatus.OK
+    html = page.content.decode()
+    assert staff.email in html
+    # The request row itself — method and path on the grant's own page.
+    assert "Requisição" in html
+    assert "GET" in html
+    # And the lifecycle that granted it.
+    assert "Acesso autorizado" in html
+
+
+def test_the_support_trail_stays_owner_only() -> None:
+    """B5: a non-owner member, a foreign firm and a support session all miss it."""
+    firm = enabled_firm("support-trail-scope")
+    other = enabled_firm("support-trail-other")
+    staff = _staff()
+    grant = _active_grant(firm, staff)
+
+    member = add_member(
+        firm.tenant, "member-trail@firm.example.com", TenantRole.STAFF_ACCOUNTANT
+    )
+    member_session = _session_for(member, _firm_host(firm))
+    other_session = _session_for(other.owner, _firm_host(other))
+    staff_session = _session_for(staff, _firm_host(firm))
+
+    for s in (member_session, other_session, staff_session):
+        r = s.get(f"/configuracoes/suporte/{grant.pk}/trilha/")
+        assert r.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND)
+
+
 def test_only_the_owner_can_decide() -> None:
     """A firm member who is not the owner cannot approve a grant."""
     firm = enabled_firm("support-member-cannot")

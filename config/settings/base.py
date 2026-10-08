@@ -475,6 +475,11 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "settings page; a live owner seat decides revocation, so the id names the "
         "object, not a credential."
     ),
+    "firm-suporte-trilha": (
+        "AXR1-023. The UUID identifies a support grant row inside the firm's own "
+        "settings page; a live owner seat and tenant RLS scope the audit trail, "
+        "so the id names the object, not a credential."
+    ),
 }
 
 # WebAuthn is out of scope for this phase. Recovery codes are on so that losing a

@@ -237,6 +237,6 @@ class SupportRequestAuditMiddleware:
             action=AuditAction.SUPPORT_REQUEST,
             tenant_id=grant.tenant_id,
             actor=actor,
-            obj=ObjectRef(type="support.grant", id=str(grant.pk)),
+            obj=ObjectRef(type="SupportGrant", id=str(grant.pk)),
             metadata=metadata,
         )

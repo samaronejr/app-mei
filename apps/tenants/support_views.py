@@ -29,19 +29,22 @@ from django.http import (
     HttpResponse,
     HttpResponseRedirect,
 )
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.translation import gettext_lazy
 from django.views.decorators.http import require_http_methods, require_POST
 
 from apps.accounts.models import User
 from apps.accounts.views import AuthenticatedRequest
+from apps.audit.models import Event
 from apps.authz.firm_account import ACCOUNT_CAPABILITY, require_account_owner
 from apps.authz.services import require_can
 from apps.authz.support import in_support_mode
 from apps.clients.models import ClientCompany
 from apps.clients.views import require_tenant
 from apps.core.flags import require_feature
+from apps.core.tenancy import tenant_context
 from apps.tenants.models import Tenant
 from apps.tenants.support import (
     MAX_HOURS,
@@ -52,7 +55,7 @@ from apps.tenants.support import (
     request_support_grant,
     revoke_support_grant,
 )
-from apps.tenants.support_models import SupportScope
+from apps.tenants.support_models import SupportGrant, SupportScope
 from apps.tenants.views import FLAG, resolved_firm
 
 
@@ -225,3 +228,68 @@ __all__ = [
     "support_request_view",
     "support_view",
 ]
+
+TRAIL_PAGE_SIZE = 100
+
+TRAIL_ACTION_LABELS: dict[str, str] = {
+    "support.request": "Requisição",
+    "support.grant_requested": "Acesso solicitado",
+    "support.grant_approved": "Acesso autorizado",
+    "support.grant_revoked": "Acesso encerrado",
+    "support.session_started": "Sessão de suporte iniciada",
+}
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_tenant
+@require_feature(FLAG)
+@require_can(ACCOUNT_CAPABILITY)
+def support_trail_view(request: AuthenticatedRequest, grant_id: UUID) -> HttpResponse:
+    """Show the owner's audit page for one support grant — B5.
+
+    Every request the grant already answered (GETs included) lands here next to
+    the lifecycle transitions that granted or ended it: requested, approved,
+    revoked, expired. The page inherits the owner gate, so a member, a foreign
+    firm and a support session all fall off before the template sees a row.
+    Newest first, one page's worth per request, select_related so the actor
+    column costs no follow-up query.
+    """
+    tenant = resolved_firm(request)
+    require_account_owner(request.user, tenant.pk)
+    if in_support_mode():
+        raise PermissionDenied
+    with tenant_context(tenant.pk):
+        grant = get_object_or_404(SupportGrant, pk=grant_id)
+        events = (
+            Event.objects.filter(object_type="SupportGrant", object_id=str(grant.pk))
+            .select_related("actor")
+            .order_by("-created_at")[:TRAIL_PAGE_SIZE]
+        )
+        rows = [
+            {
+                "actor": event.actor.email if event.actor else "—",
+                "action": TRAIL_ACTION_LABELS.get(
+                    event.action, event.get_action_display()
+                ),
+                "when": event.created_at,
+                "method": (event.metadata or {}).get("method", ""),
+                "path": (event.metadata or {}).get("path", ""),
+            }
+            for event in events
+        ]
+        grant_expired = (
+            grant.expires_at is not None
+            and grant.revoked_at is None
+            and grant.expires_at <= timezone.now()
+        )
+    return render(
+        request,
+        "tenants/support_trail.html",
+        {
+            "firm": tenant,
+            "grant": grant,
+            "grant_expired": grant_expired,
+            "rows": rows,
+        },
+    )

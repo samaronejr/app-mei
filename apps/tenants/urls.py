@@ -17,6 +17,11 @@ urlpatterns = [
         name="firm-suporte",
     ),
     path(
+        "configuracoes/suporte/<uuid:grant_id>/trilha/",
+        support_views.support_trail_view,
+        name="firm-suporte-trilha",
+    ),
+    path(
         "configuracoes/suporte/<uuid:grant_id>/aprovar/",
         support_views.approve_support_view,
         name="firm-suporte-approve",

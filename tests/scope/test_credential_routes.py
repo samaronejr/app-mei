@@ -94,6 +94,7 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         # firm's settings page; object ids, never bearer credentials.
         "firm-suporte-approve",
         "firm-suporte-revoke",
+        "firm-suporte-trilha",
         "admin:*",
     },
 )

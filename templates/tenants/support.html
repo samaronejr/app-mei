@@ -55,6 +55,7 @@
           {% endif %}
           {% if grant.revoked_at %}· {% translate "Encerrado" %} {{ grant.revoked_at|date:"d/m/Y H:i" }}{% endif %}
         </p>
+        <p class="mt-2"><a class="link" href="{% url 'firm-suporte-trilha' grant.pk %}">{% translate "Ver trilha de auditoria" %}</a></p>
         {% if grant.approved_at and not grant.revoked_at %}
         <form method="post" action="{% url 'firm-suporte-revoke' grant.pk %}" class="mt-2">
           {% csrf_token %}

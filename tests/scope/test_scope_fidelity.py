@@ -132,7 +132,7 @@ FISCAL_MODEL_NAMES = frozenset({"Municipality", "MunicipalityCapability"})
 
 # Row 10, AXR1-023: the plan's own todo-23 block commissions the owner-facing
 # support-grant pages under `/configuracoes/suporte/` ("The owner approves in
-# /configuracoes/suporte/"). Those three routes are an owner approval surface,
+# /configuracoes/suporte/"). Those four routes are an owner approval surface,
 # not the excluded support *console* — a console is the staff-facing tenant
 # switcher, which still must not exist. The exemption names the exact routes
 # and nothing else: any other route whose name carries either spelling fails.
@@ -141,6 +141,7 @@ SUPPORT_GRANT_OWNER_ROUTES = frozenset(
         "firm-suporte",
         "firm-suporte-approve",
         "firm-suporte-revoke",
+        "firm-suporte-trilha",
     }
 )
 
