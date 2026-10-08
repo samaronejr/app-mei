@@ -1,8 +1,15 @@
 {% extends "base.html" %}{% load ptbr %}
 {% block title %}Conferir efeitos · {{ proposal.client.legal_name }}{% endblock %}
 {% block heading %}Conferir efeitos{% endblock %}
-{% block content %}
-<div class="mx-auto grid min-w-0 max-w-5xl gap-6" data-approval-card data-proposal-id="{{ proposal.pk }}">
+{% block content %}{% comment %}
+One decision about frozen effects. Every fact the decision rests on comes before the
+controls in the document, so reading order, tab order and a screen reader all meet the
+facts first. From `lg` up the controls sit in a sticky column beside the facts, so the
+decision stays in view while the facts are read; below `lg` they follow the facts.
+Empty collections share one compact line, and the technical identity of this version
+(ids and digests) is a closed disclosure that still precedes the decision.
+{% endcomment %}
+<div class="mx-auto grid min-w-0 max-w-6xl gap-6" data-approval-card data-proposal-id="{{ proposal.pk }}">
   <header class="min-w-0">
     <a class="ui-link" href="{% url 'cycle-detail' proposal.cycle_id %}">Voltar ao ciclo</a>
     <p class="mt-4 text-sm text-ink-600">{{ proposal.client.legal_name }} · CNPJ {{ proposal.client.cnpj|cnpj_mask }} · competência {{ proposal.cycle.period_start|date:'m/Y' }}</p>
@@ -10,131 +17,155 @@
     <p class="mt-2"><span class="status-badge status-pending" data-proposal-state="{{ proposal.state }}">{{ proposal.get_state_display }}</span> · versão {{ proposal.revision }} · proposta por {{ proposal.initiator }}</p>
     <p class="mt-2 text-sm text-ink-600">Este cartão mostra os efeitos congelados desta versão. Aprovar registra uma decisão; não envia mensagens, não publica arquivos e não comprova execução.</p>
   </header>
-  {% if error %}<div class="ui-panel p-4" role="alert">{{ error }}</div>{% endif %}
-  {% if warnings or expired %}<section class="ui-panel p-4" aria-labelledby="approval-warnings">
-    <h2 id="approval-warnings" class="font-semibold">Atenção antes de decidir</h2>
-    {% if expired %}<p data-expired>A validade desta versão terminou. Uma nova versão precisa ser conferida.</p>{% endif %}
-    <ul>{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
-  </section>{% endif %}
-  {% include "partials/ui/effects_card.html" with card_id="frozen-effects" title="O que esta versão autoriza" effects=effects note="Na execução, estes mesmos efeitos e a autoridade de cada aprovador serão conferidos de novo. Se perderem a validade, nada será executado." only %}
-  <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-recipients">
-    <h2 id="frozen-recipients" class="ui-panel-heading">Destinatários exatos · {{ frozen.recipients|length }}</h2>
-    <ul class="mt-3 grid gap-3">{% for recipient in frozen.recipients %}
-      <li class="min-w-0" data-frozen-recipient><p class="break-all font-semibold">{{ recipient.address }}</p><p class="text-sm text-ink-600">{% if recipient.channel == 'email' %}E-mail{% else %}Acesso no portal{% endif %} · destinatário direto</p><p class="break-all text-xs text-ink-600">Contato {{ recipient.contact_id }}</p></li>
-    {% empty %}<li>Ação interna, sem destinatários externos.</li>{% endfor %}</ul>
-  </section>
-  <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-message">
-    <h2 id="frozen-message" class="ui-panel-heading">Conteúdo congelado</h2>
-    {% if frozen.payload.reopen %}
-    <p class="mt-3 font-semibold">Resultado autorizado: reabrir o ciclo com uma nova emenda.</p>
-    <p class="mt-2 break-all text-sm">Conclusão preservada: {{ frozen.payload.reopen.generation_id }}</p>
-    <ul class="mt-2 text-sm">{% for subject in frozen.payload.reopen.affected_scope %}<li class="break-all">Escopo: {{ subject }}</li>{% endfor %}</ul>
-    {% elif frozen.payload.completion_state %}<p class="mt-3 font-semibold">Resultado autorizado: {% if frozen.payload.completion_state == 'encerrado_com_pendencias' %}encerrar com pendências justificadas{% else %}concluir o ciclo, se todas as condições forem atendidas{% endif %}.</p>{% endif %}
-    {% if frozen.payload.completion_reasons %}
-    <dl class="mt-3 grid gap-3 text-sm">{% for key, reason in frozen.payload.completion_reasons.items %}<div><dt class="break-all font-semibold">{{ key }}</dt><dd class="mt-1 whitespace-pre-wrap break-words">{{ reason }}</dd></div>{% endfor %}</dl>
-    {% endif %}
-    {% if frozen.payload.supersedes %}
-    <p class="mt-3 font-semibold">Esta publicação revisa uma versão anterior.</p>
-    <p class="mt-2 break-all text-sm">Publicação: {{ frozen.payload.supersedes.publication_id }} · revisão {{ frozen.payload.supersedes.version }}</p>
-    <p class="mt-1 break-all text-xs">SHA-256 preservado: {{ frozen.payload.supersedes.digest }}</p>
-    {% endif %}
-    {% if frozen.payload.subject %}<p class="mt-3 font-semibold break-words" data-frozen-subject>{{ frozen.payload.subject }}</p>{% endif %}
-    {% if frozen.payload.from %}<p class="mt-1 text-sm break-all">Remetente: {{ frozen.payload.from }}</p>{% endif %}
-    {% if frozen.payload.body %}<pre class="mt-3 whitespace-pre-wrap break-words font-sans text-sm" data-frozen-body>{{ frozen.payload.body }}</pre>{% else %}<p class="mt-3 text-sm">Esta ação não contém mensagem externa.</p>{% endif %}
-    {% if frozen.payload.reason %}<p class="mt-3 whitespace-pre-wrap break-words">{{ frozen.payload.reason }}</p>{% endif %}
-    {% if frozen.payload.notice %}<details class="mt-4 text-sm">
-      <summary class="ui-link">Conferir o aviso de e-mail incluído</summary>
-      <p class="mt-3 font-semibold">{{ frozen.payload.notice.subject }}</p>
-      <p class="break-all">Remetente: {{ frozen.payload.notice.from }}</p>
-      <pre class="mt-2 whitespace-pre-wrap break-words font-sans">{{ frozen.payload.notice.body }}</pre>
-      <p class="mt-2 text-xs">SHA-256 da mensagem MIME</p><code class="block break-all text-xs">{{ frozen.payload.notice.mime_sha256 }}</code>
-    </details>{% endif %}
-    {% if frozen.payload.mime_sha256 %}
-    <p class="mt-3 text-xs text-ink-600">SHA-256 da mensagem MIME congelada</p>
-    <code class="block break-all text-xs" data-frozen-mime-sha256>{{ frozen.payload.mime_sha256 }}</code>
-    <details class="mt-3 text-sm" data-frozen-mail-headers>
-      <summary class="ui-link">Conferir cabeçalhos congelados</summary>
-      <dl class="mt-2 grid gap-2">{% for name,value in frozen.payload.headers.items %}<div class="min-w-0"><dt class="font-semibold">{{ name }}</dt><dd class="break-all text-xs">{{ value }}</dd></div>{% endfor %}</dl>
-    </details>
-    {% endif %}
-  </section>
-  <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-money">
-    <h2 id="frozen-money" class="ui-panel-heading">Valores exatos</h2>
-    <ul class="mt-3 grid gap-3">{% for amount in frozen.money %}<li>
-      <p class="font-semibold">{{ amount.decimal }} {{ amount.currency }}</p>
-      <p class="break-all text-sm text-ink-600">{{ amount.name }} · {{ amount.rounding_rule }}</p>
-    </li>{% empty %}<li>Nenhum valor monetário faz parte deste efeito.</li>{% endfor %}</ul>
-  </section>
-  <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-documents">
-    <h2 id="frozen-documents" class="ui-panel-heading">Documentos e revisão · {{ frozen.documents|length }}</h2>
-    <ul class="mt-3 grid gap-4">{% for document in frozen.documents %}<li class="min-w-0 border-t border-ink-200 pt-3" data-frozen-document>
-      <a class="ui-link break-all" href="{% url 'document-review' document.link_id %}">Conferir documento {{ document.document_id }}</a>
-      <p class="mt-1 text-sm">Revisão: {{ document.review_state }} · vínculo {{ document.link_revision }} · {{ document.size }} bytes</p>
-      <p class="text-sm">Verificação do arquivo: {{ document.intake_state }}</p>
-      <p class="mt-2 text-xs text-ink-600">SHA-256</p><code class="block break-all text-xs">{{ document.sha256 }}</code>
-      <p class="mt-2 break-all text-xs text-ink-600">Registro de verificação {{ document.scan_id }}</p>
-    </li>{% empty %}<li>Nenhum documento integra esta versão.</li>{% endfor %}</ul>
-  </section>
-  <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-evidence">
-    <h2 id="frozen-evidence" class="ui-panel-heading">Evidências selecionadas</h2>
-    <ul class="mt-3 grid gap-3">{% for evidence in frozen.evidence %}<li>
-      <a class="ui-link break-all" href="{% url 'cycle-detail' proposal.cycle_id %}#solicitacoes">Solicitação {{ evidence.request_id }}</a>
-      <p class="text-sm">Revisão {{ evidence.revision }}</p>
-      <p class="break-all text-xs text-ink-600">Decisão {{ evidence.decision_id|default:'Sem decisão registrada' }}</p>
-    </li>{% empty %}<li>Nenhuma solicitação de evidência integra este efeito.</li>{% endfor %}</ul>
-  </section>
-  <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-sources">
-    <h2 id="frozen-sources" class="ui-panel-heading">Fontes e validade</h2>
-    <ul class="mt-3 grid gap-4">{% for source in observations %}<li data-source-kind="{{ source.source_kind }}" data-source-status="{{ source.status }}">
-      <p class="font-semibold">{{ source.source_label }}</p><p>{{ source.status_label }} · observado em {{ source.observed_at|data_hora }}</p>
-      {% if source.stale %}<p class="mt-1 font-semibold" data-source-stale>Fonte desatualizada. Para e-mail, é um aviso; para publicação e conclusão, invalida a aprovação.</p>{% endif %}
-      {% if source.source_kind != 'official_api' and source.source_kind != 'official_file_import' %}<p class="text-sm text-ink-600">Esta fonte não é uma verificação oficial. Não comprova, por si só, pagamento ou entrega.</p>{% endif %}
-      <p class="break-all text-xs text-ink-600">{{ source.id }}</p>
-    </li>{% empty %}<li>Nenhuma observação de fonte foi selecionada.</li>{% endfor %}</ul>
-  </section>
-  <section class="ui-panel p-4 min-w-0" aria-labelledby="frozen-policy">
-    <h2 id="frozen-policy" class="ui-panel-heading">Política e limite da decisão</h2>
-    <dl class="mt-3 grid gap-3 text-sm">
-      <div><dt class="font-semibold">Aprovações necessárias</dt><dd>{{ frozen.approval_rule.quorum }}</dd></div>
-      <div><dt class="font-semibold">Separação de funções</dt><dd>{% if frozen.approval_rule.separation_of_duties %}Quem propôs não pode aprovar esta versão.{% else %}Exceção de autoaprovação habilitada para uma única pessoa ativa. Exige confirmação explícita e registro de auditoria.{% endif %}</dd></div>
-      <div><dt class="font-semibold">Válida até</dt><dd>{{ dates.expires_at|data_hora }} · America/Sao_Paulo</dd></div>
-      {% if dates.not_before %}<div><dt class="font-semibold">Não executar antes de</dt><dd>{{ dates.not_before|data_hora }}</dd></div>{% endif %}
-      <div><dt class="font-semibold">Política</dt><dd>Revisão {{ frozen.policy.version }}<code class="block break-all text-xs">{{ frozen.policy.hash }}</code></dd></div>
-      <div><dt class="font-semibold">Destino</dt><dd>{{ action_label }} · {{ frozen.destination.provider }}<code class="block break-all text-xs">{{ frozen.destination.account_id }}</code><span class="text-xs">{{ frozen.destination.operation }}</span></dd></div>
-      <div><dt class="font-semibold">Identidade desta versão</dt><dd><code class="block break-all text-xs">{{ proposal.pk }}</code>Revisão {{ proposal.revision }}</dd></div>
-      <div><dt class="font-semibold">Resumo criptográfico dos efeitos</dt><dd class="break-all font-mono text-xs" data-frozen-digest>{{ proposal.digest }}</dd></div>
-    </dl>
-  </section>
-  <section class="ui-panel p-4" aria-labelledby="approval-history">
-    <h2 id="approval-history" class="ui-panel-heading">Decisões registradas</h2>
-    <ul class="mt-3 grid gap-3">{% for decision in decisions %}<li data-decision="{{ decision.decision }}">{{ decision.approver }} · {{ decision.get_decision_display }} · {{ decision.decided_at|data_hora }}{% if decision.authorization_snapshot.self_approval_acknowledged %}<p class="text-sm">Autoaprovação confirmada explicitamente.</p>{% endif %}</li>{% empty %}<li>Ainda não há decisão nesta versão.</li>{% endfor %}</ul>
-    {% if proposal.decision_reason %}<p class="mt-3 whitespace-pre-wrap break-words">{{ proposal.decision_reason }}</p>{% endif %}
-  </section>
-  <section class="ui-panel p-4" aria-labelledby="approval-decision" data-decision-controls>
-    <h2 id="approval-decision" class="ui-panel-heading">Decidir sobre estes efeitos</h2>
-    {% if execution %}<p class="mt-3">Efeito registrado em {{ execution.executed_at|data_hora }}.{% if proposal.action_kind == 'email_notice' %} O aviso foi colocado na fila; o resultado do servidor de e-mail está em Comunicação.{% endif %}</p>
-    {% elif may_execute %}<form method="post" class="mt-4">{% csrf_token %}
-      <input type="hidden" name="expected_version" value="{{ proposal.version }}">
-      <button class="ui-btn ui-btn-primary" name="action" value="execute" type="submit">Executar efeitos aprovados</button>
-    </form>{% endif %}
-    {% if awaiting and may_approve and not expired %}
-      {% if self_approval and frozen.approval_rule.separation_of_duties %}<p class="mt-3">Outra pessoa autorizada precisa aprovar esta versão.</p>
-      {% else %}<form method="post" class="mt-4 grid gap-3">{% csrf_token %}
-        <input type="hidden" name="expected_version" value="{{ proposal.version }}">
-        {% if self_approval %}<label class="flex items-start gap-2"><input type="checkbox" name="self_approval_acknowledged" required><span>Confirmo que sou a única pessoa ativa e assumo a autoaprovação destes efeitos.</span></label>{% endif %}
-        <div><button type="submit" name="action" value="approve" class="ui-btn ui-btn-primary">Aprovar estes efeitos</button></div>
-      </form>{% endif %}
-      <form method="post" class="mt-6 grid gap-3 border-t border-ink-200 pt-4">{% csrf_token %}
-        <input type="hidden" name="expected_version" value="{{ proposal.version }}">
-        <div><label class="ui-field-label" for="reject-reason">Motivo para não aprovar</label><textarea class="ui-field-input" id="reject-reason" name="reason" maxlength="2000" required></textarea></div>
-        <div><button type="submit" name="action" value="reject" class="ui-btn ui-btn-quiet">Não aprovar</button></div>
-      </form>
-    {% elif awaiting %}<p class="mt-3">Esta versão precisa de uma pessoa com autoridade de aprovação e validade vigente.</p>{% endif %}
-    {% if open %}<div class="mt-4 flex flex-wrap gap-3">
-      <form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ proposal.version }}"><button class="ui-btn ui-btn-quiet" name="action" value="revalidate" type="submit">Conferir validade agora</button></form>
-      {% if may_cancel %}<form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ proposal.version }}"><button class="ui-btn ui-btn-quiet" name="action" value="cancel" type="submit">Cancelar proposta</button></form>{% endif %}
-    </div>{% endif %}
-    {% if may_propose %}<p class="mt-4">{% if frozen.payload.reopen %}<a class="ui-link" href="{% url 'cycle-detail' proposal.cycle_id %}#cycle-summary">Propor nova revisão da emenda</a>{% else %}<a class="ui-link" href="{% url 'proposal-create' proposal.cycle_id %}?revisao_de={{ proposal.pk }}">Criar nova versão com efeitos atualizados</a>{% endif %}</p>{% endif %}
-  </section>
+  {% if error %}<div class="ui-state {% if conflict %}ui-state-stale{% else %}ui-state-error{% endif %}" role="alert" data-approval-alert="{% if conflict %}conflict{% else %}refused{% endif %}">
+    <p class="ui-state-title">{% if conflict %}{% include "partials/pure/icons/clock-fading.html" %}{% else %}{% include "partials/pure/icons/alert-triangle.html" %}{% endif %}<span>{{ error }}</span></p>
+    {% if conflict %}<a class="ui-link" href="{% url 'approval-card' proposal.pk %}">Recarregar esta versão</a>{% endif %}
+  </div>{% endif %}
+  <div class="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] lg:items-start">
+    <div class="grid min-w-0 gap-4" data-approval-facts>
+      {% if warnings or expired %}<section class="ui-panel" aria-labelledby="approval-warnings">
+        <h2 id="approval-warnings" class="ui-panel-heading">Atenção antes de decidir</h2>
+        <div class="grid gap-2 px-4 py-3 text-sm">
+          {% if expired %}<p data-expired>A validade desta versão terminou. Uma nova versão precisa ser conferida.</p>{% endif %}
+          {% if warnings %}<ul class="grid gap-1">{% for warning in warnings %}<li>{{ warning }}</li>{% endfor %}</ul>{% endif %}
+        </div>
+      </section>{% endif %}
+      {% include "partials/ui/effects_card.html" with card_id="frozen-effects" title="O que esta versão autoriza" effects=effects note="Na execução, estes mesmos efeitos e a autoridade de cada aprovador serão conferidos de novo. Se perderem a validade, nada será executado." only %}
+      {% if empty_sections %}<p class="ui-panel px-4 py-2.5 text-sm text-ink-700" data-empty-sections><span class="font-semibold text-ink-800">Não integram esta versão:</span> {{ empty_sections|join:", " }}.</p>{% endif %}
+      {% if frozen.recipients %}<section class="ui-panel" aria-labelledby="frozen-recipients">
+        <h2 id="frozen-recipients" class="ui-panel-heading">Destinatários exatos · {{ frozen.recipients|length }}</h2>
+        <ul class="grid gap-3 px-4 py-3">{% for recipient in frozen.recipients %}
+          <li class="min-w-0" data-frozen-recipient><p class="break-all font-semibold">{{ recipient.address }}</p><p class="text-sm text-ink-600">{% if recipient.channel == 'email' %}E-mail{% else %}Acesso no portal{% endif %} · destinatário direto</p></li>
+        {% endfor %}</ul>
+      </section>{% endif %}
+      <section class="ui-panel" aria-labelledby="frozen-message">
+        <h2 id="frozen-message" class="ui-panel-heading">Conteúdo congelado</h2>
+        <div class="min-w-0 px-4 py-3">
+        {% if frozen.payload.reopen %}
+        <p class="font-semibold">Resultado autorizado: reabrir o ciclo com uma nova emenda.</p>
+        <p class="mt-2 break-all text-sm">Conclusão preservada: {{ frozen.payload.reopen.generation_id }}</p>
+        <ul class="mt-2 text-sm">{% for subject in frozen.payload.reopen.affected_scope %}<li class="break-all">Escopo: {{ subject }}</li>{% endfor %}</ul>
+        {% elif frozen.payload.completion_state %}<p class="font-semibold">Resultado autorizado: {% if frozen.payload.completion_state == 'encerrado_com_pendencias' %}encerrar com pendências justificadas{% else %}concluir o ciclo, se todas as condições forem atendidas{% endif %}.</p>{% endif %}
+        {% if frozen.payload.completion_reasons %}
+        <dl class="mt-3 grid gap-3 text-sm">{% for key, reason in frozen.payload.completion_reasons.items %}<div><dt class="break-all font-semibold">{{ key }}</dt><dd class="mt-1 whitespace-pre-wrap break-words">{{ reason }}</dd></div>{% endfor %}</dl>
+        {% endif %}
+        {% if frozen.payload.supersedes %}
+        <p class="mt-3 font-semibold">Esta publicação revisa uma versão anterior.</p>
+        <p class="mt-2 break-all text-sm">Publicação: {{ frozen.payload.supersedes.publication_id }} · revisão {{ frozen.payload.supersedes.version }}</p>
+        {% endif %}
+        {% if frozen.payload.subject %}<p class="mt-3 font-semibold break-words first:mt-0" data-frozen-subject>{{ frozen.payload.subject }}</p>{% endif %}
+        {% if frozen.payload.from %}<p class="mt-1 text-sm break-all">Remetente: {{ frozen.payload.from }}</p>{% endif %}
+        {% if frozen.payload.body %}<pre class="mt-3 whitespace-pre-wrap break-words font-sans text-sm" data-frozen-body>{{ frozen.payload.body }}</pre>{% else %}<p class="mt-3 text-sm">Esta ação não contém mensagem externa.</p>{% endif %}
+        {% if frozen.payload.reason %}<p class="mt-3 whitespace-pre-wrap break-words">{{ frozen.payload.reason }}</p>{% endif %}
+        {% if frozen.payload.notice %}<details class="mt-4 text-sm">
+          <summary class="ui-link">Conferir o aviso de e-mail incluído</summary>
+          <p class="mt-3 font-semibold">{{ frozen.payload.notice.subject }}</p>
+          <p class="break-all">Remetente: {{ frozen.payload.notice.from }}</p>
+          <pre class="mt-2 whitespace-pre-wrap break-words font-sans">{{ frozen.payload.notice.body }}</pre>
+          <p class="mt-2 text-xs">SHA-256 da mensagem MIME</p><code class="block break-all text-xs">{{ frozen.payload.notice.mime_sha256 }}</code>
+        </details>{% endif %}
+        {% if frozen.payload.mime_sha256 %}
+        <details class="mt-3 text-sm" data-frozen-mail-headers>
+          <summary class="ui-link">Conferir cabeçalhos congelados</summary>
+          <dl class="mt-2 grid gap-2">{% for name,value in frozen.payload.headers.items %}<div class="min-w-0"><dt class="font-semibold">{{ name }}</dt><dd class="break-all text-xs">{{ value }}</dd></div>{% endfor %}</dl>
+        </details>
+        {% endif %}
+        </div>
+      </section>
+      {% if frozen.money %}<section class="ui-panel" aria-labelledby="frozen-money">
+        <h2 id="frozen-money" class="ui-panel-heading">Valores exatos</h2>
+        <ul class="grid gap-3 px-4 py-3">{% for amount in frozen.money %}<li>
+          <p class="font-semibold tabular-nums">{{ amount.decimal }} {{ amount.currency }}</p>
+          <p class="break-all text-sm text-ink-600">{{ amount.name }} · {{ amount.rounding_rule }}</p>
+        </li>{% endfor %}</ul>
+      </section>{% endif %}
+      {% if frozen.documents %}<section class="ui-panel" aria-labelledby="frozen-documents">
+        <h2 id="frozen-documents" class="ui-panel-heading">Documentos e revisão · {{ frozen.documents|length }}</h2>
+        <ul class="grid gap-3 px-4 py-3">{% for document in frozen.documents %}<li class="min-w-0 border-t border-ink-200 pt-3 first:border-t-0 first:pt-0" data-frozen-document>
+          <a class="ui-link break-all" href="{% url 'document-review' document.link_id %}">Conferir documento {{ document.document_id }}</a>
+          <p class="mt-1 text-sm">Revisão: {{ document.review_state }} · vínculo {{ document.link_revision }} · {{ document.size }} bytes</p>
+          <p class="text-sm">Verificação do arquivo: {{ document.intake_state }}</p>
+        </li>{% endfor %}</ul>
+      </section>{% endif %}
+      {% if frozen.evidence %}<section class="ui-panel" aria-labelledby="frozen-evidence">
+        <h2 id="frozen-evidence" class="ui-panel-heading">Evidências selecionadas</h2>
+        <ul class="grid gap-3 px-4 py-3">{% for evidence in frozen.evidence %}<li>
+          <a class="ui-link break-all" href="{% url 'cycle-detail' proposal.cycle_id %}#solicitacoes">Solicitação {{ evidence.request_id }}</a>
+          <p class="text-sm">Revisão {{ evidence.revision }}</p>
+          <p class="break-all text-xs text-ink-600">Decisão {{ evidence.decision_id|default:'Sem decisão registrada' }}</p>
+        </li>{% endfor %}</ul>
+      </section>{% endif %}
+      {% if observations %}<section class="ui-panel" aria-labelledby="frozen-sources">
+        <h2 id="frozen-sources" class="ui-panel-heading">Fontes e validade</h2>
+        <ul class="grid gap-3 px-4 py-3">{% for source in observations %}<li data-source-kind="{{ source.source_kind }}" data-source-status="{{ source.status }}">
+          <p class="font-semibold">{{ source.source_label }}</p><p>{{ source.status_label }} · observado em {{ source.observed_at|data_hora }}</p>
+          {% if source.stale %}<p class="mt-1 font-semibold" data-source-stale>Fonte desatualizada. Para e-mail, é um aviso; para publicação e conclusão, invalida a aprovação.</p>{% endif %}
+          {% if source.source_kind != 'official_api' and source.source_kind != 'official_file_import' %}<p class="text-sm text-ink-600">Esta fonte não é uma verificação oficial. Não comprova, por si só, pagamento ou entrega.</p>{% endif %}
+        </li>{% endfor %}</ul>
+      </section>{% endif %}
+      <section class="ui-panel" aria-labelledby="frozen-policy">
+        <h2 id="frozen-policy" class="ui-panel-heading">Política e limite da decisão</h2>
+        <dl class="grid gap-3 px-4 py-3 text-sm sm:grid-cols-2">
+          <div><dt class="font-semibold">Aprovações necessárias</dt><dd>{{ frozen.approval_rule.quorum }}</dd></div>
+          <div><dt class="font-semibold">Válida até</dt><dd>{{ dates.expires_at|data_hora }} · America/Sao_Paulo</dd></div>
+          <div class="sm:col-span-2"><dt class="font-semibold">Separação de funções</dt><dd>{% if frozen.approval_rule.separation_of_duties %}Quem propôs não pode aprovar esta versão.{% else %}Exceção de autoaprovação habilitada para uma única pessoa ativa. Exige confirmação explícita e registro de auditoria.{% endif %}</dd></div>
+          {% if dates.not_before %}<div><dt class="font-semibold">Não executar antes de</dt><dd>{{ dates.not_before|data_hora }}</dd></div>{% endif %}
+          <div><dt class="font-semibold">Política</dt><dd>Revisão {{ frozen.policy.version }}</dd></div>
+          <div><dt class="font-semibold">Destino</dt><dd>{{ action_label }} · {{ frozen.destination.provider }} · {{ frozen.destination.operation }}</dd></div>
+        </dl>
+      </section>
+      <details class="ui-panel min-w-0" data-identity-block>
+        <summary class="cursor-pointer rounded-panel px-4 py-2.5 text-sm font-semibold text-ink-800">Identidade técnica desta versão</summary>
+        <dl class="grid gap-3 border-t border-ink-200 px-4 py-3 text-sm">
+          <div class="min-w-0"><dt class="font-semibold">Identidade desta versão</dt><dd><code class="block break-all text-xs">{{ proposal.pk }}</code>Revisão {{ proposal.revision }}</dd></div>
+          <div class="min-w-0"><dt class="font-semibold">Resumo criptográfico dos efeitos</dt><dd class="break-all font-mono text-xs" data-frozen-digest>{{ proposal.digest }}</dd></div>
+          {% if frozen.payload.mime_sha256 %}<div class="min-w-0"><dt class="font-semibold">SHA-256 da mensagem MIME congelada</dt><dd><code class="block break-all text-xs" data-frozen-mime-sha256>{{ frozen.payload.mime_sha256 }}</code></dd></div>{% endif %}
+          {% if frozen.payload.supersedes %}<div class="min-w-0"><dt class="font-semibold">SHA-256 preservado da versão anterior</dt><dd><code class="block break-all text-xs">{{ frozen.payload.supersedes.digest }}</code></dd></div>{% endif %}
+          <div class="min-w-0"><dt class="font-semibold">Política</dt><dd><code class="block break-all text-xs">{{ frozen.policy.hash }}</code></dd></div>
+          <div class="min-w-0"><dt class="font-semibold">Conta de destino</dt><dd><code class="block break-all text-xs">{{ frozen.destination.account_id }}</code></dd></div>
+          {% for recipient in frozen.recipients %}<div class="min-w-0"><dt class="break-all font-semibold">Contato · {{ recipient.address }}</dt><dd><code class="block break-all text-xs">{{ recipient.contact_id }}</code></dd></div>{% endfor %}
+          {% for document in frozen.documents %}<div class="min-w-0"><dt class="break-all font-semibold">Documento {{ document.document_id }}</dt><dd><span class="text-xs text-ink-600">SHA-256</span><code class="block break-all text-xs">{{ document.sha256 }}</code><span class="block break-all text-xs text-ink-600">Registro de verificação {{ document.scan_id }}</span></dd></div>{% endfor %}
+          {% for source in observations %}<div class="min-w-0"><dt class="font-semibold">Observação · {{ source.source_label }}</dt><dd><code class="block break-all text-xs">{{ source.id }}</code></dd></div>{% endfor %}
+        </dl>
+      </details>
+    </div>
+    <div class="grid min-w-0 gap-4 lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto" data-decision-area>
+      <section class="ui-panel" aria-labelledby="approval-history">
+        <h2 id="approval-history" class="ui-panel-heading">Decisões registradas</h2>
+        <div class="px-4 py-3 text-sm">
+          <ul class="grid gap-2">{% for decision in decisions %}<li data-decision="{{ decision.decision }}">{{ decision.approver }} · {{ decision.get_decision_display }} · {{ decision.decided_at|data_hora }}{% if decision.authorization_snapshot.self_approval_acknowledged %}<p class="text-sm">Autoaprovação confirmada explicitamente.</p>{% endif %}</li>{% empty %}<li>Ainda não há decisão nesta versão.</li>{% endfor %}</ul>
+          {% if proposal.decision_reason %}<p class="mt-3 whitespace-pre-wrap break-words">{{ proposal.decision_reason }}</p>{% endif %}
+        </div>
+      </section>
+      <section class="ui-panel" aria-labelledby="approval-decision" data-decision-controls>
+        <h2 id="approval-decision" class="ui-panel-heading">Decidir sobre estes efeitos</h2>
+        <div class="grid gap-4 px-4 py-3">
+        {% if execution %}<p>Efeito registrado em {{ execution.executed_at|data_hora }}.{% if proposal.action_kind == 'email_notice' %} O aviso foi colocado na fila; o resultado do servidor de e-mail está em Comunicação.{% endif %}</p>
+        {% elif may_execute %}<form method="post">{% csrf_token %}
+          <input type="hidden" name="expected_version" value="{{ proposal.version }}">
+          <button class="ui-btn ui-btn-primary" name="action" value="execute" type="submit">Executar efeitos aprovados</button>
+        </form>{% endif %}
+        {% if awaiting and may_approve and not expired %}
+          {% if self_approval and frozen.approval_rule.separation_of_duties %}<p>Outra pessoa autorizada precisa aprovar esta versão.</p>
+          {% else %}<form method="post" class="grid gap-3">{% csrf_token %}
+            <input type="hidden" name="expected_version" value="{{ proposal.version }}">
+            {% if self_approval %}<label class="flex items-start gap-2"><input type="checkbox" name="self_approval_acknowledged" required><span>Confirmo que sou a única pessoa ativa e assumo a autoaprovação destes efeitos.</span></label>{% endif %}
+            <div><button type="submit" name="action" value="approve" class="ui-btn ui-btn-primary">Aprovar estes efeitos</button></div>
+          </form>{% endif %}
+          <form method="post" class="grid gap-3 border-t border-ink-200 pt-4">{% csrf_token %}
+            <input type="hidden" name="expected_version" value="{{ proposal.version }}">
+            <div><label class="ui-field-label" for="reject-reason">Motivo para não aprovar</label><textarea class="ui-field-input" id="reject-reason" name="reason" maxlength="2000" required></textarea></div>
+            <div><button type="submit" name="action" value="reject" class="ui-btn ui-btn-quiet">Não aprovar</button></div>
+          </form>
+        {% elif awaiting %}<p>Esta versão precisa de uma pessoa com autoridade de aprovação e validade vigente.</p>{% endif %}
+        {% if open %}<div class="flex flex-wrap gap-3 border-t border-ink-200 pt-4">
+          <form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ proposal.version }}"><button class="ui-btn ui-btn-quiet" name="action" value="revalidate" type="submit">Conferir validade agora</button></form>
+          {% if may_cancel %}<form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ proposal.version }}"><button class="ui-btn ui-btn-quiet" name="action" value="cancel" type="submit">Cancelar proposta</button></form>{% endif %}
+        </div>{% endif %}
+        {% if may_propose %}<p>{% if frozen.payload.reopen %}<a class="ui-link" href="{% url 'cycle-detail' proposal.cycle_id %}#cycle-summary">Propor nova revisão da emenda</a>{% else %}<a class="ui-link" href="{% url 'proposal-create' proposal.cycle_id %}?revisao_de={{ proposal.pk }}">Criar nova versão com efeitos atualizados</a>{% endif %}</p>{% endif %}
+        </div>
+      </section>
+    </div>
+  </div>
 </div>
 {% endblock %}

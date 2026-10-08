@@ -79,6 +79,15 @@ REASON_LABELS = {
 }
 
 
+EMPTY_SECTION_LABELS = (
+    ("recipients", "destinatários externos"),
+    ("money", "valores monetários"),
+    ("documents", "documentos"),
+    ("evidence", "solicitações de evidência"),
+    ("observations", "observações de fonte"),
+)
+
+
 def _proposal(request: AuthenticatedRequest, pk: UUID) -> ActionProposal:
     require_enabled()
     proposal = get_object_or_404(
@@ -244,6 +253,12 @@ def _card(
             "expired": expires_at <= now,
             "observations": observations,
             "error": error,
+            # A 409 is a stale view, not a refusal: the card says so differently.
+            "conflict": status == HTTPStatus.CONFLICT,
+            # Frozen collections with nothing in them share one compact line.
+            "empty_sections": [
+                label for key, label in EMPTY_SECTION_LABELS if not frozen[key]
+            ],
             "warnings": [
                 REASON_LABELS.get(code, code) for code in proposal.invalidation_reasons
             ],
