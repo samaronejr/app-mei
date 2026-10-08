@@ -596,8 +596,40 @@ guard was weakened. Evidence: `.evidence/AXR1-022-happy.txt`, `-failure.txt`,
 `-placement.md`, `-gates-placed.txt` and the reviewer's `T22-RV*` artifacts.
 OD-04 and OG-08 remain **open**, as does every other owner/operator gate.
 
+`AXR1-024` (AI evaluation harness and shadow document-classification runner;
+`automation.0001`) is recorded on the final `AXR1-022` branch. It is an offline synthetic
+harness and a private, closed-by-default shadow runner, not an AI product feature: no view
+or admin shows `AgentRun` or `EvalRun`, and deterministic extraction and review are
+unchanged. A real call needs `AI_PROVIDER`, a lifted global disable, real-data approval and
+the tenant's `ai_shadow` flag.
+- **Clients and transport.** Clients split `prepare()` (all local checks, no I/O) from
+  `send()` (one bounded HTTPS request with no tools, redirects or retry).
+- **Harness.** `build_eval_set` regenerates 300 synthetic documents and an injection corpus
+  byte-for-byte. `run_eval` reports per-field precision and recall, wrong-client attribution
+  with a Clopper-Pearson 95% upper bound, abstention, injection success, latency and cost.
+- **Shadow runner.** It takes only clean, linked documents and enforces advisory-locked
+  caps: per source and client, per tenant and day (100 calls and R$5), and R$50 globally per
+  month. It also has a kill switch, and it reserves R$0.025 per attempt before any I/O.
+- **Output validation.** Rejects other clients' identifiers and web references in any
+  script.
+- **Usage metering.** One confirmed `UsageRecord(ai_shadow_calls)` per run that reaches the
+  provider, committed between `prepare()` and `send()`, so local refusals count nothing.
+
+The independent gate review of the placed head `17ccfe8` returned **needs-fix** on two
+blockers:
+- runs refused before dispatch were metered;
+- Unicode web addresses passed the ASCII-only output check.
+
+Everything else it attacked held. Repair `5b2c242` fixes both, each with a red test, a green
+run and a mutation. The confirmation review of `5b2c242` returned **confirmed** with zero
+blockers: the refusal paths record no usage, a dispatched call counts once, Unicode web references are
+refused before storage, both mutations fail, and its targeted reruns passed (432). Evidence:
+`.evidence/AXR1-024-happy.txt`, `-failure.txt`, `-placement.md`, `-usage-*.txt`, `-fix-*.txt`,
+`-gates-placed-17ccfe8.txt`, `-gates-final.txt` and the reviewers' `T24-RV*` artifacts.
+OD-05 and every other owner/operator gate remain **open**, and `ai_shadow` is off everywhere.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 23 to 29 and the final verification wave remain open.
+Todos 23 and 25 to 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -698,7 +730,15 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4072 passing** (92 deselected),
+implementation head. The current default-suite baseline is **4204 passing** (92 deselected), verified at
+`AXR1-024` code `cd19380` (tree `c75f2a5`) on `AXR1-022` repaired code `af8e053`: the
+**4072** below plus **132** net-new default-suite cases. The same serial
+run passed isolation (**309**), CNPJ (**29**), browser (**92**), lint, format,
+mypy, migration drift and a clean rebuilt-static check. Evidence:
+`.evidence/AXR1-024-gates-final.txt`. This status-only commit does not change the reviewed
+code; it sits on the `AXR1-022` status commit `be11509`.
+
+The previous default-suite baseline was **4072 passing** (92 deselected),
 verified at repaired `AXR1-022` code `af8e053` (tree `a5dbdfd`) on `AXR1-021`
 code `d8963b8`: the **3918** below plus **154** net-new
 default-suite cases. The same serial run passed isolation (**306**), CNPJ
@@ -706,8 +746,7 @@ default-suite cases. The same serial run passed isolation (**306**), CNPJ
 rebuilt-static check. The placed head `6a78683` had passed the same gates (4072,
 isolation 306, CNPJ 29, browser 90). Evidence: `.evidence/AXR1-022-fix-gates.txt`,
 `.evidence/AXR1-022-gates-placed.txt` and the reviewers'
-`T22-RV-gates.txt` and `T22-RV2-confirm.md`. This status-only commit does not change the reviewed code;
-it sits on the `AXR1-021` status commit `0cb6ffe`.
+`T22-RV-gates.txt` and `T22-RV2-confirm.md`.
 
 The previous default-suite baseline was **3918 passing**
 (86 deselected), verified at placed `AXR1-021` code `d8963b8` (tree `a294f13`) on
