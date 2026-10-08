@@ -1,5 +1,7 @@
 {
-  "measurement": "AXR1-028-perf-populated-run.txt",
+  "measurement": "AXR1-028-perf-placed.json",
+  "placed_measurement_note": "Placed-head values measured on axr1/t28-place @ 2fdc0e0 on top of c1451a2 (combined T20-T27 schema); query counts identical to the base-era measurement.",
+  "placed_on": "c1451a2cd86a779b75e13649f9ed1922a9ba2730",
   "base": "0fc87e3035fdecc4e48e22c46a849706bc9305c8",
   "fixture": "seed_axorim_demo --firms=growth --seed=42",
   "scope": "complete HTTP request, middleware and transaction statements included",
@@ -9,6 +11,7 @@
       "id": "T28-Q1",
       "read": "workspace",
       "observed_queries": 46,
+      "placed_queries": 46,
       "status": "open",
       "action": "Profile apps/clients/views.py clients_detail_view and its downstream read models; retain live authorization and existing budgets."
     },
@@ -16,6 +19,7 @@
       "id": "T28-Q2",
       "read": "cycle_detail",
       "observed_queries": 50,
+      "placed_queries": 50,
       "status": "open",
       "action": "Profile apps/cycles/cycle_views.py cycle_detail and its downstream read models; retain live authorization and existing budgets."
     },
@@ -25,8 +29,11 @@
       "status": "open",
       "observed_p50_ms": 533.732661,
       "observed_p95_ms": 574.126276,
+      "placed_p50_ms": 619.6703645,
+      "placed_p95_ms": 675.709071,
       "target_p95_ms": 500,
-      "measurement": "AXR1-028-perf.json",
+      "measurement": "AXR1-028-perf-placed.json",
+      "base_measurement": "AXR1-028-perf.json",
       "label": "constrained-local",
       "action": "Profile the seeded growth Hoje request before considering optimization; this is not a reference-host SLO."
     },
