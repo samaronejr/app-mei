@@ -1,0 +1,10 @@
+{% extends "refusal/base.html" %}{% load i18n %}{% comment %}
+Every 403 the product answers. The exception text Django passes in is deliberately
+not shown: refusals are raised with developer wording, in either language. A caller
+that owes the reader a specific reason renders this template itself with `reason`,
+in the words a client or accountant should read.
+{% endcomment %}
+{% block content %}
+    <p class="mt-4 text-ink-800" data-refusal-reason>{% if reason %}{{ reason }}{% else %}{% translate "Esta conta não tem acesso a esta página." %}{% endif %}</p>
+    <p class="mt-2 text-ink-700">{% translate "Se o acesso deveria existir, fale com o escritório de contabilidade responsável." %}</p>
+{% endblock %}
