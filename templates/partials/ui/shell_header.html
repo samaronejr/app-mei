@@ -29,16 +29,16 @@ signed-in address is shown from `2xl` only, so Sair stays on the first row at
 desktop widths.
 
 With the firm settings entry (`firm_account.enabled`, AXR1-022) the bar holds one
-more action, so from `md`, where the field shares the bar, until `2xl` Configurações
-and the search submit yield to icon buttons (`shell-compact-btn`) that keep their
-names as visually hidden text and a title; below `md` and from `2xl` they show the
-text. Both are drawn only under that flag: without it this header renders exactly
-the markup above, byte for byte.
+more action, so from `md`, where the field shares the bar, Configurações and the
+search submit yield to icon buttons (`shell-compact-btn`) that keep their names as
+visually hidden text and a title; below `md` they show the text. Both are drawn
+only under that flag: without it this header renders exactly the markup above,
+byte for byte.
 
 Under the same flag the firm's name is what gives way (`shell-bar-fit`): from `xl`
-until `2xl` the bar keeps one row whatever the firm is called, the actions keep
-their own width, and the name shrinks to an ellipsis while its full text stays in
-the title and the accessibility tree.
+upward the bar keeps one row whatever the firm is called, the actions keep their
+own width, the signed-in address stays hidden, and the name shrinks to an ellipsis
+while its full text stays in the title and the accessibility tree.
 {% endcomment %}<header class="shell-header" data-shell="r1">
     <div class="shell-bar{% if firm_account.enabled %} shell-bar-fit{% endif %}">
       <p class="shell-brand">

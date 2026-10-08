@@ -70,10 +70,11 @@ HEADER_GEOMETRY_JS: Final = """() => {
 }"""
 
 # Under firm_settings_r1 the firm's name is what gives way (AXR1-022 review). From
-# `xl` the bar keeps one row whatever the firm is called -- Tenant.name holds 255
-# characters, of wide glyphs or one unbroken word: the name shrinks and ends in an
-# ellipsis, keeping its full text for assistive technology and in its title, while
-# every action keeps its own width on the first row with HEADER_SPARE_PX to spare.
+# `xl` upward, 2xl included, the bar keeps one row whatever the firm is called --
+# Tenant.name holds 255 characters, of wide glyphs or one unbroken word: the name
+# shrinks and ends in an ellipsis, keeping its full text for assistive technology
+# and in its title, while every action keeps its own width on the first row with
+# HEADER_SPARE_PX to spare.
 # The classic scrollbar is drawn for real (a Chromium launched without Playwright's
 # --hide-scrollbars) rather than charged: the name absorbs those 15 px, which a
 # charge on a scrollbar-free render would count twice. One injected menu item stands
@@ -88,9 +89,17 @@ HEADER_FIT_VIEWPORTS: Final = (
     (ViewportSize(width=1280, height=800), False),
     (ViewportSize(width=1366, height=768), True),
     (ViewportSize(width=1440, height=900), True),
+    (ViewportSize(width=1536, height=864), True),
+    (ViewportSize(width=1920, height=1080), True),
 )
 HEADER_FIT_FIXED_ACTIONS: Final = ("field", "buscar", "settings", "sair")
 HEADER_FIT_EXTRA_ITEM: Final = NavItem("Automações", "team", "users.create")
+# The injected item is drawn where the bar is narrowest (1280 with a scrollbar) and
+# where `2xl` begins.
+HEADER_FIT_HEADROOM_VIEWPORTS: Final = (
+    HEADER_FIT_VIEWPORTS[0],
+    HEADER_FIT_VIEWPORTS[4],
+)
 HEADER_FIT_JS: Final = """() => {
   const header = document.querySelector("header.shell-header");
   const bar = header.querySelector(".shell-bar");
@@ -106,13 +115,15 @@ HEADER_FIT_JS: Final = """() => {
     ["settings", header.querySelector('.shell-account a[href="/configuracoes/"]')],
     ["sair", header.querySelector(".shell-account form button")],
   ];
-  const brandBottom = box(header.querySelector(".shell-brand")).bottom;
+  const brand = header.querySelector(".shell-brand");
+  const brandBottom = box(brand).bottom;
   const root = document.documentElement;
   return {
     height: box(header).height,
     spare: box(search).left - box(header.querySelector(".shell-disclosure")).right
       - parseFloat(getComputedStyle(bar).columnGap),
     barOverflow: bar.scrollWidth - bar.clientWidth,
+    brandOverflow: brand.scrollWidth - brand.clientWidth,
     pageOverflow: root.scrollWidth - root.clientWidth,
     innerWidth: window.innerWidth,
     clientWidth: root.clientWidth,
@@ -351,6 +362,8 @@ def _header_fit_problems(
             f"horizontal overflow bar={geometry['barOverflow']} "
             f"page={geometry['pageOverflow']}"
         )
+    if geometry["brandOverflow"] > 0:
+        problems.append(f"brand content spills by {geometry['brandOverflow']} px")
     if geometry["title"] != name or geometry["text"] != name:
         problems.append("the firm's full name is not its title and text")
     if widths is not None:
@@ -420,12 +433,12 @@ def test_firm_name_gives_way_to_header_actions(
         monkeypatch.setattr(
             navigation, "NAV_R1", (*navigation.NAV_R1, HEADER_FIT_EXTRA_ITEM)
         )
-        size, scrollbar = HEADER_FIT_VIEWPORTS[0]
-        run.size(size, scrollbar=scrollbar)
-        for index, name in enumerate(HEADER_FIT_NAMES):
-            run.rename(name)
-            for path in HEADER_ROW_PATHS:
-                run.check(index, path, size, scrollbar=scrollbar, extra_item=True)
+        for size, scrollbar in HEADER_FIT_HEADROOM_VIEWPORTS:
+            run.size(size, scrollbar=scrollbar)
+            for index, name in enumerate(HEADER_FIT_NAMES):
+                run.rename(name)
+                for path in HEADER_ROW_PATHS:
+                    run.check(index, path, size, scrollbar=scrollbar, extra_item=True)
         bar.assert_clean_console()
     opened.page.set_viewport_size(DESKTOP)
     report = run.report()
