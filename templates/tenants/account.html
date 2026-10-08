@@ -10,7 +10,7 @@
       <dl class="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <div><dt class="text-sm text-ink-500">{% translate "Faixa contratada" %}</dt><dd class="mt-1 font-semibold">{{ billing.plan_band|default:"Não informada" }}</dd></div>
         <div><dt class="text-sm text-ink-500">{% translate "Cobrança manual" %}</dt><dd class="mt-1 font-semibold">{{ billing.get_status_display|default:"Registro pendente" }}</dd></div>
-        <div><dt class="text-sm text-ink-500">{% translate "Próxima cobrança" %}</dt><dd class="mt-1 tabular">{{ billing.next_invoice_on|data }}</dd></div>
+        <div><dt class="text-sm text-ink-500">{% translate "Próxima cobrança" %}</dt><dd class="mt-1 tabular">{% if billing %}{{ billing.next_invoice_on|data }}{% else %}—{% endif %}</dd></div>
         <div><dt class="text-sm text-ink-500">{% translate "Clientes ativos" %}</dt><dd class="mt-1 tabular">{{ allowance.active }} / {% if allowance.limit is None %}{% translate "sem limite" %}{% else %}{{ allowance.limit }}{% endif %}</dd></div>
       </dl>
       <p class="mt-5 text-sm text-ink-600">{% translate "Clientes em implantação também ocupam uma vaga. O limite não impede a leitura dos dados existentes. Para mudar a faixa ou acertar a cobrança, fale com a operação da plataforma." %}</p>

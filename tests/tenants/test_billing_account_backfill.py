@@ -94,6 +94,15 @@ def test_account_page_renders_for_a_firm_created_before_billing_accounts() -> No
     assert "Ativa (registro manual)" in response.content.decode()
 
 
+def test_account_page_reports_a_pending_record_while_no_account_exists() -> None:
+    firm = enabled_firm("conta-sem-registro")
+    with tenant_context(firm.tenant.pk):
+        assert not BillingAccount.objects.exists()
+    response = firm.as_owner().get(reverse("firm-account"))
+    assert response.status_code == HTTPStatus.OK
+    assert "Registro pendente" in response.content.decode()
+
+
 def test_admin_added_firm_opens_its_billing_account() -> None:
     operator = User.objects.create_superuser(email="root@billing.example")
     enrol_totp(operator)
