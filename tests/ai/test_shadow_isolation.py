@@ -86,7 +86,14 @@ def test_source_deletion_erases_content_not_budget_metadata(setup: PortalSetup) 
             reserved_brl=Decimal("0.025"),
             expires_at=timezone.now() + timedelta(days=365),
         )
-        document.delete()
+        # AXR1-018 retains evidence metadata: a raw document delete is refused.
+        with pytest.raises(ProgrammingError) as caught, transaction.atomic():
+            document.delete()
+        assert getattr(caught.value.__cause__, "sqlstate", None) == "42501"
+        run.refresh_from_db()
+        assert run.output == {"fields": ["private"]}
+        # Should a source row ever go, ON DELETE SET NULL still erases the content.
+        AgentRun.objects.filter(pk=run.pk).update(document=None)
         run.refresh_from_db()
         assert run.output == {}
         assert run.document_id is None

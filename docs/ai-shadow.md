@@ -51,8 +51,11 @@ on it.
 
 AgentRun is portal-NONE, tenant-isolated and client/document-paired. No raw prompt,
 document text or failed provider response is persisted in traces. Validated
-output is `ai_derived`: expired content is redacted after 365 days, and document
-deletion clears it. Budget metadata remains so deletion cannot reset caps.
+output is `ai_derived`: expired content is redacted after 365 days. AXR1-018 refuses
+document deletes and purges originals only after their fiscal retention (at least
+five years), so that redaction always comes first; clearing the document link
+still erases the output as a backstop. Budget metadata remains so erasure cannot
+reset caps.
 Retention visits firms even after `ai_shadow` is removed; this is cleanup, not
 feature rollout. EvalRun contains only platform-level synthetic metrics.
 

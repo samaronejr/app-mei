@@ -2,6 +2,7 @@
 
 import pytest
 from celery.exceptions import OperationalError
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.automation.models import AgentRun
@@ -10,6 +11,7 @@ from apps.automation.tasks import classify_document, enqueue_shadow
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake, EvidenceLink, IntakeState, ScanVerdict
 from apps.cycles.tasks import extract_document
+from apps.obligations.models import Document
 from tests.ai.fixtures import single_company
 from tests.cycles.document_fixtures import reviewed, scan_clean, submit
 from tests.portal.request_fixtures import PortalSetup
@@ -92,7 +94,26 @@ def test_clean_verdict_and_actual_link_are_independent_requirements(
     intake = single_company(setup)
     with tenant_context(setup.graph.tenant.pk):
         if condition == "unlinked":
-            EvidenceLink.objects.filter(document_id=intake.document_id).delete()
+            # AXR1-018 retains links (deletes are refused), so use a clean,
+            # classified intake whose document was never linked.
+            document = Document.objects.create(
+                tenant=setup.graph.tenant,
+                client=setup.graph.client,
+                sha256="b" * 64,
+                uploaded_by=setup.graph.actor,
+                byte_size=1,
+                original_filename="unlinked.pdf",
+                content_type="application/pdf",
+            )
+            intake = DocumentIntake.objects.create(
+                tenant=setup.graph.tenant,
+                client=setup.graph.client,
+                document=document,
+                state=IntakeState.CLASSIFIED,
+                verdict=ScanVerdict.CLEAN,
+                scanned_at=timezone.now(),
+            )
+            assert not EvidenceLink.objects.filter(document=document).exists()
         else:
             DocumentIntake.objects.filter(pk=intake.pk).update(
                 state=(

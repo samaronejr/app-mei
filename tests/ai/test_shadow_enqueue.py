@@ -22,4 +22,7 @@ def test_real_extraction_enqueues_the_enabled_shadow(
     scan_clean(setup, intake)
     result = extract_document(str(setup.graph.tenant.pk), str(intake.pk))
     assert result == "classificado"
-    assert queued == ["apps.automation.tasks.classify_document"]
+    # AXR1-017 also enqueues its receipt materializer once the upload commits.
+    assert [name for name in queued if name.startswith("apps.automation.")] == [
+        "apps.automation.tasks.classify_document"
+    ]
