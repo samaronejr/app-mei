@@ -28,6 +28,7 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.extraction.cnpj import find
 from apps.cycles.parsing import UnsafeDocument, parse_intake_pdf, parse_intake_xml
 from apps.cycles.sniffing import PDF, XML
+from apps.tenants.models import UsageKind, UsageMetric, UsageRecord
 
 MAX_TEXT: Final = 20000
 
@@ -59,6 +60,27 @@ def source_text(ticket: Ticket) -> str:
     return text
 
 
+def record_dispatch(tenant_id: UUID, run_id: UUID) -> bool:
+    """Commit this run's one attempted-call usage event before any provider I/O.
+
+    A retry or redelivery reuses the run id, so it can never count twice. The
+    provider may bill a call that later fails, so nothing is refunded here.
+    """
+    assert_no_transaction()
+    with tenant_context(tenant_id):
+        _record, created = UsageRecord.objects.get_or_create(
+            metric=UsageMetric.AI_SHADOW_CALLS,
+            source_event=run_id,
+            defaults={
+                "tenant_id": tenant_id,
+                "period": timezone.localdate(),
+                "quantity": 1,
+                "kind": UsageKind.CONFIRMED,
+            },
+        )
+    return created
+
+
 def run_shadow(tenant_id: UUID, intake_id: UUID) -> str:
     """Failures are private records; never change deterministic fields or intake."""
     assert_no_transaction()
@@ -82,11 +104,10 @@ def run_shadow(tenant_id: UUID, intake_id: UUID) -> str:
                 latency_ms=0,
             )
         else:
-            result = configured_client(tenant_id).complete(
-                schema(),
-                messages_for(ticket.client_cnpj, text, ticket.expected_documents),
-                ticket.budget,
-            )
+            client = configured_client(tenant_id)
+            messages = messages_for(ticket.client_cnpj, text, ticket.expected_documents)
+            record_dispatch(tenant_id, ticket.run_id)
+            result = client.complete(schema(), messages, ticket.budget)
         cost, latency = result.cost_brl, result.latency_ms
         output = validate_output(result.output, ticket.client_cnpj).as_json()
     except UnsafeOutputError:

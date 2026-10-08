@@ -43,9 +43,14 @@ Pending reservations cannot be reclaimed automatically: redelivery skips them.
 The deterministic path is already committed before enqueue; broker and provider
 failures cannot roll it back.
 
-T22's UsageRecord is deliberately not recreated here. Placement adds the
-`ai_shadow_calls` usage write after that model exists; admission does not depend
-on it.
+Metering is separate from admission. Each run that reaches the provider writes one
+AXR1-022 `UsageRecord(metric=ai_shadow_calls, quantity=1, kind=confirmed)` keyed by
+the AgentRun id and dated by the Sao Paulo dispatch day. It commits in its own
+tenant-scoped step immediately before the call, after every local check, so local
+abstentions, gate changes and unreadable sources count nothing, while a provider
+error, timeout or rejected output still counts: the call may have been billed.
+Redelivery cannot count twice, nothing is refunded, and `run_eval` never meters.
+The owner's cost estimate sums the month's records with the configured unit price.
 
 ## Content and retention
 
