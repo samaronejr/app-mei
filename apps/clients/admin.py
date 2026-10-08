@@ -170,8 +170,10 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
 
         granted = support_clients()
         if granted is not None:
-            return super().get_queryset(request).filter(
-                pk__in=granted.values_list("pk", flat=True)
+            return (
+                super()
+                .get_queryset(request)
+                .filter(pk__in=granted.values_list("pk", flat=True))
             )
         return super().get_queryset(request)
 
