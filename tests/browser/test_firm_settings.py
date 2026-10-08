@@ -3,9 +3,10 @@
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Final
 from uuid import UUID
 
-from playwright.sync_api import expect
+from playwright.sync_api import ViewportSize, expect
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
@@ -17,8 +18,64 @@ from apps.tenants.models import (
     FirmOutboundMessage,
     NotificationPreference,
 )
-from tests.browser.harness import BrowserPage, LiveFirm, axe_check
+from tests.browser.harness import DESKTOP, BrowserPage, LiveFirm, axe_check
 from tests.ui.factories import add_client, client_base
+
+# With the settings entry beside T21's search field, brand, menu, field, Buscar,
+# Configurações and Sair still share the bar's first row at desktop widths, with room
+# to spare, on a page whose own menu item is active (bold, wider) as on one without.
+# The bar is max-w-7xl, so a classic 15 px scrollbar narrows it only in a window under
+# 1280 + 15 px; that loss is charged whether or not this browser draws scrollbars.
+HEADER_ROW_VIEWPORTS: Final = (
+    ViewportSize(width=1280, height=800),
+    ViewportSize(width=1366, height=768),
+    ViewportSize(width=1440, height=900),
+)
+HEADER_ROW_PATHS: Final = ("/configuracoes/", "/clientes/")
+HEADER_SPARE_PX: Final = 16
+SHELL_BAR_MAX_PX: Final = 1280
+CLASSIC_SCROLLBAR_PX: Final = 15
+HEADER_GEOMETRY_JS: Final = """() => {
+  const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+  const nav = box(".shell-disclosure");
+  const tops = {
+    menu: nav.top,
+    field: box("#shell-search-q").top,
+    buscar: box('header form.shell-search button[type="submit"]').top,
+    settings: box('header .shell-account a[href="/configuracoes/"]').top,
+    sair: box("header .shell-account form button").top,
+  };
+  const bar = getComputedStyle(document.querySelector(".shell-bar"));
+  return {
+    brandBottom: box(".shell-brand").bottom,
+    tops,
+    spare: box("header form.shell-search").left - nav.right - parseFloat(bar.columnGap),
+    innerWidth: window.innerWidth,
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  };
+}"""
+
+
+def _assert_header_actions_keep_one_row(opened: BrowserPage, live: LiveFirm) -> None:
+    if opened.viewport != "desktop":
+        return
+    page = opened.page
+    for viewport in HEADER_ROW_VIEWPORTS:
+        page.set_viewport_size(viewport)
+        for path in HEADER_ROW_PATHS:
+            opened.goto(live.url(path))
+            geometry = page.evaluate(HEADER_GEOMETRY_JS)
+            where = f"{path} at {viewport['width']}x{viewport['height']}"
+            for name, top in geometry["tops"].items():
+                assert top < geometry["brandBottom"], (name, where, geometry)
+            narrowing = min(SHELL_BAR_MAX_PX, geometry["clientWidth"]) - min(
+                SHELL_BAR_MAX_PX, geometry["innerWidth"] - CLASSIC_SCROLLBAR_PX
+            )
+            spare = geometry["spare"] - max(0, narrowing)
+            assert spare >= HEADER_SPARE_PX, (where, geometry)
+            assert geometry["scrollWidth"] <= geometry["innerWidth"], (where, geometry)
+    page.set_viewport_size(DESKTOP)
 
 
 def test_profile_preference_and_account_zip(
@@ -55,6 +112,7 @@ def test_profile_preference_and_account_zip(
     assert live.firm.tenant.name == "Browser firm saved"
     axe_check(page)
     opened.screenshot("firm-settings")
+    _assert_header_actions_keep_one_row(opened, live)
 
     preference_url = live.url("/configuracoes/preferencias/")
     opened.goto(preference_url)

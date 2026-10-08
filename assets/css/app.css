@@ -1002,6 +1002,23 @@
     @apply hidden truncate 2xl:inline;
   }
 
+  /* With the firm settings entry in the bar (AXR1-022), Configurações and the search
+   * submit yield to icon buttons from `md`, where the field shares the bar, until
+   * `2xl`, so the account actions keep the first row at desktop widths. Each keeps
+   * its name as visually hidden text and a title; below `md` and from `2xl` both
+   * show the text, as before. */
+  .shell-compact-btn {
+    @apply md:px-2 2xl:px-3;
+  }
+
+  .shell-compact-btn > .icon {
+    @apply hidden md:block 2xl:hidden;
+  }
+
+  .shell-compact-label {
+    @apply md:sr-only 2xl:not-sr-only;
+  }
+
   .shell-search-input {
     @apply min-h-9 w-full min-w-0 rounded-field border border-ink-300 bg-surface
       px-2.5 text-sm text-ink-900 md:w-44 2xl:w-56;

@@ -27,6 +27,13 @@ reach the client registry, the capability the search endpoint requires -- so no
 one is offered a control that refuses them. With the field in the bar, the
 signed-in address is shown from `2xl` only, so Sair stays on the first row at
 desktop widths.
+
+With the firm settings entry (`firm_account.enabled`, AXR1-022) the bar holds one
+more action, so from `md`, where the field shares the bar, until `2xl` Configurações
+and the search submit yield to icon buttons (`shell-compact-btn`) that keep their
+names as visually hidden text and a title; below `md` and from `2xl` they show the
+text. Both are drawn only under that flag: without it this header renders exactly
+the markup above, byte for byte.
 {% endcomment %}<header class="shell-header" data-shell="r1">
     <div class="shell-bar">
       <p class="shell-brand">
@@ -46,10 +53,10 @@ desktop widths.
       {% if r1_shell.searchable %}<form role="search" method="get" action="{% url 'search' %}" class="shell-search" aria-label="{% translate 'Busca' %}">
         <label for="shell-search-q" class="visually-hidden">{% translate "Buscar" %}</label>
         <input id="shell-search-q" type="search" name="q" class="shell-search-input" placeholder="{% translate 'Buscar (Ctrl+K)' %}" autocomplete="off">
-        <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Buscar" %}</button>
+        {% if firm_account.enabled %}<button type="submit" class="ui-btn ui-btn-quiet shell-compact-btn" title="{% translate 'Buscar' %}">{% include "partials/pure/icons/search.html" %}<span class="shell-compact-label">{% translate "Buscar" %}</span></button>{% else %}<button type="submit" class="ui-btn ui-btn-quiet">{% translate "Buscar" %}</button>{% endif %}
       </form>{% endif %}
-      <div class="shell-account">
-        {% if firm_account.enabled %}<a class="ui-btn ui-btn-quiet" href="{% url 'firm-settings' %}">{% translate "Configurações" %}</a>{% endif %}
+      <div class="shell-account">{% if firm_account.enabled %}
+        <a class="ui-btn ui-btn-quiet shell-compact-btn" href="{% url 'firm-settings' %}" title="{% translate 'Configurações' %}">{% include "partials/pure/icons/settings.html" %}<span class="shell-compact-label">{% translate "Configurações" %}</span></a>{% endif %}
         <span class="shell-account-email">{{ request.user.email }}</span>
         <form method="post" action="{% url 'account_logout' %}">
           {% csrf_token %}
