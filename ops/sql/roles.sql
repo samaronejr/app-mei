@@ -193,6 +193,17 @@ $$;
 -- PORTAL_NONE: tenants_accountexport
 -- PORTAL_NONE: tenants_accountexportattempt
 -- PORTAL_NONE: tenants_supportgrant
+-- AXR1-023: no DELETE for the runtime role. Revocation writes revoked_at, so
+-- the row IS the audit trail; the blanket GRANT above is narrowed here just
+-- like the append-only tables below.
+DO $$
+BEGIN
+    IF to_regclass('public.tenants_supportgrant') IS NOT NULL THEN
+        REVOKE ALL ON tenants_supportgrant FROM app_runtime;
+        GRANT SELECT, INSERT, UPDATE ON tenants_supportgrant TO app_runtime;
+    END IF;
+END
+$$;
 -- Firm account data is private even when a client belongs to the firm.
 DO $$
 DECLARE

@@ -96,6 +96,11 @@ APPEND_ONLY_TABLES = (
     "tenants_usagerecord",
 )
 
+# AXR1-023: writable-but-undeletable tables — UPDATE stays (revocation sets
+# revoked_at) while DELETE is refused, because the row is the audit trail. The
+# same REVOKE+GRANT pair lives in ops/sql/roles.sql and tenants.0012.
+NO_DELETE_TABLES = ("tenants_supportgrant",)
+
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
 # rather than blanket so every other table — accounts_user, mfa_authenticator,
 # django_session, and clients_clientcontact, which is portal-NONE in R1 — stays
@@ -171,6 +176,19 @@ def django_db_setup(
                     IF to_regclass('public.{table}') IS NOT NULL THEN
                         REVOKE ALL ON {table} FROM {RUNTIME_ROLE};
                         GRANT SELECT, INSERT ON {table} TO {RUNTIME_ROLE};
+                    END IF;
+                END
+                $$
+                """,
+            )
+        for table in NO_DELETE_TABLES:
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.{table}') IS NOT NULL THEN
+                        REVOKE ALL ON {table} FROM {RUNTIME_ROLE};
+                        GRANT SELECT, INSERT, UPDATE ON {table} TO {RUNTIME_ROLE};
                     END IF;
                 END
                 $$

@@ -469,6 +469,29 @@ def test_support_grant_rows_are_rls_isolated() -> None:
         assert cursor.fetchone()[0] == 1
 
 
+def test_automations_console_is_denied_in_support_mode() -> None:
+    """AXR1-027's Automações surface: delivery.automations resolves NONE.
+
+    The placed-stack page (`/gestao/automacoes/`) exposes firm pause controls and
+    dead-letter retry/cancel POSTs. support_mode answers NONE for
+    `delivery.automations`, so a granted session cannot even read the console —
+    and pause/retry/cancel can never fire from it.
+    """
+    firm = enabled_firm("support-automacoes")
+    staff = _staff()
+    _grant_for(firm.tenant, firm.owner, staff)
+
+    session = _session_for(staff, _firm_host(firm))
+    assert session.get("/gestao/automacoes/").status_code == HTTPStatus.FORBIDDEN
+    assert (
+        session.post(
+            "/gestao/automacoes/",
+            {"action": "pause", "expected_version": "1"},
+        ).status_code
+        == HTTPStatus.FORBIDDEN
+    )
+
+
 def test_owner_audit_trail_covers_request_approval_and_revoke() -> None:
     """The firm's own Event log carries every transition, not just the platform."""
     firm = enabled_firm("support-audit")

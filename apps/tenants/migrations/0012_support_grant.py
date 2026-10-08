@@ -186,11 +186,21 @@ class Migration(migrations.Migration):
         # dependent-migration round trip drops and recreates this table — would
         # otherwise leave app_runtime unable to read it. Same shape as
         # tenants.0011's PRIVATE_TABLES block.
+        # No DELETE: revocation sets revoked_at, so a live grant must never be
+        # able to erase its own trail. The REVOKE+GRANT pair — not a bare
+        # GRANT — because ALTER DEFAULT PRIVILEGES FOR ROLE app_migrator and
+        # the app's own default grant both include DELETE on recreated tables.
+        # Mirrors the DO block in ops/sql/roles.sql.
         migrations.RunSQL(
             sql=(
+                "REVOKE ALL ON tenants_supportgrant FROM app_runtime; "
+                "GRANT SELECT, INSERT, UPDATE "
+                "ON tenants_supportgrant TO app_runtime"
+            ),
+            reverse_sql=(
+                "REVOKE ALL ON tenants_supportgrant FROM app_runtime; "
                 "GRANT SELECT, INSERT, UPDATE, DELETE "
                 "ON tenants_supportgrant TO app_runtime"
             ),
-            reverse_sql="REVOKE ALL ON tenants_supportgrant FROM app_runtime",
         ),
     ]
