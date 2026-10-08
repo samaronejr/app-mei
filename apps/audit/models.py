@@ -110,6 +110,9 @@ class AuditAction(models.TextChoices):
     SUPPORT_GRANT_APPROVED = "support.grant_approved", _("support grant approved")
     SUPPORT_GRANT_REVOKED = "support.grant_revoked", _("support grant revoked")
     SUPPORT_SESSION_STARTED = "support.session_started", _("support session started")
+    # The per-request trail (AXR1-023 review B2): every request answered under a
+    # live grant, GETs included — a once-per-session signal is not an audit.
+    SUPPORT_REQUEST = "support.request", _("support request")
 
 
 class Event(TenantScopedModel):

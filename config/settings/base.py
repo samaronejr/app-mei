@@ -89,6 +89,10 @@ MIDDLEWARE = [
     # inside that transaction, the rollback on a failed request would erase the
     # Marco Civil access record for exactly the request an investigation wants.
     "apps.audit.middleware.AccessLogMiddleware",
+    # Same reason as AccessLog: a request answered under a support grant writes
+    # its dual audit row here, after the tenant transaction resolves — a denied
+    # or failed support request is exactly the one the owner must still see.
+    "apps.audit.middleware.SupportRequestAuditMiddleware",
     # Before TenantMiddleware: whether an account must carry a second factor is a
     # property of the account, not of the firm it is visiting, so it is settled
     # without resolving a tenant or opening the tenant transaction.

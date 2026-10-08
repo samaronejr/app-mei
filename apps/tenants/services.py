@@ -48,17 +48,21 @@ def lock_firm_settings(actor: User, tenant_id: UUID) -> tuple[User, Tenant]:
     support = current_support.get()
     if support is not None:
         # The read_write_settings scope buys exactly this write: the grant IS the
-        # membership substitute here, re-checked live from the request stash the
-        # middleware bound, never from a role the platform account lacks anyway.
-        # PLATFORM_QUERY_OK: the stash proves this exact tenant was granted for
-        # this request; the row is then re-read under the shared lock.
-        if support.scope == SupportScope.READ_WRITE_SETTINGS and str(
-            support.tenant_id
-        ) == str(tenant_id):
+        # membership substitute here, re-checked live at the moment of the write
+        # — never the request stash the middleware bound, which a revocation
+        # landing between bind and write would leave stale.
+        from apps.authz.support import resolve_support_grant
+
+        live = resolve_support_grant(fresh.pk, tenant_id)
+        if (
+            live is not None
+            and str(live.pk) == str(support.grant_id)
+            and live.scope == SupportScope.READ_WRITE_SETTINGS
+        ):
             tenant = (
-                # PLATFORM_QUERY_OK: the live support grant re-resolved into this
-                # request's stash names exactly this tenant; a support session has
-                # no membership row, so there is no portfolio to scope through.
+                # PLATFORM_QUERY_OK: the grant row just re-read live names
+                # exactly this tenant for this actor; a support session has no
+                # membership row, so there is no portfolio to scope through.
                 Tenant.objects.select_for_update(no_key=True)
                 .filter(pk=tenant_id, is_active=True)
                 .first()

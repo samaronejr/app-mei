@@ -8,6 +8,7 @@ outlive them.
 """
 
 from collections.abc import Callable
+from typing import cast
 
 from django.conf import settings
 from django.http import HttpRequest
@@ -15,9 +16,17 @@ from django.http.response import HttpResponseBase
 from django.urls import Resolver404, resolve
 
 from apps.accounts.models import User
-from apps.audit.models import AccessLog
-from apps.audit.services import flush_platform_events, open_platform_event_buffer
+from apps.audit.models import AccessLog, AuditAction
+from apps.audit.services import (
+    ObjectRef,
+    Origin,
+    flush_platform_events,
+    open_platform_event_buffer,
+    record_event,
+    record_platform_event,
+)
 from apps.core.netaddr import client_ip
+from apps.tenants.support_models import SupportGrant
 
 UA_MAX_LENGTH = 1024
 PATH_MAX_LENGTH = 2048
@@ -147,4 +156,78 @@ class AccessLogMiddleware:
             method=request.method or "",
             path=_recorded_path(request)[:PATH_MAX_LENGTH],
             status_code=status_code,
+        )
+
+
+class SupportRequestAuditMiddleware:
+    """Dual-write every request answered under a live support grant (AXR1-023 B2).
+
+    A support session's session_started row says a door opened; it says nothing
+    about what was touched inside. Every request served with
+    ``request.support_grant`` set — GETs included — is therefore written to BOTH
+    audit streams: a PlatformEvent for the platform-side actor and a tenant
+    ``Event`` the owner's ``/configuracoes/suporte/`` page renders.
+
+    Registered BEFORE `TenantMiddleware` for the same reason AccessLog is: the
+    write lands after that transaction resolves, so a denied or failed request
+    is still recorded — exactly the request an investigation wants. Requests
+    that never set ``request.support_grant`` (no grant, static, health probes)
+    cost one attribute check and nothing else.
+    """
+
+    def __init__(
+        self,
+        get_response: Callable[[HttpRequest], HttpResponseBase],
+    ) -> None:
+        """Store the next callable in the middleware chain."""
+        self.get_response = get_response
+
+    def __call__(self, request: HttpRequest) -> HttpResponseBase:
+        """Serve the request, then dual-write it when a grant was attached."""
+        response = None
+        try:
+            response = self.get_response(request)
+            return response
+        finally:
+            grant = getattr(request, "support_grant", None)
+            if grant is not None and not self._is_exempt(request.path_info):
+                self._record(
+                    request,
+                    grant,
+                    response.status_code if response is not None else 500,
+                )
+
+    @staticmethod
+    def _is_exempt(path: str) -> bool:
+        """Skip infrastructure traffic — the same set the access log skips."""
+        return path.startswith(tuple(settings.ACCESS_LOG_EXEMPT_PREFIXES))
+
+    @staticmethod
+    def _record(request: HttpRequest, grant: object, status_code: int) -> None:
+        """Write one row into each audit stream for this request."""
+        grant = cast("SupportGrant", getattr(request, "support_grant"))
+        metadata: dict[str, object] = {
+            "method": request.method or "",
+            "path": request.path_info[:PATH_MAX_LENGTH],
+            "status_code": status_code,
+        }
+        user = getattr(request, "user", None)
+        actor = user if isinstance(user, User) else None
+        # The platform stream buffers and flushes in PlatformEventMiddleware —
+        # the same write a rolled-back request cannot take with it.
+        record_platform_event(
+            action=AuditAction.SUPPORT_REQUEST,
+            tenant_id=grant.tenant_id,
+            origin=Origin(actor=actor, ip=client_ip(request)),
+            metadata={"grant_id": str(grant.pk), **metadata},
+        )
+        # The tenant stream opens its own context: the request transaction has
+        # already resolved by the time this outer finally runs, so the write is
+        # its own committed row — two queries, no N+1.
+        record_event(
+            action=AuditAction.SUPPORT_REQUEST,
+            tenant_id=grant.tenant_id,
+            actor=actor,
+            obj=ObjectRef(type="support.grant", id=str(grant.pk)),
+            metadata=metadata,
         )

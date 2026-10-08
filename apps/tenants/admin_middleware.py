@@ -73,6 +73,10 @@ class AdminTenantMiddleware:
                 client__isnull=True,
             ).exists():
                 grant = resolve_support_grant(request.user.pk, tenant_id)
+            # Bind for the outer SupportRequestAuditMiddleware the same way the
+            # firm-host middleware does, so admin-console requests under a grant
+            # land in the dual audit stream too.
+            setattr(request, "support_grant", grant)
             if grant is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
                 raise PermissionDenied
             binding = (

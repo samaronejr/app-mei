@@ -15,6 +15,8 @@ from http import HTTPStatus
 from uuid import UUID
 
 import pytest
+from django.core.exceptions import PermissionDenied
+from django.http import Http404
 from django.db import IntegrityError, connection, transaction
 from django.test import Client
 from django.utils import timezone
@@ -516,3 +518,103 @@ def test_owner_audit_trail_covers_request_approval_and_revoke() -> None:
     assert PlatformEvent.objects.filter(
         action=AuditAction.SUPPORT_GRANT_REQUESTED
     ).exists()
+
+
+# ----------------------------------------------------------- review blockers
+
+
+def test_empty_client_ids_admin_shows_no_client_rows() -> None:
+    """B1: an empty-scope grant is firm-metadata-only, admin included.
+
+    The admin console selects the firm through the session and binds the same
+    grant as current_support; ClientCompanyAdmin must answer the empty queryset
+    the firm-host portfolio already answers, not the firm's whole book.
+    """
+    firm = enabled_firm("support-admin-empty")
+    staff = _staff(email="support-admin@platform.example.com")
+    staff.is_superuser = True
+    staff.save(update_fields=["is_superuser"])
+    _grant_for(firm.tenant, firm.owner, staff, client_ids=())
+
+    session = _session_for(staff, "localhost")
+    # Select the firm in the admin console (the session key the middleware reads).
+    sel = session.post(
+        "/admin/selecionar-empresa/",
+        {"tenant": str(firm.tenant.pk), "reason": "AXR1-023 B1 repro"},
+    )
+    assert sel.status_code in (HTTPStatus.FOUND, HTTPStatus.OK)
+    changelist = session.get("/admin/clients/clientcompany/")
+    assert changelist.status_code == HTTPStatus.OK
+    assert firm.clients[0].legal_name not in changelist.content.decode()
+    # The change form for a row the scope excludes never renders: the admin
+    # answers a redirect to the index or a hard refusal, not the client's page.
+    row = session.get(f"/admin/clients/clientcompany/{firm.clients[0].pk}/change/")
+    assert row.status_code in (
+        HTTPStatus.FORBIDDEN,
+        HTTPStatus.NOT_FOUND,
+        HTTPStatus.FOUND,
+    )
+
+
+def test_every_request_under_a_grant_writes_dual_audit() -> None:
+    """B2: each support request lands in BOTH audit streams, GETs included."""
+    firm = enabled_firm("support-audit-req")
+    staff = _staff()
+    _grant_for(firm.tenant, firm.owner, staff)
+    session = _session_for(staff, _firm_host(firm))
+
+    assert session.get("/").status_code == HTTPStatus.OK
+    assert session.get("/clientes/").status_code == HTTPStatus.OK
+
+    platform = PlatformEvent.objects.filter(action=AuditAction.SUPPORT_REQUEST)
+    assert platform.count() == 2
+    with tenant_context(firm.tenant.pk):
+        tenant_events = Event.objects.filter(action=AuditAction.SUPPORT_REQUEST)
+        assert tenant_events.count() == 2
+
+
+def test_revoked_grant_cannot_write_mid_request() -> None:
+    """B3: a write re-checks the grant row itself, not the request stash.
+
+    The stash is bound once per request; a revocation landing between bind and
+    write must still fail closed. The stale-stash write proves it.
+    """
+    from apps.tenants.services import lock_firm_settings
+
+    firm = enabled_firm("support-revoke-write")
+    staff = _staff()
+    grant = _grant_for(
+        firm.tenant,
+        firm.owner,
+        staff,
+        scope=SupportScope.READ_WRITE_SETTINGS,
+    )
+    session = _session_for(staff, _firm_host(firm))
+    assert session.get("/").status_code == HTTPStatus.OK
+
+    # The owner's revoke takes effect on the very next request, mid-session.
+    with tenant_context(firm.tenant.pk):
+        revoke_support_grant(firm.owner, firm.tenant.pk, grant.pk)
+
+    assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+
+    # And a service call handed the stale stash must still fail closed: the
+    # write path re-reads the grant row, never trusts the bound snapshot.
+    with tenant_context(firm.tenant.pk):
+        from apps.authz.support import SupportContext, current_support
+
+        stale = SupportContext(
+            grant_id=grant.pk,
+            tenant_id=firm.tenant.pk,
+            scope=SupportScope.READ_WRITE_SETTINGS,
+            client_ids=frozenset(),
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        binding = current_support.set(stale)
+        try:
+            # lock_firm_settings refuses the same way it refuses a non-member:
+            # no visible tenant row, so the answer is a 404, never the write.
+            with pytest.raises(Http404):
+                lock_firm_settings(staff, firm.tenant.pk)
+        finally:
+            current_support.reset(binding)
