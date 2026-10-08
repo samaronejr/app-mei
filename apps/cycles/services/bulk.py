@@ -39,7 +39,6 @@ from apps.cycles.bulk_effects import preview_item
 from apps.cycles.effects.manifest import JSONValue, utc_timestamp
 from apps.cycles.errors import VersionConflict
 from apps.cycles.services.cycle import check_version, require_enabled, tenant_id
-from apps.delivery.services import remaining_quota
 
 PREVIEW_LIFETIME: Final = timedelta(minutes=15)
 
@@ -145,11 +144,6 @@ def preview_bulk(actor: User, op: BulkKind, selection: Selection) -> BulkOperati
             if item.eligible and op == BulkKind.SEND_REQUEST_NOTICES
         ),
         "estimated_cost": None,
-        # The queue's own read of today's local cap minus reservations: it
-        # reserves nothing and is not the email provider's quota.
-        "remaining_daily_quota": (
-            remaining_quota() if op == BulkKind.SEND_REQUEST_NOTICES else None
-        ),
     }
     operation.snapshot_json = snapshot
     operation.snapshot_digest = digest(snapshot)

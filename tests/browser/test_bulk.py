@@ -17,9 +17,10 @@ from tests.cycles.bulk_fixtures import (
     BulkSetup,
     bulk_setup,
     notice_preview_with_reservations,
+    reserve_today,
 )
 from tests.support import enrol_totp
-from tests.ui.factories import Firm
+from tests.ui.factories import Firm, make_firm
 
 OpenPage = Callable[[LiveFirm, User | None], BrowserPage]
 
@@ -118,6 +119,7 @@ def test_notice_preview_shows_the_remaining_daily_quota_of_the_queue(
 ) -> None:
     settings.DELIVERY_DAILY_CAP = 100
     setup, preview = notice_preview_with_reservations("bulk-browser-quota", reserved=97)
+    foreign = make_firm("bulk-browser-quota-foreign")
     graph = setup.graph
     firm = Firm(
         tenant=graph.tenant,
@@ -132,9 +134,32 @@ def test_notice_preview_shows_the_remaining_daily_quota_of_the_queue(
     expect(page.get_by_text("Reservas disponíveis hoje: 3.")).to_be_visible()
     opened.goto(live.url(f"/ciclos/lotes/{preview.pk}/"))
     quota = page.locator("[data-bulk-quota]")
+    over_quota = page.locator("[data-bulk-quota-short]")
     expect(quota).to_be_visible()
     expect(quota).to_have_text("3")
+    expect(over_quota).to_have_count(0)
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     axe_check(page)
     opened.screenshot("t20-notice-quota")
+
+    def reload() -> None:
+        response = page.reload()
+        assert_policed_roles()
+        assert response is not None
+        assert response.ok
+
+    # Another firm exhausting its own quota leaves this firm's value alone.
+    reserve_today(foreign.tenant.pk, 100)
+    reload()
+    expect(quota).to_have_text("3")
+    # Reloading the same preview after this firm's reservations rise is current.
+    reserve_today(graph.tenant.pk, 100)
+    reload()
+    expect(quota).to_have_text("0")
+    expect(over_quota).to_be_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    axe_check(page)
+    opened.screenshot("t20-notice-quota-exhausted")
+    opened.goto(live.url("/comunicacao/"))
+    expect(page.get_by_text("Reservas disponíveis hoje: 0.")).to_be_visible()
     opened.assert_clean_console()

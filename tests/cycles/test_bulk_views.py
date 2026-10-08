@@ -22,8 +22,10 @@ from tests.cycles.bulk_fixtures import (
     bulk_setup,
     confirm,
     notice_preview_with_reservations,
+    reserve_today,
 )
 from tests.support import enrol_totp
+from tests.ui.factories import make_firm
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -160,26 +162,50 @@ def test_notice_preview_shows_the_queue_remaining_daily_quota(
     settings.ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".localhost"]
     settings.DELIVERY_DAILY_CAP = 100
     setup, preview = notice_preview_with_reservations("bulk-http-quota", reserved=97)
+    foreign = make_firm("bulk-http-quota-foreign")
+    tid = setup.graph.tenant.pk
     host = f"{setup.graph.tenant.slug}.localhost"
     session = Client(SERVER_NAME=host)
     cookie = mfa_session_cookie(setup.graph.actor, f"http://{host}/")
     assert "name" in cookie
     assert "value" in cookie
     session.cookies[cookie["name"]] = cookie["value"]
-    queue = session.get("/comunicacao/")
-    detail = session.get(f"/ciclos/lotes/{preview.pk}/")
-    assert queue.status_code == HTTPStatus.OK
-    assert detail.status_code == HTTPStatus.OK
-    shown = re.search(r"Reservas disponíveis hoje: (\d+)\.", queue.content.decode())
-    previewed = re.search(
-        r"<strong[^>]*data-bulk-quota[^>]*>(\d+)</strong>", detail.content.decode()
-    )
-    assert shown is not None
-    assert previewed is not None
-    assert previewed[1] == shown[1] == "3"
+    quota_reads: list[int] = []
+
+    def shown() -> tuple[str, str, bool]:
+        """Reload the queue and the same preview: queue, preview, over-quota note."""
+        queue = session.get("/comunicacao/")
+        with CaptureQueriesContext(connection) as queries:
+            detail = session.get(f"/ciclos/lotes/{preview.pk}/")
+        assert queue.status_code == HTTPStatus.OK
+        assert detail.status_code == HTTPStatus.OK
+        quota_reads.append(
+            sum(
+                "delivery_automationpause" in query["sql"]
+                for query in queries.captured_queries
+            )
+        )
+        page = detail.content.decode()
+        queued = re.search(
+            r"Reservas disponíveis hoje: (\d+)\.", queue.content.decode()
+        )
+        previewed = re.search(r"<strong[^>]*data-bulk-quota[^>]*>(\d+)</strong>", page)
+        assert queued is not None
+        assert previewed is not None
+        return queued[1], previewed[1], "data-bulk-quota-short" in page
+
+    assert shown() == ("3", "3", False)
     # Showing the capacity must not reserve any of it.
-    with tenant_context(setup.graph.tenant.pk):
-        assert AutomationPause.objects.get().reserved_today == 97
+    with tenant_context(tid):
+        assert AutomationPause.objects.get(tenant_id=tid).reserved_today == 97
+    # Another firm exhausting its own quota changes nothing for this one.
+    reserve_today(foreign.tenant.pk, 100)
+    assert shown() == ("3", "3", False)
+    # Reloading the same preview after this firm's reservations rise is current.
+    reserve_today(tid, 100)
+    assert shown() == ("0", "0", True)
+    # One read of the firm's reservations per render, none per item.
+    assert quota_reads == [1, 1, 1]
 
 
 def test_http_scope_and_csv_never_expose_another_firms_operation(

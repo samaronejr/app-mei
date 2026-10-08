@@ -42,6 +42,7 @@ from apps.cycles.services.bulk import (
 )
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.tasks import run_bulk_operation
+from apps.delivery.services import remaining_quota
 
 REASONS = {
     "client_inactive": "Cliente inativo.",
@@ -268,6 +269,10 @@ def bulk_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             else:
                 _dispatch(operation)
                 return redirect("bulk-detail", pk=pk)
+    notices = (
+        operation.state == BulkOperationState.PREVIEW
+        and operation.kind == BulkKind.SEND_REQUEST_NOTICES
+    )
     return render(
         request,
         "cycles/bulk_detail.html",
@@ -277,6 +282,9 @@ def bulk_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             "excluded": request.POST.getlist("exclusions"),
             "typed_count": request.POST.get("confirm_count", ""),
             "may_confirm": operation.requested_by_id == request.user.pk,
+            # Read on every render, as the queue does: the firm's own reservations
+            # today against the configured cap. Reading it reserves nothing.
+            "remaining_quota": remaining_quota() if notices else None,
         },
         status=status,
     )

@@ -89,6 +89,15 @@ def bulk_setup(slug: str = "bulk-contract", *, count: int = 3) -> BulkSetup:
     return BulkSetup(graph, tuple(engagements))
 
 
+def reserve_today(tid: UUID, reserved: int) -> None:
+    """Record `reserved` of today's sends for one firm, as the dispatcher does."""
+    with tenant_context(tid):
+        AutomationPause.objects.update_or_create(
+            tenant_id=tid,
+            defaults={"quota_day": timezone.localdate(), "reserved_today": reserved},
+        )
+
+
 def notice_preview_with_reservations(
     slug: str, *, reserved: int
 ) -> tuple[PortalSetup, BulkOperation]:
@@ -104,10 +113,7 @@ def notice_preview_with_reservations(
             RequestFields(title="Extrato adicional"),
             expected_version=setup.cycle.version,
         )
-        AutomationPause.objects.update_or_create(
-            tenant=graph.tenant,
-            defaults={"quota_day": timezone.localdate(), "reserved_today": reserved},
-        )
+        reserve_today(graph.tenant.pk, reserved)
         preview = preview_bulk(
             graph.actor, BulkKind.SEND_REQUEST_NOTICES, Selection((setup.cycle.pk,))
         )
