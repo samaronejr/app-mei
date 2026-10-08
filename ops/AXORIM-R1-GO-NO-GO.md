@@ -58,11 +58,26 @@ contract, so they're listed here rather than dropped.
 | OD-12 | Split the cohort gate (cohort 2 before the full launch set) | Partner feedback | open (needs owner decision) |
 | Contact | A public contact channel for the pricing page | Owner-supplied address or form | open (needs owner to choose the channel) |
 
+## Residual risks from the isolation sweep (AXR1-026)
+
+`docs/residual-risks.md` section 9 records what the wave-4 isolation sweep proved and,
+more to the point, what it didn't. The sweep labels each item "accepted for R1". That
+label is engineering's recommendation, not the owner's decision, so every row below
+stays open until the owner accepts it in writing. Sections 1 to 8 of the same file
+cover the earlier residual-hardening plan. They still apply, and this ledger doesn't
+restate them.
+
+| id | risk | what it means for a cohort | evidence | status |
+| --- | --- | --- | --- | --- |
+| RR-01 | SMTP acceptance isn't delivery (section 9.1) | The delivery ledger records that a mail server accepted a message. Nothing watches the mailbox after that: no bounce handling, no DMARC reports, no open tracking. A notice marked as sent may never reach the client, so nobody should read "sent" as "received". OG-03 proves one send reaches one mailbox, not every recipient. | `.evidence/AXR1-029-RR-owner.txt` (owner acceptance) | open (needs owner acceptance before cohort 2) |
+| RR-02 | File content isn't checked against the client's CNPJ (section 9.2) | The vault checks file type, size and confinement. A document filed under the wrong client still passes as valid, and only the firm's own review catches it. Isolation holds; content truth doesn't. | `.evidence/AXR1-029-RR-owner.txt` (owner acceptance) | open (needs owner acceptance before cohort 2) |
+| RR-03 | Isolation is proven by denial on declared surfaces (section 9.3) | Each probe asks for another firm's row and sees a refusal. A surface nobody declared, such as a new endpoint, an error message or a log line, isn't probed until someone adds it to the enumeration lists. | `.evidence/AXR1-029-RR-owner.txt` (owner acceptance) | open (needs owner acceptance before cohort 2) |
+
 ## Cohorts
 
 | cohort | requires | evidence | status |
 | --- | --- | --- | --- |
 | Partner sessions on the synthetic-data tenant (before cohort 2, per OD-12) | Engineering gates of the releases shown; no real data | `.evidence/AXR1-029-OG07-sessions.txt` | open (needs partner sessions to be scheduled) |
-| Cohort 2: one design-partner pilot firm, real data, no billing | OG-01, OG-02, OG-03, OG-04, OG-05 (or scanning off with staff-only files), OG-08 for the partner DPA, OD-02, OD-10, OG-09 | Each row's evidence above plus `.evidence/AXR1-029-OG09-cohort2.txt` | open (needs every listed gate and the owner go/no-go) |
+| Cohort 2: one design-partner pilot firm, real data, no billing | OG-01, OG-02, OG-03, OG-04, OG-05 (or scanning off with staff-only files), OG-08 for the partner DPA, OD-02, OD-10, RR-01 to RR-03, OG-09 | Each row's evidence above plus `.evidence/AXR1-029-OG09-cohort2.txt` | open (needs every listed gate and the owner go/no-go) |
 | Cohort 3 and general availability | Cohort 2 requirements plus OG-06, OG-07, OD-01 for public naming | Each row's evidence above plus `.evidence/AXR1-029-OG09-cohort3.txt` | open (needs every listed gate and the owner go/no-go) |
 | Paid cohorts | Cohort 3 requirements plus OG-08, OD-04, OD-07 | Each row's evidence above plus `.evidence/AXR1-029-OG09-paid.txt` | open (needs every listed gate and the owner go/no-go) |
