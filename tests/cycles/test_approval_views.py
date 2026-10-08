@@ -17,6 +17,8 @@ from apps.clients.models import ClientAssignment
 from apps.clients.services import unassign_client
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import ActionProposal, Approval, CycleEvent, ProposalState
+from apps.obligations.generator import generate_das_calendar
+from apps.obligations.models import ObservationKind, SourceObservation
 from apps.security.csp import HEADER, build_policy
 from apps.tenants.models import TenantRole
 from tests.browser.harness import mfa_session_cookie
@@ -159,6 +161,22 @@ def test_create_form_uses_real_selected_ids_and_escapes_frozen_text(desk: Desk) 
         assert frozen["payload"]["body"] == body
         assert frozen["recipients"][0]["contact_id"] == str(setup.contact.pk)
         assert not Approval.objects.filter(proposal=created).exists()
+
+
+def test_create_form_offers_the_period_calendar_observation(desk: Desk) -> None:
+    setup = desk.setup
+    with tenant_context(setup.graph.tenant.pk):
+        generate_das_calendar(
+            setup.graph.client, starting_from=setup.cycle.period_start
+        )
+        calendar = SourceObservation.objects.get(
+            client=setup.graph.client,
+            period=setup.cycle.period_start,
+            kind=ObservationKind.CALENDAR_SCHEDULED,
+        )
+    response = desk.staff.get(f"/ciclos/{setup.cycle.pk}/propor/")
+    assert response.status_code == 200
+    assert f'value="{calendar.pk}"' in response.content.decode()
 
 
 def test_malformed_revision_link_is_a_422_not_a_server_error(desk: Desk) -> None:
