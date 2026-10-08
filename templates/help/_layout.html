@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{{ page.title }} | {% translate "Ajuda" %}{% endblock %}
+{% block heading %}{{ page.title }}{% endblock %}
+{% block content %}
+  {% comment %}
+    The frame every help article shares. Static copy only: `apps/core/public_views.py`
+    renders these pages with no query and no tenant data, and
+    `tests/ui/test_public_pages_claims.py` refuses absolute claims in them.
+  {% endcomment %}
+  <div class="max-w-2xl space-y-6">
+    <p class="text-sm"><a class="link" href="{% url 'help-index' %}">{% translate "Voltar para a Ajuda" %}</a></p>
+    <p class="text-sm text-ink-600">{{ page.summary }}</p>
+{% block article %}{% endblock %}
+  </div>
+{% endblock %}

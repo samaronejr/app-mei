@@ -1,0 +1,29 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    Cycle states and end conditions follow the R1 product contract (plan S4) and the
+    labels in docs/product/vocabulary.md.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="o-que-e">
+    <h2 id="o-que-e" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que é um ciclo{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Um ciclo é o trabalho de um cliente em uma competência, por exemplo o ciclo de março/2026. Ele nasce de uma versão publicada de um playbook e reúne as solicitações ao cliente, os documentos recebidos e revisados, as pendências e tudo o que for enviado ao cliente.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="documentos">
+    <h2 id="documentos" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Documentos e pendências{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Cada arquivo enviado pelo portal fica registrado com quem enviou, quando e uma impressão digital do conteúdo.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Quem revisa aceita o documento ou pede correção. A revisão fica registrada com a pessoa, a data e a versão revisada.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Um documento de outra empresa, ou com CNPJ diferente, vira uma pendência com responsável e prazo.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="fim">
+    <h2 id="fim" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando o ciclo termina{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O ciclo fica Concluído quando cada item obrigatório foi aceito ou dispensado com motivo, cada pendência foi resolvida, e cada envio ao cliente foi aprovado e executado ou cancelado de forma explícita.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Se isso não acontecer, ele pode ser fechado como Encerrado com pendências. Os motivos ficam escritos no ciclo.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Um ciclo fechado pode ser reaberto por quem tem permissão, e a reabertura fica registrada.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="indice">
+    <h2 id="indice" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Índice de evidências{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Ao fechar, o ciclo gera um índice do que foi pedido, recebido, revisado e enviado. É o registro do próprio sistema. Não é um documento com validade jurídica certificada.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{{ product_name }}{% endblock %}
+{% block heading %}{{ product_name }}{% endblock %}
+{% block content %}
+  {% comment %}
+    Public product page, apex host only. Lists only capabilities shipped in R1 (plan S4).
+    The name comes from PRODUCT_NAME, "app-mei" until OD-01 clears a public name. No
+    price (OD-07), no compliance guarantee, nothing from R2 offered as available.
+  {% endcomment %}
+  <div class="max-w-2xl space-y-6">
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Para escritórios de contabilidade que acompanham muitos clientes todo mês. O {{ product_name }} organiza o ciclo mensal de cada cliente, a coleta e a revisão de documentos, e a aprovação antes de qualquer envio ao cliente.{% endblocktranslate %}</p>
+  {% translate "Estamos selecionando os primeiros escritórios parceiros. O uso começa com dados de teste, ou com um contrato de tratamento de dados assinado." as aviso %}
+  {% include 'partials/pure/notice.html' with message=aviso variant='info' only %}
+  <section class="card p-6 space-y-3" aria-labelledby="funciona">
+    <h2 id="funciona" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que já funciona{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Importação de clientes por planilha, com prévia antes de criar qualquer cadastro e opção de desfazer.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Ciclos mensais a partir de playbooks: MEI mensal, e Coleta e revisão de documentos do mês.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Portal do cliente com a marca do escritório, para solicitações, envio de documentos e publicações.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Revisão de documentos, com registro de quem revisou, quando e qual versão.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Aprovação do conteúdo exato antes de qualquer envio ao cliente.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Tela Hoje, com o motivo de cada item que pede atenção.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Operações em lote com prévia antes da execução.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Índice de evidências de cada ciclo encerrado.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Exportação dos dados do escritório a qualquer momento.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="nao-promete">
+    <h2 id="nao-promete" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que o produto não promete{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Não calcula impostos além do calendário do DAS e do limite de faturamento do MEI.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Não transmite declarações e não faz pagamentos.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Não consulta a Receita: pagamentos informados continuam marcados como informados.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}O status de um e-mail mostra que o servidor aceitou a mensagem, não que ela foi lida.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}O índice de evidências é o registro do sistema, não um documento com validade jurídica certificada.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+    <p class="text-sm"><a class="link" href="{% url 'public-pricing' %}">{% translate "Preços" %}</a> | <a class="link" href="{% url 'help-index' %}">{% translate "Ajuda" %}</a></p>
+  </div>
+{% endblock %}

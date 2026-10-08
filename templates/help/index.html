@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Ajuda" %}{% endblock %}
+{% block heading %}{% translate "Ajuda" %}{% endblock %}
+{% block content %}
+  <div class="max-w-2xl space-y-6">
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Guias curtos sobre o que o {{ product_name }} faz hoje. Cada página descreve o comportamento atual do produto, sem prometer o que ainda não existe.{% endblocktranslate %}</p>
+    <section class="card p-6" aria-labelledby="artigos">
+      <h2 id="artigos" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Artigos" %}</h2>
+      <ul class="space-y-3 text-sm">
+        {% for item in help_pages %}
+          <li><a class="link font-semibold" href="{% url item.url_name %}">{{ item.title }}</a><br><span class="text-ink-600">{{ item.summary }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    STAGE-2 VERIFY (AXR1-029): written from the T23 plan block (owner-approved,
+    time-limited support grants), before T23 is placed under this branch. Stage 2
+    checks every sentence against T23's shipped behaviour and labels.
+  {% endcomment %}
+  {% translate "Este recurso está em implantação. Se a seção de suporte ainda não aparece nas suas configurações, ele ainda não está ativo na sua conta." as aviso %}
+  {% include 'partials/pure/notice.html' with message=aviso variant='info' only %}
+  <section class="card p-6 space-y-3" aria-labelledby="regra">
+    <h2 id="regra" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}A regra{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Ninguém do suporte entra na conta do seu escritório sem um pedido aprovado pelo responsável pela conta. Não existe acesso invisível.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="pedido">
+    <h2 id="pedido" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que o pedido diz{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}A finalidade do acesso.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}O escopo: somente leitura, ou leitura e ajuste de configurações.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Quais clientes. Sem clientes indicados, o suporte vê apenas dados gerais do escritório.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Até quando vale. O prazo máximo é de 72 horas.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="durante">
+    <h2 id="durante" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Durante o acesso{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Todas as páginas mostram o aviso de acesso de suporte ativo, com o horário de término.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}O conteúdo dos documentos e o texto das mensagens ficam ocultos para o suporte.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}O suporte não aprova ações, não envia mensagens e não baixa documentos.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Cada acesso fica registrado, e o responsável pela conta vê esse registro.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="revogar">
+    <h2 id="revogar" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Revogar{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O responsável pela conta pode revogar o acesso a qualquer momento, e a revogação vale na hora. Um acesso nunca é prorrogado sem um novo pedido aprovado.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

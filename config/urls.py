@@ -25,6 +25,7 @@ urlpatterns = [
     path("", include("apps.tenants.urls")),
     path("", include("apps.lgpd.urls")),
     path("", include("apps.obligations.urls")),
+    path("", include("apps.core.public_views")),
     # Before admin.site.urls so it is not swallowed by the catch-all admin router.
     path("admin/selecionar-empresa/", select_tenant_view, name="admin-select-tenant"),
     path("admin/", admin.site.urls),
