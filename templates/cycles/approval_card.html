@@ -14,7 +14,7 @@ Empty collections share one compact line, and the technical identity of this ver
     <a class="ui-link" href="{% url 'cycle-detail' proposal.cycle_id %}">Voltar ao ciclo</a>
     <p class="mt-4 text-sm text-ink-600">{{ proposal.client.legal_name }} · CNPJ {{ proposal.client.cnpj|cnpj_mask }} · competência {{ proposal.cycle.period_start|date:'m/Y' }}</p>
     <h2 class="mt-2 text-xl font-semibold text-ink-900">{{ action_label }}</h2>
-    <p class="mt-2"><span class="status-badge status-pending" data-proposal-state="{{ proposal.state }}">{{ proposal.get_state_display }}</span> · versão {{ proposal.revision }} · proposta por {{ proposal.initiator }}</p>
+    <p class="mt-2"><span data-proposal-state="{{ proposal.state }}">{% include "partials/ui/status_badge.html" with state=state_badge label=proposal.get_state_display only %}</span> · versão {{ proposal.revision }} · proposta por {{ proposal.initiator }}</p>
     <p class="mt-2 text-sm text-ink-600">Este cartão mostra os efeitos congelados desta versão. Aprovar registra uma decisão; não envia mensagens, não publica arquivos e não comprova execução.</p>
   </header>
   {% if error %}<div class="ui-state {% if conflict %}ui-state-stale{% else %}ui-state-error{% endif %}" role="alert" data-approval-alert="{% if conflict %}conflict{% else %}refused{% endif %}">

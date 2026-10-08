@@ -170,6 +170,16 @@ REDACTED_PAYLOAD_FIELDS = frozenset(
 )
 
 
+# An approval is a human decision, never verification, so no state borrows green.
+PROPOSAL_STATE_BADGES: dict[str, str] = {
+    ProposalState.AWAITING: "pending",
+    ProposalState.APPROVED: "manual",
+    ProposalState.REJECTED: "blocked",
+    ProposalState.INVALIDATED: "stale",
+    ProposalState.CANCELLED: "blocked",
+}
+
+
 def _redact_frozen(frozen: dict[str, Any]) -> dict[str, Any]:
     """Return a manifest copy with message bodies and addressees replaced."""
     payload = frozen.get("payload")
@@ -267,6 +277,7 @@ def _card(
                 and expires_at > now
             ),
             "frozen": frozen,
+            "state_badge": PROPOSAL_STATE_BADGES.get(proposal.state, "unknown"),
             "recipients": recipients,
             "dates": dates,
             "expired": expires_at <= now,

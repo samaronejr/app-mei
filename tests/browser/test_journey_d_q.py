@@ -69,6 +69,9 @@ def test_journey_q_recipient_change_voids_the_open_card(
     expect(page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.AWAITING
     )
+    expect(page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "pending"
+    )
     expect(page.locator("[data-frozen-recipient]")).to_contain_text(
         "recipient@example.test"
     )
@@ -91,6 +94,9 @@ def test_journey_q_recipient_change_voids_the_open_card(
     expect(page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.INVALIDATED
     )
+    expect(page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "stale"
+    )
     with tenant_context(setup.graph.tenant.pk):
         voided = ActionProposal.objects.get(pk=setup.proposal.pk)
         assert not Approval.objects.filter(proposal=voided).exists()
@@ -108,6 +114,9 @@ def test_journey_q_recipient_change_voids_the_open_card(
     expect(page.locator("[data-frozen-recipient]")).to_contain_text(CHANGED)
     expect(page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.AWAITING
+    )
+    expect(page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "pending"
     )
     record(owner, "q-03-new-version")
     assert_policed_roles()
@@ -165,6 +174,9 @@ def test_journey_d_revoked_reviewer_cannot_have_the_approval_executed(
     )
     expect(owner.page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.INVALIDATED
+    )
+    expect(owner.page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "stale"
     )
     expect(owner.page.locator('button[value="execute"]')).to_have_count(0)
     with tenant_context(setup.graph.tenant.pk):
