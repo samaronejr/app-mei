@@ -653,8 +653,22 @@ geometry, labels red/green, adversarial probes, placed gates) and the reviewer's
 artifacts. OG-06, the operator restore drill on an isolated host, and every other
 owner/operator gate remain **open**.
 
+`AXR1-028` (synthetic scale data, query budgets and read-latency measurement) is recorded on the final
+`AXR1-027` branch.
+- **Seed.** `seed_axorim_demo` builds three deterministic firms of 100, 1,000 and 1,000 clients with
+  messy data, and it refuses to run against production.
+- **Budget tests.** Query-budget tests cover the named reads, with a database-wide `ANALYZE` after seeding
+  so planner statistics reflect the seeded volume. There are no wall-clock limits in tests.
+- **Measurement.** `ops/perf/measure_reads.py` reports constrained-local p50/p95 per named read, and
+  `ops/perf/followups.json` lists the reads over target: Hoje p95 574 ms against 500 (676 ms at the placed head), and the client
+  workspace (46) and cycle detail (50) against the 25-query target. No SLO is claimed.
+
+A suite-order stall of the perf test is recorded with a candidate cause (mixed planner statistics),
+reproduced only as a 12x slowdown, not proven. The independent review at `6bdbd41` returned **confirmed** with zero
+blockers; every owner/operator gate remains **open**.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 23, 25, 26, 28 and 29 and the final verification wave remain open.
+Todos 23, 25, 26 and 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -755,11 +769,17 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4253 passing** (94 deselected), verified at placed
+implementation head. The current default-suite baseline is **4280 passing** (94 deselected), verified at placed
+`AXR1-028` code `6bdbd41` on `AXR1-027` code `c1451a2`: the **4253** below plus **27** net-new
+default-suite cases. The same serial run passed isolation (**309**), CNPJ (**29**), browser
+(**94**), lint, format, mypy, migration drift and a clean rebuilt-static check. Evidence:
+`.evidence/AXR1-028-gates-placed.txt`. This status-only commit does not change the reviewed code; it sits on
+the `AXR1-027` status commit `728a027`.
+
+The previous default-suite baseline was **4253 passing** (94 deselected), verified at placed
 `AXR1-027` code `c1451a2` (tree `40373cd`) on `AXR1-024` code `cd19380`: the **4204** below plus **49** net-new default-suite cases. The same serial run passed isolation
 (**309**), CNPJ (**29**), browser (**94**), lint, format, mypy, migration drift and a
-clean rebuilt-static check. Evidence: `.evidence/AXR1-027-gates-placed.txt`. This status-only commit
-does not change the reviewed code; it sits on the `AXR1-024` status commit `b73ea98`.
+clean rebuilt-static check. Evidence: `.evidence/AXR1-027-gates-placed.txt`.
 
 The previous default-suite baseline was **4204 passing** (92 deselected), verified at
 `AXR1-024` code `cd19380` (tree `c75f2a5`) on `AXR1-022` repaired code `af8e053`: the
