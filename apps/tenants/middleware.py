@@ -35,6 +35,7 @@ from apps.core.tenancy import current_tenant_id
 from apps.cycles.archive_response import EvidenceArchiveResponse
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.models import Membership, Tenant
+from apps.tenants.read_only import account_admission
 
 TENANT_GUC = "app.tenant_id"
 NO_TENANT = ""
@@ -204,7 +205,10 @@ class TenantMiddleware:
                 if tenant is not None:
                     prime_flag_cache(tenant)
                 self._apply_guc(tenant)
-                response = self.get_response(request)
+                refusal = account_admission(request, tenant)
+                response = (
+                    refusal if refusal is not None else self.get_response(request)
+                )
                 self._reject_streaming(response, tenant, request)
                 self._render_inside_transaction(response)
             return response
@@ -231,7 +235,10 @@ class TenantMiddleware:
             return
         if type(response) is EvidenceArchiveResponse and request is not None:
             match = resolve(request.path_info)
-            if match.url_name == "evidence-export-download":
+            if match.url_name in {
+                "evidence-export-download",
+                "account-export-download",
+            }:
                 return
         # A streaming iterator is consumed by the WSGI server AFTER all middleware
         # returns, by which time this block has exited and the GUC is gone. Every lazy

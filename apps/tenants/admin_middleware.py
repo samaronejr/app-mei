@@ -22,6 +22,7 @@ from apps.core.tenancy import tenant_context
 from apps.tenants.admin_tenancy import ADMIN_TENANT_SESSION_KEY, may_operate_as
 from apps.tenants.middleware import slug_from_host
 from apps.tenants.models import Tenant
+from apps.tenants.read_only import account_admission
 
 
 class AdminTenantMiddleware:
@@ -43,6 +44,11 @@ class AdminTenantMiddleware:
         if tenant_id is None:
             return self.get_response(request)
         with tenant_context(tenant_id):
+            # PLATFORM_QUERY_OK: _selected_tenant just authorized this exact scope.
+            tenant = Tenant.objects.get(pk=tenant_id)
+            refusal = account_admission(request, tenant, platform=True)
+            if refusal is not None:
+                return refusal
             return self.get_response(request)
 
     @staticmethod

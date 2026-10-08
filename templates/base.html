@@ -1,4 +1,4 @@
-{% load i18n navigation static %}{% product_shell request as r1_shell %}<!DOCTYPE html>
+{% load i18n navigation static firm_settings %}{% product_shell request as r1_shell %}{% firm_settings_context request as firm_account %}<!DOCTYPE html>
 <html lang="pt-br">
 <head>
   <meta charset="utf-8">
@@ -91,6 +91,7 @@
           </details>
         {% endif %}
         <div class="ml-auto flex items-center gap-3 text-sm text-ink-500">
+          {% if firm_account.enabled %}<a class="link" href="{% url 'firm-settings' %}">{% translate "Configurações" %}</a>{% endif %}
           <span>{{ request.user.email }}</span>
           <form method="post" action="{% url 'account_logout' %}">
             {% csrf_token %}
@@ -196,6 +197,7 @@
       {% endif %}
     </div>
 
+    {% if firm_account.past_due %}<p class="notice notice-warn mb-6" data-billing-past-due>{% translate "Há uma cobrança em atraso. Fale com a operação da plataforma para regularizar. A consulta e a exportação permanecem disponíveis." %}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 

@@ -19,6 +19,13 @@
       <div><dt class="text-xs font-medium text-ink-500">{% translate "Inválidas" %}</dt><dd class="text-lg tabular" data-count="invalid">{{ batch.planned_invalid }}</dd></div>
       <div><dt class="text-xs font-medium text-ink-500">{% translate "Duplicadas (ignoradas)" %}</dt><dd class="text-lg tabular" data-count="duplicate">{{ batch.planned_duplicate }}</dd></div>
     </dl>
+    <p class="mt-4 text-sm text-ink-600" data-active-client-limit="{{ allowance.limit|default_if_none:'unlimited' }}" data-active-client-remaining="{{ allowance.remaining|default_if_none:'unlimited' }}">
+      {% translate "Clientes ativos:" %} {{ allowance.active }}.
+      {% translate "Limite:" %} {% if allowance.limit is None %}{% translate "sem limite" %}{% else %}{{ allowance.limit }}. {% translate "Vagas disponíveis:" %} {{ allowance.remaining }}{% endif %}.
+      {% translate "Novas vagas necessárias:" %} {{ allowance.additional }}.
+    </p>
+    {% if error %}<div class="mt-4">{% include "partials/pure/notice.html" with message=error variant="warn" only %}</div>
+    {% elif not allowance.allowed %}<p class="notice notice-warn mt-4">{% translate "Esta importação excede o limite de clientes ativos. Revise a lista ou fale com o responsável pela conta. Nenhum cliente foi criado." %}</p>{% endif %}
     {% if in_progress %}
       <div class="mt-4">{% translate "A importação está em andamento. Esta página se atualiza sozinha." as msg %}{% include "partials/pure/notice.html" with message=msg variant="info" only %}</div>
     {% endif %}

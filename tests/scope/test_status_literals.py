@@ -54,6 +54,21 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         '"owner",',
     ): "The ORM update_fields entry for the migrated task owner relation.",
     LiteralPin(
+        "apps/tenants/billing_models.py",
+        "active",
+        'ACTIVE = "active", "Ativa (registro manual)"',
+    ): "T22 BillingStatus declaration; subscription state is not ClientStatus.",
+    LiteralPin(
+        "apps/tenants/billing_models.py",
+        "suspended",
+        'SUSPENDED = "suspended", "Suspensa"',
+    ): "T22 BillingStatus declaration; its own pt-BR labels ship on the enum.",
+    LiteralPin(
+        "apps/tenants/export_models.py",
+        "pending",
+        'PENDING = "pending", "Na fila"',
+    ): "T22 AccountExportState declaration, not an obligation or onboarding state.",
+    LiteralPin(
         "apps/cycles/cycle_views.py",
         "owner",
         ').select_related("client", "engagement", "owner", "playbook", "tax_profile")',

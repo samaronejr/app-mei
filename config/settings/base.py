@@ -219,6 +219,26 @@ CREDENTIAL_BEARING_URL_NAMES = [
 # Dynamic path parameters that are identifiers rather than credentials. Every entry
 # carries its decision here so the resolver guard cannot grow an invisible allow-list.
 CREDENTIAL_ROUTE_EXEMPTIONS = {
+    "account-export-detail": (
+        "AXR1-022. The UUID identifies a private account archive; a live owner "
+        "seat, account capability and tenant RLS authorize access."
+    ),
+    "account-export-download": (
+        "AXR1-022. The UUID is not a bearer credential. Owner authorization, "
+        "tenant RLS, ready state and both download deadlines are required."
+    ),
+    "firm-retention": (
+        "AXR1-022. The UUID identifies a client loaded through the owner's "
+        "portfolio before calling the existing versioned legal-hold service."
+    ),
+    "firm-hold-release": (
+        "AXR1-022. The UUID identifies a tenant/client-scoped hold; live owner "
+        "authority, portfolio loading and a rendered revision authorize release."
+    ),
+    "admin:tenants_tenant_billing": (
+        "AXR1-022. The UUID names a firm, not a credential. Active platform "
+        "operator capabilities are checked before reading or updating billing."
+    ),
     "member-deactivate": (
         "The <uuid:pk> is a tenant-scoped membership object id, not a bearer "
         "credential."
@@ -644,8 +664,34 @@ CLAMD_TIMEOUT_SECONDS = env.float("CLAMD_TIMEOUT_SECONDS", default=30.0)
 DELIVERY_PAUSED = env.bool("DELIVERY_PAUSED", default=True)
 DELIVERY_DAILY_CAP = env.int("DELIVERY_DAILY_CAP", default=100)
 RETENTION_PURGE_DRY_RUN = env.bool("RETENTION_PURGE_DRY_RUN", default=True)
+ENGAGEMENT_OFFBOARDING_GRACE_DAYS = env.int(
+    "ENGAGEMENT_OFFBOARDING_GRACE_DAYS", default=30
+)
+# Prices remain unknown until operator evidence supplies them. Missing is not zero;
+# the owner sees an incomplete estimate rather than an invented monthly cost.
+USAGE_UNIT_PRICES_BRL = env.json("USAGE_UNIT_PRICES_BRL", default={})
 
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
+    "record-firm-usage": {
+        "task": "apps.tenants.tasks.record_usage",
+        "schedule": crontab(hour=2, minute=30),
+    },
+    "offboard-engagements": {
+        "task": "apps.tenants.tasks.offboard_expired_engagements",
+        "schedule": crontab(hour=3, minute=0),
+    },
+    "daily-firm-summaries": {
+        "task": "apps.tenants.tasks.queue_daily_summaries",
+        "schedule": crontab(hour=7, minute=0),
+    },
+    "dispatch-firm-outbox": {
+        "task": "apps.tenants.notification_tasks.dispatch_firm_outbox",
+        "schedule": 60.0,
+    },
+    "account-exports": {
+        "task": "apps.tenants.export_tasks.sweep_account_exports",
+        "schedule": 60.0,
+    },
     "evidence-exports": {
         "task": "apps.cycles.export_tasks.sweep_evidence_exports",
         "schedule": 60.0,

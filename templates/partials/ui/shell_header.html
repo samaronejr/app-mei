@@ -49,6 +49,7 @@ desktop widths.
         <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Buscar" %}</button>
       </form>{% endif %}
       <div class="shell-account">
+        {% if firm_account.enabled %}<a class="ui-btn ui-btn-quiet" href="{% url 'firm-settings' %}">{% translate "Configurações" %}</a>{% endif %}
         <span class="shell-account-email">{{ request.user.email }}</span>
         <form method="post" action="{% url 'account_logout' %}">
           {% csrf_token %}

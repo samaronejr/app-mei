@@ -96,16 +96,30 @@ NFE_READ_ONLY_FILES = frozenset(
     },
 )
 
+# Row 3. AXR1-022 explicitly commissions firm owner invitations and opted-in summaries,
+# housed inside tenants. No notifications app, push channel or mail-template subsystem.
+FIRM_NOTIFICATION_MODULES = frozenset(
+    {
+        "apps/tenants/notification_models.py",
+        "apps/tenants/notification_tasks.py",
+        "apps/tenants/notifications.py",
+    }
+)
+
 # Row 7. T-033 commissioned the client CSV export. AXR1-018 explicitly commissions
 # per-cycle evidence bundles (.omo/plans/axorim-pivot-r1.md:1839), including their
 # status and download routes. AXR1-020/S7.3 commissions the private per-item bulk
-# result CSV. Portfolio Reports v1 and an audit UI remain excluded.
+# result CSV. AXR1-022 adds owner-only account portability, not portfolio KPI
+# reports. Portfolio Reports v1 and an audit UI remain excluded.
 EXPORT_URL_NAMES = frozenset(
     {
         "clients-export-csv",
         "evidence-export-detail",
         "evidence-export-download",
         "bulk-report-csv",
+        "account-export-request",
+        "account-export-detail",
+        "account-export-download",
     }
 )
 
@@ -171,10 +185,11 @@ def test_row_3_no_notifications() -> None:
         if re.search(r"mail", path.name, re.IGNORECASE)
     ]
 
-    # Then all three are empty. The two mails this scope does send are built inline at
-    # `apps/accounts/views.py:109` and `apps/lgpd/views.py:57` — a `send_mail` call with
-    # a literal body is a feature; a template directory is the start of Phase 2.
-    assert modules == [], _report("notifications module", modules)
+    # T22 supersedes only the exact three firm-notice modules above. The installed
+    # app and mail-template prohibitions remain unchanged; another module still fails.
+    assert set(modules) == FIRM_NOTIFICATION_MODULES, _report(
+        "notifications module outside T22", modules
+    )
     assert installed == [], _report("notifications app installed", installed)
     assert mail_templates == [], _report("project email template", mail_templates)
 

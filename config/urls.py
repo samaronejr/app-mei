@@ -22,6 +22,7 @@ urlpatterns = [
     path("", include("apps.briefing.urls")),
     path("", include("apps.cycles.urls")),
     path("", include("apps.delivery.urls")),
+    path("", include("apps.tenants.urls")),
     path("", include("apps.lgpd.urls")),
     path("", include("apps.obligations.urls")),
     # Before admin.site.urls so it is not swallowed by the catch-all admin router.

@@ -183,6 +183,13 @@ $$;
 -- PORTAL_NONE: delivery_deliveryeffect
 -- PORTAL_NONE: delivery_automationpause
 -- Message contents, SMTP receipts and operational controls are firm-private.
+-- PORTAL_NONE: tenants_billingaccount
+-- PORTAL_NONE: tenants_usagerecord
+-- PORTAL_NONE: tenants_notificationpreference
+-- PORTAL_NONE: tenants_firmoutboundmessage
+-- PORTAL_NONE: tenants_accountexport
+-- PORTAL_NONE: tenants_accountexportattempt
+-- Firm account data is private even when a client belongs to the firm.
 DO $$
 DECLARE
     receipt_table text;
@@ -190,7 +197,7 @@ BEGIN
     FOREACH receipt_table IN ARRAY ARRAY[
         'delivery_deliveryattempt', 'delivery_deliveryeffect', 'cycles_approval',
         'cycles_actionexecution', 'cycles_clientacknowledgement',
-        'cycles_evidenceindex', 'cycles_completiongeneration'
+        'cycles_evidenceindex', 'cycles_completiongeneration', 'tenants_usagerecord'
     ]
     LOOP
         IF to_regclass('public.' || receipt_table) IS NOT NULL THEN

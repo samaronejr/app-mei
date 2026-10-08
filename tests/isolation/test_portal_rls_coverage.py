@@ -63,7 +63,9 @@ RUNTIME_ROLE = "app_runtime"
 # T18 adds seven private completion, export and retention tables with both policies.
 # T19 adds tenant-owned SavedView and client-paired private BriefingFeedback.
 # T20 adds BulkOperation and BulkItem: 56 + 2 = 58 tenant tables.
-EXPECTED_TENANT_TABLE_COUNT = 58
+# T22 adds six tenant-private account, metering, notification and export tables:
+# 58 + 6 = 64 tenant tables.
+EXPECTED_TENANT_TABLE_COUNT = 64
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -444,6 +446,12 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "delivery_deliveryattempt",
         "delivery_deliveryeffect",
         "delivery_automationpause",
+        "tenants_billingaccount",
+        "tenants_usagerecord",
+        "tenants_notificationpreference",
+        "tenants_firmoutboundmessage",
+        "tenants_accountexport",
+        "tenants_accountexportattempt",
         "obligations_monthlyrevenue",
         "obligations_obligation",
         "obligations_sourceobservation",

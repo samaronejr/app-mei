@@ -5,7 +5,6 @@ from uuid import UUID
 from botocore.exceptions import BotoCoreError, ClientError
 from celery import shared_task
 from django.core.exceptions import PermissionDenied
-from django.core.files import File
 from django.core.files.storage import default_storage
 from django.db import DatabaseError
 from django.db.models import F, Q
@@ -15,6 +14,7 @@ from django.utils import timezone
 from apps.core.flags import tenant_has
 from apps.core.tasks import PhasedTenantTask, PlatformTask, assert_no_transaction
 from apps.core.tenancy import tenant_context
+from apps.cycles.archive_storage import upload_archive
 from apps.cycles.errors import VersionConflict
 from apps.cycles.evidence_zip import Bundle, ZipError, ZipErrorCode, build_archive
 from apps.cycles.export_records import EvidenceExport, ExportAttempt, ExportState
@@ -79,7 +79,7 @@ def _claim_or_fail(tid: UUID, eid: UUID) -> ExportClaim | None:
 
 
 def _upload(claim: ExportClaim, bundle: Bundle) -> None:
-    saved = default_storage.save(claim.storage_key, File(bundle.file))
+    saved = upload_archive(default_storage, claim.storage_key, bundle)
     if saved != claim.storage_key:
         if saved.startswith(claim.storage_key.rsplit("/", 1)[0] + "/"):
             with tenant_context(claim.tenant_id):

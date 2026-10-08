@@ -1,0 +1,42 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Configurações da firma" %}{% endblock %}
+{% block heading %}{% translate "Configurações da firma" %}{% endblock %}
+{% block content %}
+  <div class="grid gap-8 lg:grid-cols-2">
+    <section class="card p-6" aria-labelledby="perfil">
+      <h2 id="perfil" class="mb-3 text-lg font-semibold">{% translate "Perfil e identidade" %}</h2>
+      <p class="mb-5 text-sm text-ink-600">{% translate "O nome e a identidade visual aparecem no portal dos seus clientes." %}</p>
+      {% if may_edit %}
+        {% if read_only %}{% include "tenants/read_only.html" %}{% endif %}
+        {% if firm.logo_upload_pending %}<p class="notice notice-info mb-4">{% translate "O logotipo está sendo processado." %}</p>{% endif %}
+        {% if firm.logo_error_code %}<p class="notice notice-warn mb-4">{% translate "Não foi possível atualizar o logotipo. O anterior foi preservado; envie novamente." %}</p>{% endif %}
+        <form method="post" enctype="multipart/form-data" class="space-y-4">
+          {% csrf_token %}
+          {% include "partials/pure/form_errors.html" %}
+          <fieldset class="space-y-4"{% if read_only %} disabled{% endif %}>
+            <legend class="visually-hidden">{% translate "Editar perfil da firma" %}</legend>
+            {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+            <button type="submit" class="btn btn-primary">{% translate "Salvar configurações" %}</button>
+          </fieldset>
+        </form>
+      {% else %}
+        <p class="text-sm text-ink-600">{% translate "A identidade da firma é administrada pelo responsável pela conta." %}</p>
+      {% endif %}
+    </section>
+    <section aria-labelledby="acessos" class="space-y-5">
+      <h2 id="acessos" class="text-lg font-semibold">{% translate "Pessoas e conta" %}</h2>
+      <div class="border-b border-ink-200 pb-5">
+        <a href="{% url 'firm-preferences' %}" class="link font-semibold">{% translate "Minhas notificações" %}</a>
+        <p class="mt-2 text-sm text-ink-600">{% translate "Escolha se quer receber um resumo diário da sua carteira por e-mail." %}</p>
+      </div>
+      {% if may_team %}<div class="border-b border-ink-200 pb-5">
+        <a href="{% url 'team' %}" class="link font-semibold">{% translate "Equipe e permissões" %}</a>
+        <p class="mt-2 text-sm text-ink-600">{% translate "Convide pessoas, revise acessos e gerencie quem pode revisar o trabalho." %}</p>
+      </div>{% endif %}
+      {% if may_account %}<div>
+        <a href="{% url 'firm-account' %}" class="link font-semibold">{% translate "Plano, uso e encerramento" %}</a>
+        <p class="mt-2 text-sm text-ink-600">{% translate "Consulte o registro de cobrança, exporte os dados e confira as regras de retenção." %}</p>
+      </div>{% endif %}
+    </section>
+  </div>
+{% endblock %}

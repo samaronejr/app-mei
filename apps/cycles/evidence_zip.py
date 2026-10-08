@@ -5,7 +5,7 @@ import io
 import json
 import tempfile
 import zipfile
-from collections.abc import Buffer, Iterator
+from collections.abc import Buffer, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -15,6 +15,7 @@ from uuid import UUID
 from django.core.files.storage import Storage
 from django.template.loader import render_to_string
 
+from apps.core.tasks import assert_no_transaction
 from apps.cycles.archive_storage import open_archive_source
 from apps.cycles.effects.manifest import JSONValue
 
@@ -191,6 +192,35 @@ def build_archive(
         size = spool.seek(0, io.SEEK_END)
         if size > byte_cap:
             raise ZipError(ZipErrorCode.BYTE_CAP)
+        spool.seek(0)
+        digest = hashlib.sha256()
+        while block := spool.read(CHUNK):
+            digest.update(block)
+        spool.seek(0)
+        yield Bundle(spool, size, digest.hexdigest())
+
+
+@contextmanager
+def build_metadata_archive(
+    members: Iterable[tuple[str, Iterable[bytes]]], *, byte_cap: int = BYTE_CAP
+) -> Iterator[Bundle]:
+    """Bound streamed metadata with the same spool, extent cap and manifest as T18."""
+    assert_no_transaction()
+    with tempfile.SpooledTemporaryFile(max_size=SPOOL_LIMIT, mode="w+b") as spool:
+        manifest = []
+        with zipfile.ZipFile(
+            _CappedFile(spool, byte_cap), "w", compression=zipfile.ZIP_STORED
+        ) as archive:
+            for name, chunks in members:
+                digest = hashlib.sha256()
+                with archive.open(name, "w") as member:
+                    for chunk in chunks:
+                        assert_no_transaction()
+                        member.write(chunk)
+                        digest.update(chunk)
+                manifest.append(f"{digest.hexdigest()}  {name}\n")
+            archive.writestr("manifest.sha256", "".join(manifest).encode())
+        size = spool.seek(0, io.SEEK_END)
         spool.seek(0)
         digest = hashlib.sha256()
         while block := spool.read(CHUNK):

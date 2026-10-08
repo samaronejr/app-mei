@@ -84,6 +84,12 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "bulk-detail",
         "bulk-progress",
         "bulk-report-csv",
+        # T22: owner-scoped account ids and explicitly authorized operator billing.
+        "account-export-detail",
+        "account-export-download",
+        "firm-retention",
+        "firm-hold-release",
+        "admin:tenants_tenant_billing",
         "admin:*",
     },
 )

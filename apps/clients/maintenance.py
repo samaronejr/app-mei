@@ -55,6 +55,11 @@ from apps.clients.services import (
     unassign_client,
 )
 from apps.fiscal.validators import normalize_document
+from apps.tenants.entitlements import (
+    ACTIVE_CLIENT_STATES,
+    lock_entitlement,
+    require_client_capacity,
+)
 from apps.tenants.models import Invite, Membership, Tenant
 
 if TYPE_CHECKING:
@@ -211,12 +216,14 @@ def create_client(*, actor: User, tenant_id: UUID, data: ClientData) -> ClientCo
     the record they just typed in.
     """
     with transaction.atomic():
+        tenant = lock_entitlement(tenant_id)
         _require(actor, MANAGE_CAPABILITY, tenant_id)
         cnpj = normalize_document(data.cnpj)
         if find_duplicate(tenant_id, cnpj) is not None:
             raise DuplicateClientError(
                 {"cnpj": _("Este CNPJ já está cadastrado neste escritório.")},
             )
+        require_client_capacity(tenant)
         client = ClientCompany(
             tenant_id=tenant_id,
             legal_name=data.legal_name.strip(),
@@ -264,6 +271,7 @@ def update_client(
         msg = f"not editable here: {sorted(unknown)}"
         raise ValueError(msg)
     with transaction.atomic():
+        tenant = lock_entitlement(tenant_id)
         client = load_client(actor, tenant_id, client_id, lock=True)
         _require(actor, MANAGE_CAPABILITY, tenant_id)
         if client.version != expected_version:
@@ -272,6 +280,12 @@ def update_client(
                 f"not {expected_version}"
             )
             raise ConflictError(msg)
+        requested_status = changes.get("status", client.status)
+        if (
+            requested_status in ACTIVE_CLIENT_STATES
+            and client.status not in ACTIVE_CLIENT_STATES
+        ):
+            require_client_capacity(tenant)
         for field, value in changes.items():
             setattr(client, field, value)
         if client.cpf == "":

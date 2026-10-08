@@ -55,6 +55,7 @@ from apps.authz.matrix import CAPABILITY_SLUGS
 from apps.authz.services import Actor, granted_levels
 from apps.authz.stash import PortalStash, portal_stash
 from apps.clients.models import ClientCompany
+from apps.clients.offboarding import portal_engagement_current
 from apps.core.flags import tenant_row_has
 from apps.core.tenancy import (
     CLIENT_GUC,
@@ -67,6 +68,7 @@ from apps.core.tenancy import (
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.branding import Brand, brand_for
 from apps.tenants.models import Membership, Tenant
+from apps.tenants.read_only import account_admission
 
 if TYPE_CHECKING:
     from contextvars import Token
@@ -375,6 +377,17 @@ class PortalMiddleware:
                 # because that same fetch is denied outright to `app_portal`, which
                 # holds no SELECT on the row until `app.client_id` is what confines it.
                 self._apply_gucs(tenant, client_id)
+                refusal = account_admission(request, tenant)
+                if refusal is not None:
+                    return refusal
+                if (
+                    tenant is not None
+                    and client_id is not None
+                    and tenant_row_has(tenant, "firm_settings_r1")
+                    and not portal_engagement_current(client_id)
+                ):
+                    msg = "O prazo de acesso deste cliente encerrou."
+                    raise PermissionDenied(msg)
                 request.client = (
                     self._attach_companies(request, membership, client_ids)
                     if membership
