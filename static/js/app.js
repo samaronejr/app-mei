@@ -140,8 +140,10 @@
    * A swap may name where focus belongs next: the first field of a form that came
    * back with errors, the row that was just updated, the control that continues the
    * task. The server marks it with data-focus-after-swap, because only the server
-   * knows which one it is. Unmarked, focus lands on the swapped region itself, as
-   * it always has.
+   * knows which one it is. Unmarked, focus lands on the first visible heading of the
+   * swapped region -- the words that name what changed, which a screen reader then
+   * reads and from which the next Tab continues -- and on the region itself only
+   * when it has no visible heading.
    *
    * The marker is consumed when it is honoured. Left in place it would pull focus
    * back to the same element on the next, unrelated swap anywhere on the page.
@@ -167,6 +169,24 @@
   }
 
   /*
+   * The first heading of a region that is actually rendered. A heading inside a
+   * closed disclosure or a hidden block has no box, and focusing it would silently
+   * leave focus where it was.
+   */
+  function headingOf(region) {
+    if (region.matches(HEADINGS)) {
+      return region;
+    }
+    var headings = region.querySelectorAll(HEADINGS);
+    for (var index = 0; index < headings.length; index += 1) {
+      if (headings[index].getClientRects().length > 0) {
+        return headings[index];
+      }
+    }
+    return null;
+  }
+
+  /*
    * A region marked data-swap-keeps-focus is refreshed while the user is typing
    * somewhere else -- the command palette's results, under its combobox. Moving
    * focus there would pull the caret out of the field mid-word, so such a swap
@@ -175,15 +195,36 @@
    */
   var KEEPS_FOCUS = "[data-swap-keeps-focus]";
 
+  // Passive progress already has a polite live region. Its timer must not move
+  // keyboard focus or announce an unrelated page heading every two seconds.
+  function swapStaysQuiet(target) {
+    return target.hasAttribute("data-passive-poll") || target.closest(KEEPS_FOCUS);
+  }
+
   function onAfterSwap(event) {
     var target = event.target;
     if (!target || target.nodeType !== 1) {
       return;
     }
     hideFallback();
-    // Passive progress already has a polite live region. Its timer must not
-    // move keyboard focus or announce an unrelated page heading every two seconds.
-    if (target.hasAttribute("data-passive-poll") || target.closest(KEEPS_FOCUS)) {
+    if (swapStaysQuiet(target)) {
+      return;
+    }
+    announce(nameOf(target));
+  }
+
+  /*
+   * Focus moves once the swap has settled, not when it lands. During the settle
+   * delay HTMX gives each new element that shares an id with an old one the OLD
+   * element's attributes, so a results block hidden while its request ran is still
+   * hidden at afterSwap, and its heading has no box to take focus.
+   */
+  function onAfterSettle(event) {
+    var target = event.target;
+    if (!target || target.nodeType !== 1 || !target.isConnected) {
+      return;
+    }
+    if (swapStaysQuiet(target)) {
       return;
     }
     var marked = focusDestination(target);
@@ -191,9 +232,8 @@
       marked.removeAttribute("data-focus-after-swap");
       focusSwapped(marked);
     } else {
-      focusSwapped(target);
+      focusSwapped(headingOf(target) || target);
     }
-    announce(nameOf(target));
   }
 
   function onFailure(event) {
@@ -220,6 +260,7 @@
   }
 
   document.body.addEventListener("htmx:afterSwap", onAfterSwap);
+  document.body.addEventListener("htmx:afterSettle", onAfterSettle);
 
   /*
    * Three events, one handler. HTMX reports a 5xx, a network failure and an expired
