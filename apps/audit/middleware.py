@@ -65,22 +65,34 @@ def _recorded_path(request: HttpRequest) -> str:
     """
     full_path = request.get_full_path()
     path, separator, query = full_path.partition("?")
+    path = redact_path_credentials(
+        path,
+        resolve_path=request.path_info,
+        urlconf=getattr(request, "urlconf", None),
+    )
+    return f"{path}{separator}{query}"
+
+
+def redact_path_credentials(
+    path: str,
+    *,
+    resolve_path: str,
+    urlconf: str | None = None,
+) -> str:
+    """Redact registered credentials using the decoded resolver path."""
     try:
-        match = resolve(
-            request.path_info,
-            urlconf=getattr(request, "urlconf", None),
-        )
+        match = resolve(resolve_path, urlconf=urlconf)
     except Resolver404:
-        return full_path
+        return path
     if match.url_name not in settings.CREDENTIAL_BEARING_URL_NAMES:
-        return full_path
+        return path
 
     parameters = {name: str(value) for name, value in match.kwargs.items()}
     if match.url_name == RESET_FROM_KEY_URL_NAME:
         uidb36 = parameters.get("uidb36")
         key = parameters.get("key")
         if key == RESET_FORM_URL_KEY:
-            return full_path
+            return path
         if uidb36 is not None and key is not None:
             path = _replace_path_segment(
                 path,
@@ -90,7 +102,7 @@ def _recorded_path(request: HttpRequest) -> str:
     else:
         for credential in parameters.values():
             path = _replace_path_segment(path, credential, REDACTION_MARKER)
-    return f"{path}{separator}{query}"
+    return path
 
 
 class PlatformEventMiddleware:
@@ -217,7 +229,11 @@ class SupportRequestAuditMiddleware:
         grant = cast("Any", request).support_grant
         metadata: dict[str, object] = {
             "method": request.method or "",
-            "path": request.path_info[:PATH_MAX_LENGTH],
+            "path": redact_path_credentials(
+                request.path_info,
+                resolve_path=request.path_info,
+                urlconf=getattr(request, "urlconf", None),
+            )[:PATH_MAX_LENGTH],
             "status_code": status_code,
         }
         user = getattr(request, "user", None)

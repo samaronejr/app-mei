@@ -38,6 +38,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 
 from apps.accounts.models import User
 from apps.accounts.views import AuthenticatedRequest
+from apps.audit.middleware import redact_path_credentials
 from apps.audit.models import Event
 from apps.authz.firm_account import ACCOUNT_CAPABILITY, require_account_owner
 from apps.authz.services import require_can
@@ -276,7 +277,10 @@ def support_trail_view(request: AuthenticatedRequest, grant_id: UUID) -> HttpRes
                 ),
                 "when": event.created_at,
                 "method": (event.metadata or {}).get("method", ""),
-                "path": (event.metadata or {}).get("path", ""),
+                "path": redact_path_credentials(
+                    (event.metadata or {}).get("path", ""),
+                    resolve_path=(event.metadata or {}).get("path", ""),
+                ),
             }
             for event in page.object_list
         ]
