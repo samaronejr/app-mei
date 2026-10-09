@@ -667,8 +667,39 @@ A suite-order stall of the perf test is recorded with a candidate cause (mixed p
 reproduced only as a 12x slowdown, not proven. The independent review at `6bdbd41` returned **confirmed** with zero
 blockers; every owner/operator gate remains **open**.
 
+`AXR1-023` (time- and purpose-limited support grants; `tenants.0012` and `0013`) is recorded on the final `AXR1-028`
+branch.
+- **Grant model.** An owner approves a `SupportGrant` at `/configuracoes/suporte/`. The grant names its
+  purpose and scope, can be limited to clients, and lasts at most 72 hours, enforced in the database. It can
+  be revoked immediately and is never extended silently.
+- **Support mode.** Platform staff with an active grant enter through the middleware with a visible "Acesso
+  de suporte ativo até …" banner. Document bytes and message bodies are redacted, and approving, sending or
+  downloading is refused.
+- **Audit and admin.** Every support request is audited for the owner. The superuser admin needs an active
+  grant for tenant data.
+
+Placement added a root-required commit:
+- the "no support console" guard now also sees `suporte`, with exactly the three owner routes allowed;
+- the app role can no longer delete support grants (no code path needs it; revoke-then-grant in the migration);
+- unscoped reads are pinned to the grant;
+- support mode covers the T24 and T27 surfaces;
+- the inactive banner renders no bytes, so the legacy dashboard stays byte-identical.
+
+The first independent review found three blockers: client data under a metadata-only grant, unaudited page
+views and writes accepted after revocation. Two more came from T25 and T29: the approval form's
+unnamed and colliding client checkboxes, and the owner having no view of the request trail.
+The next review found six additional gaps: sibling audit-admin scope, the admin banner,
+write/revocation ordering, silent window extension, unreachable historical trail pages,
+and credentials in audited URL paths. Six focused commits repaired them with failing-first
+tests. CF2 independently **confirmed** `b02cf0e` with zero blockers: 625 targeted tests,
+312 isolation tests, 29 CNPJ tests, 102 browser tests, 16 additional cases and a populated
+migration round-trip. The delivered code at `d477b7e` is identical apart from this status
+document. Both author and reviewer lanes were torn down with receipts.
+Evidence: `.evidence/T23-CF2-review.md`, `T23-CF2-cleanup.txt` and `AXR1-023-fix3-teardown.txt`.
+Every owner/operator gate remains **open**.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 23, 25, 26 and 29 and the final verification wave remain open.
+Todos 25, 26 and 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -769,12 +800,20 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4280 passing** (94 deselected), verified at placed
+implementation head. The current default-suite baseline is **4330 passing** (102 deselected), verified at
+`AXR1-023` code `b02cf0e`: the **4280** below plus **50** net-new default-suite cases.
+The same head passed isolation (**312**), CNPJ (**29**), browser (**102**), lint, format,
+mypy, migration drift, build/static equality and the clean-tree check. The first full-suite
+attempt lacked `SUPERUSER_DATABASE_URL`; only that gate was rerun with the corrected lane
+setting, without changing code or tests. Evidence: `.evidence/AXR1-023-fix-gates.txt` and
+`AXR1-023-fix3-full-rerun.txt`. The replay on `AXR1-028` status commit `33a955b` preserves
+the reviewed code exactly; this status-only commit records its results.
+
+The previous default-suite baseline was **4280 passing** (94 deselected), verified at placed
 `AXR1-028` code `6bdbd41` on `AXR1-027` code `c1451a2`: the **4253** below plus **27** net-new
 default-suite cases. The same serial run passed isolation (**309**), CNPJ (**29**), browser
 (**94**), lint, format, mypy, migration drift and a clean rebuilt-static check. Evidence:
-`.evidence/AXR1-028-gates-placed.txt`. This status-only commit does not change the reviewed code; it sits on
-the `AXR1-027` status commit `728a027`.
+`.evidence/AXR1-028-gates-placed.txt`.
 
 The previous default-suite baseline was **4253 passing** (94 deselected), verified at placed
 `AXR1-027` code `c1451a2` (tree `40373cd`) on `AXR1-024` code `cd19380`: the **4204** below plus **49** net-new default-suite cases. The same serial run passed isolation
