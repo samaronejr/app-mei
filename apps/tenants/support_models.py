@@ -43,8 +43,9 @@ class SupportGrant(TenantScopedModel):
     * `approved_by_owner` NULL — the request is pending and admits nothing.
     * approved and inside [`starts_at`, `expires_at`) — live.
     * `revoked_at` set or `expires_at` past — dead forever. Re-activating a dead
-      row is refused by `approve_support_grant` and by the CHECK: a new session
-      needs a new request and a new approval, which is the whole point of the
+      row is refused by `approve_support_grant`. The database trigger also
+      freezes the approved window and approval identity: a new session needs a
+      new request and a new approval, which is the whole point of the
       "no silent extension" rule.
     """
 

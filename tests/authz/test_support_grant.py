@@ -141,7 +141,9 @@ def test_pending_grant_denies_until_the_owner_decides() -> None:
     assert session.get("/").status_code == HTTPStatus.FORBIDDEN
 
 
-def test_expired_mid_session_denies_the_next_request() -> None:
+def test_expired_mid_session_denies_the_next_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Expiry is re-read per request: past expires_at the session dies at once."""
     firm = enabled_firm("support-expired")
     staff = _staff()
@@ -149,15 +151,11 @@ def test_expired_mid_session_denies_the_next_request() -> None:
     session = _session_for(staff, _firm_host(firm))
     assert session.get("/").status_code == HTTPStatus.OK
 
-    with tenant_context(firm.tenant.pk):
-        # ALL_OBJECTS_OK: expiry is crossed deliberately by rewriting the row
-        # behind the same tenant context, not by asking the visible manager.
-        SupportGrant.all_objects.filter(pk=grant.pk).update(
-            # Shift the whole window into the past: expires_at alone would
-            # violate the positive-window half of support_grant_72h_window.
-            starts_at=timezone.now() - timedelta(hours=1),
-            expires_at=timezone.now() - timedelta(minutes=1),
-        )
+    expires_at = grant.expires_at
+    assert expires_at is not None
+    # The approved window is immutable. Cross its exact boundary with the clock,
+    # not by rewriting the owner's decision or waiting for wall time.
+    monkeypatch.setattr("apps.authz.support.timezone.now", lambda: expires_at)
 
     assert session.get("/").status_code == HTTPStatus.FORBIDDEN
 
