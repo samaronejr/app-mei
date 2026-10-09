@@ -60,6 +60,7 @@ class Surface:
 def _surface(tenant: Tenant, actor: User, client: ClientCompany) -> Surface:
     """A live cycle, request, review link and proposal under `client`."""
     with tenant_context(tenant.id):
+        # ALL_OBJECTS_OK: fixture Engagement row inside the tenant context
         engagement = Engagement.all_objects.create(
             tenant=tenant,
             client=client,
@@ -68,6 +69,7 @@ def _surface(tenant: Tenant, actor: User, client: ClientCompany) -> Surface:
             responsible=actor,
             provenance="staff_entry",
         )
+        # ALL_OBJECTS_OK: fixture TaxProfile row inside the tenant context
         TaxProfile.all_objects.create(
             tenant=tenant,
             client=client,
@@ -76,7 +78,9 @@ def _surface(tenant: Tenant, actor: User, client: ClientCompany) -> Surface:
             provenance="staff_entry",
         )
         definition = __import__(
-            "apps.cycles.models", fromlist=["PlaybookVersion"]
+            "apps.cycles.models",
+            fromlist=["PlaybookVersion"],
+            # ALL_OBJECTS_OK: resolving the published playbook inside the tenant context
         ).PlaybookVersion.all_objects.get(playbook__key="mei-mensal", state="published")
         ref = open_cycle(
             actor,
@@ -85,6 +89,7 @@ def _surface(tenant: Tenant, actor: User, client: ClientCompany) -> Surface:
             definition.pk,
             idempotency_key=uuid4().hex,
         )
+        # ALL_OBJECTS_OK: reading the cycle just created under the tenant context
         cycle = ServiceCycle.all_objects.get(pk=ref.id)
         request = create_request(
             actor,
@@ -92,12 +97,14 @@ def _surface(tenant: Tenant, actor: User, client: ClientCompany) -> Surface:
             RequestFields(title="varredura"),
             expected_version=cycle.version,
         )
+        # ALL_OBJECTS_OK: fixture ClientContact row inside the tenant context
         contact = ClientContact.all_objects.create(
             tenant=tenant,
             client=client,
             name="Destinatario",
             email=f"dest-{uuid4().hex[:8]}@example.test",
         )
+        # ALL_OBJECTS_OK: fixture Document row inside the tenant context
         document = Document.all_objects.create(
             tenant=tenant,
             client=client,
@@ -107,6 +114,7 @@ def _surface(tenant: Tenant, actor: User, client: ClientCompany) -> Surface:
             byte_size=10,
             uploaded_by=actor,
         )
+        # ALL_OBJECTS_OK: fixture EvidenceLink row inside the tenant context
         link = EvidenceLink.all_objects.create(
             tenant=tenant,
             client=client,
@@ -115,6 +123,7 @@ def _surface(tenant: Tenant, actor: User, client: ClientCompany) -> Surface:
             origin="portal",
             submitted_by=actor,
         )
+        # ALL_OBJECTS_OK: fixture DocumentIntake row inside the tenant context
         DocumentIntake.all_objects.create(
             tenant=tenant,
             client=client,

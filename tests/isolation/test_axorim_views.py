@@ -264,6 +264,7 @@ def _account_export(ctx: SeedContext) -> models.Model:
     key = model._meta.label_lower
     if key not in ctx.rows:
         with tenant_context(ctx.tenant.id):
+            # ALL_OBJECTS_OK: fixture row written inside the tenant context.
             ctx.rows[key] = model.all_objects.create(
                 tenant=ctx.tenant,
                 requested_by=ctx.user,
@@ -518,6 +519,7 @@ def test_a_support_grant_for_firm_a_admits_nothing_on_firm_b(
         email=f"support@{alpha.tag}.example.test", is_staff=True
     )
     with tenant_context(alpha.tenant.id):
+        # ALL_OBJECTS_OK: support-grant fixture seeded under the alpha tenant context
         SupportGrant.all_objects.create(
             tenant=alpha.tenant,
             requested_by=staff,

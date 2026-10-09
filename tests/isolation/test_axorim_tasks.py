@@ -63,13 +63,20 @@ EXPECTED_TENANT_TASKS = frozenset(
 
 
 def _tenant_tasks() -> dict[str, TenantTask]:
-    """Every registered task that runs under the tenant-aware contract."""
+    """Every registered task that runs under the tenant-aware contract.
+
+    Only tasks whose callable lives in an `apps.` module count — the full suite
+    also registers TenantTask probes defined inside test modules, and those are
+    deliberate one-off fixtures, not application tasks the sweep owns.
+    """
     for module in TASK_MODULES:
         importlib.import_module(module)
     current_app.loader.import_default_modules()
     registry = cast("dict[str, Task]", cast("object", current_app.tasks))
     return {
-        name: task for name, task in registry.items() if isinstance(task, TenantTask)
+        name: task
+        for name, task in registry.items()
+        if isinstance(task, TenantTask) and task.__module__.startswith("apps.")
     }
 
 

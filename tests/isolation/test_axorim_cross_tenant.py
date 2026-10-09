@@ -98,6 +98,7 @@ def _sibling_client(ctx: SeedContext) -> ClientCompany:
     key = "clients.clientcompany.sibling"
     if key not in ctx.rows:
         with tenant_context(ctx.tenant.id):
+            # ALL_OBJECTS_OK: sibling fixture row under the seed tenant context
             ctx.rows[key] = ClientCompany.all_objects.create(
                 tenant=ctx.tenant,
                 legal_name=f"SIBLING {ctx.tag.upper()}",

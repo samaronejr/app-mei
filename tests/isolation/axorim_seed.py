@@ -721,6 +721,7 @@ def make_seed_context(slug: str, tag: str, *, cnpj: str | None = None) -> SeedCo
     user = User.objects.create_user(email=f"actor@{slug}.test")
     Membership.objects.create(user=user, tenant=tenant, role=TenantRole.OWNER)
     with tenant_context(tenant.id):
+        # ALL_OBJECTS_OK: seed client written under the tenant context.
         client = ClientCompany.all_objects.create(
             tenant=tenant,
             legal_name=f"CLIENTE {tag.upper()} MARKER",

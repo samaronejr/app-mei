@@ -48,6 +48,7 @@ def test_the_same_cnpj_stores_once_per_firm() -> None:
         pytest.raises(IntegrityError),
         transaction.atomic(),
     ):
+        # ALL_OBJECTS_OK: duplicate-CNPJ probe inserted inside the alpha tenant context
         ClientCompany.all_objects.create(
             tenant=alpha.tenant,
             legal_name="DUPLICATE",
@@ -60,6 +61,7 @@ def test_the_same_cnpj_stores_once_per_firm() -> None:
     # ContextVar-free manager, so outside it the empty GUC hides alpha's own row.
     with tenant_context(alpha.tenant.id):
         assert (
+            # ALL_OBJECTS_OK: counting the probe row; unscoped read inside the context.
             ClientCompany.all_objects.filter(tenant=alpha.tenant, cnpj=CNPJ).count()
             == 1
         )
@@ -110,6 +112,7 @@ def test_cross_tenant_rows_are_invisible_to_the_unscoped_manager() -> None:
     # ContextVar never carries this assertion. The set is materialised inside the
     # block: outside it the restored GUC would hide alpha's row too.
     with tenant_context(alpha.tenant.id):
+        # ALL_OBJECTS_OK: the assertion reads the unscoped manager on purpose.
         visible = {str(row.pk) for row in ClientCompany.all_objects.filter(cnpj=CNPJ)}
 
     # Then exactly alpha's row comes back; beta's identical number stays hidden
