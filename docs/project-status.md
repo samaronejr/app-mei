@@ -698,8 +698,23 @@ document. Both author and reviewer lanes were torn down with receipts.
 Evidence: `.evidence/T23-CF2-review.md`, `T23-CF2-cleanup.txt` and `AXR1-023-fix3-teardown.txt`.
 Every owner/operator gate remains **open**.
 
+`AXR1-025` (golden browser journeys and accessibility evidence; `tenants.0013_backfill_billing_accounts`,
+ordered after `AXR1-023`'s `0013_support_grant_window_immutable`) is recorded on the final `AXR1-023` branch.
+- **Journeys.** Journey A and failure journeys B, D/Q, I, J and K run in a real browser at both viewports,
+  with a slow-network upload retry and no fixed sleeps.
+- **Accessibility evidence.** axe covers every S5.5 screen, Automações and Suporte included; focus lands on
+  the updated heading after swaps; and keyboard paths are tested. `ops/AXORIM-A11Y-CHECKLIST.md` holds the
+  manual screen-reader scripts, with an operator table that is still open.
+- **Fixes.** The journeys forced five product fixes: a calendar-label 500, focus after swaps, pt-BR refusals,
+  the billing-account backfill for older firms, and the approval card's recipient name and state badges.
+
+No WCAG conformance is claimed. The independent review **confirmed** `b4c9a66` with zero blockers: it reran the full suite (4336),
+isolation (312), CNPJ (29) and the browser suite (134, the 32 new cases three times), checked the populated
+migrations and reproduced the Journey I failure proof. Evidence: `.evidence/T25-RV4-review.md`. Every owner/operator gate remains
+**open**.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 25, 26 and 29 and the final verification wave remain open.
+Todos 26 and 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -800,14 +815,21 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4330 passing** (102 deselected), verified at
+implementation head. The current default-suite baseline is **4336 passing** (134 deselected), verified at
+`AXR1-025` code `439fd67` on `AXR1-023` code `b02cf0e`: the **4330** below plus **6** net-new default-suite
+cases. The same serial run passed isolation (**312**), CNPJ (**29**), browser (**134**, 32 more than the
+**102** below), lint, format, mypy and migration drift. Its static and clean-tree checks failed only on a
+utility token in inherited status prose; after the one-line prose fix both passed on the corrected head.
+Evidence: `.evidence/AXR1-025-gates-final.txt`. The delivered code is the same tree replayed onto the
+`AXR1-023` status commit `e2227da`; this status-only commit records its results.
+
+The previous default-suite baseline was **4330 passing** (102 deselected), verified at
 `AXR1-023` code `b02cf0e`: the **4280** below plus **50** net-new default-suite cases.
 The same head passed isolation (**312**), CNPJ (**29**), browser (**102**), lint, format,
 mypy, migration drift, build/static equality and the clean-tree check. The first full-suite
 attempt lacked `SUPERUSER_DATABASE_URL`; only that gate was rerun with the corrected lane
 setting, without changing code or tests. Evidence: `.evidence/AXR1-023-fix-gates.txt` and
-`AXR1-023-fix3-full-rerun.txt`. The replay on `AXR1-028` status commit `33a955b` preserves
-the reviewed code exactly; this status-only commit records its results.
+`AXR1-023-fix3-full-rerun.txt`.
 
 The previous default-suite baseline was **4280 passing** (94 deselected), verified at placed
 `AXR1-028` code `6bdbd41` on `AXR1-027` code `c1451a2`: the **4253** below plus **27** net-new
