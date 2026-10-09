@@ -23,6 +23,7 @@ from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.paginator import Paginator
 from django.http import (
     Http404,
     HttpRequest,
@@ -264,8 +265,9 @@ def support_trail_view(request: AuthenticatedRequest, grant_id: UUID) -> HttpRes
         events = (
             Event.objects.filter(object_type="SupportGrant", object_id=str(grant.pk))
             .select_related("actor")
-            .order_by("-created_at")[:TRAIL_PAGE_SIZE]
+            .order_by("-created_at", "-pk")
         )
+        page = Paginator(events, TRAIL_PAGE_SIZE).get_page(request.GET.get("pagina"))
         rows = [
             {
                 "actor": event.actor.email if event.actor else "—",
@@ -276,7 +278,7 @@ def support_trail_view(request: AuthenticatedRequest, grant_id: UUID) -> HttpRes
                 "method": (event.metadata or {}).get("method", ""),
                 "path": (event.metadata or {}).get("path", ""),
             }
-            for event in events
+            for event in page.object_list
         ]
         grant_expired = (
             grant.expires_at is not None
@@ -291,5 +293,6 @@ def support_trail_view(request: AuthenticatedRequest, grant_id: UUID) -> HttpRes
             "grant": grant,
             "grant_expired": grant_expired,
             "rows": rows,
+            "page": page,
         },
     )
