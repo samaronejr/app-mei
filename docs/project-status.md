@@ -536,7 +536,7 @@ no tenant value is interpolated into `x-*` or `hx-*` attributes, and the
 portal has no global search in R1. Long filenames, client names and labels
 wrap at phone width. Tailwind no longer scans the frozen legacy-dashboard test
 fixture; the only stylesheet change from that is the removal of the unused
-`.sm:inline` rule.
+small-breakpoint inline-display rule.
 
 The pre-placement adversarial review found standalone documents unsearchable
 and full-width wildcards unescaped; both were fixed with regression tests that
