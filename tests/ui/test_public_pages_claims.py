@@ -30,6 +30,25 @@ SCANNED_DIRS: Final = (
     PROJECT_ROOT / "templates" / "help",
 )
 
+OVERBROAD_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
+    # IS-4: only consequential exact-effect actions need an approval card;
+    # templated notices, reminders and invitations send under policy/playbook.
+    "approval before any send": re.compile(
+        r"antes\s+de\s+qualquer\s+envio|"
+        r"nada\s+sai\s+para\s+o\s+cliente\s+sem[^.]*|"
+        r"tudo\s+o\s+que\s+sai\s+para\s+o\s+cliente\s+passa\s+por\s+uma\s+aprova|"
+        r"sem\s+algu[ée]m\s+aprovar\s+exatamente\s+o\s+que\s+vai\s+sair",
+        re.IGNORECASE,
+    ),
+    # S15 B: only extractable identifiers raise divergence; images/scans are
+    # "não verificável" and need the firm's manual review (no OCR in R1).
+    "any other-company document becomes an exception": re.compile(
+        r"(?<!leg[íi]veis,\s)um\s+documento\s+de\s+outra\s+empresa[^.]*vira\s+uma\s+pend[êe]ncia|"
+        r"(?<!leg[íi]veis,\s)um\s+documento[^.]*cnpj\s+diferente[^.]*vira\s+uma\s+pend[êe]ncia",
+        re.IGNORECASE,
+    ),
+}
+
 FORBIDDEN_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
     "100% seguro": re.compile(r"100\s*%\s*segur[oa]", re.IGNORECASE),
     "tempo real": re.compile(r"tempo\s+real", re.IGNORECASE),
@@ -125,3 +144,15 @@ def test_public_pages_render_on_the_apex_only() -> None:
         assert response.status_code == HTTPStatus.OK, name
         assert "app-mei" in response.content.decode()
         assert firm_host.get(reverse(name)).status_code == HTTPStatus.NOT_FOUND, name
+
+@pytest.mark.parametrize("phrase", sorted(OVERBROAD_CLAIMS))
+def test_no_public_or_help_template_overstates_approval_or_detection(phrase: str) -> None:
+    hits = _hits(OVERBROAD_CLAIMS[phrase], _templates())
+    assert hits == [], f"overbroad claim {phrase!r}:\n" + "\n".join(hits)
+
+
+def test_the_approval_blurb_states_the_templated_exception() -> None:
+    source = (PROJECT_ROOT / "apps" / "core" / "public_views.py").read_text(
+        encoding="utf-8"
+    )
+    assert "aviso" in source, "approval blurb must name the templated sends"
