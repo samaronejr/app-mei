@@ -16,6 +16,7 @@ so a route converted to POST-only cannot silently leave this sweep.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import time
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -48,7 +49,6 @@ from tests.support import enrol_totp
 
 if TYPE_CHECKING:
     from django.db import models
-    from django.http import HttpResponse
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -159,6 +159,9 @@ FIRM_ROUTES: Final = (
         {"grant_id": "tenants.supportgrant"},
         accept_redirect=True,
     ),
+    # AXR1-023's grant audit page: firm A's owner asking for firm B's grant trail
+    # must get 404/403 (the grant lookup is tenant-scoped), never B's events.
+    Route("firm-suporte-trilha", {"grant_id": "tenants.supportgrant"}),
 )
 
 # Paramless additions: asserted for marker absence on firm A's own render.
@@ -356,6 +359,47 @@ def _assert_no_markers(response: object, ctx: SeedContext, *objects: object) -> 
         )
 
 
+_COUNT_DISCLOSURE = re.compile(
+    r"""(
+        \b\d+\s+(?:item|itens|items?|resultados?|registros?|linhas?|encontrados?)\b
+        | \b(?:item|itens|items?|resultados?|registros?|linhas?)\s*[:=]\s*\d+\b
+        | \b(?:total|count)["']?\s*[:=]\s*\d+\b
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _assert_no_counts(response: HttpResponse) -> None:
+    """Reject count disclosures in denied bodies, including zero and one."""
+    body = getattr(response, "content", b"").decode(errors="replace")
+    match = _COUNT_DISCLOSURE.search(body)
+    assert match is None, (
+        f"a firm A deny response discloses a row count: {match.group(0)!r} "
+        f"in {body[:200]!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "7 itens encontrados; total=7; count=7",
+        "total=7",
+        "count=7",
+        "1 item encontrado",
+        "0 itens encontrados",
+        '{"count":7}',
+    ],
+)
+def test_denied_body_rejects_count_disclosures(body: str) -> None:
+    # Given a denied response carrying a count rather than a company marker.
+    response = HttpResponse(body, status=HTTPStatus.NOT_FOUND)
+
+    # When the same helper used by the route sweep inspects that response.
+    # Then a count disclosure fails even when no object identifiers appear.
+    with pytest.raises(AssertionError):
+        _assert_no_counts(response)
+
+
 @pytest.fixture
 def alpha_session(tenants: dict[str, SeedContext]) -> Client:
     enrol_totp(tenants["alpha"].user)
@@ -385,7 +429,13 @@ def test_a_firm_route_never_serves_tenant_bs_object(
         route.accept_redirect and response.status_code == HTTPStatus.FOUND
     )
     assert denied, f"{route.name} answered {response.status_code} for tenant B ids"
+    if response.status_code == HTTPStatus.FOUND:
+        # A refused POST redirects to the console; follow it and check the
+        # landing page carries none of B's markers or counts either.
+        landed = alpha_session.get(response.headers["Location"])
+        _assert_no_markers(landed, tenants["beta"], *beta_kwargs.values())
     _assert_no_markers(response, tenants["beta"], *beta_kwargs.values())
+    _assert_no_counts(response)
 
     # Positive control where the route renders the object: firm A's own row must
     # answer other than 404/403, or "denied" passed on a route that denies all.
@@ -504,6 +554,7 @@ def test_a_portal_route_never_serves_tenant_bs_object(
         f"{route.name} answered {response.status_code} for tenant B ids"
     )
     _assert_no_markers(response, tenants["beta"], *beta_kwargs.values())
+    _assert_no_counts(response)
 
 
 def test_a_support_grant_for_firm_a_admits_nothing_on_firm_b(
@@ -682,11 +733,21 @@ def test_every_new_route_name_is_swept() -> None:
         "firm-suporte",
         "firm-suporte-approve",
         "firm-suporte-revoke",
+        "firm-suporte-trilha",
     }
 
     # Then every added name is swept or explicitly decided — a new URL added
     # without an entry fails here rather than going unprobed.
     assert added <= swept, f"routes added but not swept: {sorted(added - swept)}"
-    resolver = get_resolver()
-    for name in added:
-        assert resolver.reverse_dict.getlist(name) or True  # names verified by use
+
+    # And every added name genuinely exists in a urlconf — a typo'd name in
+    # the swept lists would pass the set comparison while naming a route that
+    # does not exist. Firm routes live in the root resolver, portal routes in
+    # PORTAL_URLCONF, so each name must resolve in one of them.
+    portal_resolver = get_resolver(PORTAL_URLCONF)
+    firm_names = {str(k) for k in get_resolver().reverse_dict}
+    portal_names = {str(k) for k in portal_resolver.reverse_dict}
+    unresolvable = sorted(added - firm_names - portal_names)
+    assert not unresolvable, (
+        f"route names in the sweep set that resolve nowhere: {unresolvable}"
+    )
