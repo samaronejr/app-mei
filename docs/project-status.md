@@ -729,8 +729,25 @@ and row restoration after both successful and refused INSERTs; production protec
 Evidence: `.evidence/T26-RV5-review.md`, `T26-RV5-live.txt` and `T26-RV5-cleanup.txt`.
 Accepted limits remain in `docs/residual-risks.md`; every owner/operator gate remains **open**.
 
+`AXR1-029` (launch-readiness engineering) is recorded on the final `AXR1-026` branch.
+Nine pt-BR help articles and their index explain shipped behavior; apex-only product and pricing
+pages retain the app-mei name and "Fale conosco". Exact approval is distinguished from authorization
+of templated messages by a published playbook or tenant policy, including cycle-independent invitations.
+The document guidance distinguishes extractable PDF/XML identifiers from images requiring manual review.
+The public/help footer meets the measured contrast threshold without changing the frozen legacy output.
+
+Independent review **confirmed** `46e1eed` with no blockers. Real SMTP and image probes agreed with
+the copy; both legacy dashboard byte comparisons passed; all **44** public/help renders fitted at
+1440 and 360 pixels with no serious/critical axe violations and measured footer contrast **7.1043:1**.
+A fresh forbidden-claim mutation failed as intended and was restored.
+Evidence: `.evidence/T29-RV-review.md`, `T29-RV-final-runtime.txt`,
+`T29-RV-final-pages2.txt`, `AXR1-029-RV-final-happy.txt` and `AXR1-029-RV-final-failure.txt`.
+The five legal/partner drafts remain private MINUTA documents for professional review.
+Every owner/operator/contact/cohort gate in `ops/AXORIM-R1-GO-NO-GO.md` remains **open**.
+This is engineering approval, not launch authorization or a WCAG-conformance claim.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todo 29 and the final verification wave remain open.
+The final verification wave remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -831,7 +848,16 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4654 passing** (28 skipped, 134 deselected),
+implementation head. The current default-suite baseline is **4673 passing** (28 skipped, 138 deselected),
+verified at `AXR1-029` code `46e1eed` on delivered `AXR1-026` head `76bdd55`:
+the **4654** below plus **19** net-new default-suite cases.
+The same serial run passed isolation (**628**, with **28** justified skips), CNPJ (**29**),
+browser (**138**), lint, format, mypy, migration drift, rebuilt-static equality and the clean-tree check.
+Evidence: `.evidence/AXR1-029-final-gates2.txt`, with all ten exits zero and a matching final-head marker.
+Independent review audited those broad results and ran its own focused mechanism, browser and mutation
+checks. This status-only commit records the verified candidate without changing its implementation.
+
+The previous default-suite baseline was **4654 passing** (28 skipped, 134 deselected),
 verified at `AXR1-026` code `80fe953`: the **4336** below plus **318** net-new passing cases.
 Lint, format, mypy, migration drift and the clean-tree check passed at that head.
 Isolation (**628** passing, **28** skips), CNPJ (**29**), browser (**134**) and rebuilt-static equality
@@ -839,8 +865,8 @@ passed at `58be395`; independent review also reran isolation at `80fe953`.
 The only intervening change placed an existing approval comment next to its query, with identical
 executable ASTs. The earlier full-suite source-guard failure remains recorded; the complete rerun passed.
 Evidence: `.evidence/AXR1-026-final-full.txt`, `AXR1-026-gates-r3.txt` and
-`AXR1-026-marker-reconciliation.md`. Delivery replays the same code onto the `AXR1-025` status commit
-`6e8d511`; this status-only commit records its results.
+`AXR1-026-marker-reconciliation.md`. Delivery replayed the same code onto the `AXR1-025` status commit
+`6e8d511`.
 
 The previous default-suite baseline was **4336 passing** (134 deselected), verified at
 `AXR1-025` code `439fd67` on `AXR1-023` code `b02cf0e`: the **4330** below plus **6** net-new default-suite
