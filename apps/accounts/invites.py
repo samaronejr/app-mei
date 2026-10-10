@@ -504,9 +504,9 @@ def _client_seat(invite: Invite, user: User) -> Membership:
     if invite.client_id is None:
         msg = "No invitation matches that link."
         raise InviteNotFoundError(msg)
-    # PLATFORM_QUERY_OK: the exact target seat, after the caller's user fence.
-    # Other redemptions for this user cannot race creation of a missing row.
     membership = (
+        # PLATFORM_QUERY_OK: the exact target seat, after the caller's user fence.
+        # Other redemptions for this user cannot race creation of a missing row.
         Membership.objects.select_for_update(no_key=True)
         .filter(user=user, tenant_id=invite.tenant_id, client_id=invite.client_id)
         .first()
@@ -570,7 +570,7 @@ def accept_invite(
     _assert_expected_scope(locked, expected_scope)
     _assert_current_token(invite, locked)
 
-    if not user.is_active:
+    if locked.client_id is not None and not user.is_active:
         msg = "No invitation matches that link."
         raise InviteNotFoundError(msg)
 
