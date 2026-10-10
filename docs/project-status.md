@@ -757,8 +757,22 @@ The reviewer inspected 20 author captures and 24 independent captures at desktop
 and verified its resource teardown. Evidence: `.evidence/AXR1-031-review.md`,
 `AXR1-031-review-verdict.json`, `AXR1-031-F1-delta.md`, `AXR1-031-happy.txt`
 and `AXR1-031-failure.txt`. Test-oracle limitations and the inherited generic bulk reopening
-label remain documented in that review. Whole F1/F2 approval, the separate `AXR1-032`
-authority-race repair and F3/F4 remain open; no owner/operator gate is closed by this repair.
+label remain documented in that review. No owner/operator gate is closed by this repair.
+
+`AXR1-032` (support decision authority) is recorded on delivered `AXR1-031`.
+Both approval and revocation lock a fresh actor before rechecking activity, the owner
+seat and the account capability, then lock the grant. Authority removal that commits
+first prevents the decision and its audits; a decision holding the fence commits first.
+Existing scope, immutable windows, grant locking and both audit streams are preserved.
+Independent review **confirmed** `f4e8c87` with no blockers, passing 14 independent
+checks and closing F2-B1. The worker's failing-first result was eight failures and two
+passes, followed by 48 targeted passes. Reviewer and author resources are removed.
+Evidence: `.evidence/AXR1-032-review.md`, `AXR1-032-review-verdict.json`,
+`AXR1-032-F2-delta.md`, `AXR1-032-review-live.txt`, `AXR1-032-failure.txt`
+and `AXR1-032-integrated-gates-summary.txt`.
+Final F2 code-quality verification is **APPROVE** at that implementation head;
+`.evidence/AXR1-F2.txt` records its scope and limits. Whole F1, F3/F4 and all
+OG/OD gates remain open. No launch, merge or deployment is authorized here.
 
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
 The final verification wave remains open.
@@ -862,7 +876,16 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4683 passing** (28 skipped, 146 deselected),
+implementation head. The current default-suite baseline is **4693 passing** (28 skipped, 146 deselected),
+verified at `AXR1-032` code `f4e8c87` on delivered `AXR1-031` head `1bec8d6`:
+the **4683** below plus **10** new authority regression cases.
+Isolation (**628**, with **28** justified skips), CNPJ (**29**), browser (**146**),
+lint, format, Mypy, migration drift, rebuilt-static equality and clean-tree checks passed.
+Evidence: `.evidence/AXR1-032-gates.txt`, all ten exits zero and final `FAILED=0`.
+Independent review audited the integrated gates and passed its own 14 focused checks.
+This status-only delivery commit changes no reviewed implementation.
+
+The previous default-suite baseline was **4683 passing** (28 skipped, 146 deselected),
 verified at `AXR1-031` code `bc2c0cb` on delivered `AXR1-029` head `ff372a6`:
 the **4673** below plus **10** new default-suite cases.
 The serial run passed isolation (**628**, with **28** justified skips), CNPJ (**29**),
