@@ -713,8 +713,24 @@ isolation (312), CNPJ (29) and the browser suite (134, the 32 new cases three ti
 migrations and reproduced the Journey I failure proof. Evidence: `.evidence/T25-RV4-review.md`. Every owner/operator gate remains
 **open**.
 
+`AXR1-026` (cross-tenant and cross-client isolation sweep; tests and engineering documentation only)
+is recorded on the final `AXR1-025` branch. The explicit 45-model registry covers real RLS reads,
+portal decisions, vacuity controls and catalog-derived composite foreign keys. Route checks include
+the support trail and company selection, with no foreign markers or counts in denial bodies.
+The suite also covers tenant-aware tasks, real same-CNPJ imports followed by search/export,
+assigned-client permissions and cross-firm support grants.
+
+Independent review repaired five checks that did not prove their intended protection, plus a
+company-selection denial-body omission found during confirmation. The final review **confirmed**
+`80fe953` with no blockers: exact-head isolation passed **628** tests with **28** schema-justified
+skips (15 client-parent, 13 tenant-parent), and nine mutation invocations produced **16** expected
+assertion failures. All restored checks passed. Synthetic FK probes verify role, trigger, policy
+and row restoration after both successful and refused INSERTs; production protections are unchanged.
+Evidence: `.evidence/T26-RV5-review.md`, `T26-RV5-live.txt` and `T26-RV5-cleanup.txt`.
+Accepted limits remain in `docs/residual-risks.md`; every owner/operator gate remains **open**.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 26 and 29 and the final verification wave remain open.
+Todo 29 and the final verification wave remain open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -815,13 +831,23 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4336 passing** (134 deselected), verified at
+implementation head. The current default-suite baseline is **4654 passing** (28 skipped, 134 deselected),
+verified at `AXR1-026` code `80fe953`: the **4336** below plus **318** net-new passing cases.
+Lint, format, mypy, migration drift and the clean-tree check passed at that head.
+Isolation (**628** passing, **28** skips), CNPJ (**29**), browser (**134**) and rebuilt-static equality
+passed at `58be395`; independent review also reran isolation at `80fe953`.
+The only intervening change placed an existing approval comment next to its query, with identical
+executable ASTs. The earlier full-suite source-guard failure remains recorded; the complete rerun passed.
+Evidence: `.evidence/AXR1-026-final-full.txt`, `AXR1-026-gates-r3.txt` and
+`AXR1-026-marker-reconciliation.md`. Delivery replays the same code onto the `AXR1-025` status commit
+`6e8d511`; this status-only commit records its results.
+
+The previous default-suite baseline was **4336 passing** (134 deselected), verified at
 `AXR1-025` code `439fd67` on `AXR1-023` code `b02cf0e`: the **4330** below plus **6** net-new default-suite
 cases. The same serial run passed isolation (**312**), CNPJ (**29**), browser (**134**, 32 more than the
 **102** below), lint, format, mypy and migration drift. Its static and clean-tree checks failed only on a
 utility token in inherited status prose; after the one-line prose fix both passed on the corrected head.
-Evidence: `.evidence/AXR1-025-gates-final.txt`. The delivered code is the same tree replayed onto the
-`AXR1-023` status commit `e2227da`; this status-only commit records its results.
+Evidence: `.evidence/AXR1-025-gates-final.txt`.
 
 The previous default-suite baseline was **4330 passing** (102 deselected), verified at
 `AXR1-023` code `b02cf0e`: the **4280** below plus **50** net-new default-suite cases.
