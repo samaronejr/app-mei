@@ -62,7 +62,8 @@ name. The repository, the README headline and customer-facing copy stay "app-mei
 until the name is cleared.
 
 - **Ids.** The plan has 29 original numbered todos in five waves, the added
-  `AXR1-030` certificate guard, and a final verification wave. Todo N is cited
+  `AXR1-030` certificate guard, `AXR1-031` customer-facing label repair,
+  `AXR1-032` support-authority repair, and a final verification wave. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
 - **Delivery.** One open pull request per todo in a linear stack: the first is
@@ -746,6 +747,19 @@ The five legal/partner drafts remain private MINUTA documents for professional r
 Every owner/operator/contact/cohort gate in `ops/AXORIM-R1-GO-NO-GO.md` remains **open**.
 This is engineering approval, not launch authorization or a WCAG-conformance claim.
 
+`AXR1-031` (customer-facing destination labels) is recorded on the final `AXR1-029` branch.
+Individual and bulk cards show meaningful destinations for publication, email, completion and waiver,
+and the quota explanation uses neutral wording. Stored manifests, internal provider identifiers,
+canonical bytes, digests and execution code are unchanged.
+Independent review **confirmed** `bc2c0cb` with no blockers, resolving F1's naming finding B1.
+Its own 108 render/manifest checks and 12 browser cases passed, including individual reopening.
+The reviewer inspected 20 author captures and 24 independent captures at desktop/mobile widths
+and verified its resource teardown. Evidence: `.evidence/AXR1-031-review.md`,
+`AXR1-031-review-verdict.json`, `AXR1-031-F1-delta.md`, `AXR1-031-happy.txt`
+and `AXR1-031-failure.txt`. Test-oracle limitations and the inherited generic bulk reopening
+label remain documented in that review. Whole F1/F2 approval, the separate `AXR1-032`
+authority-race repair and F3/F4 remain open; no owner/operator gate is closed by this repair.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
 The final verification wave remains open.
 
@@ -848,7 +862,15 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4673 passing** (28 skipped, 138 deselected),
+implementation head. The current default-suite baseline is **4683 passing** (28 skipped, 146 deselected),
+verified at `AXR1-031` code `bc2c0cb` on delivered `AXR1-029` head `ff372a6`:
+the **4673** below plus **10** new default-suite cases.
+The serial run passed isolation (**628**, with **28** justified skips), CNPJ (**29**),
+browser (**146**), lint, format, mypy, migration drift, rebuilt-static equality and clean-tree checks.
+Evidence: `.evidence/AXR1-031-gates.txt`, all ten exits zero with matching begin/end head.
+Independent review audited the completed run and passed its own focused real-surface checks.
+
+The previous default-suite baseline was **4673 passing** (28 skipped, 138 deselected),
 verified at `AXR1-029` code `46e1eed` on delivered `AXR1-026` head `76bdd55`:
 the **4654** below plus **19** net-new default-suite cases.
 The same serial run passed isolation (**628**, with **28** justified skips), CNPJ (**29**),
