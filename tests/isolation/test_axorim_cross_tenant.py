@@ -187,9 +187,9 @@ def test_rls_hides_tenant_b_rows_under_tenant_a(
     # filter would deny the row even with RLS disabled, which is exactly the
     # vacuity this test exists to rule out.
     with tenant_context(tenants["alpha"].tenant.id):
+        scoped = cast("type[TenantScopedModel]", model)
         # ALL_OBJECTS_OK: the RLS assertion must bypass the ORM ContextVar filter;
         # the row-exists control below proves the row is actually in the table.
-        scoped = cast("type[TenantScopedModel]", model)
         visible = scoped.all_objects.filter(pk=beta_row.pk).count()
 
     # Then nothing comes back. The separate vacuity test reads the seeded row
