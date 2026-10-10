@@ -63,7 +63,10 @@ until the name is cleared.
 
 - **Ids.** The plan has 29 original numbered todos in five waves, the added
   `AXR1-030` certificate guard, `AXR1-031` customer-facing label repair,
-  `AXR1-032` support-authority repair, and a final verification wave. Todo N is cited
+  `AXR1-032` support-authority repair, `AXR1-033` contact-invitation binding,
+  and a final verification wave. Required follow-ups `AXR1-034` through
+  `AXR1-050` and `AXR1-053` remain open; optional proposals 051/052 are not
+  accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
 - **Delivery.** One open pull request per todo in a linear stack: the first is
@@ -777,6 +780,25 @@ OG/OD gates remain open. No launch, merge or deployment is authorized here.
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
 The final verification wave remains open.
 
+`AXR1-033` (accepted invitation contact binding) is recorded on delivered `AXR1-032`.
+Contact-issued invitations retain an explicit nullable origin through token refresh.
+Acceptance atomically links only that eligible same-client contact to the accepted
+membership; address-only and historical invitations do not guess a contact by email.
+Mailbox, consent, token, expiry and existing-association checks remain enforced.
+The original firm-roster contract and unchanged publication recipient guard are preserved.
+Independent review **APPROVE**, high confidence, at `c6653b0`: 71 independent
+checks passed, losing the contact link broke both publication journeys as expected,
+restoration passed, and the populated migration reversed/reapplied as `app_migrator`.
+Root's actual desktop/mobile continuation accepted a fresh invitation for the
+retained Aurora contact and created its publication approval card; consumed-token
+replay returned 410. No fixture assigned the contact's membership.
+Evidence: `.evidence/AXR1-033-review.md`, `AXR1-033-review-cleanup.txt`,
+`AXR1-033-root-qa.md`, `AXR1-033-gates-summary.txt`, `AXR1-033-happy.txt`
+and `AXR1-033-failure.txt`. Author and reviewer runtime lanes are removed;
+separate retained F3 data remains for the unfinished final journey.
+This approves T33, not publication execution/acknowledgement/closure, wider
+F3/F4 fidelity, launch, merge or deployment. Every OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -876,7 +898,19 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4693 passing** (28 skipped, 146 deselected),
+implementation head. The current default-suite baseline is **4722 passing** (28 skipped, 146 deselected),
+verified at `AXR1-033` code `c6653b0` on delivered `AXR1-032` head `65392c6`:
+the **4693** below plus **29** new invitation regression cases.
+Isolation (**628**, with **28** justified skips), CNPJ (**29**), browser (**146**),
+lint, format, Mypy, migration drift and clean-tree checks passed serially.
+Build/static was not applicable under the plan's conditional rule: no assets changed.
+Evidence: `.evidence/AXR1-033-gates-root3.txt`, all applicable exits zero and
+`T33_ALL_STD_GATES_OK` at the same head. Interrupted overlapping runs and the
+earlier two-regression full run remain separate failures, not passing evidence.
+Independent review retained these gates and passed 71 focused checks.
+This status-only delivery changes no reviewed implementation.
+
+The previous default-suite baseline was **4693 passing** (28 skipped, 146 deselected),
 verified at `AXR1-032` code `f4e8c87` on delivered `AXR1-031` head `1bec8d6`:
 the **4683** below plus **10** new authority regression cases.
 Isolation (**628**, with **28** justified skips), CNPJ (**29**), browser (**146**),
