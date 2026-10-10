@@ -145,8 +145,9 @@ def test_public_pages_render_on_the_apex_only() -> None:
         assert "app-mei" in response.content.decode()
         assert firm_host.get(reverse(name)).status_code == HTTPStatus.NOT_FOUND, name
 
+
 @pytest.mark.parametrize("phrase", sorted(OVERBROAD_CLAIMS))
-def test_no_public_or_help_template_overstates_approval_or_detection(phrase: str) -> None:
+def test_no_template_overstates_approval_or_detection(phrase: str) -> None:
     hits = _hits(OVERBROAD_CLAIMS[phrase], _templates())
     assert hits == [], f"overbroad claim {phrase!r}:\n" + "\n".join(hits)
 

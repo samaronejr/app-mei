@@ -61,7 +61,10 @@ HELP_PAGES: Final[tuple[HelpPage, ...]] = (
     HelpPage(
         "aprovacoes",
         _("Aprovações"),
-        _("Envios com efeito no cliente exigem aprovação exata; avisos e lembretes do playbook já saem autorizados."),
+        _(
+            "Envios com efeito no cliente exigem aprovação exata; "
+            "avisos e lembretes já saem autorizados."
+        ),
     ),
     HelpPage(
         "aceita-pelo-servidor",
