@@ -49,6 +49,7 @@ from tests.support import enrol_totp
 
 if TYPE_CHECKING:
     from django.db import models
+    from django.http.response import HttpResponseBase
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -369,7 +370,7 @@ _COUNT_DISCLOSURE = re.compile(
 )
 
 
-def _assert_no_counts(response: HttpResponse) -> None:
+def _assert_no_counts(response: HttpResponseBase) -> None:
     """Reject count disclosures in denied bodies, including zero and one."""
     body = getattr(response, "content", b"").decode(errors="replace")
     match = _COUNT_DISCLOSURE.search(body)
@@ -620,6 +621,8 @@ def test_company_select_refuses_a_seat_the_account_does_not_hold(
     # Then the seat check refuses it — a seat in *a* company must never satisfy
     # the check for *this* company
     assert response.status_code in DENIED
+    _assert_no_markers(response, tenants["beta"], tenants["beta"].client.pk)
+    _assert_no_counts(response)
 
 
 @pytest.mark.parametrize("name", PORTAL_PARAMLESS)
