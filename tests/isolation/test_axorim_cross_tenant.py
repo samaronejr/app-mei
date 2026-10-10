@@ -18,6 +18,7 @@ dependency chain each case actually needs.
 from __future__ import annotations
 
 import importlib
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
@@ -42,10 +43,12 @@ from tests.isolation.axorim_seed import (
     CLIENT_PAIR_ONLY_MODELS,
     SeedContext,
     axorim_models,
+    client_paired_fk_defs,
     client_paired_tables,
     make_seed_context,
     paired_parent_fks,
     paired_parent_targets,
+    runtime_update_denied_tables,
     seed_model,
 )
 from tests.isolation.rolecheck import assert_isolated_role
@@ -70,11 +73,21 @@ CLIENT_SCOPED_MODELS: list[type[models.Model]] = [
     if any(field.attname == "client_id" for field in model._meta.fields)
 ]
 
+# These tables grant UPDATE for state or retention changes, but their identity
+# triggers forbid repointing a parent. The composite must be exercised by INSERT.
+_INSERT_ONLY_IDENTITY_TABLES = frozenset(
+    {
+        "cycles_cycleamendment",
+        "cycles_completionjustification",
+        "cycles_actionproposal",
+        "cycles_clientpublication",
+    }
+)
+
 
 def _unscoped(model: type[models.Model]) -> models.Manager[models.Model]:
     """The manager that bypasses the ContextVar filter, so RLS carries it."""
-    manager = model._meta.default_manager
-    assert manager is not None
+    manager = model._base_manager
     return cast("models.Manager[models.Model]", cast("object", manager))
 
 
@@ -168,12 +181,19 @@ def test_rls_hides_tenant_b_rows_under_tenant_a(
     assert_isolated_role()
     beta_row = seed_model(model, tenants["beta"])
 
-    # When tenant A's context reads it by primary key through the UNSCOPED manager —
-    # the ORM's ContextVar filter must never carry this assertion
+    # When tenant A's context reads it by primary key through all_objects — the
+    # ContextVar-free manager, so ONLY row-level security stands between the read
+    # and beta's row. The scoped `objects` must never carry this assertion: its
+    # filter would deny the row even with RLS disabled, which is exactly the
+    # vacuity this test exists to rule out.
     with tenant_context(tenants["alpha"].tenant.id):
-        visible = _unscoped(model).filter(pk=beta_row.pk).count()
+        # ALL_OBJECTS_OK: the RLS assertion must bypass the ORM ContextVar filter;
+        # the row-exists control below proves the row is actually in the table.
+        scoped = cast("type[TenantScopedModel]", model)
+        visible = scoped.all_objects.filter(pk=beta_row.pk).count()
 
-    # Then nothing comes back
+    # Then nothing comes back. The separate vacuity test reads the seeded row
+    # as app_test (BYPASSRLS), proving there is a row for this policy to hide.
     assert visible == 0, f"{model._meta.db_table} leaked a row across tenants"
 
 
@@ -255,11 +275,59 @@ def client_paired() -> set[str]:
     return client_paired_tables()
 
 
+@pytest.fixture
+def client_paired_defs() -> dict[str, list[tuple[str, list[tuple[str, str, str]]]]]:
+    """{table: [(name, extras)]} — the client-bearing composites, with bindings."""
+    return client_paired_fk_defs()
+
+
+@pytest.fixture
+def append_only() -> set[str]:
+    """Tables the runtime role cannot UPDATE — their probes must INSERT."""
+    return runtime_update_denied_tables()
+
+
+def _constraint_name(exc: object) -> str | None:
+    """The refusing constraint's name, when Postgres diagnosed one."""
+    cause = getattr(exc, "__cause__", exc)
+    return getattr(getattr(cause, "diag", None), "constraint_name", None)
+
+
+def _assert_specific_refusal(
+    exc: BaseException,
+    *,
+    table: str,
+    column: str,
+    expected_constraint: str | set[str],
+) -> None:
+    """The refusal must be the named composite firing, not any earlier error.
+
+    SQLSTATE 23503 must name the expected composite. A privilege refusal
+    (42501) proves the composite never ran and must fail this assertion.
+    """
+    sqlstate = getattr(exc.__cause__, "sqlstate", None)
+    assert sqlstate == FK_VIOLATION, (
+        f"{table}.{column}: refusal came from sqlstate={sqlstate}, expected "
+        f"the composite foreign key to fire (23503)"
+    )
+    expected = (
+        expected_constraint
+        if isinstance(expected_constraint, set)
+        else {expected_constraint}
+    )
+    assert _constraint_name(exc) in expected, (
+        f"{table}.{column} refused with constraint "
+        f"{_constraint_name(exc)!r}, expected {sorted(expected)!r}"
+    )
+
+
 @pytest.mark.parametrize("model", SCOPED_MODELS, ids=lambda m: m._meta.label)
 def test_a_paired_fk_rejects_the_cross_client_reference(
     model: type[models.Model],
     tenants: dict[str, SeedContext],
     client_paired: set[str],
+    client_paired_defs: dict[str, list[tuple[str, list[tuple[str, str, str]]]]],
+    append_only: set[str],
 ) -> None:
     # Given a child row pointing at alpha's client and alpha's parents
     assert_isolated_role()
@@ -270,12 +338,19 @@ def test_a_paired_fk_rejects_the_cross_client_reference(
     row = seed_model(model, alpha)
     sibling = _sibling_client(alpha)
 
-    if table in _SWAP_INSERT_PROBES:
-        # These tables seed all-NULL client-paired columns, so an UPDATE probes
-        # no constraint. A fresh INSERT carrying the mismatched client and a
-        # real parent forces the composite on the write path it guards.
+    if (
+        table in append_only
+        or table in _SWAP_INSERT_PROBES
+        or table in _INSERT_ONLY_IDENTITY_TABLES
+    ):
+        # The composite must fire on INSERT: either the table is append-only for
+        # the runtime role (an UPDATE probe would die as 42501 before any FK
+        # runs), or its seeded rows hold all-NULL paired columns. A fresh row
+        # born mismatched is the honest probe — sqlstate must be 23503 and the
+        # named composite must be the one that refused.
         overrides: dict[str, object] = {"client": sibling}
-        overrides.update(_SWAP_INSERT_PROBES[table](model, alpha, row))
+        if table in _SWAP_INSERT_PROBES:
+            overrides.update(_SWAP_INSERT_PROBES[table](model, alpha, row))
         with (
             tenant_context(alpha.tenant.id),
             client_context(sibling.id),
@@ -283,23 +358,32 @@ def test_a_paired_fk_rejects_the_cross_client_reference(
             transaction.atomic(),
         ):
             _clone_insert(model, row, alpha, overrides)
+        _assert_specific_refusal(
+            exc.value,
+            table=table,
+            column="client_id",
+            expected_constraint={name for name, _extras in client_paired_defs[table]},
+        )
     else:
-        # When the row is moved to the OTHER client while its parent composites
-        # still name alpha's objects, the *_client_fk pairs refuse the mismatch.
-        # Immutable ledgers answer earlier and harder: app_runtime holds no
-        # UPDATE grant on them at all (42501), which still proves the ORM path
-        # cannot retarget the row.
+        # Mutable tables: the UPDATE flips client_id while every composite's
+        # parent columns still name alpha's objects. 23503 must name ONE of the
+        # table's client-bearing composites — privilege denial proves nothing.
         with (
             tenant_context(alpha.tenant.id),
             pytest.raises((IntegrityError, ProgrammingError)) as exc,
             transaction.atomic(),
         ):
             _unscoped(model).filter(pk=row.pk).update(client_id=sibling.pk)
-
-    assert getattr(exc.value.__cause__, "sqlstate", None) in {
-        FK_VIOLATION,
-        PRIVILEGE_DENIED,
-    }, f"{model._meta.db_table} accepted a cross-client reference"
+        names = [n for n, _e in client_paired_defs[table]]
+        sqlstate = getattr(exc.value.__cause__, "sqlstate", None)
+        assert sqlstate == FK_VIOLATION, (
+            f"{table}: expected the composite FK to fire (23503), "
+            f"got sqlstate={sqlstate}"
+        )
+        assert _constraint_name(exc.value) in names, (
+            f"{table} refused with {_constraint_name(exc.value)!r}, "
+            f"expected one of {names}"
+        )
 
 
 # Tables where the swap must arrive as an INSERT, each with the extra columns a
@@ -363,6 +447,8 @@ def test_paired_fks_reject_cross_tenant_parents(
     model: type[models.Model],
     tenants: dict[str, SeedContext],
     paired_fks: dict[tuple[str, str], str],
+    client_paired_defs: dict[str, list[tuple[str, list[tuple[str, str, str]]]]],
+    append_only: set[str],
 ) -> None:
     # Given this table's composites (any FK column sharing a key with tenant_id)
     assert_isolated_role()
@@ -372,61 +458,130 @@ def test_paired_fks_reject_cross_tenant_parents(
         pytest.skip(f"{table} carries no tenant-composite parent foreign key")
 
     alpha = tenants["alpha"]
+    probe = _ParentProbe(
+        alpha=alpha,
+        beta=tenants["beta"],
+        paired_fks=paired_fks,
+        client_paired_defs=client_paired_defs,
+        append_only=append_only,
+        targets=paired_parent_targets(),
+    )
     child = seed_model(model, alpha)
-    targets = paired_parent_targets()
     for column in parent_columns:
-        # The Django FK when the column is a real ORM field; otherwise the
-        # constraint's referenced table is the parent (a plain UUID column).
-        try:
-            field = model._meta.get_field(column.removesuffix("_id"))
-        except FieldDoesNotExist:
-            field = None
-        remote = getattr(field, "remote_field", None)
-        parent_model = getattr(remote, "model", None)
-        # Only columns that bind the remote table's 'id' are parents: exact-FK
-        # twins bind remote 'revision'/'digest' and are not probed.
-        remote_table, remote_col = targets.get((table, column), ("", ""))
-        if remote_col != "id":
-            continue
-        if parent_model is None or isinstance(parent_model, str):
-            if not remote_table or remote_table == table:
-                continue
-            parent_model = _model_for_table(remote_table)
+        probe.run(model, child, column)
+
+
+@dataclass
+class _ParentProbe:
+    """Per-run catalogs for the cross-tenant parent probe."""
+
+    alpha: SeedContext
+    beta: SeedContext
+    paired_fks: dict[tuple[str, str], str]
+    client_paired_defs: dict[str, list[tuple[str, list[tuple[str, str, str]]]]]
+    append_only: set[str]
+    targets: dict[tuple[str, str], tuple[str, str]]
+
+    def run(self, model: type[models.Model], child: models.Model, column: str) -> None:
+        """Probe one composite parent column: repoint or insert at B's parent."""
+        table = model._meta.db_table
+        parent_model = _parent_model_for(model, column, self.targets)
         if parent_model is None or parent_model is model:
-            continue
-        beta_parent = seed_model(parent_model, tenants["beta"])
+            return
+        beta_parent = seed_model(parent_model, self.beta)
 
-        # Columns whose update path is guarded so the composite can only be
-        # reached on INSERT: bulkitem's immutability trigger fires 23514 on any
-        # identity change, and evidencerequest.obligation's CHECK requires
-        # kind='comprovante'. For these, a fresh row carrying the cross-tenant
-        # parent is the honest probe.
-        if (table, column) in _INSERT_PROBE_COLUMNS:
-            overrides: dict[str, object] = {column.removesuffix("_id"): beta_parent}
-            if table == "cycles_evidencerequest":
-                overrides["kind"] = "comprovante"
-            with (
-                tenant_context(alpha.tenant.id),
-                client_context(alpha.client.id),
-                pytest.raises((IntegrityError, ProgrammingError)) as exc,
-                transaction.atomic(),
-            ):
-                _clone_insert(model, child, alpha, overrides)
+        # A beta-side value for the probed column violates every composite that
+        # binds (tenant_id, <column>) — the paired constraint plus any
+        # client-bearing composite sharing the column. Assert the refusal names
+        # one of them, never a bare privilege denial.
+        expected = {n for n in [self.paired_fks.get((table, column))] if n}
+        expected |= {
+            cname
+            for cname, extras in self.client_paired_defs.get(table, [])
+            if column in {lcol for lcol, _rt, _rc in extras}
+        }
+
+        if (
+            (table, column) in _INSERT_PROBE_COLUMNS
+            or table in self.append_only
+            or table in _INSERT_ONLY_IDENTITY_TABLES
+        ):
+            exc = self._insert_probe(model, child, column, beta_parent)
         else:
-            # When alpha's row is repointed at beta's parent. Refusal comes from
-            # the composite (23503) or, for tenant_id itself, from RLS WITH
-            # CHECK (42501) — either way the row cannot escape its tenant.
-            with (
-                tenant_context(alpha.tenant.id),
-                pytest.raises((IntegrityError, ProgrammingError)) as exc,
-                transaction.atomic(),
-            ):
-                _unscoped(model).filter(pk=child.pk).update(**{column: beta_parent.pk})
+            exc = self._update_probe(model, child, column, beta_parent)
+        _assert_specific_refusal(
+            exc, table=table, column=column, expected_constraint=expected
+        )
 
-        assert getattr(exc.value.__cause__, "sqlstate", None) in {
-            FK_VIOLATION,
-            PRIVILEGE_DENIED,
-        }, f"{table}.{column} accepted a cross-tenant parent"
+    def _insert_probe(
+        self,
+        model: type[models.Model],
+        child: models.Model,
+        column: str,
+        beta_parent: models.Model,
+    ) -> BaseException:
+        """The INSERT-side probe for columns the update path cannot reach.
+
+        Guarded columns (bulkitem's immutability trigger, evidencerequest's
+        CHECK) and every append-only table (the runtime role lacks UPDATE, so
+        an update probe dies as 42501 before any FK runs) need a fresh row
+        born with the cross-tenant parent.
+        """
+        overrides: dict[str, object] = {column: beta_parent.pk}
+        if model._meta.db_table == "cycles_evidencerequest":
+            overrides["kind"] = "comprovante"
+        with (
+            tenant_context(self.alpha.tenant.id),
+            client_context(self.alpha.client.id),
+            pytest.raises((IntegrityError, ProgrammingError)) as exc,
+            transaction.atomic(),
+        ):
+            _clone_insert(model, child, self.alpha, overrides)
+        return exc.value
+
+    def _update_probe(
+        self,
+        model: type[models.Model],
+        child: models.Model,
+        column: str,
+        beta_parent: models.Model,
+    ) -> BaseException:
+        """Repoint alpha's row at beta's parent; the composite must refuse."""
+        with (
+            tenant_context(self.alpha.tenant.id),
+            pytest.raises((IntegrityError, ProgrammingError)) as exc,
+            transaction.atomic(),
+        ):
+            _unscoped(model).filter(pk=child.pk).update(**{column: beta_parent.pk})
+        return exc.value
+
+
+def _parent_model_for(
+    model: type[models.Model],
+    column: str,
+    targets: dict[tuple[str, str], tuple[str, str]],
+) -> type[models.Model] | None:
+    """The model a composite parent column points at, or None when unprobable.
+
+    The Django FK when the column is a real ORM field; otherwise the
+    constraint's referenced table is the parent (a plain UUID column). Only
+    columns binding the remote 'id' count as parents: exact-FK twins bind
+    remote 'revision'/'digest' and are skipped.
+    """
+    table = model._meta.db_table
+    remote_table, remote_col = targets.get((table, column), ("", ""))
+    if remote_col != "id":
+        return None
+    try:
+        field = model._meta.get_field(column.removesuffix("_id"))
+    except FieldDoesNotExist:
+        field = None
+    parent_model = getattr(getattr(field, "remote_field", None), "model", None)
+    if parent_model is None or isinstance(parent_model, str):
+        if not remote_table or remote_table == table:
+            return None
+        return _model_for_table(remote_table)
+    return cast("type[models.Model]", parent_model)
 
 
 # (table, column) pairs whose UPDATE path is guarded before the composite
@@ -447,20 +602,87 @@ def _clone_insert(
 ) -> models.Model:
     """INSERT a copy of `child` with `overrides` — the guarded-table probe."""
     kwargs: dict[str, object] = {
-        field.name: getattr(child, field.name)
+        field.attname: getattr(child, field.attname)
         for field in model._meta.fields
         if not field.auto_created and field.name != "id"
     }
-    kwargs.update(overrides)
+    attnames = {field.name: field.attname for field in model._meta.fields}
+    kwargs.update(
+        {
+            attnames.get(name, name): (
+                value.pk if isinstance(value, models.Model) else value
+            )
+            for name, value in overrides.items()
+        }
+    )
     kwargs.pop("id", None)
     # A row-clone must differ from `child` on whatever makes it unique; the
     # effect_key/position pair is the bulkitem uniqueness an unchanged clone
     # would collide with before the composite fires.
     if "effect_key" in kwargs:
         kwargs["effect_key"] = f"clone-{kwargs['effect_key']}"
-    if "position" in kwargs:
-        kwargs["position"] = cast("int", kwargs["position"]) + 1
-    return _unscoped(model).create(**kwargs)
+    for column in ("position", "amendment", "number"):
+        if column in kwargs:
+            kwargs[column] = cast("int", kwargs[column]) + 1
+    if "business_intent_key" in kwargs:
+        kwargs["business_intent_key"] = f"clone-{kwargs['business_intent_key']}"[:64]
+
+    # Frozen manifests/publications reject mismatched identities BEFORE any FK
+    # can run. Isolate that separate layer for this synthetic composite probe:
+    # disable only its named user trigger, retain RLS and every FK, then INSERT
+    # as app_runtime. The savepoint is always rolled back, including when a
+    # broken composite unexpectedly accepts the row, restoring the trigger.
+    identity_trigger = {
+        "cycles_actionproposal": "cycles_frozen_proposal",
+        "cycles_clientpublication": "cycles_frozen_publication",
+    }.get(model._meta.db_table)
+    with transaction.atomic():
+        if identity_trigger is not None:
+            with connection.cursor() as cursor:
+                cursor.execute("RESET ROLE")
+                table = connection.ops.quote_name(model._meta.db_table)
+                trigger = connection.ops.quote_name(identity_trigger)
+                cursor.execute(f"ALTER TABLE {table} DISABLE TRIGGER {trigger}")
+                cursor.execute("SET ROLE app_runtime")
+        assert_isolated_role()
+        try:
+            return _unscoped(model).create(**kwargs)
+        finally:
+            transaction.set_rollback(True)
+
+
+@pytest.mark.parametrize(
+    ("label", "trigger_name"),
+    [
+        ("cycles.ActionProposal", "cycles_frozen_proposal"),
+        ("cycles.ClientPublication", "cycles_frozen_publication"),
+    ],
+)
+def test_a_successful_clone_restores_the_identity_trigger(
+    label: str,
+    trigger_name: str,
+    tenants: dict[str, SeedContext],
+) -> None:
+    # Given a valid clone whose composite FKs would allow the INSERT.
+    assert_isolated_role()
+    model = django_apps.get_model(label)
+    alpha = tenants["alpha"]
+    row = seed_model(model, alpha)
+
+    # When the probe succeeds rather than raising the expected FK violation.
+    with tenant_context(alpha.tenant.id), client_context(alpha.client.id):
+        clone = _clone_insert(model, row, alpha, {})
+
+        # Then it still leaves neither a row nor a disabled identity trigger.
+        assert not _unscoped(model).filter(pk=clone.pk).exists()
+        assert_isolated_role()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT tgenabled FROM pg_trigger "
+                "WHERE tgname = %s AND tgrelid = %s::regclass",
+                [trigger_name, model._meta.db_table],
+            )
+            assert cursor.fetchone() == ("O",)
 
 
 def test_every_client_scoped_table_is_probed_or_decided(

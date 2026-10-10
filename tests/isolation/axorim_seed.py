@@ -125,7 +125,7 @@ def _first_choice(field: models.Field[Any, Any]) -> object | None:
 
 
 def _manager(model: type[models.Model]) -> models.Manager[models.Model]:
-    """`default_manager` is all_objects on scoped models — ContextVar-free."""
+    """The default manager; fixture writes establish its tenant context."""
     manager = model._meta.default_manager
     assert manager is not None
     return cast("models.Manager[models.Model]", cast("object", manager))
@@ -785,6 +785,72 @@ def client_paired_tables() -> set[str]:
                AND connamespace = 'public'::regnamespace
                AND pg_get_constraintdef(oid)
                        LIKE 'FOREIGN KEY (tenant_id, client_id,%%'
+            """
+        )
+        for (table,) in cursor.fetchall():
+            tables.add(str(table))
+    return tables
+
+
+def client_paired_fk_defs() -> dict[str, list[tuple[str, list[tuple[str, str, str]]]]]:
+    """{table: [(name, [(local_col, remote_table, remote_col), ...])]}.
+
+    The client-bearing tenant composites, with each local column mapped to the
+    remote column it binds. The probes need the remote bindings to build
+    INSERTs that satisfy or break exactly one composite — a row whose other
+    composite columns are NULL cannot exercise it at all.
+    """
+    defs: dict[str, list[tuple[str, list[tuple[str, str, str]]]]] = {}
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid)
+              FROM pg_constraint
+             WHERE contype = 'f'
+               AND connamespace = 'public'::regnamespace
+               AND pg_get_constraintdef(oid)
+                       LIKE 'FOREIGN KEY (tenant_id, client_id,%%'
+            """
+        )
+        for table, name, definition in cursor.fetchall():
+            local = [
+                c.strip().strip('"')
+                for c in definition.split("(", 1)[1].split(")", 1)[0].split(",")
+            ]
+            refs = definition.split("REFERENCES ", 1)[1]
+            remote_table = refs.split("(", 1)[0].strip()
+            remote_cols = [
+                c.strip().strip('"')
+                for c in refs.split("(", 1)[1].split(")", 1)[0].split(",")
+            ]
+            cols = list(zip(local, remote_cols, strict=True))
+            extras = [
+                (lcol, remote_table, rcol)
+                for (lcol, rcol) in cols
+                if lcol not in {"tenant_id", "client_id"}
+            ]
+            defs.setdefault(str(table), []).append((str(name), extras))
+    return defs
+
+
+def runtime_update_denied_tables() -> set[str]:
+    """Tables app_runtime cannot UPDATE — the probes for these must INSERT.
+
+    Append-only and ledger tables revoke UPDATE for the runtime role, so an
+    UPDATE probe answers 42501 before any composite foreign key can fire. The
+    suite counts that as unprobed, not passed: on these tables the cross-client
+    and cross-tenant assertions run against a fresh INSERT.
+    """
+    tables: set[str] = set()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT c.relname
+              FROM pg_class c
+             WHERE c.relkind = 'r'
+               AND c.relnamespace = 'public'::regnamespace
+               AND NOT has_table_privilege('app_runtime', c.oid, 'UPDATE')
+               AND has_table_privilege('app_runtime', c.oid, 'INSERT')
             """
         )
         for (table,) in cursor.fetchall():
