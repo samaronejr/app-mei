@@ -126,6 +126,16 @@ def contact_journey(settings: SettingsWrapper) -> Journey:
     assert created.status_code == HTTPStatus.FOUND
     with tenant_context(firm.tenant.pk):
         contact = ClientContact.objects.get(client=client)
+    authorized = staff.post(
+        reverse("notice-policy"),
+        {
+            "action": "save",
+            "expected_version": 0,
+            "kinds": ["portal_invite"],
+            "acknowledged": "on",
+        },
+    )
+    assert authorized.status_code == HTTPStatus.FOUND
     invited = staff.post(
         reverse("client-contact-invite", args=[client.pk, contact.pk]),
         {"convite-role": TenantRole.CLIENT_OWNER, "convite-version": contact.version},

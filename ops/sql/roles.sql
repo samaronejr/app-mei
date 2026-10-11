@@ -182,6 +182,7 @@ $$;
 -- PORTAL_NONE: delivery_deliveryattempt
 -- PORTAL_NONE: delivery_deliveryeffect
 -- PORTAL_NONE: delivery_automationpause
+-- PORTAL_NONE: delivery_tenantnoticepolicy
 -- PORTAL_NONE: automation_agentrun
 -- PORTAL_NONE: automation_evalrun
 -- T24: hidden AI observations and synthetic evaluation metrics have no portal grant.

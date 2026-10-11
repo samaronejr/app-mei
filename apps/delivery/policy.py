@@ -149,10 +149,14 @@ def still_valid(message: OutboundMessage) -> tuple[bool, str]:
     if definition is None:
         return False, "unregistered_kind"
     approved = message.kind in {"approved_email", "approved_publication_notice"}
-    if approved:
-        valid, reason = definition.still_valid(message)
-        if not valid:
-            return valid, reason
+    if not approved:
+        from apps.delivery.notice_authority import validate_notice  # noqa: PLC0415
+
+    valid, reason = (
+        definition.still_valid(message) if approved else validate_notice(message)
+    )
+    if not valid:
+        return valid, reason
     try:
         contact = resolve_recipient(message.client_id, message.contact_id)
     except ValidationError:

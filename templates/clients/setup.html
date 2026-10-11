@@ -1,4 +1,4 @@
-{% extends "base.html" %}{% load i18n ptbr %}
+{% extends "base.html" %}{% load i18n ptbr firm_settings %}
 {% block title %}{% blocktranslate with name=client.legal_name %}Cadastro de {{ name }}{% endblocktranslate %}{% endblock %}
 {% block heading %}{{ client.legal_name }}{% endblock %}
 {% block actions %}
@@ -20,6 +20,7 @@
   <p class="mb-4 text-sm"><a class="link" href="{% url 'clients-list' %}">{% translate "Voltar para Clientes" %}</a></p>
 
   <p class="mb-6 text-sm text-ink-700">{% translate "CNPJ" %}: <span class="tabular">{{ client.cnpj|cnpj_mask }}</span></p>
+  {% notice_policy_href request as policy_href %}{% if policy_href %}<p class="mb-6 text-sm"><a class="link" href="{{ policy_href }}">Política de avisos manuais</a></p>{% endif %}
 
   <div class="grid gap-8">
     <section id="servicos" aria-labelledby="servicos-titulo" class="card p-5">

@@ -182,32 +182,38 @@ def claim_batch(tid: UUID) -> list[Claim]:
         now = timezone.now()
         # Expired sending leases are never reclaimed: the previous process might
         # still be transmitting. Only an explicit human decision can resolve them.
-        expired = (
+        expired = list(
             OutboundMessage.objects.select_for_update(skip_locked=True)
             .filter(state=MessageState.SENDING, lease_until__lte=now)
             .order_by("pk")[:CLAIM_LIMIT]
         )
-        for message in expired:
-            transition(message, Reply(MessageState.UNKNOWN, "lease_expired"))
-            effect(message)
-            report_problem(message)
-        if settings.DELIVERY_PAUSED or control.paused:
-            return []
-        if control.quota_day != timezone.localdate():
+        paused = settings.DELIVERY_PAUSED or control.paused
+        if not paused and control.quota_day != timezone.localdate():
             control.quota_day = timezone.localdate()
             control.reserved_today = 0
         limit = min(
             CLAIM_LIMIT, max(0, settings.DELIVERY_DAILY_CAP - control.reserved_today)
         )
         rows = (
-            OutboundMessage.objects.select_for_update(skip_locked=True)
-            .filter(
-                state__in=[MessageState.QUEUED, MessageState.TEMPORARY],
-                next_attempt_at__lte=now,
-                attempts__lt=MAX_ATTEMPTS,
+            list(
+                OutboundMessage.objects.select_for_update(skip_locked=True)
+                .filter(
+                    state__in=[MessageState.QUEUED, MessageState.TEMPORARY],
+                    next_attempt_at__lte=now,
+                    attempts__lt=MAX_ATTEMPTS,
+                )
+                .order_by("next_attempt_at", "pk")[:limit]
             )
-            .order_by("next_attempt_at", "pk")[:limit]
+            if not paused
+            else []
         )
+        # All existing messages precede source locks taken by problem reporting.
+        for message in expired:
+            transition(message, Reply(MessageState.UNKNOWN, "lease_expired"))
+            effect(message)
+            report_problem(message)
+        if paused:
+            return []
         claims = []
         for message in rows:
             existing = DeliveryEffect.objects.filter(
@@ -391,7 +397,10 @@ def decide(
 
 def set_pause(actor: User, *, paused: bool, expected_version: int) -> AutomationPause:
     """Change the kill switch; quota reservations do not change its revision."""
-    require_enabled()
+    if not (
+        tenant_has(tenant_id(), "cycles_r1") or tenant_has(tenant_id(), "import_r1")
+    ):
+        raise Http404
     with transaction.atomic():
         control = _control()
         authority = lock_authorities(

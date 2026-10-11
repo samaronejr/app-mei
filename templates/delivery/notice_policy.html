@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Política de avisos{% endblock %}
+{% block heading %}Política de avisos{% endblock %}
+{% block content %}
+<div class="mx-auto max-w-3xl">
+  <a class="ui-link" href="{% url 'clients-list' %}">Voltar aos clientes</a>
+  <section class="ui-panel mt-6 p-4" aria-labelledby="notice-policy-heading">
+    <h2 class="ui-panel-heading" id="notice-policy-heading">Autorização para avisos manuais</h2>
+    <p class="mt-3">Marque somente os tipos que este escritório autoriza. Cada mudança exige uma confirmação atual do titular e fica registrada.</p>
+    <p class="mt-2 text-sm text-ink-600">Ciclos com playbook publicado usam essa base e não exigem esta autorização adicional. A política não libera entregas que exigem aprovação, nem cria regras automáticas.</p>
+    <p class="mt-2 text-sm text-ink-600">Todos os tipos desta lista exigem a rota de ciclos ativa para enviar. Salvar uma permissão não ativa essa rota nem um provedor de e-mail. Cada nova revisão bloqueia os avisos pendentes vinculados à revisão anterior; não os autoriza novamente.</p>
+    <p class="mt-2 text-sm text-ink-600">O convite abaixo é o da ficha do cliente. Envios legados não são autorizados por esta política. A lista de contatos só envia pela rota durável de ciclos; sem ela, recusa antes de criar o convite.</p>
+    <p class="mt-3" role="status">{% if policy_state == "absent" %}Nenhuma política registrada. Avisos que dependem dela estão bloqueados.{% elif policy_state == "revoked" %}Autorização por política revogada. Avisos que dependem dela estão bloqueados.{% elif policy_state == "unacknowledged" %}Tipos registrados sem autorização. Confirme novamente para liberar somente os tipos marcados.{% elif policy_state == "stale" %}A autorização registrada não está mais vigente. O titular atual precisa confirmar novamente.{% else %}Autorização vigente para os tipos manuais marcados.{% endif %}</p>
+    <form method="post" class="mt-6 grid gap-4" id="notice-policy-form">{% csrf_token %}
+      {{ form.expected_version }}
+      {% if form.non_field_errors %}<div role="alert">{{ form.non_field_errors }}<a class="ui-link" href="{% url 'notice-policy' %}">Recarregar a política atual</a></div>{% endif %}
+      <fieldset class="grid gap-3">
+        <legend class="ui-field-label mb-3">{{ form.kinds.label }}</legend>
+        {% for option in form.kinds %}<label class="flex items-start gap-2" for="{{ option.id_for_label }}">{{ option.tag }}<span>{{ option.choice_label }}</span></label>{% endfor %}
+        {% if form.kinds.errors %}<div role="alert">{{ form.kinds.errors }}</div>{% endif %}
+      </fieldset>
+      <label class="flex items-start gap-2" for="{{ form.acknowledged.id_for_label }}">{{ form.acknowledged }}<span>{{ form.acknowledged.label }}</span></label>
+      {% if form.acknowledged.errors %}<div role="alert">{{ form.acknowledged.errors }}</div>{% endif %}
+      <p class="text-sm text-ink-600">Revisão: {% if policy %}{{ policy.version }}{% else %}0 — nenhuma política registrada{% endif %}. {% if policy.acknowledged_at %}Autorização registrada em {{ policy.acknowledged_at|date:"d/m/Y H:i" }} para a revisão {{ policy.acknowledged_version }}.{% else %}Sem autorização registrada.{% endif %}</p>
+      <div class="flex flex-wrap gap-3">
+        <button class="ui-btn ui-btn-primary" type="submit" name="action" value="save">Salvar e autorizar tipos marcados</button>
+        {% if policy %}<button class="ui-btn ui-btn-secondary" type="submit" name="action" value="revoke">Revogar avisos por política</button>{% endif %}
+      </div>
+    </form>
+  </section>
+  <section class="ui-panel mt-6 p-4" aria-labelledby="notice-pause-heading">
+    <h2 class="ui-panel-heading" id="notice-pause-heading">Pausa de novos envios</h2>
+    <p class="mt-3">{% if control.paused %}Novos envios estão pausados neste escritório.{% else %}A pausa deste escritório está desligada.{% endif %}</p>
+    {% if global_paused %}<p class="mt-2 text-sm text-ink-600">A configuração operacional também mantém os envios parados. Retomar a pausa do escritório não altera essa configuração.</p>{% endif %}
+    <p class="mt-2 text-sm text-ink-600">Pausar ou revogar bloqueia novos inícios. Um envio já iniciado pode terminar; nenhuma ação recolhe um e-mail já enviado ou apaga suas tentativas.</p>
+    {% if pause_error %}<div class="mt-3" role="alert">{{ pause_error }} <a class="ui-link" href="{% url 'notice-policy' %}">Recarregar</a></div>{% endif %}
+    <form method="post" class="mt-4">{% csrf_token %}
+      <input type="hidden" name="expected_version" value="{{ pause_version }}">
+      {% if control.paused %}<button class="ui-btn ui-btn-secondary" type="submit" name="action" value="resume">Retomar novos envios</button>{% else %}<button class="ui-btn ui-btn-secondary" type="submit" name="action" value="pause">Pausar novos envios</button>{% endif %}
+    </form>
+  </section>
+</div>
+{% endblock %}

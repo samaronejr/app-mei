@@ -10,18 +10,21 @@ from django.db import transaction
 from django.db.models import Q
 
 from apps.accounts.models import User
-from apps.clients.maintenance import load_client
 from apps.clients.models import ClientContact
-from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.evidence import EvidenceRequest
 from apps.cycles.services.cycle import (
     load_cycle,
-    require_actor,
     require_enabled,
     tenant_id,
 )
 from apps.delivery.errors import IntentConflict, VersionConflict
 from apps.delivery.models import DeliveryEffect, OutboundMessage
+from apps.delivery.notice_authority import (
+    NoticeOrigin,
+    NoticeScope,
+    bind_notice,
+    lock_notice_scope,
+)
 from apps.delivery.policy import (
     KINDS,
     BusinessIntent,
@@ -44,12 +47,22 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
     idempotency_key: str = "",
     invite: Invite | None = None,
     evidence_request: EvidenceRequest | None = None,
+    notice_scope: NoticeScope | None = None,
 ) -> OutboundMessage:
     """Serialize intent creation on the authorized client; retries return one row."""
     require_enabled()
     with transaction.atomic():
-        client = load_client(actor, tenant_id(), client_id, lock=True)
-        require_actor(actor, CYCLES_OPERATE)
+        scope = notice_scope or lock_notice_scope(
+            actor,
+            NoticeOrigin(
+                kind,
+                client_id,
+                cycle_id,
+                evidence_request.pk if evidence_request else None,
+            ),
+        )
+        actor = scope.actor
+        client = scope.client
         contact = resolve_recipient(client.pk, contact_id)
         definition = KINDS.get(kind)
         if definition is None:
@@ -95,6 +108,7 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
         )
         _require_same_client(client.pk, invite, evidence_request)
         message.content_digest = content_digest(message)
+        bind_notice(scope, message)
         previous = OutboundMessage.objects.filter(
             Q(business_intent_key=key) | Q(idempotency_key=caller_key), client=client
         ).first()
@@ -102,6 +116,10 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
             if (
                 previous.content_digest != message.content_digest
                 or previous.business_intent_key != key
+                or previous.notice_authorization_bytes
+                != message.notice_authorization_bytes
+                or previous.notice_authorization_digest
+                != message.notice_authorization_digest
             ):
                 msg = "The same intent cannot authorize different content."
                 raise IntentConflict(msg)
@@ -147,10 +165,13 @@ def portal_home_url(tenant_slug: str) -> str:
     return str(urlunsplit((parts.scheme, host, "/", "", "")))
 
 
+@transaction.atomic
 def enqueue_portal_invite(
     actor: User,
     invite: Invite,
     contact: ClientContact,
+    *,
+    notice_scope: NoticeScope | None = None,
 ) -> OutboundMessage:
     """Queue the delivery of one portal invitation inside the issuing transaction.
 
@@ -165,15 +186,18 @@ def enqueue_portal_invite(
     row instead of queueing a second mail.
     """
     require_enabled()
+    if invite.client_id is None:
+        msg = "O convite não pertence a este cliente."
+        raise ValidationError(msg)
+    scope = notice_scope or lock_notice_scope(
+        actor,
+        NoticeOrigin("portal_invite", invite.client_id),
+    )
+    actor = scope.actor
     definition = KINDS["portal_invite"]
     key = hashlib.sha256(
         f"portal_invite:{tenant_id()}:{invite.pk}".encode()
     ).hexdigest()
-    previous = OutboundMessage.objects.filter(
-        client_id=invite.client_id, business_intent_key=key
-    ).first()
-    if previous is not None:
-        return previous
     if contact.client_id != invite.client_id or contact.email.lower() != (
         invite.email.lower()
     ):
@@ -195,6 +219,20 @@ def enqueue_portal_invite(
         invite=invite,
     )
     message.content_digest = content_digest(message)
+    bind_notice(scope, message)
+    previous = OutboundMessage.objects.filter(
+        client_id=invite.client_id, business_intent_key=key
+    ).first()
+    if previous is not None:
+        if (
+            previous.notice_authorization_bytes != message.notice_authorization_bytes
+            or previous.notice_authorization_digest
+            != message.notice_authorization_digest
+            or previous.content_digest != message.content_digest
+        ):
+            msg_0 = "A autorização deste convite mudou."
+            raise IntentConflict(msg_0)
+        return previous
     message.save(force_insert=True)
     record(message, message.state, actor=actor, code="enqueued")
     return message

@@ -41,7 +41,7 @@ from django.db import connection, models
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.clients.models import ClientCompany
+from apps.clients.models import ClientCompany, ClientContact
 from apps.core.models import TenantScopedModel
 from apps.core.tenancy import client_context, tenant_context
 from apps.cycles.effects.manifest import (
@@ -49,6 +49,10 @@ from apps.cycles.effects.manifest import (
     EffectManifestV1,
     canonicalize,
 )
+from apps.delivery.models import TenantNoticePolicy
+from apps.delivery.notice_authority import configure
+from apps.delivery.outbox import enqueue
+from apps.delivery.policy import BusinessIntent
 from apps.tenants.models import Membership, Tenant, TenantRole
 
 PERIOD = dt.date(2026, 9, 1)
@@ -172,6 +176,8 @@ _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
 
 # Rows whose insert fires a domain trigger the generic kwargs cannot satisfy.
 _SPECIAL_SEEDERS: dict[str, str] = {
+    "delivery.OutboundMessage": "_seed_notice",
+    "delivery.TenantNoticePolicy": "_seed_notice_policy",
     "cycles.ActionProposal": "_seed_action_proposal",
     "cycles.ContentPurgeClaim": "_seed_purge_claim",
     "cycles.ClientPublication": "_seed_client_publication",
@@ -260,6 +266,56 @@ def seed_model(
     if self_fk is not None:
         _link_self_parent(model, self_fk, instance, kwargs, ctx)
     return instance
+
+
+def _seed_notice_policy(
+    _model: type[models.Model], ctx: SeedContext
+) -> TenantNoticePolicy:
+    """A real current owner acknowledgement, local to the isolation seed only."""
+    with tenant_context(ctx.tenant.pk):
+        existing = TenantNoticePolicy.objects.filter().first()
+        if existing is not None:
+            return existing
+        return configure(
+            ctx.user, kinds=("notice",), acknowledged=True, expected_version=0
+        )
+
+
+def _seed_notice(_model: type[models.Model], ctx: SeedContext) -> models.Model:
+    """Use the real policy producer; generic kwargs cannot forge authority bytes."""
+    with tenant_context(ctx.tenant.pk):
+        policy = _seed_notice_policy(TenantNoticePolicy, ctx)
+        ctx.rows["delivery.tenantnoticepolicy"] = policy
+        contact_row = ctx.rows.get("clients.clientcontact")
+        if contact_row is None:
+            contact = ClientContact.objects.create(
+                tenant=ctx.tenant,
+                client=ctx.client,
+                name="Isolation recipient",
+                email=f"recipient@{ctx.tenant.slug}.test",
+            )
+            ctx.rows["clients.clientcontact"] = contact
+        else:
+            contact = cast("ClientContact", contact_row)
+        engagement = seed_model(django_apps.get_model("clients", "Engagement"), ctx)
+        playbook = seed_model(django_apps.get_model("cycles", "Playbook"), ctx)
+        ctx.client.refresh_from_db(fields=["version"])
+        return enqueue(
+            ctx.user,
+            ctx.client.pk,
+            contact.pk,
+            intent=BusinessIntent(
+                engagement.pk,
+                playbook.pk,
+                PERIOD,
+                PERIOD + dt.timedelta(days=29),
+                0,
+                f"isolation:{ctx.tag}",
+                "notice",
+                1,
+            ),
+            expected_version=ctx.client.version,
+        )
 
 
 def _collect_fields(

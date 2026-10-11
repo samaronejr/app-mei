@@ -81,6 +81,7 @@ _INSERT_ONLY_IDENTITY_TABLES = frozenset(
         "cycles_completionjustification",
         "cycles_actionproposal",
         "cycles_clientpublication",
+        "delivery_outboundmessage",
     }
 )
 
@@ -155,8 +156,8 @@ def test_the_enumeration_covers_every_axorim_model_and_nothing_else() -> None:
         "NEW_OBLIGATION_MODELS / NEW_TENANT_MODELS and the literal set above so "
         "the addition is enumerated"
     )
-    assert len(MODELS) == 45, (
-        f"expected 45 swept models as of 69f292f, found {len(MODELS)}"
+    assert len(MODELS) == 46, (
+        f"expected 46 swept models after notice policy, found {len(MODELS)}"
     )
 
 
@@ -624,8 +625,9 @@ def _clone_insert(
     for column in ("position", "amendment", "number"):
         if column in kwargs:
             kwargs[column] = cast("int", kwargs[column]) + 1
-    if "business_intent_key" in kwargs:
-        kwargs["business_intent_key"] = f"clone-{kwargs['business_intent_key']}"[:64]
+    for column in ("business_intent_key", "idempotency_key"):
+        if column in kwargs:
+            kwargs[column] = f"clone-{kwargs[column]}"[:64]
 
     # Frozen manifests/publications reject mismatched identities BEFORE any FK
     # can run. Isolate that separate layer for this synthetic composite probe:
@@ -635,6 +637,7 @@ def _clone_insert(
     identity_trigger = {
         "cycles_actionproposal": "cycles_frozen_proposal",
         "cycles_clientpublication": "cycles_frozen_publication",
+        "delivery_outboundmessage": "delivery_notice_binding_guard",
     }.get(model._meta.db_table)
     with transaction.atomic():
         if identity_trigger is not None:
@@ -656,6 +659,7 @@ def _clone_insert(
     [
         ("cycles.ActionProposal", "cycles_frozen_proposal"),
         ("cycles.ClientPublication", "cycles_frozen_publication"),
+        ("delivery.OutboundMessage", "delivery_notice_binding_guard"),
     ],
 )
 def test_a_successful_clone_restores_the_identity_trigger(

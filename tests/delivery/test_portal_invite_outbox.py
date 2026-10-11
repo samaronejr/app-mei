@@ -25,6 +25,7 @@ from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
 from apps.delivery import outbox
 from apps.delivery.models import DeliveryAttempt, MessageState, OutboundMessage
+from apps.delivery.notice_authority import configure
 from apps.delivery.tasks import dispatch_outbox
 from apps.tenants.models import Invite, TenantRole
 from tests.browser.harness import mfa_session_cookie
@@ -58,6 +59,13 @@ def graph(settings: SettingsWrapper) -> CycleSetup:
     setup.tenant.features = ["cycles_r1", "import_r1"]
     setup.tenant.save(update_fields=["features"])
     enrol_totp(setup.actor)
+    with tenant_context(setup.tenant.pk):
+        configure(
+            setup.actor,
+            kinds=("portal_invite",),
+            acknowledged=True,
+            expected_version=0,
+        )
     return setup
 
 

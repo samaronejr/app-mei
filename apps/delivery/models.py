@@ -55,6 +55,8 @@ class OutboundMessage(ClientRecord):
     idempotency_key = models.CharField(max_length=64)
     business_intent_key = models.CharField(max_length=64)
     content_digest = models.CharField(max_length=64)
+    notice_authorization_bytes = models.BinaryField(null=True, blank=True)
+    notice_authorization_digest = models.BinaryField(null=True, blank=True)
     recipients_json = models.JSONField(default=list)
     subject = models.CharField(max_length=255)
     body_ref = models.CharField(max_length=255)
@@ -175,4 +177,61 @@ class AutomationPause(TenantScopedModel):
         ]
         indexes: ClassVar[list[models.Index]] = [
             models.Index(fields=["tenant", "quota_day"], name="delivery_pause_day_idx"),
+        ]
+
+
+class TenantNoticePolicy(TenantScopedModel):
+    """Current exact notice grants; acknowledgement never substitutes for access."""
+
+    version = models.PositiveIntegerField(default=1)
+    grants_json = models.JSONField(default=list, blank=True)
+    acknowledged_version = models.PositiveIntegerField(null=True, blank=True)
+    acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True
+    )
+    ack_membership_id = models.UUIDField(null=True, blank=True)
+    ack_membership_version = models.PositiveIntegerField(null=True, blank=True)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledgement_code = models.CharField(max_length=64, blank=True)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(TenantScopedModel.Meta):
+        """One retained, monotonically versioned policy per firm."""
+
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["tenant"], name="notice_policy_tenant_uniq"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0), name="notice_policy_version_positive"
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        acknowledged_version__isnull=True,
+                        acknowledged_by__isnull=True,
+                        ack_membership_id__isnull=True,
+                        ack_membership_version__isnull=True,
+                        acknowledged_at__isnull=True,
+                        acknowledgement_code="",
+                    )
+                    | (
+                        models.Q(
+                            acknowledged_version=models.F("version"),
+                            acknowledged_by__isnull=False,
+                            ack_membership_id__isnull=False,
+                            ack_membership_version__gt=0,
+                            acknowledged_at__isnull=False,
+                        )
+                        & ~models.Q(acknowledgement_code="")
+                        & ~models.Q(grants_json=[])
+                    )
+                ),
+                name="notice_policy_ack_complete",
+            ),
+        ]
+        indexes: ClassVar[list[models.Index]] = [
+            models.Index(
+                fields=["tenant", "version"], name="notice_policy_revision_idx"
+            ),
         ]

@@ -66,6 +66,7 @@ PORTAL_DENIED_TABLES = (
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
     "delivery_automationpause",
+    "delivery_tenantnoticepolicy",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",

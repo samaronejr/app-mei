@@ -3,6 +3,7 @@
 {% block heading %}Automações{% endblock %}
 {% block content %}
 <p class="mb-6 max-w-prose text-ink-600">Acompanhe as rotinas e trate os envios que precisam de uma decisão. As mensagens abaixo pertencem à sua carteira de clientes.</p>
+{% if notice_policy_url %}<p class="mb-6"><a class="ui-link" href="{{ notice_policy_url }}">Política de avisos</a></p>{% endif %}
 {% if error %}<div role="alert" class="ui-panel mb-6 p-4">{{ error }}</div>{% endif %}
 
 <section class="ui-panel mb-6 p-4" aria-labelledby="delivery-controls">

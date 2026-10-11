@@ -41,13 +41,13 @@ def test_contact_edit_committing_first_refuses_waiting_acceptance(
     offer = contact_offer()
     user = verified_invitee()
     entering_seat = Event()
-    original = invites._client_seat
+    original = invites._client_acceptance_sources
 
-    def observed(invite: Invite, account: User) -> Membership:
+    def observed(invite: Invite, account: User | None) -> None:
         entering_seat.set()
-        return original(invite, account)
+        original(invite, account)
 
-    monkeypatch.setattr(invites, "_client_seat", observed)
+    monkeypatch.setattr(invites, "_client_acceptance_sources", observed)
 
     def redeem() -> Membership:
         try:
@@ -130,13 +130,13 @@ def test_expiry_while_waiting_for_contact_authority_rolls_back_every_write(
     clock = [timezone.now()]
     monkeypatch.setattr(timezone, "now", lambda: clock[0])
     entering_seat = Event()
-    original = invites._client_seat
+    original = invites._client_acceptance_sources
 
-    def observed(invite: Invite, account: User) -> Membership:
+    def observed(invite: Invite, account: User | None) -> None:
         entering_seat.set()
-        return original(invite, account)
+        original(invite, account)
 
-    monkeypatch.setattr(invites, "_client_seat", observed)
+    monkeypatch.setattr(invites, "_client_acceptance_sources", observed)
 
     def redeem() -> Membership:
         try:

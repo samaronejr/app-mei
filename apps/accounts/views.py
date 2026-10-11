@@ -70,6 +70,12 @@ from apps.authz.portfolio import visible_clients
 from apps.authz.services import can, require_can
 from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
+from apps.delivery.notice_authority import (
+    NoticeOrigin,
+    NoticeRefusalError,
+    NoticeScope,
+    lock_notice_scope,
+)
 from apps.portal.middleware import PORTAL_URLCONF
 from apps.tenants.authority import lock_users
 from apps.tenants.models import Invite, Membership, Tenant, TenantRole
@@ -301,9 +307,14 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
             {"reason": _("Dados inválidos.")},
             status=HTTPStatus.BAD_REQUEST,
         )
+    scope = None
     try:
+        if tenant_has(tenant.pk, "cycles_r1"):
+            scope = lock_notice_scope(
+                request.user, NoticeOrigin("portal_invite", client.pk)
+            )
         _invite, raw_token = issue_client_invite(
-            actor=request.user,
+            actor=scope.actor if scope else request.user,
             tenant=tenant,
             client=client,
             email=form.cleaned_data["email"],
@@ -311,12 +322,21 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
         )
     except InviteNotPermittedError as error:
         raise PermissionDenied(str(error)) from error
+    except NoticeRefusalError as error:
+        return render(
+            request,
+            REFUSAL_TEMPLATE,
+            {"reason": error.messages[0]},
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        )
     if tenant_has(tenant.pk, "cycles_r1"):
         # T11: onto the outbox, inside this request's transaction. The send used to
         # happen here, inside the tenant transaction, and could 500 when it raced an
         # import rollback; now nothing leaves until the dispatcher claims the row
         # after commit, and a rollback takes the message with the invitation.
-        _queue_portal_invitation(request.user, client, _invite)
+        if scope is None:
+            raise PermissionDenied
+        _queue_portal_invitation(scope.actor, client, _invite, scope)
         return HttpResponseRedirect(reverse("invite-issued"))
     try:
         _mail_portal_invitation(
@@ -340,7 +360,7 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
 
 
 def _queue_portal_invitation(
-    actor: User, client: ClientCompany, invite: Invite
+    actor: User, client: ClientCompany, invite: Invite, scope: NoticeScope
 ) -> None:
     """Queue the invitation for the contact at its address, creating the contact.
 
@@ -372,7 +392,7 @@ def _queue_portal_invitation(
             email=invite.email,
             role_label=_("Convidado para o portal"),
         )
-    enqueue_portal_invite(actor, invite, contact)
+    enqueue_portal_invite(actor, invite, contact, notice_scope=scope)
 
 
 def assert_firm_invite(*, invite: Invite) -> None:

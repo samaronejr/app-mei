@@ -68,7 +68,7 @@ RUNTIME_ROLE = "app_runtime"
 # T24 adds one client-paired, independently portal-denied shadow observation table:
 # 64 + 1 = 65 tenant tables.
 # T23 places after T28 on this stack and adds tenants_supportgrant: 65 + 1 = 66.
-EXPECTED_TENANT_TABLE_COUNT = 66
+EXPECTED_TENANT_TABLE_COUNT = 67
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -451,6 +451,7 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "delivery_deliveryattempt",
         "delivery_deliveryeffect",
         "delivery_automationpause",
+        "delivery_tenantnoticepolicy",
         "tenants_billingaccount",
         "tenants_usagerecord",
         "tenants_notificationpreference",
