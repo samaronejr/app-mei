@@ -235,5 +235,12 @@ class Migration(migrations.Migration):
         ),
         EnableRLS("TenantNoticePolicy"),
         DenyPortalAccess("TenantNoticePolicy"),
+        # Explicit, like every runtime table: default privileges exist only for
+        # app_migrator, so a replay as another owner would otherwise strand it.
+        migrations.RunSQL(
+            "GRANT SELECT, INSERT, UPDATE, DELETE "
+            "ON delivery_tenantnoticepolicy TO app_runtime;",
+            "REVOKE ALL ON delivery_tenantnoticepolicy FROM app_runtime;",
+        ),
         migrations.RunSQL(GUARDS, REVERSE),
     ]

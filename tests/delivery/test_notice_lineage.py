@@ -40,12 +40,6 @@ def _restore_older_notice_schema(message: OutboundMessage) -> None:
     finally:
         MigrationExecutor(connection).migrate(leaves)
         with connection.cursor() as cursor:
-            # The test owner, unlike app_migrator, has no default role grants.
-            # Restore the fixture's runtime grant on the recreated table only.
-            cursor.execute(
-                "GRANT SELECT, INSERT, UPDATE, DELETE "
-                "ON delivery_tenantnoticepolicy TO app_runtime"
-            )
             cursor.execute("SET ROLE app_runtime")
     with tenant_context(message.tenant_id):
         message.refresh_from_db()
