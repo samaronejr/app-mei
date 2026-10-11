@@ -27,6 +27,7 @@ def test_notice_policy_is_forced_and_foreign_read_mutation_are_denied(
         # ALL_OBJECTS_OK: these denials must be caused by RLS, not ContextVar.
         assert TenantNoticePolicy.all_objects.filter(pk=policy.pk).count() == 0
         assert (
+            # ALL_OBJECTS_OK: prove the foreign UPDATE is denied by RLS itself.
             TenantNoticePolicy.all_objects.filter(pk=policy.pk).update(
                 version=2, grants_json=[]
             )

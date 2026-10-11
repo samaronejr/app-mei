@@ -16,6 +16,11 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Assunto",
         "Ativa",
         "Ativo",
+        (
+            "Autorizo somente os tipos manuais marcados para os destinatários "
+            "elegíveis deste escritório. Esta autorização não vale para entregas "
+            "que exigem aprovação."
+        ),
         "Atualidade da fonte",
         "Ação",
         "CNAE principal",
@@ -96,6 +101,7 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Texto para o cliente",
         "Tipo de solicitação",
         "Tipo",
+        "Tipos manuais autorizados",
         "UF",
         "Último dia de serviço",
         "Vale a partir de",

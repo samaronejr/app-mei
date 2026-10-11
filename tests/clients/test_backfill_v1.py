@@ -74,6 +74,12 @@ def _restore_schema(executor: MigrationExecutor) -> None:
     """Land every migration again so a failure cannot poison the next test."""
     executor.migrate(executor.loader.graph.leaf_nodes())
     with connection.cursor() as cursor:
+        # The backfill rollback recreates this dependent table as app_test,
+        # which has no app_migrator default grants.
+        cursor.execute(
+            "GRANT SELECT, INSERT, UPDATE, DELETE "
+            "ON delivery_tenantnoticepolicy TO app_runtime"
+        )
         cursor.execute("SET ROLE app_runtime")
 
 

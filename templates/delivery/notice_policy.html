@@ -24,7 +24,7 @@
       <p class="text-sm text-ink-600">Revisão: {% if policy %}{{ policy.version }}{% else %}0 — nenhuma política registrada{% endif %}. {% if policy.acknowledged_at %}Autorização registrada em {{ policy.acknowledged_at|date:"d/m/Y H:i" }} para a revisão {{ policy.acknowledged_version }}.{% else %}Sem autorização registrada.{% endif %}</p>
       <div class="flex flex-wrap gap-3">
         <button class="ui-btn ui-btn-primary" type="submit" name="action" value="save">Salvar e autorizar tipos marcados</button>
-        {% if policy %}<button class="ui-btn ui-btn-secondary" type="submit" name="action" value="revoke">Revogar avisos por política</button>{% endif %}
+        {% if policy %}<button class="ui-btn ui-btn-quiet" type="submit" name="action" value="revoke">Revogar avisos por política</button>{% endif %}
       </div>
     </form>
   </section>
@@ -36,7 +36,7 @@
     {% if pause_error %}<div class="mt-3" role="alert">{{ pause_error }} <a class="ui-link" href="{% url 'notice-policy' %}">Recarregar</a></div>{% endif %}
     <form method="post" class="mt-4">{% csrf_token %}
       <input type="hidden" name="expected_version" value="{{ pause_version }}">
-      {% if control.paused %}<button class="ui-btn ui-btn-secondary" type="submit" name="action" value="resume">Retomar novos envios</button>{% else %}<button class="ui-btn ui-btn-secondary" type="submit" name="action" value="pause">Pausar novos envios</button>{% endif %}
+      {% if control.paused %}<button class="ui-btn ui-btn-quiet" type="submit" name="action" value="resume">Retomar novos envios</button>{% else %}<button class="ui-btn ui-btn-quiet" type="submit" name="action" value="pause">Pausar novos envios</button>{% endif %}
     </form>
   </section>
 </div>

@@ -27,6 +27,13 @@ from apps.authz.support import SupportContext, current_support
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
 from apps.delivery.models import MessageState, OutboundMessage
+from apps.delivery.notice_authority import (
+    NoticeOrigin,
+    bind_notice,
+    configure,
+    lock_notice_scope,
+)
+from apps.delivery.policy import content_digest
 from apps.tenants.models import Tenant, TenantRole
 from apps.tenants.services import lock_firm_settings
 from apps.tenants.support import (
@@ -407,7 +414,9 @@ def test_message_subject_and_note_are_redacted_in_support_mode() -> None:
 
     contact = _contact_for(setup)
     with tenant_context(setup.tenant.pk):
-        OutboundMessage.objects.create(
+        configure(setup.actor, kinds=("notice",), acknowledged=True, expected_version=0)
+        scope = lock_notice_scope(setup.actor, NoticeOrigin("notice", setup.client.pk))
+        message = OutboundMessage(
             tenant=setup.tenant,
             client=setup.client,
             contact=contact,
@@ -415,14 +424,16 @@ def test_message_subject_and_note_are_redacted_in_support_mode() -> None:
             kind="notice",
             idempotency_key="support-redact-1",
             business_intent_key="support-redact-1",
-            content_digest="d" * 64,
-            recipients_json=[],
+            recipients_json=[contact.email],
             subject="PRIVATE SUBJECT CANARY",
             body_ref="digest-body-ref",
             portal_url="https://example.test/x",
             state=MessageState.QUEUED,
             decision_note="PRIVATE NOTE CANARY",
         )
+        message.content_digest = content_digest(message)
+        bind_notice(scope, message)
+        message.save(force_insert=True)
 
     session = _session_for(staff, f"{setup.tenant.slug}.localhost")
     page = session.get("/comunicacao/")
@@ -441,7 +452,9 @@ def test_send_decision_post_is_denied_under_a_grant() -> None:
 
     contact = _contact_for(setup)
     with tenant_context(setup.tenant.pk):
-        message = OutboundMessage.objects.create(
+        configure(setup.actor, kinds=("notice",), acknowledged=True, expected_version=0)
+        scope = lock_notice_scope(setup.actor, NoticeOrigin("notice", setup.client.pk))
+        message = OutboundMessage(
             tenant=setup.tenant,
             client=setup.client,
             contact=contact,
@@ -449,13 +462,15 @@ def test_send_decision_post_is_denied_under_a_grant() -> None:
             kind="notice",
             idempotency_key="support-send-1",
             business_intent_key="support-send-1",
-            content_digest="e" * 64,
-            recipients_json=[],
+            recipients_json=[contact.email],
             subject="queued",
             body_ref="ref",
             portal_url="https://example.test/x",
             state=MessageState.UNKNOWN,
         )
+        message.content_digest = content_digest(message)
+        bind_notice(scope, message)
+        message.save(force_insert=True)
 
     session = _session_for(staff, f"{setup.tenant.slug}.localhost")
     response = session.post(
