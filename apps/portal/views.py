@@ -572,6 +572,11 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     """
     rows = Document.objects.filter(_served()).order_by("-created_at", "pk")
     page = _documents_page(rows, request)
+    # T45: the R1 ink for this page and the layout around it, answered from the portal
+    # stash without a query exactly as on `portal_payments`. Unflagged tenants keep
+    # their bytes.
+    tenant = request.tenant
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
     return render(
         request,
         "portal/documents.html",
@@ -582,6 +587,7 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
                 for document in page.object_list
             ],
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+            "cycles_r1": cycles_r1,
         },
     )
 
@@ -591,9 +597,9 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
 def portal_account(request: HttpRequest) -> HttpResponse:
     """Render the three things a client can do to their own sign-in, and nothing else.
 
-    **Zero data reads, and no context, which is the finished shape rather than a page
-    still waiting to be filled in.** Every destination this screen offers is a static
-    address the URL tree already carries, and the one value it shows —
+    **Zero data reads, and one flag of context, which is the finished shape rather than
+    a page still waiting to be filled in.** Every destination this screen offers is a
+    static address the URL tree already carries, and the one value it shows —
     `request.user.email` — is materialised by the middleware BEFORE the transaction
     opens and before the role switch, so the template reads it without issuing
     anything. `tests/portal/test_portal_templates_render.py:102-106` allows exactly
@@ -617,8 +623,14 @@ def portal_account(request: HttpRequest) -> HttpResponse:
     The links are named, not built. `account_logout` is reached by a POST form in the
     template rather than an anchor, because a signing-out GET is a link any prefetch,
     scanner or preloading browser can follow on the client's behalf.
+
+    The one context value is `cycles_r1` (T45), answered from the portal stash without
+    a query exactly as on `portal_payments`. It gives the layout and this page the R1
+    ink; unflagged tenants keep their bytes.
     """
-    return render(request, "portal/account.html")
+    tenant = getattr(request, "tenant", None)
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
+    return render(request, "portal/account.html", {"cycles_r1": cycles_r1})
 
 
 def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
