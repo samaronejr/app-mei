@@ -1,5 +1,6 @@
 """Workspace rendering kept separate from the cycle URL decorators."""
 
+from typing import Final
 from uuid import UUID
 
 from django.db.models import Q
@@ -8,8 +9,9 @@ from django.shortcuts import render
 
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.services import can
-from apps.clients.maintenance import load_client
+from apps.clients.maintenance import MANAGE_CAPABILITY, load_client
 from apps.clients.models import ClientContact, Engagement, OnboardingItem
+from apps.core.flags import tenant_has
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.exception_context import exception_rows
 from apps.cycles.models import Exception as CycleException
@@ -18,6 +20,13 @@ from apps.cycles.services.cycle import tenant_id
 from apps.cycles.workspace import get_cycle_context, parse_period, timeline
 from apps.obligations.coverage import coverage_for
 from apps.obligations.models import Document, Obligation
+
+# AXR1-047: the flag the setup route is gated on, written as a literal for the
+# reason `cycle_views` writes `"bulk_r1"` and `clients.views` writes `"cycles_r1"`
+# — `apps.clients.views` imports this module, so importing its `ONBOARDING_FLAG`
+# back would close an import cycle. A misspelling is not silent: `tenant_has`
+# refuses a slug outside `FEATURES` instead of answering False.
+SETUP_FLAG: Final = "import_r1"
 
 
 def client_workspace(
@@ -71,6 +80,15 @@ def client_workspace(
             .order_by("playbook_id", "-number")
             .distinct("playbook_id"),
             "may_operate": can(request.user, CYCLES_OPERATE, tenant_id=tenant_id()),
+            # AXR1-047: whether to draw the way into this client's setup page.
+            # The route behind it answers 404 without `import_r1` and 403 without
+            # `clients.manage` (`apps/clients/views_onboarding.py:412-424`), so the
+            # link is offered exactly when both already say yes — the decorators
+            # there remain the authorization, this only keeps the page honest about
+            # what it offers. A read-only support session resolves `clients.manage`
+            # to NONE and is therefore shown no link it would be refused.
+            "may_set_up": tenant_has(tenant_id(), SETUP_FLAG)
+            and can(request.user, MANAGE_CAPABILITY, tenant_id=tenant_id()),
             "timeline": timeline(request.user, pk, period),
             "documents": Document.objects.filter(client=client).order_by(
                 "-created_at", "pk"
