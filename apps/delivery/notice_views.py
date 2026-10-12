@@ -20,6 +20,7 @@ from apps.delivery.notice_authority import (
     NoticeRefusalError,
     configure,
     enabled,
+    granted_automatic_reminders,
     granted_kinds,
     may_manage,
     tenant_id,
@@ -29,7 +30,7 @@ from apps.tenants.models import Membership, Tenant
 
 
 class NoticePolicyForm(forms.Form):
-    """Only actual implemented manual grants; no basis or automatic-rule input."""
+    """Exact manual choices and the one implemented bounded automatic rule."""
 
     expected_version = forms.IntegerField(min_value=0, widget=forms.HiddenInput)
     kinds = forms.MultipleChoiceField(
@@ -38,12 +39,19 @@ class NoticePolicyForm(forms.Form):
         widget=forms.CheckboxSelectMultiple,
         label="Tipos manuais autorizados",
     )
+    automatic_reminders = forms.BooleanField(
+        required=False,
+        label=(
+            "Autorizar lembretes automáticos: um por solicitação atrasada e contato "
+            "elegível por dia, sem recuperar dias perdidos."
+        ),
+    )
     acknowledged = forms.BooleanField(
         required=False,
         label=(
-            "Autorizo somente os tipos manuais marcados para os destinatários "
-            "elegíveis deste escritório. Esta autorização não vale para entregas "
-            "que exigem aprovação."
+            "Autorizo somente os tipos e a regra automática marcados para os "
+            "destinatários elegíveis deste escritório. Esta autorização não vale para "
+            "entregas que exigem aprovação."
         ),
     )
 
@@ -99,6 +107,9 @@ def _save_policy(
             if action == "save"
             else False,
             expected_version=form.cleaned_data["expected_version"],
+            automatic_reminders=form.cleaned_data["automatic_reminders"]
+            if action == "save"
+            else False,
         )
     except NoticeRefusalError as error:
         form.add_error(None, error)
@@ -148,6 +159,7 @@ def notice_policy(request: AuthenticatedRequest) -> HttpResponse:
         initial={
             "expected_version": policy.version if policy else 0,
             "kinds": granted_kinds(policy),
+            "automatic_reminders": granted_automatic_reminders(policy),
         }
     )
     status = HTTPStatus.OK

@@ -349,6 +349,50 @@ The latter may already have caused an external effect and has no retry button.
    first, database/object recovery, both reconciliation commands, uncertainty
    review, then unpause. The live operator drill OG-06 remains OPEN.
 
+### Automatic reminder sweep {#automatic-reminder-sweep}
+
+`sweep-reminders` is registered every five minutes. Automações projects the
+`sweep_reminders` heartbeat's last attempt, last successful completion, outcome
+counts and `reminder_sweep_failed` / `reminder_sweep_running` codes. A failed
+round never advances its successful-completion field. A running stamp that
+outlives the expected cadence can indicate a lost worker; compare it with beat
+and worker diagnostics before resuming anything. Tenant failures are captured
+through the existing Sentry path with a hashed tenant tag. The new heartbeat
+fields and tag contain no mailbox or policy data; existing Sentry redaction
+still applies to captured exceptions.
+
+The sweep needs a fresh ordinary-owner acknowledgement of the exact
+`request_reminder / automatic / rule_version=1` grant. A manual grant or a
+published playbook alone does not opt a firm into a cadence absent from that
+playbook's schema. Policy settings and the existing pause control are at
+`/gestao/politica-avisos/`; saving a grant does not enable cycles or a provider.
+
+Each tenant turn evaluates at most 50 overdue requests and cancels at most
+50 obsolete pending automatic reminders. Each request queues at most 50 eligible
+recipients per turn. A partial request retains a contact cursor, including across
+days; the turn stops and the next firm gets its opportunity. Completed or refused
+requests advance the request cursor. Recipient eligibility uses the existing
+manual-request audience contract; the existing daily SMTP attempt cap still
+applies. At most one occurrence per request/contact/Brazilian local day expires
+at the next local midnight, with no catch-up of missed days. The authority suffix
+still locks all of the client's contacts and invitations; these limits bound
+enqueue work, not the total SQL or lock cost of that existing suffix.
+
+Both the sweep and dispatch's pre-claim phase cancel obsolete automatic notices,
+including when flags or pause prevent claims. Cancellation reserves no SMTP
+quota and does not cancel paused manual notices. The gateway still repeats the
+full authority/source checks at committed dispatch start. A started send can
+finish; pause/revocation is not recall.
+
+A failed tenant phase can have a committed prefix. Counters summarize completed
+tenant batches; an incomplete batch is not added. Zero queued notices on a failed
+run is not proof that no notices were committed. Inspect Comunicação and the independent
+journal; never reacknowledge a policy or change an occurrence key to force a
+replay. The other tenants still receive their bounded turn, and the overall
+task raises. `/readyz` continues to report the existing backlog/dead-letter
+budgets, not a reminder-worker completion claim. After restore, retain the
+global pause and the reconciliation protocol in `ops/RESTORE.md`.
+
 ### Raised SMTP error
 
 1. The user already saw an honest error page; the invitation was not created. Do not

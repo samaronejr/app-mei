@@ -37,6 +37,11 @@ from apps.delivery.services import record
 from apps.tenants.models import Invite
 
 
+def idempotency_digest(idempotency_key: str) -> str:
+    """Return the stored caller key for a caller-supplied idempotency key."""
+    return hashlib.sha256(idempotency_key.encode()).hexdigest()
+
+
 def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and revision
     actor: User,
     client_id: UUID,
@@ -71,9 +76,14 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
             msg = "Tipo de mensagem não registrado."
             raise ValidationError(msg)
         if cycle_id is not None:
-            cycle = load_cycle(actor, cycle_id)
+            cycle = (
+                scope.cycle
+                if scope.reminder_on is not None
+                else load_cycle(actor, cycle_id)
+            )
             if (
-                cycle.client_id != client.pk
+                cycle is None
+                or cycle.client_id != client.pk
                 or cycle.engagement_id != intent.engagement
                 or cycle.playbook_id != intent.playbook
                 or cycle.period_start != intent.period_start
@@ -83,11 +93,7 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
                 msg = "A intenção não corresponde ao ciclo."
                 raise ValidationError(msg)
         key = intent.key(tenant_id())
-        caller_key = (
-            hashlib.sha256(idempotency_key.encode()).hexdigest()
-            if idempotency_key
-            else key
-        )
+        caller_key = idempotency_digest(idempotency_key) if idempotency_key else key
         parts = urlsplit(settings.PLATFORM_URL)
         host = f"{client.tenant.slug}-portal.{parts.hostname}"
         if parts.port:
@@ -140,7 +146,12 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
         message.save()
         client.version += 1
         client.save(update_fields=["version"])
-        record(message, message.state, actor=actor, code="enqueued")
+        record(
+            message,
+            message.state,
+            actor=None if scope.reminder_on is not None else actor,
+            code="enqueued",
+        )
         return message
 
 

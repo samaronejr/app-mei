@@ -747,6 +747,10 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
         "task": "apps.delivery.tasks.dispatch_outbox",
         "schedule": 60.0,
     },
+    "sweep-reminders": {
+        "task": "apps.delivery.tasks.sweep_reminders",
+        "schedule": 300.0,
+    },
     # T12: scan quarantined uploads. Minute cadence like the outbox; the per-intake
     # backoff (1-60 min, 24 h deadline) lives in `next_scan_at`, not here.
     "scan-quarantine": {

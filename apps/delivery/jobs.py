@@ -21,6 +21,7 @@ HEARTBEAT_NAMES: Final = {
 }
 JOB_LABELS: Final = {
     "dispatch_outbox": "Envios da fila",
+    "sweep_reminders": "Lembretes automáticos de documentos",
     "generate_monthly_cycles": "Geração de ciclos",
     "scan_quarantine": "Verificação de arquivos",
     "extract_documents": "Extração de documentos",
@@ -39,6 +40,15 @@ JOB_LABELS: Final = {
     "resume_bulk_operations": "Operações em lote",
     "purge_agent_outputs": "Retenção de registros internos de processamento",
 }
+OUTCOME_LABELS: Final = {
+    "evaluated": "Solicitações avaliadas em lotes concluídos",
+    "queued": "Avisos incluídos em lotes concluídos",
+    "existing": "Ocorrências já existentes",
+    "skipped": "Solicitações ignoradas",
+    "conflicts": "Conflitos de autorização ou conteúdo",
+    "cancelled": "Avisos cancelados antes de iniciar",
+    "failed_tenants": "Escritórios com falha",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +61,9 @@ class JobStatus:
     next_run_at: datetime | None
     enabled: bool
     due: bool
+    last_attempt_at: datetime | None = None
+    last_error_code: str = ""
+    outcomes: tuple[tuple[str, int], ...] = ()
 
 
 def registered_jobs() -> tuple[JobStatus, ...]:
@@ -63,14 +76,22 @@ def registered_jobs() -> tuple[JobStatus, ...]:
             "interval", "crontab", "solar", "clocked"
         )
     }
-    stamps = dict(SchedulerHeartbeat.objects.values_list("name", "updated_at"))
+    stamps = {stamp.name: stamp for stamp in SchedulerHeartbeat.objects.all()}
     now = timezone.now()
     result = []
     for name, definition in definitions.items():
         row = persisted.get(name)
         task = str(row.task) if row is not None else definition["task"]
         short_name = task.rsplit(".", 1)[-1]
-        completed = stamps.get(HEARTBEAT_NAMES.get(short_name, short_name))
+        stamp = stamps.get(HEARTBEAT_NAMES.get(short_name, short_name))
+        completed = (
+            stamp.last_success_at
+            if stamp is not None and stamp.last_attempt_at is not None
+            else stamp.updated_at
+            if stamp is not None
+            else None
+        )
+        attempted = stamp.last_attempt_at if stamp is not None else None
         last_dispatched = row.last_run_at if row is not None else None
         enabled = bool(row.enabled) if row is not None else True
         starts = row.start_time if row is not None else None
@@ -90,7 +111,9 @@ def registered_jobs() -> tuple[JobStatus, ...]:
             )
             local_now = now.astimezone(schedule.tz)
             schedule.nowfun = lambda instant=local_now: instant
-            last_run = (last_dispatched or completed or now).astimezone(schedule.tz)
+            last_run = (last_dispatched or attempted or completed or now).astimezone(
+                schedule.tz
+            )
             remaining = schedule.remaining_estimate(last_run)
             due = remaining.total_seconds() <= 0
             next_run = now + max(remaining, timedelta(0))
@@ -106,6 +129,13 @@ def registered_jobs() -> tuple[JobStatus, ...]:
                 next_run_at=next_run,
                 enabled=enabled,
                 due=due,
+                last_attempt_at=attempted,
+                last_error_code=stamp.last_error_code if stamp else "",
+                outcomes=tuple(
+                    (label, int(stamp.outcomes_json[key]))
+                    for key, label in OUTCOME_LABELS.items()
+                    if stamp is not None and key in stamp.outcomes_json
+                ),
             )
         )
     return tuple(result)

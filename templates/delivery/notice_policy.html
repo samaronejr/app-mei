@@ -5,12 +5,12 @@
 <div class="mx-auto max-w-3xl">
   <a class="ui-link" href="{% url 'clients-list' %}">Voltar aos clientes</a>
   <section class="ui-panel mt-6 p-4" aria-labelledby="notice-policy-heading">
-    <h2 class="ui-panel-heading" id="notice-policy-heading">Autorização para avisos manuais</h2>
+    <h2 class="ui-panel-heading" id="notice-policy-heading">Autorização para avisos e lembretes</h2>
     <p class="mt-3">Marque somente os tipos que este escritório autoriza. Cada mudança exige uma confirmação atual do titular e fica registrada.</p>
-    <p class="mt-2 text-sm text-ink-600">Ciclos com playbook publicado usam essa base e não exigem esta autorização adicional. A política não libera entregas que exigem aprovação, nem cria regras automáticas.</p>
-    <p class="mt-2 text-sm text-ink-600">O convite pela lista de contatos exige a importação de clientes ativa; os demais tipos desta lista exigem a rota de ciclos ativa para enviar. Salvar uma permissão não ativa nenhuma dessas rotas nem um provedor de e-mail. Cada nova revisão bloqueia os avisos pendentes vinculados à revisão anterior; não os autoriza novamente.</p>
+    <p class="mt-2 text-sm text-ink-600">Avisos manuais de ciclos com playbook publicado usam essa base e não exigem esta autorização adicional. Publicar um playbook ou marcar um lembrete manual não autoriza a rotina automática abaixo. A política não libera entregas que exigem aprovação.</p>
+    <p class="mt-2 text-sm text-ink-600">O convite pela lista de contatos exige a importação de clientes ativa; os demais tipos desta lista e os lembretes automáticos exigem a rota de ciclos ativa para enviar. Salvar uma permissão não ativa nenhuma dessas rotas nem um provedor de e-mail. Cada nova revisão bloqueia os avisos pendentes vinculados à revisão anterior; não os autoriza novamente.</p>
     <p class="mt-2 text-sm text-ink-600">Os dois convites ao portal são autorizados separadamente: um vale para a ficha do cliente e o outro para a lista de contatos. Envios legados não são autorizados por esta política.</p>
-    <p class="mt-3" role="status">{% if policy_state == "absent" %}Nenhuma política registrada. Avisos que dependem dela estão bloqueados.{% elif policy_state == "revoked" %}Autorização por política revogada. Avisos que dependem dela estão bloqueados.{% elif policy_state == "unacknowledged" %}Tipos registrados sem autorização. Confirme novamente para liberar somente os tipos marcados.{% elif policy_state == "stale" %}A autorização registrada não está mais vigente. O titular atual precisa confirmar novamente.{% else %}Autorização vigente para os tipos manuais marcados.{% endif %}</p>
+    <p class="mt-3" role="status">{% if policy_state == "absent" %}Nenhuma política registrada. Avisos que dependem dela estão bloqueados.{% elif policy_state == "revoked" %}Autorização por política revogada. Avisos que dependem dela estão bloqueados.{% elif policy_state == "unacknowledged" %}Tipos registrados sem autorização. Confirme novamente para liberar somente os tipos marcados.{% elif policy_state == "stale" %}A autorização registrada não está mais vigente. O titular atual precisa confirmar novamente.{% else %}Autorização vigente somente para os tipos e a regra marcados.{% endif %}</p>
     <form method="post" class="mt-6 grid gap-4" id="notice-policy-form">{% csrf_token %}
       {{ form.expected_version }}
       {% if form.non_field_errors %}<div role="alert">{{ form.non_field_errors }}<a class="ui-link" href="{% url 'notice-policy' %}">Recarregar a política atual</a></div>{% endif %}
@@ -18,6 +18,13 @@
         <legend class="ui-field-label mb-3">{{ form.kinds.label }}</legend>
         {% for option in form.kinds %}<label class="flex items-start gap-2" for="{{ option.id_for_label }}">{{ option.tag }}<span>{{ option.choice_label }}</span></label>{% endfor %}
         {% if form.kinds.errors %}<div role="alert">{{ form.kinds.errors }}</div>{% endif %}
+      </fieldset>
+      <fieldset class="grid gap-3">
+        <legend class="ui-field-label mb-3">Regra automática implementada — versão 1</legend>
+        <label class="flex items-start gap-2" for="{{ form.automatic_reminders.id_for_label }}">{{ form.automatic_reminders }}<span>{{ form.automatic_reminders.label }}</span></label>
+        {% if form.automatic_reminders.errors %}<div role="alert">{{ form.automatic_reminders.errors }}</div>{% endif %}
+        <p class="text-sm text-ink-600">A rotina verifica solicitações já enviadas, atrasadas e ainda sem envio do cliente. Usa somente o modelo de lembrete existente. Cada ocorrência vale até a próxima meia-noite no horário de Brasília; dias perdidos não geram acúmulo. A plataforma visita no máximo 50 solicitações por escritório a cada rodada prevista de cinco minutos; o limite de envio por dia continua valendo.</p>
+        <p class="text-sm text-ink-600">Upload, encerramento, dispensa, perda de acesso, expiração, pausa ou revogação são conferidos novamente antes de iniciar o envio. A rotina não aprova uma entrega nem toma uma decisão em nome do titular.</p>
       </fieldset>
       <label class="flex items-start gap-2" for="{{ form.acknowledged.id_for_label }}">{{ form.acknowledged }}<span>{{ form.acknowledged.label }}</span></label>
       {% if form.acknowledged.errors %}<div role="alert">{{ form.acknowledged.errors }}</div>{% endif %}

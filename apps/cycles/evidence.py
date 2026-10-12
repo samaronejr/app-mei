@@ -119,6 +119,10 @@ class EvidenceRequest(ClientRecord):
             models.Index(
                 fields=["tenant", "cycle", "state"], name="evidencerequest_cycle_idx"
             ),
+            models.Index(
+                fields=["tenant", "state", "due_on", "id"],
+                name="evidencerequest_reminder_idx",
+            ),
         ]
         constraints: ClassVar[list[models.BaseConstraint]] = [
             *ClientRecord.Meta.constraints,

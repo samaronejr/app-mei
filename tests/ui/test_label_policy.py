@@ -17,9 +17,13 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Ativa",
         "Ativo",
         (
-            "Autorizo somente os tipos manuais marcados para os destinatários "
-            "elegíveis deste escritório. Esta autorização não vale para entregas "
-            "que exigem aprovação."
+            "Autorizo somente os tipos e a regra automática marcados para os "
+            "destinatários elegíveis deste escritório. Esta autorização não vale para "
+            "entregas que exigem aprovação."
+        ),
+        (
+            "Autorizar lembretes automáticos: um por solicitação atrasada e contato "
+            "elegível por dia, sem recuperar dias perdidos."
         ),
         "Atualidade da fonte",
         "Ação",
