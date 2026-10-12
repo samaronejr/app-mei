@@ -64,8 +64,8 @@ until the name is cleared.
 - **Ids.** The plan has 29 original numbered todos in five waves, the added
   `AXR1-030` certificate guard, `AXR1-031` customer-facing label repair,
   `AXR1-032` support-authority repair, `AXR1-033` contact-invitation binding,
-  and a final verification wave. Required follow-ups `AXR1-034` through
-  `AXR1-050` and `AXR1-053` remain open; optional proposals 051/052 are not
+  `AXR1-053` tenant notice authorization, and a final verification wave.
+  Required follow-ups `AXR1-034` through `AXR1-050` remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
@@ -799,6 +799,27 @@ separate retained F3 data remains for the unfinished final journey.
 This approves T33, not publication execution/acknowledgement/closure, wider
 F3/F4 fidelity, launch, merge or deployment. Every OG/OD gate remains open.
 
+`AXR1-053` (versioned tenant notice authorization) is recorded on delivered `AXR1-033`.
+A tenant-scoped, monotonically versioned notice policy holds exact manual kind grants
+that only a fresh ordinary owner can save or revoke, under lock, expected version,
+capability check and an append-only event carrying the acknowledgement snapshot.
+Templated intents bind their authorization basis immutably at enqueue: either the
+cycle's published playbook or the acknowledged policy revision. Dispatch revalidates
+policy revision, owner seat, capability and recipient before any SMTP; revocation or
+re-acknowledgement cancels obsolete intents with zero sends. No migration consent,
+historical acknowledgement or consequential-effect allowlisting. The policy table is
+RLS-forced, portal NONE, and its migration grants `app_runtime` explicitly.
+The owner surface was exercised for real (password and MFA) in cycles and import-only
+shells at desktop and mobile. Independent review **APPROVE**, high confidence, at
+`136a267`: focused, adversarial, Chromium/axe and fake-SMTP checks passed; removing
+the pre-send authority check made the policy-revision test transmit and fail, and
+restoring it passed. The reviewer relied on source equivalence for the full default,
+isolation and CNPJ suites, which ran at `f0a2d9e` (only a browser fixture differs).
+Evidence: `.evidence/AXR1-053-happy.txt`, `AXR1-053-failure.txt`, `AXR1-053-review.md`,
+`AXR1-053-review-cleanup.txt`, `AXR1-053-root-ui.md`, `AXR1-053-final-gates-r3.txt`
+and `AXR1-053-final-browser-r1.txt`. This approves T53, not T48 import-origin routing,
+T39 automatic reminders, launch, merge or deployment. Every OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -898,7 +919,18 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4722 passing** (28 skipped, 146 deselected),
+implementation head. The current default-suite baseline is **4803 passing** (30 skipped, 154 deselected),
+verified at `AXR1-053` code `f0a2d9e` on delivered `AXR1-033` head `657ede8`:
+the **4722** below plus **81** new notice-authority and compatibility cases.
+Isolation (**640**, with **30** justified skips), CNPJ (**29**), build with a clean
+static diff, lint, format, Mypy and migration drift passed serially; browser (**154**)
+passed at `136a267`, which differs only in `tests/browser/test_onboarding.py`.
+Evidence: `.evidence/AXR1-053-final-gates-r3.txt` and `AXR1-053-final-browser-r1.txt`.
+Earlier failed full runs (63 failed with 11 errors, then 2, then 2 browser failures)
+remain separate failures with their repairs recorded, not passing evidence.
+This status-only delivery changes no reviewed implementation.
+
+The previous default-suite baseline was **4722 passing** (28 skipped, 146 deselected),
 verified at `AXR1-033` code `c6653b0` on delivered `AXR1-032` head `65392c6`:
 the **4693** below plus **29** new invitation regression cases.
 Isolation (**628**, with **28** justified skips), CNPJ (**29**), browser (**146**),
