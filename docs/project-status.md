@@ -65,9 +65,9 @@ until the name is cleared.
   `AXR1-030` certificate guard, `AXR1-031` customer-facing label repair,
   `AXR1-032` support-authority repair, `AXR1-033` contact-invitation binding,
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
-  routing, `AXR1-039` automatic reminder sweep, and a final verification wave. Required
-  follow-ups `AXR1-034` through `AXR1-038`, `AXR1-040` through `AXR1-047`, `AXR1-049` and
-  `AXR1-050` remain open; optional proposals 051/052 are not
+  routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, and a
+  final verification wave. Required follow-ups `AXR1-034` through `AXR1-038`, `AXR1-040` through
+  `AXR1-047` and `AXR1-050` remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
@@ -859,6 +859,21 @@ key is now the enqueue idempotency key (database-unique); a same-day reopen or r
 reported as a conflict and sends nothing. Regression test kept. This approves T39, not T49 or later follow-ups, launch, merge
 or deployment. Every OG/OD gate remains open.
 
+`AXR1-049` (logout recovery after support or tenant denial) is recorded on delivered `AXR1-039`.
+When an authenticated account has neither an active membership nor a live support grant for the
+firm, the tenant middleware still refuses every route except the registered allauth logout view
+(matched by route name and callable), which it admits with no tenant context. Logout keeps its
+GET confirmation and POST execution, CSRF and Origin checks, safe local `next` handling and
+host-only session cookies; the next account must pass password and MFA again. Verified for real
+at desktop and mobile: owner approval and revocation through the actual forms, the revoked
+support session and a freshly authenticated revoked account both refused, refused logout POSTs
+without a token or with a foreign Origin, logout with an external `next` sent to `/`, a local
+`next` honoured, an owner account switch with a new code, and the same recovery after a staff
+membership is deactivated. Independent review **APPROVE** at `e681371`: no blockers; all five denial classes reproduced over HTTP, and the real revoked-support and lost-membership journeys at 1440 and 390 recovered through the normal logout and a fresh password plus TOTP sign-in while protected routes stayed 403; 1,145 adversarial probes passed.
+Evidence: `.evidence/AXR1-049-happy.txt`, `AXR1-049-failure.txt`, `AXR1-049-review.md`,
+`AXR1-049-final-gates-r1.txt`. This approves T49, not T50 or later follow-ups, launch, merge or
+deployment. Every OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -958,10 +973,13 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4893 passing** (30 skipped, 154 deselected), verified at `AXR1-039` code `fdb1bd0` on delivered `AXR1-048` head `0fccec1`: the **4855** below plus **38** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-039-final-gates-r4.txt`.
+implementation head. The current default-suite baseline is **4902 passing** (30 skipped, 154 deselected), verified at `AXR1-049` code `e681371` on delivered `AXR1-039` head `778b5f1`: the **4893** below plus **9** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed (r2; r1 had 1 Chromium screenshot-capture error, see failure evidence)**) passed serially. Evidence: `.evidence/AXR1-049-final-gates-r1.txt`.
 This status-only delivery changes no reviewed implementation.
 
-The previous default-suite baseline was **4855 passing** (30 skipped, 154 deselected),
+The previous default-suite baseline was **4893 passing** (30 skipped, 154 deselected), verified at `AXR1-039` code `fdb1bd0` on delivered `AXR1-048` head `0fccec1`: the **4855** below plus **38** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-039-final-gates-r4.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4855 passing** (30 skipped, 154 deselected),
 verified at `AXR1-048` code `b53ad6b` on delivered `AXR1-053` head `d87cf17`: the
 **4803** below plus **52** new or reshaped import-origin cases. Isolation (**640**, with
 **30** justified skips), CNPJ (**29**), build with a clean static diff, lint, format, Mypy
