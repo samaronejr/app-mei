@@ -103,10 +103,37 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         '.select_related("owner", "cycle__client", "cycle__engagement")',
     ): "AXR1-036: ORM exception owner relation for the cycle detail display.",
     LiteralPin(
-        "apps/cycles/workspace_views.py",
+        "apps/cycles/workspace_queries.py",
         "owner",
-        '.select_related("playbook", "owner", "engagement")',
-    ): "ORM cycle owner relation, not an authorization role literal.",
+        '"owner",',
+    ): (
+        "AXR1-035: ServiceCycle field name in the workspace aggregate's "
+        "serialized field list."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "active",
+        '"active",',
+    ): (
+        "AXR1-035: ClientContact boolean field name in the aggregate's "
+        "serialized field list."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "owner",
+        'cycle.owner = _person(payload["owner"])',
+    ): (
+        "AXR1-035: aggregate payload key restoring the cycle owner relation, "
+        "not a role."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "unknown",
+        'coverage=("unknown",),',
+    ): (
+        "AXR1-035: the same not-yet-evaluated coverage placeholder as "
+        "apps/cycles/workspace.py."
+    ),
     LiteralPin(
         "apps/cycles/exception_context.py",
         "owner",

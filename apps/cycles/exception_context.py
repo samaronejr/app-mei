@@ -1,5 +1,6 @@
 """The shared, authorized exception drawer projection for both staff surfaces."""
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -7,9 +8,8 @@ from django.db.models import Q, QuerySet
 from django.http import Http404
 
 from apps.accounts.views import AuthenticatedRequest
-from apps.authz.portfolio import firm_wide_memberships
+from apps.authz.portfolio import assignable_members
 from apps.authz.services import can
-from apps.clients.models import ClientAssignment
 from apps.cycles.capabilities import CYCLES_REVIEW
 from apps.cycles.exception_evidence import evidence_destinations, exception_location
 from apps.cycles.models import Exception as CycleException
@@ -35,31 +35,62 @@ EXCEPTION_ACTION_LABELS = {
 
 def _roster(client_id: UUID) -> list[Membership]:
     """Firm members an exception may be handed to (the service re-checks each)."""
-    assigned = ClientAssignment.objects.filter(client_id=client_id).values("user_id")
-    # PLATFORM_QUERY_OK: tenants_membership is a tenancy root; this firm's staff.
-    members = Membership.objects.filter(
-        tenant_id=tenant_id(), client__isnull=True, is_active=True
-    )
-    return list(
-        members.filter(
-            Q(user_id__in=assigned)
-            | Q(pk__in=firm_wide_memberships(members).values("pk"))
-        )
-        .select_related("user")
-        .order_by("user__email")
-    )
+    return list(assignable_members(client_id, tenant_id=tenant_id()))
 
 
-def _selected(
-    request: AuthenticatedRequest, selected_exception: CycleException | None
-) -> UUID | None:
+@dataclass(frozen=True, slots=True)
+class ExceptionControls:
+    """The reader's roster and review decision, not write authorization."""
+
+    roster: list[Membership]
+    may_review: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ExceptionSelection:
+    """Durable drawer selection and the selected row's conflict message."""
+
+    selected: UUID | None
+    error: str = ""
+
+
+def exception_selection(
+    request: AuthenticatedRequest,
+    selected_exception: CycleException | None = None,
+    error: str = "",
+) -> ExceptionSelection:
+    """Parse the selected identity once, refusing malformed UUIDs."""
     selected = selected_exception.pk if selected_exception is not None else None
     if selected is None and "pendencia" in request.GET:
         try:
             selected = UUID(request.GET["pendencia"])
         except ValueError as exc:
             raise Http404 from exc
-    return selected
+    return ExceptionSelection(selected, error)
+
+
+def _require_selection(
+    visible: list[CycleException], selection: ExceptionSelection
+) -> None:
+    """Refuse a selected identity absent from either scoped read source."""
+    if selection.selected is not None and not any(
+        row.pk == selection.selected for row in visible
+    ):
+        raise Http404
+
+
+def read_exceptions(
+    rows: QuerySet[CycleException], selection: ExceptionSelection
+) -> list[CycleException]:
+    """Fetch the scoped active rows and any selected terminal row."""
+    visible = list(
+        rows.filter(Q(state__in=ACTIVE_STATES) | Q(pk=selection.selected))
+        .select_related("owner", "cycle__client", "cycle__engagement")
+        .prefetch_related("internals")
+        .order_by("due_on", "review_on", "created_at", "pk")
+    )
+    _require_selection(visible, selection)
+    return visible
 
 
 def exception_rows(
@@ -70,15 +101,13 @@ def exception_rows(
     error: str = "",
 ) -> list[dict[str, object]]:
     """Select only inside the caller's authorized client, period and cycle."""
-    selected = _selected(request, selected_exception)
-    visible = list(
-        rows.filter(Q(state__in=ACTIVE_STATES) | Q(pk=selected))
-        .select_related("owner", "cycle__client", "cycle__engagement")
-        .prefetch_related("internals")
-        .order_by("due_on", "review_on", "created_at", "pk")
-    )
+    selection = exception_selection(request, selected_exception, error)
+    visible = read_exceptions(rows, selection)
+    roster = _roster(visible[0].client_id) if visible else []
     may_review = can(request.user, CYCLES_REVIEW, tenant_id=tenant_id())
-    return _rows_context(visible, origin, selected, error, may_review)
+    return present_exceptions(
+        visible, selection, ExceptionControls(roster, may_review), origin
+    )
 
 
 def display_exception_rows(
@@ -88,27 +117,31 @@ def display_exception_rows(
     error: str = "",
 ) -> list[dict[str, object]]:
     """Reuse the cycle display cut, retaining selected terminal rows and 404s."""
-    selected = _selected(request, selected_exception)
+    selection = exception_selection(request, selected_exception, error)
     visible = [
         row
         for row in reads.exceptions
-        if row.state in ACTIVE_STATES or row.pk == selected
+        if row.state in ACTIVE_STATES or row.pk == selection.selected
     ]
-    return _rows_context(
-        visible, "ciclo", selected, error, CYCLES_REVIEW in reads.allowed
+    _require_selection(visible, selection)
+    roster = _roster(visible[0].client_id) if visible else []
+    return present_exceptions(
+        visible,
+        selection,
+        ExceptionControls(roster, CYCLES_REVIEW in reads.allowed),
+        "ciclo",
     )
 
 
-def _rows_context(
+def present_exceptions(
     visible: list[CycleException],
+    selection: ExceptionSelection,
+    controls: ExceptionControls,
     origin: str,
-    selected: UUID | None,
-    error: str,
-    may_review: bool,
 ) -> list[dict[str, object]]:
-    if selected is not None and not any(row.pk == selected for row in visible):
-        raise Http404
-    roster = _roster(visible[0].client_id) if visible else []
+    """Render scoped rows using the originating reader's resolved controls."""
+    selected, error = selection.selected, selection.error
+    roster, may_review = controls.roster, controls.may_review
     evidence = evidence_destinations(visible, may_review)
     result = []
     for problem in visible:

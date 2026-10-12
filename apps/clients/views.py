@@ -368,12 +368,12 @@ def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse
     tenant = _tenant(request)
     tenant_id = UUID(str(tenant.pk))
 
+    if tenant_has(tenant.pk, "cycles_r1"):
+        return client_workspace(request, pk)
+
     client = visible_clients(request.user, tenant_id=tenant_id).filter(pk=pk).first()
     if client is None:
         raise Http404
-
-    if tenant_has(tenant.pk, "cycles_r1"):
-        return client_workspace(request, pk)
 
     context = client_detail_context(request, client)
     context["onboarding_r1"] = tenant_has(tenant.pk, ONBOARDING_FLAG)
