@@ -1,0 +1,17 @@
+{% extends "refusal/base.html" %}{% load i18n %}{% comment %}
+The 410 the account admission policy answers once a firm's export window has ended
+(apps/tenants/read_only.py, AXR1-054), on whichever host asked: the firm, portal and
+selected-tenant admin middleware all call that one policy before any view runs.
+
+The host-neutral layout beside this file, and rendered by the policy with
+render_to_string and no request, so no context processor runs: the page reads no
+tenant, account, session or message, only the sentence the policy hands it. The way
+back is the root of the host the reader is already on, for the same reason: it names
+no route that only one of the three hosts serves.
+{% endcomment %}
+{% block title %}{% translate "Exportação encerrada" %}{% endblock %}
+{% block heading %}{% translate "Exportação encerrada" %}{% endblock %}
+{% block content %}
+    <p class="mt-4 text-ink-800" data-refusal-reason>{{ reason }}</p>
+    <p class="mt-2"><a class="link" href="/">{% translate "Voltar ao início" %}</a></p>
+{% endblock %}

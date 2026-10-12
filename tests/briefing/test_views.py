@@ -1,5 +1,8 @@
 """Drive the real Hoje route and its version-carrying preference forms."""
 
+from http import HTTPStatus
+from uuid import uuid4
+
 import pytest
 from django.urls import reverse
 
@@ -8,6 +11,7 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.models import BriefingFeedback, SavedView
 from tests.briefing.fixtures import NOW
 from tests.briefing.http_fixtures import http_firm
+from tests.ui.refusal_contract import assert_readable_page
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -71,6 +75,25 @@ def test_dismissal_post_records_a_reason_and_rejects_replayed_form() -> None:
     assert stale.status_code == 409
     with tenant_context(firm.tenant.pk):
         assert BriefingFeedback.objects.count() == 1
+
+
+def test_a_refused_dismissal_reads_in_plain_sentences() -> None:
+    """AXR1-054: the dismissal service's ValidationError reads as its sentence."""
+    firm = http_firm()
+    response = firm.as_owner().post(
+        reverse("briefing-dismiss"),
+        {
+            "kind": "coverage",
+            "subject_ref": str(uuid4()),
+            "fact_version": "1",
+            "reason": "Conferido nesta versão",
+        },
+    )
+    assert_readable_page(
+        response,
+        status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        reason="Informe a competência da cobertura.",
+    )
 
 
 @pytest.mark.parametrize(

@@ -1,14 +1,17 @@
 """Workspace rendering kept separate from the cycle URL decorators."""
 
+from http import HTTPStatus
 from typing import Final
 from uuid import UUID
 
 from django.http import HttpResponse
 from django.shortcuts import render
+from django.urls import reverse
 
 from apps.accounts.views import AuthenticatedRequest
 from apps.clients.maintenance import MANAGE_CAPABILITY, load_client
 from apps.core.flags import tenant_has
+from apps.core.refusal import WayBack, refusal_page
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.exception_context import (
     exception_selection,
@@ -45,7 +48,15 @@ def client_workspace(
     except ValueError:
         # Preserve the portfolio-first refusal even for malformed periods.
         load_client(request.user, tenant_id(), pk)
-        return HttpResponse("Competência inválida. Use AAAA-MM.", status=422)
+        return refusal_page(
+            request,
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+            heading="Não foi possível abrir o espaço do cliente",
+            reason="Competência inválida. Use AAAA-MM.",
+            back=WayBack(
+                reverse("client-detail", args=[pk]), "Voltar ao espaço do cliente"
+            ),
+        )
     workspace = read_workspace(request.user, pk, period)
     selection = exception_selection(request, selected_exception, error)
     exceptions = read_exceptions(

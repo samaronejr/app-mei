@@ -3,6 +3,7 @@
 from typing import Final
 
 from django.http import HttpRequest, HttpResponse
+from django.template.loader import render_to_string
 from django.urls import Resolver404, resolve
 
 from apps.tenants.account_state import (
@@ -27,6 +28,8 @@ SESSION_POSTS: Final = frozenset(
 PLATFORM_ACCOUNT_COMMANDS: Final = frozenset(
     {"admin:tenants_tenant_new_firm", "admin:tenants_tenant_billing"}
 )
+EXPORT_ENDED: Final = "O prazo de exportação desta conta encerrou."
+EXPORT_ENDED_TEMPLATE: Final = "refusal/export_ended.html"
 
 
 def account_admission(
@@ -51,10 +54,12 @@ def account_admission(
         )
     )
     if exporting and not export_available(tenant):
+        # AXR1-054: a page rather than bare text. Rendered without the request, so
+        # no context processor runs and the page reads nothing on any of the three
+        # hosts that share this policy.
         return HttpResponse(
-            "O prazo de exportação desta conta encerrou.",
+            render_to_string(EXPORT_ENDED_TEMPLATE, {"reason": EXPORT_ENDED}),
             status=410,
-            content_type="text/plain; charset=utf-8",
         )
     if (
         exporting
