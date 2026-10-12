@@ -64,8 +64,9 @@ until the name is cleared.
 - **Ids.** The plan has 29 original numbered todos in five waves, the added
   `AXR1-030` certificate guard, `AXR1-031` customer-facing label repair,
   `AXR1-032` support-authority repair, `AXR1-033` contact-invitation binding,
-  `AXR1-053` tenant notice authorization, and a final verification wave.
-  Required follow-ups `AXR1-034` through `AXR1-050` remain open; optional proposals 051/052 are not
+  `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
+  routing, and a final verification wave. Required follow-ups `AXR1-034`
+  through `AXR1-047`, `AXR1-049` and `AXR1-050` remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
@@ -820,6 +821,23 @@ Evidence: `.evidence/AXR1-053-happy.txt`, `AXR1-053-failure.txt`, `AXR1-053-revi
 and `AXR1-053-final-browser-r1.txt`. This approves T53, not T48 import-origin routing,
 T39 automatic reminders, launch, merge or deployment. Every OG/OD gate remains open.
 
+`AXR1-048` (import-only invitation routing) is recorded on delivered `AXR1-053`. The
+import-gated contact door now issues a durable `contact_portal_invite` intent under the
+owner's exact, separately acknowledged notice-policy grant, bound with feature
+`import_r1`, instead of refusing when cycles is off; a `portal_invite` grant does not
+authorize it. Claim, egress and worker selection admit each kind only under its own
+originating flag and global kill. Migration `delivery.0007` widens only the T53 binding
+guard for the new kind and reverses to 0006. The import-only shell names no unreachable
+Comunicacao queue, the policy page states each invitation's route, and the client setup
+row shows the invitation message's own delivery state. Verified for real: owner
+acknowledgement, refusal, queueing, revoke and reinvite at desktop and mobile; one
+accepted fake-SMTP send with a refused duplicate; crash-after-send left uncertain with no
+resend; new-account acceptance bound to the contact. Independent review rejected `b53ad6b` on one AA contrast defect in
+the new row label; the fix `e400a96` was confirmed **APPROVE**: high confidence, no blockers: all 12 rendered labels measured 7.43:1 in queued and SMTP-accepted states at 1440 and 390, including the cycles-global-killed surface, with assets clean and no new contrast nodes or overflow. Evidence: `.evidence/AXR1-048-happy.txt`,
+`AXR1-048-failure.txt`, `AXR1-048-review.md`, `AXR1-048-final-gates-r1.txt`.
+This approves T48, not T39 automatic reminders, launch, merge or deployment. Every OG/OD
+gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -919,7 +937,17 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4803 passing** (30 skipped, 154 deselected),
+implementation head. The current default-suite baseline is **4855 passing** (30 skipped, 154 deselected),
+verified at `AXR1-048` code `b53ad6b` on delivered `AXR1-053` head `d87cf17`: the
+**4803** below plus **52** new or reshaped import-origin cases. Isolation (**640**, with
+**30** justified skips), CNPJ (**29**), build with a clean static diff, lint, format, Mypy
+and migration drift passed serially; browser (**154**) passed at `e400a96`, which changes
+only one template class. Evidence: `.evidence/AXR1-048-final-gates-r1.txt` and
+`AXR1-048-final-browser-r1.txt`. Earlier failed targeted runs (Mypy, migration syntax,
+one test artifact) remain separate failures with their repairs recorded.
+This status-only delivery changes no reviewed implementation.
+
+The previous default-suite baseline was **4803 passing** (30 skipped, 154 deselected),
 verified at `AXR1-053` code `f0a2d9e` on delivered `AXR1-033` head `657ede8`:
 the **4722** below plus **81** new notice-authority and compatibility cases.
 Isolation (**640**, with **30** justified skips), CNPJ (**29**), build with a clean
@@ -930,7 +958,7 @@ Earlier failed full runs (63 failed with 11 errors, then 2, then 2 browser failu
 remain separate failures with their repairs recorded, not passing evidence.
 This status-only delivery changes no reviewed implementation.
 
-The previous default-suite baseline was **4722 passing** (28 skipped, 146 deselected),
+Before that, the default-suite baseline was **4722 passing** (28 skipped, 146 deselected),
 verified at `AXR1-033` code `c6653b0` on delivered `AXR1-032` head `65392c6`:
 the **4693** below plus **29** new invitation regression cases.
 Isolation (**628**, with **28** justified skips), CNPJ (**29**), browser (**146**),
