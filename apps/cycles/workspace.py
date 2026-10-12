@@ -108,13 +108,20 @@ def get_cycle_context(actor: User, client_id: UUID, period: date) -> CycleContex
 
 @dataclass(frozen=True, slots=True)
 class TimelineEntry:
-    """Reference-only projection; never expose audit metadata or message bodies."""
+    """Reference-only projection; never expose audit metadata or message bodies.
+
+    `ignored` marks a recorded observation that did not change business state
+    (AXR1-044): it keeps its own time and place in the history, and `detail`
+    says in pt-BR why it had no effect, so it never reads as the current state.
+    """
 
     id: UUID
     when: datetime
     summary: str
     lane: str
     subject_ref: str
+    ignored: bool = False
+    detail: str = ""
 
 
 # T10 registers an outbox reference reader. Empty today because no outbox domain

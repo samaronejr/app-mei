@@ -27,12 +27,12 @@
 <article class="ui-panel p-4" aria-labelledby="message-{{ message.pk }}">
   <h2 class="font-semibold" id="message-{{ message.pk }}">{{ message.client.legal_name }}</h2>
   <p>{{ item.display_subject }}</p>
-  <p class="mt-2 font-medium" data-state="{{ message.state }}">{{ message.get_state_display }}</p>
+  <p class="mt-2 font-medium" data-state="{{ message.state }}"><span class="font-normal text-ink-600">Estado atual:</span> {{ message.get_state_display }}</p>
   <p class="text-sm text-ink-600">{{ message.created_at|date:'d/m/Y H:i' }} · Tentativas: {{ message.attempts }}</p>
   {% if message.last_error_code %}<p class="text-sm">Código: {{ message.last_error_code }}</p>{% endif %}
   {% if item.display_note %}<p class="mt-2">Nota da equipe: {{ item.display_note }}</p>{% endif %}
   <ol class="mt-4 space-y-2 text-sm" aria-label="Histórico do envio">
-    {% for entry in item.timeline %}<li><time>{{ entry.when|date:'d/m/Y H:i' }}</time> · {{ entry.label }}{% if entry.code %}<span class="text-ink-600"> · {{ entry.code }}</span>{% endif %}</li>{% endfor %}
+    {% for entry in item.timeline %}<li data-observation-effect="{{ entry.effect }}" data-observed-state="{{ entry.observed_state }}"{% if entry.ignored %} class="text-ink-600"{% endif %}><time>{{ entry.when|date:'d/m/Y H:i' }}</time> · {{ entry.summary }}{% if entry.code %}<span class="text-ink-600"> · {{ entry.code }}</span>{% endif %}{% if entry.ignored %}<span class="block text-xs">{{ entry.detail }}</span>{% endif %}</li>{% endfor %}
   </ol>
   {% if item.publication %}<section class="mt-4 border-t border-ink-200 pt-4" aria-label="Recebimento da publicação">
     <h3 class="font-semibold break-words">{{ item.publication.title }}</h3>
