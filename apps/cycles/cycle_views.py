@@ -77,7 +77,7 @@ from apps.obligations.observations import (
     StaleObservationError,
     record_cycle_fact,
 )
-from apps.portal.request_views import client_help
+from apps.portal.request_views import client_help, open_requests
 from apps.portal.views import PortalVaultRequest
 
 
@@ -675,12 +675,22 @@ def portal_cycle_detail(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
     cycle = get_object_or_404(
         ServiceCycle.objects.filter(client_id=request.client.pk), pk=pk
     )
+    requests = open_requests(timezone.localdate(), cycle_id=cycle.pk)
+    next_request = next((row for row in requests if row.actionable), None)
     return render(
         request,
         "portal/cycle.html",
         {
             "cycles_r1": True,
             "help_rows": client_help(cycle.pk),
-            **portal_projection(cycle),
+            "next_request": next_request,
+            "requests": requests,
+            **portal_projection(
+                cycle,
+                has_actionable_requests=next_request is not None,
+                has_submitted_requests=any(
+                    row.status == "recebido" for row in requests
+                ),
+            ),
         },
     )

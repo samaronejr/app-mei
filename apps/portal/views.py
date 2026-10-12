@@ -188,8 +188,8 @@ def _situation(today: date) -> tuple[int, int]:
     return int(totals["total"]), int(totals["overdue"])
 
 
-def _next_action(today: date) -> NextAction | None:
-    """Return the earliest unsettled obligation still ahead, or `None` if there is none.
+def _next_action(today: date, *, include_overdue: bool = False) -> NextAction | None:
+    """Return the earliest unsettled calendar entry; legacy only considers future dates.
 
     `.values()` rather than a model instance, and `obligation_type_id` rather than the
     relation: the code IS the primary key of `ObligationType`, so the local column
@@ -197,10 +197,11 @@ def _next_action(today: date) -> NextAction | None:
     breaks ties, so two obligations sharing a due date resolve to the same one on every
     request instead of alternating between renders.
     """
+    obligations = Obligation.objects.exclude(status__in=SETTLED)
+    if not include_overdue:
+        obligations = obligations.filter(resolved_due_date__gte=today)
     row = (
-        Obligation.objects.exclude(status__in=SETTLED)
-        .filter(resolved_due_date__gte=today)
-        .order_by("resolved_due_date", "pk")
+        obligations.order_by("resolved_due_date", "pk")
         .values(
             "obligation_type_id",
             "competence_month",
@@ -243,11 +244,8 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     requests = []
     help_rows = []
     publications = []
+    next_request = None
     if cycles_r1:
-        cycles = [
-            {"id": cycle.pk, **portal_projection(cycle)}
-            for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]
-        ]
         # T11: the client's open requests, confined by RLS like every figure here.
         from apps.portal.request_views import (  # noqa: PLC0415
             client_help,
@@ -255,6 +253,27 @@ def portal_home(request: HttpRequest) -> HttpResponse:
         )
 
         requests = open_requests(today)
+        next_request = next((row for row in requests if row.actionable), None)
+        for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]:
+            has_actionable_requests = any(
+                row.cycle_id == cycle.pk and row.actionable for row in requests
+            )
+            has_submitted_requests = any(
+                row.cycle_id == cycle.pk and row.status == "recebido"
+                for row in requests
+            )
+            cycles.append(
+                {
+                    "id": cycle.pk,
+                    "has_actionable_requests": has_actionable_requests,
+                    "has_submitted_requests": has_submitted_requests,
+                    **portal_projection(
+                        cycle,
+                        has_actionable_requests=has_actionable_requests,
+                        has_submitted_requests=has_submitted_requests,
+                    ),
+                }
+            )
         help_rows = client_help()
         from apps.cycles.models import ClientPublication  # noqa: PLC0415
 
@@ -274,7 +293,8 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "client": client,
             "obligation_count": obligation_count,
             "overdue_count": overdue_count,
-            "next_action": _next_action(today),
+            "next_action": _next_action(today, include_overdue=cycles_r1),
+            "next_request": next_request,
             "cycles": cycles,
             "cycles_r1": cycles_r1,
             "requests": requests,

@@ -180,12 +180,21 @@ def timeline(actor: User, client_id: UUID, period: date) -> list[TimelineEntry]:
     return sorted(entries, key=lambda entry: (entry.when, entry.id), reverse=True)[:100]
 
 
-def portal_projection(cycle: ServiceCycle) -> dict[str, object]:
-    """Exactly three visible fields; never hand a model with private joins to HTML."""
+def portal_projection(
+    cycle: ServiceCycle,
+    *,
+    has_actionable_requests: bool = False,
+    has_submitted_requests: bool = False,
+) -> dict[str, object]:
+    """Three client fields; request work outranks the stored cycle state."""
     return {
         "period": cycle.period_start,
         "state_label": cycle.get_state_display(),
-        "next_action": "Entre em contato com o escritório para saber o que falta."
+        "next_action": "Envie os documentos solicitados para este ciclo."
+        if has_actionable_requests
+        else "Seus arquivos deste ciclo foram recebidos. A equipe ainda vai conferir."
+        if has_submitted_requests
+        else "Entre em contato com o escritório para saber o que falta."
         if cycle.state == CycleState.WAITING
-        else "Aguarde a próxima orientação do escritório.",
+        else "Acompanhe as solicitações e publicações deste ciclo no portal.",
     }
