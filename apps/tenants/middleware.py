@@ -24,6 +24,7 @@ Both are load-bearing, and `core.E001`/`core.E005` fail startup if either is mis
 from collections.abc import Callable
 from uuid import UUID
 
+from allauth.account.views import logout
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
@@ -201,6 +202,22 @@ class TenantMiddleware:
                 request.support_grant = resolve_support_grant(user.pk, resolved.pk)
                 if request.support_grant is not None:
                     return resolved
+            # An account denied this firm still owns its authentication session.
+            # Admit only the registered allauth logout callback, without granting
+            # tenant context. Active members/grants keep the normal path above,
+            # including support request auditing.
+            try:
+                match = resolve(
+                    request.path_info, urlconf=getattr(request, "urlconf", None)
+                )
+            except Resolver404:
+                match = None
+            if (
+                match is not None
+                and match.view_name == "account_logout"
+                and match.func is logout
+            ):
+                return None
             msg = "This account has no active membership for this firm."
             raise PermissionDenied(msg)
         return resolved

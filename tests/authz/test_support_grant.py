@@ -13,19 +13,26 @@ RLS layer, which are meaningless inside a surrounding test transaction.
 import re
 from datetime import timedelta
 from http import HTTPStatus
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pytest
+from allauth.account.models import EmailAddress
+from allauth.account.views import logout
+from django.contrib.auth import SESSION_KEY
+from django.contrib.sessions.models import Session
 from django.db import IntegrityError, connection, transaction
 from django.http import Http404
 from django.test import Client
+from django.urls import include, path, reverse
 from django.utils import timezone
+from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event, PlatformEvent
 from apps.authz.support import SupportContext, current_support
 from apps.clients.models import ClientContact
-from apps.core.tenancy import tenant_context
+from apps.core.tenancy import current_tenant_id, tenant_context
 from apps.delivery.models import MessageState, OutboundMessage
 from apps.delivery.notice_authority import (
     NoticeOrigin,
@@ -34,7 +41,7 @@ from apps.delivery.notice_authority import (
     lock_notice_scope,
 )
 from apps.delivery.policy import content_digest
-from apps.tenants.models import Tenant, TenantRole
+from apps.tenants.models import Membership, Tenant, TenantRole
 from apps.tenants.services import lock_firm_settings
 from apps.tenants.support import (
     SupportApproval,
@@ -48,9 +55,13 @@ from tests.cycles.approval_fixtures import approval_graph
 from tests.cycles.cycle_fixtures import CycleSetup, cycle_setup
 from tests.cycles.test_retention_dry_run import old_original
 from tests.isolation.rolecheck import assert_isolated_role
-from tests.support import enrol_totp
+from tests.support import enrol_totp, pinned_totp_window, totp_code
+from tests.tenants import urls as tenant_test_urls
 from tests.tenants.test_cancellation_retention import enabled_firm
 from tests.ui.factories import PASSWORD, Firm, add_member
+
+if TYPE_CHECKING:
+    from django.urls import URLPattern, URLResolver
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -699,3 +710,230 @@ def test_revoked_grant_cannot_write_mid_request() -> None:
                 lock_firm_settings(staff, firm.tenant.pk)
         finally:
             current_support.reset(binding)
+
+
+# ----------------------------------------------------------- logout recovery
+
+
+def _csrf_from(content: bytes) -> str:
+    token = re.search(rb'name="csrfmiddlewaretoken" value="([^"]+)"', content)
+    assert token is not None
+    return token.group(1).decode()
+
+
+def _login_with_csrf(session: Client, user: User, *, step: int = 0) -> None:
+    """Use password and real TOTP on the same host-bound, CSRF-enforcing client."""
+    EmailAddress.objects.get_or_create(
+        user=user,
+        email=user.email,
+        defaults={"verified": True, "primary": True},
+    )
+    page = session.get(reverse("account_login"))
+    assert page.status_code == HTTPStatus.OK
+    password = session.post(
+        reverse("account_login"),
+        {
+            "login": user.email,
+            "password": PASSWORD,
+            "csrfmiddlewaretoken": _csrf_from(page.content),
+        },
+    )
+    assert password.status_code == HTTPStatus.FOUND
+    assert password["Location"] == reverse("mfa_authenticate")
+    assert SESSION_KEY not in session.session
+    challenge = session.get(reverse("mfa_authenticate"))
+    assert challenge.status_code == HTTPStatus.OK
+    with pinned_totp_window(step=step):
+        second_factor = session.post(
+            reverse("mfa_authenticate"),
+            {"code": totp_code(), "csrfmiddlewaretoken": _csrf_from(challenge.content)},
+        )
+    assert second_factor.status_code == HTTPStatus.FOUND
+    assert session.session[SESSION_KEY] == str(user.pk)
+
+
+def _denied_login(
+    firm: Firm, denial: str, foreign_path: str, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Client, User]:
+    """Start a real session and cross the specified admission boundary."""
+    grant = None
+    if denial == "membership-lost":
+        actor = firm.accountant
+    elif denial == "portal-seat":
+        actor = add_member(
+            firm.tenant,
+            "logout-portal@client.example",
+            TenantRole.CLIENT_OWNER,
+            client=firm.clients[0],
+        )
+    else:
+        actor = _staff()
+        enrol_totp(actor)
+        grant = _grant_for(
+            firm.tenant, firm.owner, actor, client_ids=(firm.clients[0].pk,)
+        )
+    session = Client(SERVER_NAME=firm.host, enforce_csrf_checks=True)
+    _login_with_csrf(session, actor)
+    if denial != "portal-seat":
+        assert session.get("/").status_code == HTTPStatus.OK
+        assert session.get(foreign_path).status_code == HTTPStatus.NOT_FOUND
+    if denial.startswith("revoked"):
+        assert grant is not None
+        with tenant_context(firm.tenant.pk):
+            revoke_support_grant(firm.owner, firm.tenant.pk, grant.pk)
+    elif denial == "expired":
+        assert grant is not None
+        boundary = grant.expires_at
+        assert boundary is not None
+        monkeypatch.setattr("apps.authz.support.timezone.now", lambda: boundary)
+    elif denial == "membership-lost":
+        Membership.objects.filter(user=actor, tenant=firm.tenant).update(
+            is_active=False
+        )
+    if denial == "revoked-fresh":
+        session = Client(SERVER_NAME=firm.host, enforce_csrf_checks=True)
+        _login_with_csrf(session, actor, step=1)
+    return session, actor
+
+
+@pytest.mark.parametrize(
+    "denial",
+    ["revoked-live", "revoked-fresh", "expired", "membership-lost", "portal-seat"],
+)
+def test_denied_account_can_logout_and_switch_with_csrf(
+    denial: str, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+) -> None:
+    # Given a real MFA session, denied by a live authorization change or client seat.
+    settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
+    firm = enabled_firm(f"logout-{denial}")
+    other = enabled_firm(f"logout-other-{denial}")
+    foreign_path = f"/clientes/{other.clients[0].pk}/"
+    session, actor = _denied_login(firm, denial, foreign_path, monkeypatch)
+    assert session.cookies[settings.SESSION_COOKIE_NAME]["domain"] == ""
+    old_key = session.session.session_key
+    assert old_key is not None
+    for protected in (
+        "/",
+        "/clientes/",
+        f"/clientes/{firm.clients[0].pk}/",
+        foreign_path,
+        reverse("account_email"),
+        reverse("account_change_password"),
+        "/accounts/logout/not-registered/",
+        "/clientes/?next=/accounts/logout/",
+    ):
+        denied = session.get(protected)
+        assert denied.status_code == HTTPStatus.FORBIDDEN
+        assert firm.clients[0].legal_name not in denied.content.decode()
+        assert other.clients[0].legal_name not in denied.content.decode()
+
+    # When the registered confirmation and then its CSRF-protected POST are used.
+    logout_path = reverse("account_logout")
+    confirmation = session.get(logout_path)
+    assert confirmation.status_code == HTTPStatus.OK
+    assert session.session[SESSION_KEY] == str(actor.pk)
+    assert session.session.session_key == old_key
+    assert getattr(confirmation.wsgi_request, "resolved_tenant", None) == firm.tenant
+    assert hasattr(confirmation.wsgi_request, "tenant")
+    assert getattr(confirmation.wsgi_request, "tenant", None) is None
+    assert getattr(confirmation.wsgi_request, "support_grant", None) is None
+    assert current_tenant_id.get() is None
+    assert current_support.get() is None
+    assert firm.clients[0].legal_name not in confirmation.content.decode()
+    assert other.clients[0].legal_name not in confirmation.content.decode()
+    csrf = _csrf_from(confirmation.content)
+    assert session.post(logout_path).status_code == HTTPStatus.FORBIDDEN
+    assert (
+        session.post(
+            logout_path,
+            {"csrfmiddlewaretoken": csrf},
+            HTTP_ORIGIN="https://attacker.invalid",
+        ).status_code
+        == HTTPStatus.FORBIDDEN
+    )
+    assert session.session[SESSION_KEY] == str(actor.pk)
+    assert (
+        session.post("/clientes/", {"csrfmiddlewaretoken": csrf}).status_code
+        == HTTPStatus.FORBIDDEN
+    )
+    exited = session.post(
+        logout_path,
+        {"csrfmiddlewaretoken": csrf, "next": "https://attacker.invalid/"},
+    )
+
+    # Then real server-side logout occurs, with no unsafe redirect or data admission.
+    assert exited.status_code == HTTPStatus.FOUND
+    assert exited["Location"] == "/"
+    assert not exited.wsgi_request.user.is_authenticated
+    assert SESSION_KEY not in session.session
+    assert not Session.objects.filter(session_key=old_key).exists()
+    assert session.cookies[settings.SESSION_COOKIE_NAME]["domain"] == ""
+    _login_with_csrf(session, firm.owner)
+    assert session.cookies[settings.SESSION_COOKIE_NAME]["domain"] == ""
+    assert session.get("/").status_code == HTTPStatus.OK
+    assert session.get(foreign_path).status_code == HTTPStatus.NOT_FOUND
+    for protected in ("/", f"/clientes/{other.clients[0].pk}/"):
+        denied = session.get(protected, HTTP_HOST=other.host)
+        assert denied.status_code == HTTPStatus.FORBIDDEN
+        assert other.clients[0].legal_name not in denied.content.decode()
+
+
+@pytest.mark.parametrize(
+    ("name", "real_callback", "namespace"),
+    [
+        ("account_logout", False, ""),
+        ("forged_logout", True, ""),
+        ("account_logout", True, "forged"),
+    ],
+)
+def test_logout_recovery_requires_registered_route_and_callback(
+    name: str,
+    real_callback: bool,
+    namespace: str,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: SettingsWrapper,
+) -> None:
+    # Given an authenticated account without a seat, and an impostor logout route.
+    firm = enabled_firm("logout-impostor")
+    staff = _staff()
+    session = _session_for(staff, firm.host)
+    routes: list[URLPattern | URLResolver] = [
+        path(
+            "accounts/logout/",
+            logout if real_callback else tenant_test_urls.guc,
+            name=name,
+        )
+    ]
+    if namespace:
+        routes = [path("", include((routes, namespace), namespace=namespace))]
+    monkeypatch.setattr(tenant_test_urls, "urlpatterns", routes)
+    settings.ROOT_URLCONF = "tests.tenants.urls"
+    settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
+
+    # When the name alone, callback alone, or namespaced callback asks for entry.
+    response = session.get("/accounts/logout/")
+
+    # Then it is still denied and has not signed the account out.
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert session.session[SESSION_KEY] == str(staff.pk)
+
+
+def test_active_support_logout_retains_its_granted_context() -> None:
+    # Given an active grant, whose ordinary request context must still be audited.
+    firm = enabled_firm("logout-active-support")
+    staff = _staff()
+    grant = _grant_for(firm.tenant, firm.owner, staff)
+    session = _session_for(staff, firm.host)
+
+    # When the normal logout route is reached and executed.
+    confirmation = session.get(reverse("account_logout"))
+    assert confirmation.status_code == HTTPStatus.OK
+    assert getattr(confirmation.wsgi_request, "tenant", None) == firm.tenant
+    assert getattr(confirmation.wsgi_request, "support_grant", None) == grant
+    exited = session.post(reverse("account_logout"))
+
+    # Then authorized support keeps its existing context; actor audit is T50's scope.
+    assert exited.status_code == HTTPStatus.FOUND
+    assert getattr(exited.wsgi_request, "tenant", None) == firm.tenant
+    assert getattr(exited.wsgi_request, "support_grant", None) == grant
+    assert SESSION_KEY not in session.session
