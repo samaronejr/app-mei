@@ -41,11 +41,13 @@ from apps.core.tenancy import client_context, tenant_context
 from tests.conftest import PORTAL_TABLES
 from tests.isolation.axorim_seed import (
     CLIENT_PAIR_ONLY_MODELS,
+    REQUIRED_TENANT_PAIRED_PARENTS,
     SeedContext,
     axorim_models,
     client_paired_fk_defs,
     client_paired_tables,
     make_seed_context,
+    paired_parent_constraints,
     paired_parent_fks,
     paired_parent_targets,
     runtime_update_denied_tables,
@@ -147,17 +149,22 @@ def test_the_enumeration_covers_every_axorim_model_and_nothing_else() -> None:
         "obligations.SourceObservation",
         # AXR1-023's support-grant ledger.
         "tenants.SupportGrant",
+        "authz.UserCapabilityGrant",
+        "tenants.BillingAccount",
+        "tenants.UsageRecord",
+        "tenants.NotificationPreference",
+        "tenants.FirmOutboundMessage",
+        "tenants.AccountExport",
+        "tenants.AccountExportAttempt",
     }
 
     # Then it is exactly the four new apps' full registry plus the named additions —
     # a model added later without updating BOTH lists fails HERE, named.
     assert labels == expected, (
         "sweep list drifted from the registry; update NEW_CLIENT_MODELS / "
-        "NEW_OBLIGATION_MODELS / NEW_TENANT_MODELS and the literal set above so "
+        "NEW_OBLIGATION_MODELS / NEW_TENANT_MODELS / NEW_AUTHZ_MODELS and the "
+        "literal set above so "
         "the addition is enumerated"
-    )
-    assert len(MODELS) == 46, (
-        f"expected 46 swept models after notice policy, found {len(MODELS)}"
     )
 
 
@@ -181,6 +188,10 @@ def test_rls_hides_tenant_b_rows_under_tenant_a(
     # Given one seeded row in beta's (tenant, client) pair
     assert_isolated_role()
     beta_row = seed_model(model, tenants["beta"])
+    scoped = cast("type[TenantScopedModel]", model)
+    with tenant_context(tenants["beta"].tenant.id):
+        # ALL_OBJECTS_OK: owning-positive control as app_runtime, not BYPASSRLS.
+        assert scoped.all_objects.filter(pk=beta_row.pk).count() == 1
 
     # When tenant A's context reads it by primary key through all_objects — the
     # ContextVar-free manager, so ONLY row-level security stands between the read
@@ -188,7 +199,6 @@ def test_rls_hides_tenant_b_rows_under_tenant_a(
     # filter would deny the row even with RLS disabled, which is exactly the
     # vacuity this test exists to rule out.
     with tenant_context(tenants["alpha"].tenant.id):
-        scoped = cast("type[TenantScopedModel]", model)
         # ALL_OBJECTS_OK: the RLS assertion must bypass the ORM ContextVar filter;
         # the row-exists control below proves the row is actually in the table.
         visible = scoped.all_objects.filter(pk=beta_row.pk).count()
@@ -443,6 +453,10 @@ def _paired_targets(
     return targets
 
 
+def test_the_tenant_composites_match_the_declared_manifest() -> None:
+    assert paired_parent_constraints() == REQUIRED_TENANT_PAIRED_PARENTS
+
+
 @pytest.mark.parametrize("model", SCOPED_MODELS, ids=lambda m: m._meta.label)
 def test_paired_fks_reject_cross_tenant_parents(
     model: type[models.Model],
@@ -451,12 +465,16 @@ def test_paired_fks_reject_cross_tenant_parents(
     client_paired_defs: dict[str, list[tuple[str, list[tuple[str, str, str]]]]],
     append_only: set[str],
 ) -> None:
-    # Given this table's composites (any FK column sharing a key with tenant_id)
+    # Given this table's declared composites (FK columns sharing a key with tenant_id)
     assert_isolated_role()
     table = model._meta.db_table
-    parent_columns = _paired_targets(paired_fks).get(table, [])
+    parent_columns = sorted(
+        {column for name, column, _ in REQUIRED_TENANT_PAIRED_PARENTS if name == table}
+    )
     if not parent_columns:
-        pytest.skip(f"{table} carries no tenant-composite parent foreign key")
+        pytest.skip(f"{table} declares no tenant-composite parent foreign key")
+    missing = [column for column in parent_columns if (table, column) not in paired_fks]
+    assert not missing, f"{table} lost a declared tenant-composite parent: {missing}"
 
     alpha = tenants["alpha"]
     probe = _ParentProbe(

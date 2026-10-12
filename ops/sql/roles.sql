@@ -120,6 +120,8 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- Firm-only reviewer authority: no portal grant. DenyPortalAccess supplies the
 -- restrictive false policy as well. Mirrored by PORTAL_DENIED_TABLES in tests/conftest.py.
 
+-- PORTAL_NONE: clients_clientcontact
+-- Contacts remain ungranted; the existing client predicate is unchanged.
 -- PORTAL_NONE: clients_importbatch
 -- PORTAL_NONE: clients_importrow
 -- PORTAL_NONE: cycles_playbook

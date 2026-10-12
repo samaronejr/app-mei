@@ -32,6 +32,7 @@ PORTAL_DENIED_TABLES = (
     "automation_agentrun",
     "automation_evalrun",
     "authz_usercapabilitygrant",
+    "clients_clientcontact",
     "clients_importbatch",
     "clients_importrow",
     # Playbook definitions are firm-internal editor content (todo 8): no portal
