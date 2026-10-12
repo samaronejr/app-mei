@@ -20,6 +20,7 @@ from pytest_django.fixtures import SettingsWrapper
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, ClientContact, TaxProfile
 from apps.core.tenancy import tenant_context
+from apps.delivery.notice_authority import configure
 from apps.delivery.tasks import dispatch_outbox
 from apps.tenants.models import Invite
 from tests.browser.harness import BrowserPage, LiveFirm, axe_check
@@ -37,6 +38,19 @@ def _field(label: str) -> re.Pattern[str]:
     return re.compile(rf"^{re.escape(label)}( \*)?$")
 
 
+def _invitation_ready_firm(live_firm: Callable[..., LiveFirm]) -> LiveFirm:
+    """T53: a templated invitation needs the owner's acknowledged notice policy."""
+    live = live_firm("onb", features=FEATURES)
+    with tenant_context(live.firm.tenant.pk):
+        configure(
+            live.firm.owner,
+            kinds=("portal_invite",),
+            acknowledged=True,
+            expected_version=0,
+        )
+    return live
+
+
 def _dispatch_queued_invitation(settings: SettingsWrapper) -> None:
     """T11: under cycles_r1 the invitation is queued on the outbox inside the request
     transaction and mailed by the dispatcher afterwards, never by the request."""
@@ -50,7 +64,7 @@ def test_create_a_client_set_its_profile_and_invite_a_contact(
     open_page: OpenPage,
     settings: SettingsWrapper,
 ) -> None:
-    live = live_firm("onb", features=FEATURES)
+    live = _invitation_ready_firm(live_firm)
     shell = open_page(live, None)
     page = shell.page
     mail.outbox.clear()
