@@ -65,8 +65,9 @@ until the name is cleared.
   `AXR1-030` certificate guard, `AXR1-031` customer-facing label repair,
   `AXR1-032` support-authority repair, `AXR1-033` contact-invitation binding,
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
-  routing, and a final verification wave. Required follow-ups `AXR1-034`
-  through `AXR1-047`, `AXR1-049` and `AXR1-050` remain open; optional proposals 051/052 are not
+  routing, `AXR1-039` automatic reminder sweep, and a final verification wave. Required
+  follow-ups `AXR1-034` through `AXR1-038`, `AXR1-040` through `AXR1-047`, `AXR1-049` and
+  `AXR1-050` remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
@@ -838,6 +839,26 @@ the new row label; the fix `e400a96` was confirmed **APPROVE**: high confidence,
 This approves T48, not T39 automatic reminders, launch, merge or deployment. Every OG/OD
 gate remains open.
 
+`AXR1-039` (policy-authorized automatic reminders) is recorded on delivered `AXR1-048`. An
+owner opts in to one fixed rule (`request_reminder`, automatic mode, rule version 1) through a
+separate acknowledged policy grant; manual grants, playbook publication and migrations never
+create it. A five-minute `sweep_reminders` job enqueues at most one occurrence per overdue
+request, eligible contact and local day, in bounded per-tenant batches with resumable cursors,
+binding the policy revision and owner seat with `system_operation=sweep_reminders` and no
+impersonated session. Obsolete automatic reminders are cancelled before claim, including under
+pause or flag changes, and dispatch re-evaluates upload, closure, waiver, expiry and revocation.
+The heartbeat shows last attempt, last success, failure code and outcomes on the ops page.
+Verified for real: owner opt-in at desktop and mobile; the registered job run twice leaving one
+intent; one accepted fake-SMTP send with a refused duplicate; heartbeat on the ops page.
+Independent review **APPROVE** at `fdb1bd0`: no blockers; RV1's unchanged close-and-reopen probe now records one SMTP send and one accepted effect, re-acknowledgement is again a visible conflict, and the amendment race, next-day, cancellation, manual-reminder, live-owner and heartbeat checks passed. Evidence:
+`.evidence/AXR1-039-happy.txt`, `AXR1-039-failure.txt`, `AXR1-039-review.md` (RV1),
+`AXR1-039-review-rv2.md`, `AXR1-039-final-gates-r4.txt`. A first independent review rejected
+`e59045f`: an approved same-day close and reopen sent a second reminder for the same request and
+contact, because the reminder identity included the cycle amendment. The daily request/contact/day
+key is now the enqueue idempotency key (database-unique); a same-day reopen or re-acknowledgement is
+reported as a conflict and sends nothing. Regression test kept. This approves T39, not T49 or later follow-ups, launch, merge
+or deployment. Every OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -937,7 +958,10 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4855 passing** (30 skipped, 154 deselected),
+implementation head. The current default-suite baseline is **4893 passing** (30 skipped, 154 deselected), verified at `AXR1-039` code `fdb1bd0` on delivered `AXR1-048` head `0fccec1`: the **4855** below plus **38** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-039-final-gates-r4.txt`.
+This status-only delivery changes no reviewed implementation.
+
+The previous default-suite baseline was **4855 passing** (30 skipped, 154 deselected),
 verified at `AXR1-048` code `b53ad6b` on delivered `AXR1-053` head `d87cf17`: the
 **4803** below plus **52** new or reshaped import-origin cases. Isolation (**640**, with
 **30** justified skips), CNPJ (**29**), build with a clean static diff, lint, format, Mypy
@@ -947,7 +971,7 @@ only one template class. Evidence: `.evidence/AXR1-048-final-gates-r1.txt` and
 one test artifact) remain separate failures with their repairs recorded.
 This status-only delivery changes no reviewed implementation.
 
-The previous default-suite baseline was **4803 passing** (30 skipped, 154 deselected),
+Before that, the default-suite baseline was **4803 passing** (30 skipped, 154 deselected),
 verified at `AXR1-053` code `f0a2d9e` on delivered `AXR1-033` head `657ede8`:
 the **4722** below plus **81** new notice-authority and compatibility cases.
 Isolation (**640**, with **30** justified skips), CNPJ (**29**), build with a clean
