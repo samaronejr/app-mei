@@ -1106,14 +1106,10 @@ runbook that documents a restore is not a rehearsal.
 
 ## How changes reach `main`
 
-**Sequential pull requests, each based on current `main`.** Never stacked.
-
-The reason is mechanical rather than stylistic. Continuous integration is configured
-to run on pull requests whose base is `main`. A pull request stacked on another
-feature branch therefore receives no CI run at all, and with required checks in place
-it can never merge. Rebasing a stack onto `main` to unblock it re-runs everything
-anyway, so the stack buys nothing. The accepted consequence is that a wave's work
-waits for the previous wave's pull request to merge before it opens.
+**AXR1 uses a linear stack of open pull requests:** the first targets `main`, and
+each later PR targets the previous `axr1/*` branch. Merge only on the owner's
+instruction. CI evidence must identify the exact head tested; missing checks
+remain explicitly unverified.
 
 ## Deploy cutover state
 

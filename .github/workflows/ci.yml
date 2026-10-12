@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "axr1/**"]
 
 # A superseded push to the same ref is wasted signal, but never cancel main: the
 # green run on main is the artifact T-021 exists to produce.
@@ -82,6 +82,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Stacked PRs validate their exact head; main PRs keep merge-ref testing.
+          ref: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          printf 'source_sha=%s event_sha=%s workflow_sha=%s workflow_ref=%s\n' \
+            "$source_sha" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -322,6 +336,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          printf 'source_sha=%s event_sha=%s workflow_sha=%s workflow_ref=%s\n' \
+            "$source_sha" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -380,6 +407,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          printf 'source_sha=%s event_sha=%s workflow_sha=%s workflow_ref=%s\n' \
+            "$source_sha" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
 
       - name: Write workflow-local .env
         # Compose requires SECRET_KEY to be set and reads the rest from .env. These
