@@ -115,11 +115,17 @@ def _editor_errors(
 
     A 422/409 re-render rather than a redirect keeps the submitted field values
     on screen — losing the draft to a validation error is how editors lose work.
+    When those values came from the step form itself (`save`/`preview`), nothing
+    on screen was saved, so `unsaved` keeps the unsaved-changes guard armed.
     """
     return render(
         request,
         "cycles/playbook_editor.html",
-        {**context, "errors": [str(error) for error in errors]},
+        {
+            **context,
+            "errors": [str(error) for error in errors],
+            "unsaved": request.POST.get("action") in {"save", "preview"},
+        },
         status=status,
     )
 

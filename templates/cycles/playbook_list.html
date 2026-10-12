@@ -16,10 +16,12 @@
     Creating a playbook is a small typed form, not a wizard: name, key and the
     targeting scope. The fields render through the same pure partial every other
     form uses, so the accessibility chain (label, help, error) is identical.
+    `unsavedGuard` (AXR1-040) asks before typed fields are left behind; a refused
+    create redirects back with a message, so this form is never re-rendered bound.
   {% endcomment %}
   <section class="ui-panel mt-6" aria-labelledby="novo-playbook">
     <h2 id="novo-playbook" class="ui-panel-heading">{% translate "Novo playbook" %}</h2>
-    <form method="post" class="grid gap-4 px-4 py-4" novalidate>
+    <form method="post" class="grid gap-4 px-4 py-4" novalidate x-data="unsavedGuard">
       {% csrf_token %}
       <input type="hidden" name="action" value="create">
       {% for field in create_form %}
