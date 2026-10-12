@@ -1,6 +1,7 @@
 """Local read identities keep the real 120/minute rate-limit policy in the run."""
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
 
@@ -49,7 +50,9 @@ def session_cookie(user: User) -> str:
     return f"{settings.SESSION_COOKIE_NAME}={session.session_key}"
 
 
-def _actors(tenant: Tenant, company: ClientCompany | None) -> tuple[str, ...]:
+def _actors(
+    tenant: Tenant, company: ClientCompany | None, issued: list[str] | None = None
+) -> tuple[str, ...]:
     role = TenantRole.CLIENT_OWNER if company else TenantRole.OWNER
     cookies = []
     for index in range(ACTORS_PER_ROLE):
@@ -64,12 +67,19 @@ def _actors(tenant: Tenant, company: ClientCompany | None) -> tuple[str, ...]:
         Membership.objects.get_or_create(
             tenant=tenant, user=user, client=company, defaults={"role": role}
         )
-        cookies.append(session_cookie(user))
+        cookie = session_cookie(user)
+        cookies.append(cookie)
+        if issued is not None:
+            issued.append(cookie)
     return tuple(cookies)
 
 
-def read_targets(slug: str) -> tuple[ReadTarget, ...]:
-    """Resolve only the seeded growth firm and its own portal client's cycle."""
+def read_targets(slug: str, issued: list[str] | None = None) -> tuple[ReadTarget, ...]:
+    """Resolve only the seeded growth firm and its own portal client's cycle.
+
+    Each session cookie is appended to `issued` as soon as it exists, so a caller
+    can delete the sessions of a preparation that fails partway.
+    """
     # PLATFORM_QUERY_OK: the local-only harness requires this named synthetic firm.
     tenant = Tenant.objects.get(slug=slug)
     portal = User.objects.get(email=f"portal@{slug}.example.com")
@@ -84,8 +94,8 @@ def read_targets(slug: str) -> tuple[ReadTarget, ...]:
             message = "The measurement requires the seeded 1,000-client growth firm."
             raise ValueError(message)
         cycle = ServiceCycle.objects.filter(client=company).latest("period_start")
-        owner_cookies = _actors(tenant, None)
-        portal_cookies = _actors(tenant, company)
+        owner_cookies = _actors(tenant, None, issued)
+        portal_cookies = _actors(tenant, company, issued)
     host = f"{slug}.localhost"
     return (
         ReadTarget("hoje", host, "/", owner_cookies, b"Hoje"),
@@ -117,8 +127,15 @@ def read_targets(slug: str) -> tuple[ReadTarget, ...]:
     )
 
 
-def remove_sessions(targets: tuple[ReadTarget, ...]) -> int:
-    """Delete only session keys issued by this measurement, including on failure."""
-    keys = {cookie.split("=", 1)[1] for target in targets for cookie in target.cookies}
+def remove_cookie_sessions(cookies: Iterable[str]) -> int:
+    """Delete only the sessions behind these issued cookies."""
+    keys = {cookie.split("=", 1)[1] for cookie in cookies}
     deleted, _counts = Session.objects.filter(session_key__in=keys).delete()
     return deleted
+
+
+def remove_sessions(targets: tuple[ReadTarget, ...]) -> int:
+    """Delete only session keys issued by this measurement, including on failure."""
+    return remove_cookie_sessions(
+        cookie for target in targets for cookie in target.cookies
+    )
