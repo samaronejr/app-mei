@@ -168,7 +168,7 @@ def test_rejected_invite_matches_its_message_and_ignores_other_references() -> N
     world = portal_setup("invite-destination")
     world.graph.tenant.features = ["cycles_r1", "import_r1"]
     world.graph.tenant.save(update_fields=["features"])
-    acknowledge(world.graph, ("portal_invite",))
+    acknowledge(world.graph, ("contact_portal_invite",))
     with tenant_context(world.graph.tenant.pk):
         contact = ClientContact.objects.create(
             tenant=world.graph.tenant,
@@ -183,7 +183,9 @@ def test_rejected_invite_matches_its_message_and_ignores_other_references() -> N
     )
     assert queued.status_code == 302
     with tenant_context(world.graph.tenant.pk):
-        message = OutboundMessage.objects.get(kind="portal_invite", contact=contact)
+        message = OutboundMessage.objects.get(
+            kind="contact_portal_invite", contact=contact
+        )
         message.state = MessageState.REJECTED
         message.save(update_fields=["state"])
         report_problem(message)

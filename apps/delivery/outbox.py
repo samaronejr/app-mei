@@ -8,6 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.http import Http404
 
 from apps.accounts.models import User
 from apps.clients.models import ClientContact
@@ -29,6 +30,7 @@ from apps.delivery.policy import (
     KINDS,
     BusinessIntent,
     content_digest,
+    enabled_kinds,
     resolve_recipient,
 )
 from apps.delivery.services import record
@@ -171,6 +173,7 @@ def enqueue_portal_invite(
     invite: Invite,
     contact: ClientContact,
     *,
+    kind: str = "portal_invite",
     notice_scope: NoticeScope | None = None,
 ) -> OutboundMessage:
     """Queue the delivery of one portal invitation inside the issuing transaction.
@@ -185,16 +188,19 @@ def enqueue_portal_invite(
     One message per invitation, keyed on the invitation id: a replay returns the same
     row instead of queueing a second mail.
     """
-    require_enabled()
+    if kind not in {"portal_invite", "contact_portal_invite"} or (
+        kind not in enabled_kinds(tenant_id())
+    ):
+        raise Http404
     if invite.client_id is None:
         msg = "O convite não pertence a este cliente."
         raise ValidationError(msg)
     scope = notice_scope or lock_notice_scope(
         actor,
-        NoticeOrigin("portal_invite", invite.client_id),
+        NoticeOrigin(kind, invite.client_id),
     )
     actor = scope.actor
-    definition = KINDS["portal_invite"]
+    definition = KINDS[kind]
     key = hashlib.sha256(
         f"portal_invite:{tenant_id()}:{invite.pk}".encode()
     ).hexdigest()
@@ -209,7 +215,7 @@ def enqueue_portal_invite(
         client_id=invite.client_id,
         contact=recipient,
         created_by=actor,
-        kind="portal_invite",
+        kind=kind,
         business_intent_key=key,
         idempotency_key=key,
         recipients_json=[recipient.email],

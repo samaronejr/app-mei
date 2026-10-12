@@ -396,14 +396,12 @@ def test_create_edit_and_set_up_a_client_through_the_screens() -> None:
         assert Event.objects.filter(action=AuditAction.ASSIGNMENT_CHANGED).count() == 2
 
 
-def test_inviting_a_contact_mails_the_contacts_own_address() -> None:
+def test_inviting_a_contact_queues_the_contacts_own_address() -> None:
     firm = _firm("kapa")
-    firm.tenant.features = ["import_r1", "cycles_r1"]
-    firm.tenant.save(update_fields=["features"])
     with tenant_context(firm.tenant.pk):
         configure(
             firm.owner,
-            kinds=("portal_invite",),
+            kinds=("contact_portal_invite",),
             acknowledged=True,
             expected_version=0,
         )
@@ -436,6 +434,7 @@ def test_inviting_a_contact_mails_the_contacts_own_address() -> None:
     assert mail.outbox == []
     with tenant_context(firm.tenant.pk):
         message = OutboundMessage.objects.get()
+        assert message.kind == "contact_portal_invite"
         assert message.recipients_json == ["maria@padaria.test"]
     replay = browser.post(
         reverse("client-contact-invite", args=[client.pk, contact.pk]),
@@ -458,7 +457,7 @@ def test_a_contact_who_refused_email_cannot_be_invited() -> None:
     with tenant_context(firm.tenant.id):
         configure(
             firm.owner,
-            kinds=("portal_invite",),
+            kinds=("contact_portal_invite",),
             acknowledged=True,
             expected_version=0,
         )

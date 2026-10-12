@@ -47,6 +47,7 @@ SCHEMA: Final = "axorim.notice-authorization.v1"
 NOTICE_CHOICES: Final = (
     ("notice", "Aviso simples por e-mail"),
     ("portal_invite", "Convite ao portal enviado pela ficha do cliente"),
+    ("contact_portal_invite", "Convite ao portal enviado pela lista de contatos"),
     ("request_notice", "Solicitação de documentos do ciclo"),
     ("request_reminder", "Lembrete manual de documento pendente"),
 )
@@ -358,7 +359,7 @@ def _lock_sources(
 
 def _issuer_permits(authority: Authority, origin: NoticeOrigin, tid: UUID) -> bool:
     return authority.permits(CYCLES_OPERATE, origin.client_id, tid) and (
-        origin.kind != "portal_invite"
+        origin.kind not in {"portal_invite", "contact_portal_invite"}
         or authority.permits("users.create", origin.client_id, tid)
     )
 
@@ -375,10 +376,10 @@ def lock_notice_scope(
         msg = "notice_kind_not_allowed"
         raise NoticeRefusalError(msg)
     tid = tenant_id()
-    policy_required = (
+    policy_required = origin.kind in {"portal_invite", "contact_portal_invite"} or (
         object_value(binding.get("basis")).get("type") == "tenant_policy"
         if binding is not None
-        else origin.kind == "portal_invite" or origin.cycle_id is None
+        else origin.cycle_id is None
     )
     candidate = TenantNoticePolicy.objects.filter().first() if policy_required else None
     owner_id = (
@@ -401,7 +402,8 @@ def lock_notice_scope(
         raise PermissionDenied
     # PLATFORM_QUERY_OK: current tenant fence, after the full participant union.
     tenant = Tenant.objects.select_for_update(no_key=True).get(pk=tid)
-    if not tenant_row_has(tenant, "cycles_r1"):
+    feature = "import_r1" if origin.kind == "contact_portal_invite" else "cycles_r1"
+    if not tenant_row_has(tenant, feature):
         msg = "notice_feature_disabled"
         raise NoticeRefusalError(msg)
     require_writable(tenant)
@@ -486,7 +488,9 @@ def _envelope(
             raise NoticeRefusalError(msg)
     return {
         "schema": SCHEMA,
-        "feature": "cycles_r1",
+        "feature": "import_r1"
+        if message.kind == "contact_portal_invite"
+        else "cycles_r1",
         "mode": "manual",
         "kind": message.kind,
         "tenant_id": str(message.tenant_id),
@@ -577,7 +581,9 @@ def _legacy_publication(message: OutboundMessage, scope: NoticeScope) -> bool:
 def _read_binding(message: OutboundMessage) -> dict[str, JSONValue] | None:
     raw = message.notice_authorization_bytes
     if raw is None:
-        if message.kind == "portal_invite" or message.cycle_id is None:
+        if message.kind in {"portal_invite", "contact_portal_invite"} or (
+            message.cycle_id is None
+        ):
             msg = "notice_policy_missing"
             raise NoticeRefusalError(msg)
         return None

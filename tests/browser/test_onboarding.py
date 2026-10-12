@@ -44,7 +44,7 @@ def _invitation_ready_firm(live_firm: Callable[..., LiveFirm]) -> LiveFirm:
     with tenant_context(live.firm.tenant.pk):
         configure(
             live.firm.owner,
-            kinds=("portal_invite",),
+            kinds=("contact_portal_invite",),
             acknowledged=True,
             expected_version=0,
         )

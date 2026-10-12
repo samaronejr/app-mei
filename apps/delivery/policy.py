@@ -12,6 +12,7 @@ from django.core.validators import validate_email
 from django.template.loader import render_to_string
 
 from apps.clients.models import ClientContact
+from apps.core.flags import tenant_has
 from apps.cycles.effects.manifest import normalize_email
 from apps.cycles.models import CycleState
 from apps.delivery.models import OutboundMessage
@@ -82,6 +83,17 @@ def register_kind(kind: str, definition: MessageKind) -> None:
     if kind in KINDS:
         raise ValueError(kind)
     KINDS[kind] = definition
+
+
+def enabled_kinds(tenant_id: UUID) -> frozenset[str]:
+    """Filter trusted kinds before claiming rows or reserving quota."""
+    cycles = tenant_has(tenant_id, "cycles_r1")
+    importing = tenant_has(tenant_id, "import_r1")
+    return frozenset(
+        kind
+        for kind in KINDS
+        if (importing if kind == "contact_portal_invite" else cycles)
+    )
 
 
 def resolve_recipient(client_id: UUID, contact_id: UUID | str) -> ClientContact:

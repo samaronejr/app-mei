@@ -538,7 +538,7 @@ def test_a_provider_rejected_portal_invite_is_withdrawn_and_owned(
     setup = cycle_setup("invite-reject")
     setup.tenant.features = ["cycles_r1", "import_r1"]
     setup.tenant.save(update_fields=["features"])
-    acknowledge(setup, ("portal_invite",))
+    acknowledge(setup, ("contact_portal_invite",))
     with tenant_context(setup.tenant.pk):
         cycle = _cycle(setup)
         contact = ClientContact.objects.create(
@@ -573,7 +573,7 @@ def test_a_provider_rejected_portal_invite_is_withdrawn_and_owned(
         metadata__system=True,
     ).exists()
     with tenant_context(setup.tenant.pk):
-        message = OutboundMessage.objects.get(kind="portal_invite")
+        message = OutboundMessage.objects.get(kind="contact_portal_invite")
         assert message.state == MessageState.REJECTED
         problem = CycleException.objects.get(cycle=cycle)
         assert (problem.reason_code, problem.subject_ref, problem.state) == (

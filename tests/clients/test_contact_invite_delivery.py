@@ -73,7 +73,7 @@ def _firm_with_contact(slug: str) -> tuple[Firm, ClientCompany, ClientContact]:
         )
         configure(
             firm.owner,
-            kinds=("portal_invite",),
+            kinds=("contact_portal_invite",),
             acknowledged=True,
             expected_version=0,
         )
@@ -122,10 +122,14 @@ def _wrap(
     monkeypatch.setattr(views_onboarding, name, wrapped)
 
 
+@pytest.mark.parametrize("features", [["import_r1"], ["import_r1", "cycles_r1"]])
 def test_two_racing_invites_mint_one_invitation_and_one_mail(
     monkeypatch: pytest.MonkeyPatch,
+    features: list[str],
 ) -> None:
     firm, client, contact = _firm_with_contact("corrida")
+    firm.tenant.features = features
+    firm.tenant.save(update_fields=["features"])
     signed_in = firm.as_owner()
     barrier = threading.Barrier(2, timeout=TIMEOUT)
     # Both requests have read the contact (and passed every check made on that read)
@@ -318,7 +322,7 @@ def test_a_refused_send_is_withdrawn_even_if_the_requester_lost_the_permission(
     with tenant_context(firm.tenant.pk):
         configure(
             admin,
-            kinds=("portal_invite",),
+            kinds=("contact_portal_invite",),
             acknowledged=True,
             expected_version=1,
         )
