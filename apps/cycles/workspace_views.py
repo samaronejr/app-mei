@@ -9,6 +9,7 @@ from django.shortcuts import render
 
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.services import can
+from apps.authz.support import in_support_mode
 from apps.clients.maintenance import MANAGE_CAPABILITY, load_client
 from apps.clients.models import ClientContact, Engagement, OnboardingItem
 from apps.core.flags import tenant_has
@@ -18,6 +19,8 @@ from apps.cycles.models import Exception as CycleException
 from apps.cycles.models import PlaybookVersion, ServiceCycle, VersionState
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.workspace import get_cycle_context, parse_period, timeline
+from apps.cycles.workspace_sections import period_requests
+from apps.delivery.timeline import period_communication
 from apps.obligations.coverage import coverage_for
 from apps.obligations.models import Document, Obligation
 
@@ -90,6 +93,12 @@ def client_workspace(
             "may_set_up": tenant_has(tenant_id(), SETUP_FLAG)
             and can(request.user, MANAGE_CAPABILITY, tenant_id=tenant_id()),
             "timeline": timeline(request.user, pk, period),
+            # AXR1-043: the linked request and communication sections, read once
+            # for the client this page already resolved through its portfolio.
+            "period_requests": period_requests(client, period),
+            "communication": period_communication(
+                client.pk, period, redact=in_support_mode()
+            ),
             "documents": Document.objects.filter(client=client).order_by(
                 "-created_at", "pk"
             )[:20],
