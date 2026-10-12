@@ -2,14 +2,14 @@
 
 from collections.abc import Mapping
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from django import forms
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
-from django.db.models import OuterRef, Q, Subquery
+from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -24,11 +24,16 @@ from apps.clients.maintenance import load_client
 from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
 from apps.core.flags import tenant_has
-from apps.cycles.capabilities import CYCLES_OPERATE
-from apps.cycles.completion_checks import completion_items
+from apps.cycles.capabilities import CYCLES_OPERATE, CYCLES_REOPEN
+from apps.cycles.display_completion import display_completion_items
+from apps.cycles.display_reads import load_cycle_detail
+from apps.cycles.display_requests import display_internal
 from apps.cycles.errors import IllegalTransition, VersionConflict
-from apps.cycles.evidence import SUSPENDED_STATES, DocumentIntake, ReviewDecision
-from apps.cycles.exception_context import EXCEPTION_ACTION_LABELS, exception_rows
+from apps.cycles.evidence import SUSPENDED_STATES, ReviewDecision
+from apps.cycles.exception_context import (
+    EXCEPTION_ACTION_LABELS,
+    display_exception_rows,
+)
 from apps.cycles.exception_evidence import exception_location
 from apps.cycles.forms import SERVICE_KIND_CHOICES
 from apps.cycles.models import (
@@ -59,7 +64,6 @@ from apps.cycles.services.requests import (
     RequestFields,
     client_status,
     create_request,
-    preview_recipients,
     remind_request,
     send_requests,
     update_request,
@@ -70,8 +74,6 @@ from apps.cycles.workspace import (
     portal_projection,
 )
 from apps.cycles.workspace_views import client_workspace
-from apps.obligations.coverage import coverage_for
-from apps.obligations.models import Obligation
 from apps.obligations.observations import (
     StaffFact,
     StaleObservationError,
@@ -79,6 +81,9 @@ from apps.obligations.observations import (
 )
 from apps.portal.request_views import client_help, open_requests
 from apps.portal.views import PortalVaultRequest
+
+if TYPE_CHECKING:
+    from apps.cycles.display_reads import CycleDetailReads
 
 
 class ChangeForm(forms.Form):
@@ -193,6 +198,8 @@ def cycle_list(request: AuthenticatedRequest) -> HttpResponse:
 @require_can("clients.view_assigned")
 def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     """Render the pinned graph and apply only the selected, versioned operation."""
+    if request.method == "GET":
+        return _render_detail(request, pk, "", HTTPStatus.OK)
     cycle = load_cycle(request.user, pk)
     error = ""
     status = HTTPStatus.OK
@@ -268,12 +275,11 @@ def _render_detail(
     selected_exception: CycleException | None = None,
 ) -> HttpResponse:
     """Render the cycle page; shared by the cycle and the request-action posts."""
-    # Refresh state after a refused POST and fetch the visible context together,
-    # rather than adding a client/engagement query for every header field.
-    cycle = ServiceCycle.objects.select_related(
-        "client", "engagement", "playbook", "playbook_version"
-    ).get(pk=pk)
-    steps = {step.key: step for step in cycle.playbook_version.steps.all()}
+    # A new display cut after a refused POST keeps rendered versions fresh. No
+    # command receives this projection; services still reload and lock their scope.
+    reads = load_cycle_detail(request.user, pk)
+    cycle = reads.cycle
+    steps = {step.key: step for step in reads.steps}
     tasks = [
         {
             "task": task,
@@ -285,11 +291,11 @@ def _render_detail(
             ],
         }
         for task in sorted(
-            cycle.tasks.select_related("owner"),
+            reads.tasks,
             key=lambda task: steps[task.step_key].position,
         )
     ]
-    missing_items = completion_items(cycle)
+    missing_items = display_completion_items(reads)
     unmet = list(dict.fromkeys(item.code for item in missing_items))
     checklist = [
         {
@@ -326,35 +332,28 @@ def _render_detail(
         "cycles/cycle_detail.html",
         {
             "cycle": cycle,
-            "coverage": coverage_for(
-                request.user,
-                cycle.client,
-                cycle.period_start,
-                engagement_id=cycle.engagement_id,
-            ),
+            "coverage": reads.coverage,
             "service_label": dict(SERVICE_KIND_CHOICES)[cycle.engagement.service_kind],
             "tasks": tasks,
             "actions": [
                 (value, CycleState(value).label)
-                for value in available_actions(request.user, cycle, unmet=unmet)
+                for value in available_actions(
+                    request.user, cycle, unmet=unmet, allowed=reads.allowed
+                )
             ],
-            "may_operate": can(request.user, CYCLES_OPERATE, tenant_id=tenant_id()),
+            "may_operate": CYCLES_OPERATE in reads.allowed,
             "unmet": unmet,
             "completion_checklist": checklist,
             "completion_items": missing_items,
             "may_reopen": cycle.state in {CycleState.COMPLETED, CycleState.WITH_PENDING}
-            and can(request.user, "cycles.reopen", tenant_id=tenant_id()),
-            "notes": cycle.notes.select_related("author").order_by("created_at", "pk"),
-            "proposals": cycle.proposals.order_by("-created_at", "-pk"),
-            "exceptions": exception_rows(
-                request,
-                CycleException.objects.filter(cycle=cycle),
-                "ciclo",
-                selected_exception,
-                error,
+            and CYCLES_REOPEN in reads.allowed,
+            "notes": reads.notes,
+            "proposals": reads.proposals,
+            "exceptions": display_exception_rows(
+                request, reads, selected_exception, error
             ),
             "error": error,
-            **_requests_context(request, cycle),
+            **_requests_context(reads),
         },
         status=status,
     )
@@ -394,30 +393,11 @@ def _intake_state(link: EvidenceLink) -> str | None:
     return state
 
 
-def _requests_context(
-    request: AuthenticatedRequest, cycle: ServiceCycle
-) -> dict[str, object]:
-    """Build the firm's view of the cycle's requests and the send preview (T11)."""
-    rows = list(
-        EvidenceRequest.objects.filter(cycle=cycle)
-        .select_related("obligation__obligation_type")
-        .prefetch_related("internals")
-        .order_by("created_at", "pk")
-    )
+def _requests_context(reads: "CycleDetailReads") -> dict[str, object]:
+    """Render requests and recipient access from the same display-only cut."""
+    rows = reads.requests
     links: dict[UUID, list[EvidenceLink]] = {}
-    for link in (
-        EvidenceLink.objects.filter(request__cycle=cycle)
-        .select_related("document")
-        # The intake state rides on the same query: no per-link lookup (T12).
-        .annotate(
-            intake_state=Subquery(
-                DocumentIntake.objects.filter(document=OuterRef("document_id")).values(
-                    "state"
-                )[:1]
-            )
-        )
-        .order_by("created_at", "pk")
-    ):
+    for link in reads.links:
         links.setdefault(link.request_id, []).append(link)
     # A refused file (type or malware), a document of another company and a file
     # the reviewer did not accept are shown to the firm but are not "sent" (T12/T13).
@@ -435,7 +415,7 @@ def _requests_context(
         "evidence_requests": [
             {
                 "request": row,
-                "internal": next(iter(row.internals.all()), None),
+                "internal": display_internal(row),
                 "links": links.get(row.pk, []),
                 "status": client_status(row, submitted=row.pk in counted, today=today),
                 "editable": row.state in {RequestState.DRAFT, RequestState.REQUESTED},
@@ -459,12 +439,10 @@ def _requests_context(
             for row in rows
             for link in links.get(row.pk, [])
         ],
-        "recipients": preview_recipients(request.user, cycle.pk),
+        "recipients": reads.recipients,
         # The only legal receipt bindings — the service re-checks inside the
         # aggregate lock; this list just keeps the form honest.
-        "bindable_obligations": Obligation.objects.filter(
-            client_id=cycle.client_id, competence_month=cycle.period_start
-        ),
+        "bindable_obligations": reads.obligations,
     }
 
 

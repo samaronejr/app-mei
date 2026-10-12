@@ -25,10 +25,10 @@ from tests.browser.harness import mfa_session_cookie
 
 pytestmark = [pytest.mark.scale, pytest.mark.django_db(transaction=True)]
 
-# Measured on populated pages: workspace=46 and cycle_detail=50. These are
-# open follow-ups, not larger budgets. The three compliant reads enforce 25 and
-# the pre-existing tests/briefing/test_scale.py remains completely unchanged.
-FOLLOW_UP_READS = frozenset({"workspace", "cycle_detail"})
+# The workspace's reported 46 remains an open follow-up, not a larger budget.
+# Cycle detail now joins the reads enforcing 25; its count needs remeasurement.
+# The pre-existing tests/briefing/test_scale.py remains completely unchanged.
+FOLLOW_UP_READS = frozenset({"workspace"})
 
 
 def _analyze_seeded_tables(settings: SettingsWrapper) -> None:

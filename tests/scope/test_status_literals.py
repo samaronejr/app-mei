@@ -90,10 +90,18 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         ').select_related("client", "engagement", "owner", "playbook", "tax_profile")',
     ): "ORM relation name, not the tenant owner role or a status comparison.",
     LiteralPin(
-        "apps/cycles/cycle_views.py",
+        "apps/cycles/display_reads.py",
         "owner",
-        'cycle.tasks.select_related("owner"),',
-    ): "ORM task owner relation; eagerly loaded to prevent per-row queries.",
+        'tasks=tuple(cycle.tasks.select_related("owner")),',
+    ): (
+        "AXR1-036: ORM task owner relation, loaded once for the cycle detail "
+        "display projection (moved here from cycle_views)."
+    ),
+    LiteralPin(
+        "apps/cycles/display_reads.py",
+        "owner",
+        '.select_related("owner", "cycle__client", "cycle__engagement")',
+    ): "AXR1-036: ORM exception owner relation for the cycle detail display.",
     LiteralPin(
         "apps/cycles/workspace_views.py",
         "owner",

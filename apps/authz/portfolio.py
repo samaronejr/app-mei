@@ -26,14 +26,16 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from django.db.models import QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
+from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.authz.models import GrantLevel
+from apps.authz.models import GrantLevel, RoleGrant, UserCapabilityGrant
 from apps.authz.services import Actor, granted_levels_with_role
-from apps.authz.support import support_clients
+from apps.authz.stash import portal_stash
+from apps.authz.support import in_support_mode, support_clients
 from apps.clients.models import ClientCompany
-from apps.tenants.models import TenantRole
+from apps.tenants.models import Membership, TenantRole
 
 VIEW_ASSIGNED: Final = "clients.view_assigned"
 VIEW_ALL: Final = "clients.view_all"
@@ -120,11 +122,43 @@ def visible_clients(
     return ClientCompany.objects.none()
 
 
+def firm_wide_memberships(memberships: QuerySet[Membership]) -> QuerySet[Membership]:
+    """Select roster members whose live portfolio_scope would answer ALL.
+
+    This is a display roster, not an actor authorization cache. Keep the role
+    narrowing here and intersect it with both matrix ceilings, including live
+    raises. Support/portal resolution has no firm role, so cannot answer ALL.
+    """
+    if in_support_mode() or portal_stash.get() is not None:
+        return memberships.none()
+    rows = memberships.filter(
+        is_active=True, client__isnull=True, role__in=FIRM_WIDE_ROLES
+    )
+    for index, action in enumerate((VIEW_ASSIGNED, VIEW_ALL)):
+        role_grants = RoleGrant.objects.filter(
+            role=OuterRef("role"), capability__slug=action, level=GrantLevel.FULL
+        )
+        raises = UserCapabilityGrant.objects.filter(
+            Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()),
+            tenant_id=OuterRef("tenant_id"),
+            user_id=OuterRef("user_id"),
+            capability__slug=action,
+            level=GrantLevel.FULL,
+            revoked_at__isnull=True,
+        )
+        name = f"portfolio_full_{index}"
+        rows = rows.annotate(**{name: Exists(role_grants) | Exists(raises)}).filter(
+            Q(user__is_superuser=True) | Q(**{name: True})
+        )
+    return rows
+
+
 __all__ = [
     "FIRM_WIDE_ROLES",
     "VIEW_ALL",
     "VIEW_ASSIGNED",
     "PortfolioScope",
+    "firm_wide_memberships",
     "portfolio_scope",
     "visible_clients",
 ]
