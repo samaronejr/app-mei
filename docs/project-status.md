@@ -66,9 +66,10 @@ until the name is cleared.
   `AXR1-032` support-authority repair, `AXR1-033` contact-invitation binding,
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
-  support audit actor, `AXR1-044` ignored late observations shown as history, and a final verification
-  wave. Required follow-ups `AXR1-034` through `AXR1-038`, `AXR1-040` through `AXR1-043`,
-  `AXR1-045` through `AXR1-047`, and `AXR1-054` readable refusals remain open; optional proposals 051/052 are not
+  support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
+  discoverable setup after import, and a final verification wave. Required follow-ups `AXR1-034`
+  through `AXR1-038`, `AXR1-040` through `AXR1-043`, `AXR1-045`, `AXR1-046`, and `AXR1-054`
+  readable refusals remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
@@ -901,6 +902,23 @@ The complete r2 rerun supplies the passing evidence. Evidence: `.evidence/AXR1-0
 `AXR1-044-failure.txt`, `AXR1-044-review.md`, `AXR1-044-final-gates-r2.txt`.
 This approves T44, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
 
+`AXR1-047` (discoverable setup after a flagged CSV import) is recorded on delivered `AXR1-044`.
+The import result lists the clients that batch created (in file order, at most 200, disclosed when
+capped), each linking to its ordinary page. The client workspace's "Cadastro e autorizações" section
+links to the setup page (service, tax profile, contacts and responsible people) only for actors the
+setup route admits: the import flag plus the clients.manage capability. The old link that reloaded
+the same workspace at `#contatos` is gone. Read-only support, unassigned staff and other firms see no
+link and are still refused; flag-off and legacy pages are unchanged. Verified by an owner walking from
+the CSV import to the setup page through rendered links only, at desktop and mobile with a keyboard
+final step, then adding a contact and queuing its invitation. Independent review **APPROVE** at
+`2d3d607`: no blockers; 33 HTTP checks (five actors across four flag states, batch boundaries 0-201
+with one query) and 4 browser cases passed, and a restored self-loop failed at the loop assertion.
+Pre-existing and out of scope: the legacy client page draws its setup link on the import flag alone,
+so read-only support sees a link the route refuses with 403. Evidence:
+`.evidence/AXR1-047-happy.txt`, `AXR1-047-failure.txt`, `AXR1-047-review.md`,
+`AXR1-047-final-gates-r1.txt`. This approves T47, not later follow-ups, launch, merge or deployment.
+Every OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -1000,10 +1018,13 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4921 passing** (30 skipped, 154 deselected), verified at `AXR1-044` code `5cf5957` on delivered `AXR1-050` head `5a42438`: the **4911** below plus **10** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-044-final-gates-r2.txt`.
+implementation head. The current default-suite baseline is **4928 passing** (30 skipped, 156 deselected), verified at `AXR1-047` code `2d3d607` on delivered `AXR1-044` head `b965b8b`: the **4921** below plus **7** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**156 passed**) passed serially. Evidence: `.evidence/AXR1-047-final-gates-r1.txt`.
 This status-only delivery changes no reviewed implementation.
 
-The previous default-suite baseline was **4911 passing** (30 skipped, 154 deselected), verified at `AXR1-050` code `9430bbe` on delivered `AXR1-049` head `7464dd1`: the **4902** below plus **9** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-050-final-gates-r2.txt` and `AXR1-050-final-tail-r1.txt`.
+The previous default-suite baseline was **4921 passing** (30 skipped, 154 deselected), verified at `AXR1-044` code `5cf5957` on delivered `AXR1-050` head `5a42438`: the **4911** below plus **10** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-044-final-gates-r2.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4911 passing** (30 skipped, 154 deselected), verified at `AXR1-050` code `9430bbe` on delivered `AXR1-049` head `7464dd1`: the **4902** below plus **9** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-050-final-gates-r2.txt` and `AXR1-050-final-tail-r1.txt`.
 This status-only delivery changes no reviewed implementation.
 
 Before that, the default-suite baseline was **4902 passing** (30 skipped, 154 deselected), verified at `AXR1-049` code `e681371` on delivered `AXR1-039` head `778b5f1`: the **4893** below plus **9** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed (r2; r1 had 1 Chromium screenshot-capture error, see failure evidence)**) passed serially. Evidence: `.evidence/AXR1-049-final-gates-r1.txt`.
