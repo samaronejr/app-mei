@@ -67,8 +67,8 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, and a final verification wave.
-  Required follow-ups `AXR1-034` through `AXR1-038`, `AXR1-041`, `AXR1-042`, `AXR1-045`, `AXR1-046`, and `AXR1-054`
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, and a final verification wave.
+  Required follow-ups `AXR1-034` through `AXR1-038`, `AXR1-041`, `AXR1-045`, `AXR1-046`, and `AXR1-054`
   readable refusals remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
@@ -945,6 +945,17 @@ unguarded. Evidence: `.evidence/AXR1-040-happy.txt`, `AXR1-040-failure.txt`, `AX
 `AXR1-040-final-gates-r1.txt`. This approves T40, not later follow-ups, launch, merge or deployment. Every
 OG/OD gate remains open.
 
+`AXR1-042` (portal next action) is recorded on delivered `AXR1-040`. The R1 portal now chooses the
+client's next action from the requests and cycles that client may see: an outstanding request leads the
+page and is never contradicted by an instruction to wait, a received request waits for review, an older
+period's overdue request is no longer hidden by a newer cycle, and known calendar entries stay a separate,
+scoped action. Coverage stays explicitly unknown; nothing turns green from missing data. Internal notes,
+reviews and official source assertions stay outside the portal role. Independent review **APPROVE** at
+`8f73d27`: no blockers; 22 focused, 272 portal/payment and 14 browser cases at both widths passed in the
+reviewer's own capped lane, and the gates, negative controls and screenshots were audited. Evidence:
+`.evidence/AXR1-042-happy.txt`, `AXR1-042-failure.txt`, `AXR1-042-review.md`, `AXR1-042-final-gates-r1.txt`.
+This approves T42, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -1044,10 +1055,13 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **4946 passing** (30 skipped, 164 deselected), verified at `AXR1-040` code `a81fd85` on delivered `AXR1-043` head `aefb7ca`: the **4936** below plus **10** new cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**164 passed**) passed serially. Evidence: `.evidence/AXR1-040-final-gates-r1.txt`.
+implementation head. The current default-suite baseline is **4968 passing** (30 skipped, 164 deselected), verified at `AXR1-042` code `8f73d27` on delivered `AXR1-040` head `bc11afc`: the **4946** below plus **22** new cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**164 passed**) passed serially. Evidence: `.evidence/AXR1-042-final-gates-r1.txt`.
 This status-only delivery changes no reviewed implementation.
 
-The previous default-suite baseline was **4936 passing** (30 skipped, 156 deselected), verified at `AXR1-043` code `92eaf3a` on delivered `AXR1-047` head `33a4da0`: the **4928** below plus **8** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**156 passed**) passed serially. Evidence: `.evidence/AXR1-043-final-gates-r1.txt`.
+The previous default-suite baseline was **4946 passing** (30 skipped, 164 deselected), verified at `AXR1-040` code `a81fd85` on delivered `AXR1-043` head `aefb7ca`: the **4936** below plus **10** new cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**164 passed**) passed serially. Evidence: `.evidence/AXR1-040-final-gates-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4936 passing** (30 skipped, 156 deselected), verified at `AXR1-043` code `92eaf3a` on delivered `AXR1-047` head `33a4da0`: the **4928** below plus **8** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**156 passed**) passed serially. Evidence: `.evidence/AXR1-043-final-gates-r1.txt`.
 This status-only delivery changes no reviewed implementation.
 
 Before that, the default-suite baseline was **4928 passing** (30 skipped, 156 deselected), verified at `AXR1-047` code `2d3d607` on delivered `AXR1-044` head `b965b8b`: the **4921** below plus **7** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**156 passed**) passed serially. Evidence: `.evidence/AXR1-047-final-gates-r1.txt`.
