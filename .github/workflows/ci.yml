@@ -25,6 +25,10 @@ jobs:
     # commit finished in 22m02s, proving the ceiling sat inside the runner's own variance band; re-running was
     # luck, not a fix. Seventy-five minutes provides runner-variance margin, not permission for indefinite runtime growth:
     # coverage, isolation, RLS, migration, and CNPJ checks all remain mandatory and unconditional.
+    # AXR1-041: the R1 schema roughly doubled the tables every transactional test flushes, and
+    # the serial suite reached only 53% of 5190 tests in 74 minutes on this runner (run
+    # 38537217704). Both pytest steps therefore use every runner CPU (pytest-xdist, one test
+    # database per worker, whole files per worker) instead of a longer ceiling.
     timeout-minutes: 75
 
     # Every credential below is a workflow-local literal for a container that is
@@ -189,6 +193,7 @@ jobs:
       - name: Tests with coverage
         run: |
           uv run pytest \
+            -n auto --dist loadfile \
             --durations=50 \
             --durations-min=1.0 \
             --cov=apps --cov=config \
@@ -243,7 +248,7 @@ jobs:
       # rather than one line inside a 450-test summary. Overlapping with the full
       # run above is deliberate.
       - name: Isolation suite
-        run: uv run pytest tests/isolation/ -v
+        run: uv run pytest tests/isolation/ -v -n auto --dist loadfile
 
       # A dedicated step for the same reason as the isolation suite above: the CNPJ
       # is this product's most fundamental identifier, alphanumeric registrations
