@@ -67,7 +67,7 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, `AXR1-060` portal next action for awaiting publications, `AXR1-061` email metering states, `AXR1-062` R1 client flows in pt-BR, `AXR1-063` upload-refusal ink, `AXR1-064` refused playbook creation form, and a final verification wave.
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, `AXR1-060` portal next action for awaiting publications, `AXR1-061` email metering states, `AXR1-062` R1 client flows in pt-BR, `AXR1-063` upload-refusal ink, `AXR1-064` refused playbook creation form, `AXR1-057` evidence export with unscanned originals, and a final verification wave.
   Required follow-up `AXR1-041` is delivered and waits only for its integrated top-of-stack CI run; repair items
   `AXR1-055` to `AXR1-064` follow it in the stack; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
@@ -1155,6 +1155,18 @@ shared field partial carries both this change and item 55's date values (a one-l
 verified by review). Final STD-GATES at `0ebaeee` passed (5222/41/170, isolation 722/41, CNPJ 29, browser 170). Independent review **APPROVE** at `0ebaeee`: 70 tests,
 desktop and mobile retries, bound and unbound select and date probes. Evidence: `.evidence/AXR1-064-prep.md`,
 `AXR1-064-review.md`, `AXR1-064-final-gates-r2.txt`. Every OG/OD gate remains open.
+
+`AXR1-057` (evidence export with unscanned originals) is recorded on delivered `AXR1-064`. A cycle's evidence export now
+succeeds when some originals were never scanned: unsafe, unscanned or rejected originals are excluded and named with their
+reason on the page and in the archive, and an all-clean archive is byte-identical to before. Review r1 found a race (an
+original rejected after the claim reached a READY archive); eligibility is now rechecked under row locks in the
+publication transaction, historical exports included, and unsafe attempts never become READY. Migration
+`0020_evidenceexport_excluded_originals` follows item 60's `0019`. Final STD-GATES at `d1e803f` passed (5240/41/170, isolation 722/41, CNPJ 29, browser 170 on a same-head rerun).
+Independent review r2 **APPROVE**: the rebuilt race attack fails on the old head and passes here, plus two new attacks;
+the r3 delta review confirmed it at `d1e803f` (product code unchanged, test-file typing only). Residual for F4: an archive
+published before a later rejection stays downloadable. Evidence: `.evidence/AXR1-057-prep.md`, `AXR1-057-review.md`,
+`AXR1-057-review-r2.md`, `AXR1-057-review-r3.md`, `AXR1-057-final-gates-r3.txt`, `AXR1-057-browser-rerun-r1.txt`. Every
+OG/OD gate remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
