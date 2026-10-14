@@ -67,8 +67,8 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, and a final verification wave.
-  Required follow-ups `AXR1-034`, `AXR1-038`, `AXR1-041`, and `AXR1-054`
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, and a final verification wave.
+  Required follow-ups `AXR1-034`, `AXR1-041`, and `AXR1-054`
   readable refusals remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
@@ -1021,6 +1021,24 @@ record and not counted. Evidence: `.evidence/AXR1-037-happy.txt`, `AXR1-037-fail
 `AXR1-037-paired-window-P4-summary.txt`, `AXR1-037-review.md`, `AXR1-037-review-r2.md`,
 `AXR1-037-final-gates-r2.txt`. This approves T37, not later follow-ups, launch, merge or deployment. Every OG/OD gate
 remains open.
+
+`AXR1-038` (every-model isolation) is recorded on delivered `AXR1-037`. The behavioral isolation sweep now covers the
+seven models it missed - user capability grants, billing accounts, usage records, notification preferences, firm
+outbound messages, account exports and their attempts - and an inventory test fails whenever a concrete model has
+neither sweep coverage nor an individually justified exemption. Every tenant-composite parent foreign key of the
+shipped schema (71 table/column/constraint triples) is now declared in the test suite and reconciled against the
+live catalog, so a dropped, renamed or added composite fails instead of turning a cross-tenant probe into a skip.
+ClientContact is declared portal NONE in both the roles script and the test registry, with no grant change.
+Review history: the first review attempt was lost (no verdict) and kept on record; review r2 rejected the
+catalog-only discovery of paired parents, fixed test-only with the declared manifest; review r3 **APPROVE** at
+`83e8370`: fresh isolation and scope reproduced (754 passed, 41 skipped), the catalog matched all 71 declared triples, three dropped-FK mutants failed and restored, and the incremental gate coverage was accepted. Full gates last ran at `3b56656` (suite 5103 passed / 41 skipped / 168 deselected,
+isolation 720 passed / 41 skipped, CNPJ 29, browser 168); after AXR1-037's fix the affected suites and the browser
+reran at `563a34a` (162 and 168 passed), and after the r2 fix isolation plus scope reran at `83e8370` (754 passed, 41
+skipped). The default-suite baseline above is not re-rolled by this item because no single full-suite run exists at
+its final head; the next full run (final verification) re-establishes it. Evidence: `.evidence/AXR1-038-happy.txt`,
+`AXR1-038-failure.txt`, `AXR1-038-review.md`, `AXR1-038-review-r3.md`, `AXR1-038-final-gates-r1.txt`,
+`AXR1-038-incremental-r1.txt`, `AXR1-038-isolation-fix.txt`. This approves T38, not later follow-ups, launch, merge or
+deployment. Every OG/OD gate remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
