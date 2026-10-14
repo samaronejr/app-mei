@@ -67,7 +67,7 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, and a final verification wave.
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, and a final verification wave.
   Required follow-up `AXR1-041` is delivered and waits only for its integrated top-of-stack CI run; repair items
   `AXR1-055` to `AXR1-064` follow it in the stack; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
@@ -1077,6 +1077,16 @@ minutes, and the into-`main` path is verified by reading only. The plan's integr
 the top repair PR's CI run, so item 41 stays unticked until that run is green. Evidence: `.evidence/AXR1-041-happy.txt`,
 `AXR1-041-failure.txt`, `AXR1-041-review.md`, `AXR1-041-final-gates-r1.txt`, `AXR1-041-remote-ci-r2-test-job.log`.
 Every OG/OD gate remains open.
+
+`AXR1-055` (saved dates in date inputs) is recorded on delivered `AXR1-041`. Edit forms rendered a saved date in its
+localized display format inside `<input type="date">`, which browsers treat as empty, so re-saving an engagement silently
+cleared its dates (final F3 N1). A new `input_value` filter renders each field in the input's own wire format (ISO for
+dates) through the shared field partial; submitted strings and non-date values are unchanged. Real-browser QA passed 4/4
+(pt-BR and en at 1440x900 and 390x844): the editor shows both saved dates, changing only the service kind keeps them, and
+reopening shows them again. Final STD-GATES at `28b2eb0` passed (5156/41/168, isolation 721/41, CNPJ 29, browser 168).
+Independent review **APPROVE** at `28b2eb0`: patch identity, 24 focused tests and four browser attacks. Evidence:
+`.evidence/AXR1-055-happy.txt`, `AXR1-055-failure.txt`, `AXR1-055-review.md`, `AXR1-055-final-gates-r2.txt`. Every OG/OD
+gate remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
