@@ -70,6 +70,7 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
         <ul class="space-y-3">{% for publication in publications %}<li class="min-w-0">
           <a class="ui-link break-words" href="{% url 'portal-publication-detail' publication.id %}">{{ publication.title }}</a>
           <p class="text-sm text-ink-600">{{ publication.published_at|data_hora }}{% if publication.state == 'retirada' %} · Retirada pelo escritório{% endif %}{% if publication.revised %} · Revisada{% endif %}</p>
+          {% if publication.awaiting_confirmation %}<p class="text-sm text-ink-700" data-publication-pending="{{ publication.id }}">{% translate "Confirme o recebimento desta publicação." %}</p>{% endif %}
         </li>{% endfor %}</ul>
       </section>{% endif %}
       {% endif %}{% if cycles %}
@@ -80,10 +81,13 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
           <p>{{ cycle.state_label }}</p><p>{{ cycle.next_action }}</p>
         </li>{% endfor %}</ul>
       </section>{% endif %}
-      {% if cycles_r1 %}<section id="portal-status" class="card space-y-4 px-5 py-4 text-sm text-ink-700" data-status="{% if next_request %}action_required{% elif overdue_count %}calendar_overdue{% elif next_action %}calendar_upcoming{% elif help_rows %}contact_required{% elif requests %}awaiting_review{% else %}no_client_action{% endif %}">
+      {% if cycles_r1 %}<section id="portal-status" class="card space-y-4 px-5 py-4 text-sm text-ink-700" data-status="{% if next_request or next_publication %}action_required{% elif overdue_count %}calendar_overdue{% elif next_action %}calendar_upcoming{% elif help_rows %}contact_required{% elif requests %}awaiting_review{% else %}no_client_action{% endif %}">
         {% if next_request %}
           <span class="badge badge-warn">{% translate "Solicitação pendente" %}</span>
           <p>{% translate "O escritório precisa de um documento seu. Veja a próxima ação abaixo." %}</p>
+        {% elif next_publication %}
+          <span class="badge badge-warn">{% translate "Confirmação de recebimento pendente" %}</span>
+          <p>{% translate "O escritório publicou um documento para você. Confira e confirme o recebimento na próxima ação abaixo." %}</p>
         {% elif overdue_count %}
           <span class="badge badge-late">{% translate "Vencimento em atraso" %}</span>
           <p>{% translate "Há um vencimento em atraso no calendário de obrigações acompanhado pelo escritório. Veja a próxima ação abaixo." %}</p>
@@ -117,7 +121,7 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
         {% endif %}
       </p>{% endif %}
 
-      <section class="card space-y-4 px-5 py-4" aria-labelledby="proxima-acao"{% if cycles_r1 %} data-action-kind="{% if next_request %}request{% elif next_action %}calendar{% elif help_rows %}contact{% elif requests %}review{% else %}none{% endif %}"{% endif %}>
+      <section class="card space-y-4 px-5 py-4" aria-labelledby="proxima-acao"{% if cycles_r1 %} data-action-kind="{% if next_request %}request{% elif next_publication %}publication{% elif next_action %}calendar{% elif help_rows %}contact{% elif requests %}review{% else %}none{% endif %}"{% endif %}>
         <h2 id="proxima-acao" class="text-sm font-semibold text-ink-700">{% translate "Próxima ação" %}</h2>
         {% if next_request %}
           <p class="text-lg font-semibold text-ink-900">{{ next_request.title }}</p>
@@ -125,6 +129,10 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
           {% if next_request.due_on %}<p class="text-sm text-ink-700">{% translate "Enviar até" %} <time datetime="{{ next_request.due_on.isoformat }}">{{ next_request.due_on|data }}</time></p>{% endif %}
           {% if next_request.hint %}<p class="text-sm text-ink-700">{{ next_request.hint }}</p>{% endif %}
           <a class="btn btn-primary" href="{% url 'portal-request-detail' next_request.id %}" data-primary-action="request" data-primary-request-id="{{ next_request.id }}" data-status="{{ next_request.status }}">{% translate "Ver solicitação e enviar arquivo" %}</a>
+        {% elif next_publication %}
+          <p class="text-lg font-semibold text-ink-900 break-words">{{ next_publication.title }}</p>
+          <p class="text-sm text-ink-700">{% translate "Confira a publicação do escritório e confirme que a recebeu." %}</p>
+          <a class="btn btn-primary" href="{% url 'portal-publication-detail' next_publication.id %}" data-primary-action="publication">{% translate "Ver publicação e confirmar recebimento" %}</a>
         {% elif next_action %}
           <p class="text-lg font-semibold text-ink-900">{% if next_action.type_code == 'DAS' %}{% translate "Guia mensal (DAS)" %}{% elif next_action.type_code == 'DASN' %}{% translate "Declaração anual (DASN)" %}{% else %}{{ next_action.type_code }}{% endif %}</p>
 
