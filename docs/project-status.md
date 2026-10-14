@@ -67,7 +67,7 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, `AXR1-060` portal next action for awaiting publications, `AXR1-061` email metering states, `AXR1-062` R1 client flows in pt-BR, `AXR1-063` upload-refusal ink, and a final verification wave.
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, `AXR1-060` portal next action for awaiting publications, `AXR1-061` email metering states, `AXR1-062` R1 client flows in pt-BR, `AXR1-063` upload-refusal ink, `AXR1-064` refused playbook creation form, and a final verification wave.
   Required follow-up `AXR1-041` is delivered and waits only for its integrated top-of-stack CI run; repair items
   `AXR1-055` to `AXR1-064` follow it in the stack; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
@@ -1148,6 +1148,13 @@ size limit, and flag-off pages are byte-identical. Final STD-GATES at `fc53fd9` 
 **APPROVE** at `fc53fd9`: 76 HTTP and 6 browser tests including two attacks. Residual for F4: a file rejected for its type
 still shows "Nenhum arquivo foi escolhido". Evidence: `.evidence/AXR1-063-happy.txt`, `AXR1-063-failure.txt`,
 `AXR1-063-review.md`, `AXR1-063-final-gates-r2.txt`. Every OG/OD gate remains open.
+
+`AXR1-064` (playbook bound form) is recorded on delivered `AXR1-063`. A refused playbook creation (422 or 409) now re-renders
+the bound form with the submitted values, selected options and inline errors, and correcting only the key succeeds. The
+shared field partial carries both this change and item 55's date values (a one-line conflict resolved during placement and
+verified by review). Final STD-GATES at `0ebaeee` passed (5222/41/170, isolation 722/41, CNPJ 29, browser 170). Independent review **APPROVE** at `0ebaeee`: 70 tests,
+desktop and mobile retries, bound and unbound select and date probes. Evidence: `.evidence/AXR1-064-prep.md`,
+`AXR1-064-review.md`, `AXR1-064-final-gates-r2.txt`. Every OG/OD gate remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
