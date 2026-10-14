@@ -67,7 +67,7 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, and a final verification wave.
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, `AXR1-060` portal next action for awaiting publications, and a final verification wave.
   Required follow-up `AXR1-041` is delivered and waits only for its integrated top-of-stack CI run; repair items
   `AXR1-055` to `AXR1-064` follow it in the stack; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
@@ -1115,6 +1115,15 @@ contrast (4.27:1); a control proves it predates this item, so it is recorded und
 STD-GATES at `0055ad3` passed (5176/41/168, isolation 721/41, CNPJ 29, browser 168). Independent review **APPROVE** at `0055ad3` (r1 plus a delta review of the
 amendment). Evidence: `.evidence/AXR1-059-prep.md`, `AXR1-059-review.md`, `AXR1-059-final-gates-r1.txt`. Every OG/OD gate
 remains open.
+
+`AXR1-060` (portal next action for awaiting publications) is recorded on delivered `AXR1-059`. A publication awaiting the
+client's confirmation is now the portal's next action, its confirm link works and it clears afterwards; migration
+`0019_portal_receipt_lookup` grants the portal role read access to four receipt columns only, and existing row-level
+security still limits rows to the client's own. The first final gates found two defects the reviews missed: the column-only portal grant was not declared where the
+isolation guard reads portal decisions, and an annotation was named "pending"; the decision is now declared and asserted
+(SELECT * refused, only the declared columns readable, RLS confining rows) and the annotation renamed. Final STD-GATES at `da27d06` passed (5182/41/168, isolation 722/41, CNPJ 29, browser 168). Independent review
+**APPROVE** at `da27d06`: 32 tests, the live confirmation flow, and cross-client and cross-tenant attacks. Evidence:
+`.evidence/AXR1-060-prep.md`, `AXR1-060-review.md`, `AXR1-060-final-gates-r1.txt`. Every OG/OD gate remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
