@@ -168,6 +168,6 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
       </dl>
     </div>
   {% else %}
-    <p class="card empty-state">{% translate "Nenhuma empresa vinculada a esta conta. Fale com a sua contadora para liberar o seu acesso." %}</p>
+    <p class="card empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Nenhuma empresa vinculada a esta conta. Fale com a sua contadora para liberar o seu acesso." %}</p>
   {% endif %}
 {% endblock %}
