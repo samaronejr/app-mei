@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError, IntegrityError, transaction
+from django.urls import reverse
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
@@ -164,7 +165,108 @@ def test_owner_estimate_excludes_corrected_readings_and_never_invents_prices(
             UsageMetric.AI_SHADOW_CALLS: "1",
         }
         measured = cost_estimate(firm.owner, firm.tenant.pk, on=TODAY)
-        assert measured.complete
-        assert measured.total == Decimal(12)
+        assert not measured.complete
+        assert measured.total is None
+        assert sum(
+            line.cost for line in measured.lines if line.cost is not None
+        ) == Decimal(12)
         with pytest.raises(PermissionDenied):
             cost_estimate(firm.accountant, firm.tenant.pk, on=TODAY)
+
+
+@pytest.mark.parametrize(
+    ("days", "accepted_today", "partial"),
+    [
+        ((), False, True),
+        ((), True, True),
+        ((7,), False, True),
+        ((7,), True, True),
+        ((6,), False, True),
+        ((1, 8), False, True),
+        (tuple(range(1, 9)), False, False),
+    ],
+)
+def test_email_estimate_distinguishes_missing_partial_and_measured_zero(
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+    days: tuple[int, ...],
+    accepted_today: bool,
+    partial: bool,
+) -> None:
+    firm = enabled_firm("email-coverage")
+    settings.USAGE_UNIT_PRICES_BRL = dict.fromkeys(UsageMetric, "1")
+    monkeypatch.setattr("apps.tenants.account_views.timezone.localdate", lambda: TODAY)
+    with tenant_context(firm.tenant.pk):
+        for day in days:
+            UsageRecord.objects.create(
+                tenant=firm.tenant,
+                metric=UsageMetric.EMAILS_SENT,
+                period=TODAY.replace(day=day),
+                quantity=0,
+                source_event=uuid4(),
+            )
+        for metric in (UsageMetric.ACTIVE_CLIENTS, UsageMetric.STORAGE_BYTES):
+            UsageRecord.objects.create(
+                tenant=firm.tenant,
+                metric=metric,
+                period=TODAY,
+                quantity=0,
+                source_event=uuid4(),
+            )
+        if accepted_today:
+            FirmOutboundMessage.objects.create(
+                tenant=firm.tenant,
+                user=firm.owner,
+                kind=FirmMessageKind.DAILY_SUMMARY,
+                period=TODAY,
+                state=FirmMessageState.ACCEPTED,
+                idempotency_key="a" * 64,
+                finished_at=datetime(2026, 10, 8, 15, tzinfo=UTC),
+            )
+    response = firm.as_owner().get(reverse("firm-account"))
+    assert response.status_code == 200
+    estimate = response.context["estimate"]
+    email = next(
+        line for line in estimate.lines if line.metric == UsageMetric.EMAILS_SENT
+    )
+    assert email.quantity == (0 if days else None)
+    assert email.cost == (Decimal(0) if days else None)
+    assert estimate.complete is (not partial)
+    assert estimate.total == (None if partial else Decimal(0))
+    assert email.covered_through == (TODAY.replace(day=max(days)) if days else None)
+    assert email.measured_days == len(days)
+    assert email.partial is partial
+
+
+def test_email_coverage_uses_corrected_readings_and_month_boundary() -> None:
+    firm = enabled_firm("email-corrected-coverage")
+    record_tenant_usage(firm.tenant.pk, on=TODAY.replace(day=1))
+    with tenant_context(firm.tenant.pk):
+        missing = cost_estimate(firm.owner, firm.tenant.pk, on=TODAY)
+        email = next(
+            line for line in missing.lines if line.metric == UsageMetric.EMAILS_SENT
+        )
+        assert email.quantity is None
+        original = UsageRecord.objects.create(
+            tenant=firm.tenant,
+            metric=UsageMetric.EMAILS_SENT,
+            period=TODAY - timedelta(days=1),
+            quantity=3,
+            source_event=uuid4(),
+        )
+        UsageRecord.objects.create(
+            tenant=firm.tenant,
+            metric=original.metric,
+            period=original.period,
+            quantity=1,
+            source_event=uuid4(),
+            correction_of=original,
+        )
+        estimate = cost_estimate(firm.owner, firm.tenant.pk, on=TODAY)
+        email = next(
+            line for line in estimate.lines if line.metric == UsageMetric.EMAILS_SENT
+        )
+        assert email.quantity == 1
+        assert email.measured_days == 1
+        assert email.covered_through == original.period
+        assert email.partial
