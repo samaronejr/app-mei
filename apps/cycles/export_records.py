@@ -54,6 +54,7 @@ class EvidenceExport(ClientRecord):
     byte_size = models.PositiveBigIntegerField(default=0)
     sha256 = models.CharField(max_length=64, blank=True)
     error_code = models.CharField(max_length=64, blank=True)
+    excluded_originals = models.JSONField(default=list)
     created_at = models.DateTimeField(default=timezone.now)
     completed_at = models.DateTimeField(null=True)
     expires_at = models.DateTimeField(null=True)
