@@ -68,7 +68,8 @@ until the name is cleared.
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
   discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, and a final verification wave.
-  Required follow-up `AXR1-041` remains open; optional proposals 051/052 are not
+  Required follow-up `AXR1-041` is delivered and waits only for its integrated top-of-stack CI run; repair items
+  `AXR1-055` to `AXR1-064` follow it in the stack; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
@@ -1062,6 +1063,20 @@ missing-swap control failed as required with the "missing exact populated HTMX s
 `f3a8afd`: review r1 rejected only a contract misstatement in root's dispatch (median p50); after the correction, r2 confirmed every recomputed median, p95, count, budget and the control. Evidence: `.evidence/AXR1-034-happy.txt`, `AXR1-034-failure.txt`,
 `AXR1-034-review.md`, `AXR1-034-final-gates-r1.txt`, `t34-capture-r3/`. This approves T34, not later
 follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-041` (stack-aware CI) is recorded on delivered `AXR1-034`. CI now also runs for pull requests into `axr1/**`
+branches, checks out each PR's exact head and fails when the checked-out commit differs; PRs into `main` keep merge-ref
+testing and `deploy-pilot` still needs a push to `main`. Both pytest steps run on every runner CPU with `pytest-xdist`
+(one test database per worker; local STD-GATES stay serial), because R1 roughly doubled the tables each transactional
+test flushes and the serial suite was cancelled at its 75-minute ceiling at 53% (run 38537217704). Remote CI at
+`f2f3961` (run 38556594907) passed every required job: tests in 60 min 51 s (5149 passed, 41 skipped on 4 workers, the
+serial total), container smoke and browser; deploy skipped. Serial STD-GATES at `f2f3961` passed (5149/41/168, isolation
+721/41, CNPJ 29, browser 168). Independent review **APPROVE** at `f2f3961`; its notes: the local paused-channel smoke and
+failing control ran at `f85313d` (the exact-head smoke is the remote job), the test job's margin under its ceiling is 14
+minutes, and the into-`main` path is verified by reading only. The plan's integrated-identity condition is met only by
+the top repair PR's CI run, so item 41 stays unticked until that run is green. Evidence: `.evidence/AXR1-041-happy.txt`,
+`AXR1-041-failure.txt`, `AXR1-041-review.md`, `AXR1-041-final-gates-r1.txt`, `AXR1-041-remote-ci-r2-test-job.log`.
+Every OG/OD gate remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
