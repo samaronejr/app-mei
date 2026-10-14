@@ -67,8 +67,8 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, and a final verification wave.
-  Required follow-ups `AXR1-034`, `AXR1-041`, and `AXR1-054`
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, and a final verification wave.
+  Required follow-ups `AXR1-034` and `AXR1-041`
   readable refusals remain open; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
@@ -1040,6 +1040,19 @@ its final head; the next full run (final verification) re-establishes it. Eviden
 `AXR1-038-incremental-r1.txt`, `AXR1-038-isolation-fix.txt`. This approves T38, not later follow-ups, launch, merge or
 deployment. Every OG/OD gate remains open.
 
+`AXR1-054` (readable refusals) is recorded on delivered `AXR1-038`. Refusals that used to reach the reader as bare
+text or as a Python list - for example the F3 case of opening a cycle for a client still in onboarding - now read as
+plain sentences on the product's accessible error page, with unchanged statuses (409/410/422), wording, authorization
+order and portfolio-first 404s; in-page, form, flash and stored bulk-item errors read as sentences too, and markup in a
+message renders escaped. Real-browser QA passed 12/12 screens at 1440x900 and 390x844 (lang, title, one heading, a
+keyboard-reachable way back, no overflow, no serious axe violation). Independent review **APPROVE** at `4c4dace`: no
+blockers; its own browser probe passed the F3 path and escaping attacks at both widths. Review-reported residuals for
+F4 to classify: a tampered `?revisao_de=` still returns a bare 422, the read-only 403 is plain text, BuildError machine
+codes can reach two pages, a caught Http404 gives an empty flash in support views, and bulk-item rows stored before
+this change may still hold a repr. Evidence: `.evidence/AXR1-054-happy.txt`, `AXR1-054-failure.txt`,
+`AXR1-054-review.md`, `AXR1-054-final-gates-r3.txt`, `AXR1-054-incremental-r1.txt`, `AXR1-054-qa-r4.txt`. This
+approves T54, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -1139,10 +1152,13 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **5032 passing** (30 skipped, 168 deselected) at `AXR1-037` code `aeba3df` (the reviewed head), the **5025** below plus **7** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `aeba3df`. Evidence: `.evidence/AXR1-037-final-gates-r2.txt`.
+implementation head. The current default-suite baseline is **5137 passing** (41 skipped, 168 deselected), measured at `AXR1-054` code `a7830c7`; it includes AXR1-038's isolation sweep, whose skips raise the skipped count. The placed head `4c4dace` differs only in this file and AXR1-038's two review-fix isolation test files, which pass there (isolation + scope 754 passed, 41 skipped). Isolation (**720 passed, 41 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `a7830c7`. Evidence: `.evidence/AXR1-054-final-gates-r3.txt`, `AXR1-054-incremental-r1.txt`.
 This status-only delivery changes no reviewed implementation.
 
-The previous default-suite baseline was **5025 passing** (30 skipped, 168 deselected) at `AXR1-035`: the first run at `8e3ef88` passed 5024 with one static-guard failure, fixed test-only at `0b80947` (the reviewed code), where all 33 scope tests pass; that is the **5008** below plus **17** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `0b80947`. Evidence: `.evidence/AXR1-035-final-gates-r1.txt`, `AXR1-035-final-gates-r2.txt`.
+The previous default-suite baseline was **5032 passing** (30 skipped, 168 deselected) at `AXR1-037` code `aeba3df` (the reviewed head), the **5025** below plus **7** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `aeba3df`. Evidence: `.evidence/AXR1-037-final-gates-r2.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **5025 passing** (30 skipped, 168 deselected) at `AXR1-035`: the first run at `8e3ef88` passed 5024 with one static-guard failure, fixed test-only at `0b80947` (the reviewed code), where all 33 scope tests pass; that is the **5008** below plus **17** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `0b80947`. Evidence: `.evidence/AXR1-035-final-gates-r1.txt`, `AXR1-035-final-gates-r2.txt`.
 This status-only delivery changes no reviewed implementation.
 
 Before that, the default-suite baseline was **5008 passing** (30 skipped, 168 deselected) at `AXR1-036`: the first run at `1c3301a` passed 5007 with one static-guard failure, fixed test-only at `8ee7ce0` (code-identical to the reviewed `5cd9d1d`), where all 33 scope tests pass; that is the **4984** below plus **24** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `8ee7ce0`. Evidence: `.evidence/AXR1-036-final-gates-r1.txt`, `AXR1-036-final-gates-r2.txt`.
