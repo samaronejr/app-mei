@@ -22,9 +22,8 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 OWNER_ONLY = "Equipe"
 SHARED = "Exportar clientes"
-# Two reads for the whole table: the capability existence check and the grant lookup,
-# plus the membership read that resolves the role.
-NAV_QUERY_BUDGET = 3
+# AXR1-019 combines capability, membership and role grants in one live read.
+NAV_QUERY_BUDGET = 1
 
 
 @pytest.fixture(autouse=True)

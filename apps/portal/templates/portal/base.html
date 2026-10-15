@@ -11,11 +11,19 @@
     sheet would double what the build has to keep in step for a design the firm side
     already carries.
 
-    No script tag of any kind, here or in any page below. The portal is the one
+    No script tag on any page the navigation bar reaches. The portal is the one
     boundary in this product that row-level security is enforcing, and a shared bundle
-    is a shared attack surface across it. A guard test refuses one on any portal page.
+    is a shared attack surface across it; a guard test refuses one on every bar page.
+    The single exception is the `scripts` block, filled only by the request page
+    (T11, cycles_r1): its upload needs progress, cancel and retry on a slow phone
+    connection, which plain HTML cannot show. It loads the same first-party, vendored
+    files the firm side ships, from 'self', under the same CSP (no eval, no inline).
+
+    The brand stylesheet (T11) is a same-origin, app-mediated route, because the CSP
+    refuses inline styles; it is linked only when the firm set a colour, so an
+    unflagged or unbranded firm's pages are byte for byte what they were.
   {% endcomment %}
-  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">{% if request.portal_brand.color %}<link rel="stylesheet" href="{% url 'portal-brand-css' %}">{% endif %}{% block scripts %}{% endblock %}
 </head>
 <body class="min-h-screen pb-24 md:pb-0">
   {% comment %}
@@ -30,13 +38,15 @@
     The first focusable element on every page, jumping past the header and the bar to
     the start of the content: one keystroke instead of six, on every screen.
   {% endcomment %}
-  <a class="skip-link" href="#conteudo">{% translate "Pular para o conteúdo" %}</a>
+  <a class="skip-link" href="#conteudo">{% translate "Pular para o conteúdo" %}</a>{% if request.portal_brand.name or request.portal_brand.logo_key %}
+  <div class="portal-brand border-b border-ink-200"><div class="mx-auto flex max-w-3xl items-center gap-3 px-5 py-2">{% if request.portal_brand.logo_key %}<img class="portal-brand-logo" src="{% url 'portal-brand-logo' %}" alt="{{ request.portal_brand.name }}" height="32">{% endif %}{% if request.portal_brand.name %}<span class="font-semibold tracking-tight">{{ request.portal_brand.name }}</span>{% endif %}</div></div>{% endif %}
 
   <header class="border-b border-ink-200 bg-surface">
     <div class="mx-auto flex max-w-3xl items-center gap-3 px-5 py-3 text-sm">
       <span class="font-semibold tracking-tight text-ink-900">{% translate "Portal do cliente" %}</span>
-      <span class="ml-auto truncate text-ink-500">{{ request.user.email }}</span>
-    </div>
+      <span class="ml-auto truncate {% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{{ request.user.email }}</span>
+    </div>{% if request.portal_companies|length > 1 %}
+    <form class="mx-auto flex max-w-3xl flex-wrap items-end gap-2 px-5 pb-3 text-sm" method="post" action="{% url 'portal-company-select' %}">{% csrf_token %}<div class="field grow"><label class="field-label" for="empresa-atual">{% translate "Empresa" %}</label><select class="field-input w-full" id="empresa-atual" name="client">{% for company_id, company_name in request.portal_companies %}<option value="{{ company_id }}"{% if company_id == request.client.pk %} selected{% endif %}>{{ company_name }}</option>{% endfor %}</select></div><button class="btn btn-quiet" type="submit">{% translate "Trocar empresa" %}</button></form>{% endif %}
   </header>
 
   {% comment %}
@@ -74,7 +84,8 @@
       correct, renders the informational ramp for every warning, and is invisible until
       someone wonders why a warning is teal.
     {% endcomment %}
-    <div id="messages" role="status" aria-live="polite">
+    <div id="messages" role="status" aria-live="polite">{% if request.portal_selection_stale %}
+      <div class="grid gap-3 pb-6">{% translate "Seu acesso à empresa que estava selecionada foi encerrado. Mostramos outra empresa vinculada à sua conta." as stale_notice %}{% include 'partials/pure/notice.html' with message=stale_notice variant='warn' only %}</div>{% endif %}
       {% if messages %}
         <div class="grid gap-3 pb-6">
           {% for message in messages %}
@@ -105,7 +116,7 @@
     portal view for one footer link buys less than it costs. The page itself stays
     reachable on the platform host, which is where it has always been published.
   {% endcomment %}
-  <footer class="mx-auto max-w-3xl px-5 pb-8 text-xs text-ink-500">
+  <footer class="mx-auto max-w-3xl px-5 pb-8 text-xs {% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">
     <p>{% translate "Todos os horários desta página são de Brasília." %}</p>
   </footer>
 </body>

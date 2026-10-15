@@ -1,0 +1,37 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{{ playbook.name }}{% endblock %}
+{% block heading %}{{ playbook.name }}{% endblock %}
+{% block content %}
+  {% comment %}
+    Version history of one playbook. Publishing happens in the editor; retiring
+    is the one state change that fits this screen — a published version that
+    must stop generating cycles is retired here, and what it already generated
+    is never touched.
+  {% endcomment %}
+  <section class="ui-panel" aria-labelledby="versoes">
+    <h2 id="versoes" class="ui-panel-heading">{% translate "Versões" %}</h2>
+    {% translate "Versões do playbook" as version_caption %}
+    {% translate "Nenhuma versão" as empty_title %}
+    {% translate "Crie uma versão em rascunho para definir as etapas." as empty_message %}
+    {% include "partials/ui/table.html" with caption=version_caption columns=columns rows=versions row_template="cycles/_version_row.html" empty_title=empty_title empty_message=empty_message only %}
+  </section>
+
+  {% if draft %}
+    <p class="mt-6">
+      <a class="ui-btn ui-btn-primary" href="{% url 'playbook-editor' pk=playbook.pk number=draft.number %}">
+        {% translate "Editar rascunho v" %}{{ draft.number }}
+      </a>
+    </p>
+  {% elif not playbook.is_system %}
+    <form method="post" action="{% url 'playbook-list' %}" class="mt-6">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="new_draft">
+      <input type="hidden" name="playbook" value="{{ playbook.pk }}">
+      <button type="submit" class="ui-btn ui-btn-primary">{% translate "Nova versão em rascunho" %}</button>
+    </form>
+  {% else %}
+    <p class="mt-6 text-sm text-ink-600">
+      {% translate "Este é um pacote do sistema. Para personalizar, use Clonar na lista de playbooks." %}
+    </p>
+  {% endif %}
+{% endblock %}

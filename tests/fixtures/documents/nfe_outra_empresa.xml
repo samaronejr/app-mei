@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe>
+    <infNFe Id="NFe00000000000000000000000000000000000000000000" versao="4.00">
+      <ide><nNF>456</nNF><dhEmi>2026-09-15T10:00:00-03:00</dhEmi></ide>
+      <emit><CNPJ>11444777000161</CNPJ><xNome>Empresa sintética emitente</xNome></emit>
+      <dest><CNPJ>98ZYX76501AB50</CNPJ><xNome>Empresa sintética destinatária</xNome></dest>
+      <total><ICMSTot><vNF>1500.00</vNF></ICMSTot></total>
+    </infNFe>
+  </NFe>
+</nfeProc>

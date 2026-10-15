@@ -1,0 +1,29 @@
+{% extends "base.html" %}{% load ptbr %}
+{% block title %}Índice de evidências{% endblock %}
+{% block heading %}Índice de evidências{% endblock %}
+{% block content %}
+<a class="ui-link" href="{% url 'cycle-detail' cycle.pk %}">Voltar ao ciclo</a>
+<p class="mt-3 text-sm text-ink-600">Registro interno do escritório. O índice reúne identidades, decisões e proveniência; não comprova pagamento ou protocolo oficial.</p>
+{% if error %}<div role="alert" class="ui-panel p-4 mt-4">{{ error }}</div>{% endif %}
+<section class="ui-panel p-4 mt-4" aria-labelledby="index-generation">
+  <h2 id="index-generation" class="ui-panel-heading">Geração de evidências</h2>
+  {% if index %}
+  <p class="mt-2">Gerada em {{ index.created_at|data_hora }} · emenda {{ index.amendment }} · revisão {{ index.cycle_revision }}</p>
+  <p class="mt-2 text-sm break-all">SHA-256: {{ index.digest }}</p>
+  <details class="mt-3"><summary class="ui-link">Consultar gerações preservadas</summary>
+    <ul class="mt-3 grid gap-2">{% for generation in generations %}<li><a class="ui-link" href="?geracao={{ generation.pk }}">{{ generation.created_at|data_hora }} · emenda {{ generation.amendment }} · revisão {{ generation.cycle_revision }}</a></li>{% endfor %}</ul>
+  </details>
+  <dl class="grid gap-3 mt-4 sm:grid-cols-2">{% for section in sections %}<div><dt class="text-sm text-ink-600">{{ section.label }}</dt><dd class="font-semibold">{{ section.count }}</dd></div>{% endfor %}</dl>
+  <details class="mt-4"><summary class="ui-link">Inspecionar as referências do índice</summary><pre class="mt-3 whitespace-pre-wrap break-all text-xs">{{ index_text }}</pre></details>
+  {% else %}<p class="mt-3">O índice ainda não foi gerado. Gere uma cópia das evidências atuais antes de propor a conclusão.</p>{% endif %}
+  <div class="mt-4 flex flex-wrap gap-3">
+  <form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ cycle.version }}"><input type="hidden" name="action" value="index"><button class="ui-btn ui-btn-primary" type="submit">Gerar índice atualizado</button></form>
+  <form method="post">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ cycle.version }}"><input type="hidden" name="action" value="export"><button class="ui-btn ui-btn-quiet" type="submit">Solicitar arquivo ZIP</button></form>
+  </div>
+  <p class="mt-3 text-sm text-ink-600">O ZIP usa a conclusão vigente ou as evidências atuais, mesmo ao consultar uma geração antiga. Inclui índice, originais elegíveis e resumos SHA-256. Limites: 500 MiB no total e 8 MiB de metadados; download por 30 dias.</p>
+</section>
+<section class="ui-panel p-4 mt-6" aria-labelledby="exports-title">
+<h2 id="exports-title" class="ui-panel-heading">Arquivos solicitados</h2>
+<ul class="mt-3 grid gap-3">{% for export in exports %}<li><a class="ui-link" href="{% url 'evidence-export-detail' export.pk %}">{{ export.created_at|data_hora }} · {{ export.get_state_display }}</a></li>{% empty %}<li>Nenhum arquivo solicitado.</li>{% endfor %}</ul>
+</section>
+{% endblock %}

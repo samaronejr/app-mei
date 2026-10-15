@@ -44,7 +44,7 @@ BACKFILL = "0013_backfill_engagement_taxprofile"
 # `features`, clients' own `tax_profile_revision`) sends NULL into the live
 # column the live schema requires — the seed state must match the schema it
 # writes to, not merely the migration under test.
-SCHEMA = "0014_clientcompany_tax_profile_revision"
+SCHEMA = "0015_import_batches_and_versions"
 TENANTS_SCHEMA = "0007_tenant_features"
 
 

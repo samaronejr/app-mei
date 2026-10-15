@@ -160,6 +160,27 @@ class ClientCompany(TenantScopedModel):
         _("tax profile revision"),
         default=1,
     )
+    # Optimistic concurrency for the identity editor: the form carries the version it
+    # read, and `update_client` refuses to land on a row that moved since.
+    version = models.PositiveIntegerField(_("version"), default=1)
+    # Optimistic concurrency for the assignment SET, which has no row of its own to
+    # version: bumped under the client lock by every in-product add/remove, so a
+    # replayed old POST cannot re-add someone who was removed since (ABA).
+    assignment_version = models.PositiveIntegerField(
+        _("assignment version"),
+        default=1,
+    )
+    # Provenance: the import batch that created this client, if one did. PROTECT on
+    # the ORM side and a tenant-paired RESTRICT key in the database — a batch is
+    # history and is never deleted while its clients exist.
+    import_batch = models.ForeignKey(
+        "clients.ImportBatch",
+        on_delete=models.PROTECT,
+        related_name="clients",
+        verbose_name=_("import batch"),
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 

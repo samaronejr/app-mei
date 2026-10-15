@@ -24,6 +24,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.paginator import EmptyPage, Page, Paginator
 from django.db.models import Model, QuerySet
 from django.http import Http404, HttpRequest, HttpResponse
+from django.http.response import HttpResponseBase
 from django.shortcuts import render
 from django.views.decorators.http import require_http_methods
 
@@ -35,16 +36,34 @@ from apps.audit.services import record_event
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
 from apps.clients.exports import UTF8_BOM, build_client_csv
+from apps.clients.importing import may_import
 from apps.clients.managers import search_filter
 from apps.clients.models import ClientCompany, OnboardingItem
 from apps.core.dashboard import das_calendar
+from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id
+from apps.cycles.workspace_views import client_workspace
 from apps.fiscal.capabilities import capability_for
 from apps.obligations.models import Obligation
 from apps.obligations.queries import ThresholdRow, threshold_warning
 from apps.tenants.models import Invite, Tenant
 
 EXPORT_FILENAME = "clientes.csv"
+
+# AXR1-007's onboarding and import screens. Answered from the per-request flag cache
+# the middleware primed, so asking costs no query and a flag-off page is unchanged.
+ONBOARDING_FLAG = "import_r1"
+
+
+def _onboarding_links(request: AuthenticatedRequest, tenant: Tenant) -> dict[str, bool]:
+    """Say which onboarding entry points to draw; all False while the flag is off."""
+    if not tenant_has(tenant.pk, ONBOARDING_FLAG):
+        return {"onboarding_r1": False, "may_import": False}
+    return {
+        "onboarding_r1": True,
+        "may_import": may_import(request.user, UUID(str(tenant.pk))),
+    }
+
 
 # A directory rather than a worklist: the queues page at 25 because a short page is a
 # unit of work to grind through, while this screen is scanned and searched, so a denser
@@ -74,9 +93,9 @@ def _tenant(request: AuthenticatedRequest) -> Tenant:
     return resolved
 
 
-def require_tenant[**P](
-    view: Callable[Concatenate[AuthenticatedRequest, P], HttpResponse],
-) -> Callable[Concatenate[AuthenticatedRequest, P], HttpResponse]:
+def require_tenant[R: HttpResponseBase, **P](
+    view: Callable[Concatenate[AuthenticatedRequest, P], R],
+) -> Callable[Concatenate[AuthenticatedRequest, P], R]:
     """Resolve the firm before the capability is consulted, or 404.
 
     **The position of this decorator is load-bearing and reordering it reintroduces an
@@ -106,7 +125,7 @@ def require_tenant[**P](
         /,
         *args: P.args,
         **kwargs: P.kwargs,
-    ) -> HttpResponse:
+    ) -> R:
         _tenant(request)
         return view(request, *args, **kwargs)
 
@@ -192,6 +211,7 @@ def clients_list_view(request: AuthenticatedRequest) -> HttpResponse:
             "page": _page(rows, request),
             "term": term,
             "filter_query": _filter_query(term),
+            **_onboarding_links(request, tenant),
         },
         status=HTTPStatus.OK,
     )
@@ -348,14 +368,19 @@ def clients_detail_view(request: AuthenticatedRequest, pk: UUID) -> HttpResponse
     tenant = _tenant(request)
     tenant_id = UUID(str(tenant.pk))
 
+    if tenant_has(tenant.pk, "cycles_r1"):
+        return client_workspace(request, pk)
+
     client = visible_clients(request.user, tenant_id=tenant_id).filter(pk=pk).first()
     if client is None:
         raise Http404
 
+    context = client_detail_context(request, client)
+    context["onboarding_r1"] = tenant_has(tenant.pk, ONBOARDING_FLAG)
     return render(
         request,
         "clients/detail.html",
-        client_detail_context(request, client),
+        context,
         status=HTTPStatus.OK,
     )
 

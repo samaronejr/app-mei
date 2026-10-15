@@ -31,7 +31,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 PORTAL_HOST = "acme-portal.localhost"
 PORTAL_URLCONF = "apps.portal.urls"
 PASSWORD = "sufficiently-long-passphrase"  # noqa: S105
-UPLOAD_PAYLOAD = b"new fiscal evidence"
+UPLOAD_PAYLOAD = b"%PDF-1.4 new fiscal evidence"
 EXISTING_PAYLOAD = b"pre-existing fiscal evidence"
 REQUESTED_KEY = "pre-existing-requested-key"
 RECONCILE_MODULE = "apps.core.management.commands.reconcile_documents"
@@ -73,6 +73,8 @@ def upload_portal(
 
     storage = FileSystemStorage(location=tmp_path)
     monkeypatch.setattr("apps.portal.views.default_storage", storage)
+    # T13: the vault upload writes through the intake pipeline (quarantine key).
+    monkeypatch.setattr("apps.cycles.intake.default_storage", storage)
 
     tenant = Tenant.objects.create(name="Acme", slug="acme")
     with tenant_context(tenant.id):
@@ -116,6 +118,7 @@ def _document_row(
     *,
     payload: bytes = EXISTING_PAYLOAD,
     storage_key: str = REQUESTED_KEY,
+    client_upload: bool = True,
 ) -> Document:
     """Create metadata for one object without coupling storage to model persistence."""
     document = Document(
@@ -127,10 +130,16 @@ def _document_row(
         byte_size=len(payload),
         uploaded_by=portal.user,
         storage_key=storage_key,
+        client_upload=client_upload,
     )
     with tenant_context(portal.tenant.id):
         document.save(force_insert=True)
     return document
+
+
+def _all_files(storage: FileSystemStorage) -> list[Path]:
+    """Every stored object, quarantine prefix included (T13)."""
+    return [path for path in Path(storage.location).rglob("*") if path.is_file()]
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,8 +235,7 @@ def test_row_save_failure_deletes_the_object_written_by_this_request(
         _upload(upload_portal)
 
     assert deleted.call_count == 1
-    _directories, files = upload_portal.storage.listdir("")
-    assert files == []
+    assert _all_files(upload_portal.storage) == []
     with tenant_context(upload_portal.tenant.id):
         assert not Document.objects.exists()
 
@@ -254,8 +262,7 @@ def test_cleanup_failure_is_captured_without_masking_the_row_error(
         _upload(upload_portal)
 
     captured.assert_called_once_with(cleanup_error)
-    _directories, files = upload_portal.storage.listdir("")
-    assert len(files) == 1
+    assert len(_all_files(upload_portal.storage)) == 1
     with tenant_context(upload_portal.tenant.id):
         assert not Document.objects.exists()
 
@@ -275,9 +282,7 @@ def test_storage_selected_alternative_name_is_deleted_and_rejected(
 
     monkeypatch.setattr(upload_portal.storage, "save", save_under_alternate)
 
-    with pytest.raises(
-        RuntimeError, match="storage changed the requested document key"
-    ):
+    with pytest.raises(RuntimeError, match="storage changed the requested"):
         _upload(upload_portal)
 
     assert len(alternate_names) == 1
@@ -315,7 +320,7 @@ def test_collision_deletes_only_alternate_and_preserves_requested_object_and_row
             "delete",
             wraps=upload_portal.storage.delete,
         ) as deleted,
-        pytest.raises(RuntimeError, match="storage changed the requested document key"),
+        pytest.raises(RuntimeError, match="storage changed the requested"),
     ):
         _upload(upload_portal)
 
@@ -338,7 +343,10 @@ def test_missing_object_download_returns_503_captures_sentry_and_hides_stack(
     upload_portal: UploadPortal,
 ) -> None:
     """An authorised row with missing bytes produces a bounded safe response."""
-    document = _document_row(upload_portal, storage_key="missing-object-key")
+    # A firm-published row: T13 serves a client upload only through a verified intake.
+    document = _document_row(
+        upload_portal, storage_key="missing-object-key", client_upload=False
+    )
     missing = FileNotFoundError("MISSING_OBJECT_CANARY /private/bucket/key")
 
     with (

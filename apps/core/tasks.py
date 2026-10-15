@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from celery import Task, shared_task
+from django.db import connection
 
 from apps.core.tenancy import MissingTenantContext, tenant_context
 
@@ -49,6 +50,38 @@ class TenantTask(Task):
         raise MissingTenantContext(msg)
 
 
+def assert_no_transaction() -> None:
+    """Refuse external I/O while any enclosing transaction could roll back."""
+    if connection.in_atomic_block:
+        msg = "External I/O is forbidden inside a database transaction."
+        raise RuntimeError(msg)
+
+
+class PhasedTenantTask(TenantTask):
+    """Validate the firm without wrapping the body; each DB phase owns a context."""
+
+    abstract = True
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        """Fail closed on missing, malformed or inactive tenants before work."""
+        from apps.tenants.models import Tenant  # noqa: PLC0415
+
+        try:
+            tenant_id = self._tenant_id_from(args, kwargs)
+        except ValueError as error:
+            msg = "Invalid tenant UUID."
+            raise MissingTenantContext(msg) from error
+        active = tenant_id is not None and (
+            # PLATFORM_QUERY_OK: validate exactly the task's explicit tenant, not data.
+            Tenant.objects.filter(pk=tenant_id, is_active=True).exists()
+        )
+        if not active:
+            msg = "An active tenant is required."
+            raise MissingTenantContext(msg)
+        assert_no_transaction()
+        return Task.__call__(self, *args, **kwargs)
+
+
 class PlatformTask(Task):
     """A task that legitimately spans tenants, and must visit them one at a time.
 
@@ -58,6 +91,17 @@ class PlatformTask(Task):
     """
 
     abstract = True
+
+    @staticmethod
+    def tenant_ids(*, include_inactive: bool = False) -> list[UUID]:
+        """Collect firms without holding a transaction across external I/O."""
+        from apps.tenants.models import Tenant  # noqa: PLC0415
+
+        # PLATFORM_QUERY_OK: explicit enumeration for phased platform dispatch.
+        queryset = Tenant.objects.all()
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
+        return list(queryset.values_list("pk", flat=True))
 
     @staticmethod
     def each_tenant(*, include_inactive: bool = False) -> Iterator["Tenant"]:

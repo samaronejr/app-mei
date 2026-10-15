@@ -61,6 +61,9 @@ class ClientContact(TenantScopedModel):
     )
     is_primary = models.BooleanField(_("primary contact"), default=False)
     active = models.BooleanField(_("active"), default=True)
+    # Optimistic concurrency for the contact editor (AXR1-007): the form carries the
+    # version it read and a stale save is refused before anything is written.
+    version = models.PositiveIntegerField(_("version"), default=1)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
     class Meta(TenantScopedModel.Meta):
