@@ -37,7 +37,7 @@ stale-stylesheet guard as though they were class names.
   <div class="field">
     <label class="field-label" for="arquivo">{% translate "Escolha o arquivo" %}</label>
     <input class="upload-field w-full" type="file" name="file" id="arquivo" required accept=".pdf,.jpg,.jpeg,.png">
-    <p class="field-help">{% translate "Envie PDF, JPG ou PNG." %} {% blocktranslate with limite=max_size_label %}Até {{ limite }} por arquivo.{% endblocktranslate %}</p>
+    <p class="field-help{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Envie PDF, JPG ou PNG." %} {% blocktranslate with limite=max_size_label %}Até {{ limite }} por arquivo.{% endblocktranslate %}</p>
   </div>
 
   <button class="btn btn-primary" type="submit">

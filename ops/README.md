@@ -8,6 +8,66 @@ the public name has served from the Lightsail host since 2026-09-22, and the old
 compute instance is stopped with its disk intact. The runsheets stay beside the
 mechanisms they configure, so a re-run starts from the same text that was executed.
 
+## Local synthetic scale measurements
+
+Reference host class (operator to fill in): **________________**. Record the
+Lightsail instance class, RAM, vCPU, PostgreSQL/Redis versions and measurement date
+before comparing a local run with an operator-run reference measurement. These are
+candidate budgets, not SLOs or capacity promises.
+
+`seed_axorim_demo --firms small,growth,mixed --seed 42` creates synthetic firms with
+100/1,000/1,000 clients, twelve months ending September 2026, long names, alphanumeric
+CNPJs, expired certificate metadata, missing requests, divergent XML and terminal
+failed sends. The seed controls business data, not credentials: random passwords and
+TOTP secrets print only on the first run. Rerunning preserves identities and repairs
+missing local XML bytes. It refuses `DEBUG=False` when the connected database name
+matches `POSTGRES_DB` (production default `app_mei`), and requires local file storage.
+Never run it against production or operational client data.
+
+Use a disposable local lane initialized with `ops/sql`, runtime/migrator roles,
+PostgreSQL 16 limited to 320 MiB and Redis 7 limited to 96 MiB. Export its
+`DATABASE_URL` (app_runtime, loopback, database name beginning `axr1_`),
+`DATABASE_MIGRATION_URL`, `REDIS_URL`, a local `SECRET_KEY`, `DJANGO_ENV_FILE=/nonexistent`,
+and an unused loopback port in `AXR1_PERF_PORT`. The benchmark refuses remote
+targets, production database names, privileged DB roles and unbounded cgroups.
+
+```sh
+DATABASE_URL="$DATABASE_MIGRATION_URL" uv run python manage.py migrate --noinput --skip-checks
+uv run python manage.py seed_axorim_demo --firms small,growth,mixed --seed 42
+docker compose -p axr1-t28-perf -f ops/perf/compose.yml build measure
+docker compose -p axr1-t28-perf -f ops/perf/compose.yml up -d --no-build web
+docker compose -p axr1-t28-perf -f ops/perf/compose.yml run --rm --no-deps measure \
+  --port "$AXR1_PERF_PORT" --requests 200 --output .evidence/AXR1-028-perf.json
+docker compose -p axr1-t28-perf -f ops/perf/compose.yml down
+```
+
+Wait for Gunicorn's listening/worker-start log before starting the driver. Compose
+5.6 has no `run --cpus` flag; `cpus: 1` in the standalone local Compose file is the
+supported equivalent. Both server and driver attest their actual cgroup v2 CPU and
+400 MiB memory limits against `docker-compose.prod.yml`. Capture `docker inspect`
+for the lane database and Redis limits too. This stack starts no database, Redis,
+worker, scheduler, mail sender, or production service.
+
+The driver makes 200 real HTTP reads per S11.2 surface, after one warmup each.
+The outer middleware measures request start through completed Django response,
+including authentication, templates and transaction work but excluding the network.
+The JSON retains all samples, p50 (median), p95 (nearest rank), and locally gzipped
+HTML sizes. Ten synthetic firm identities and ten client identities keep the normal
+120/minute rate limit enabled; they have unusable passwords and exist only in the
+disposable seeded database. Their measurement sessions are removed even on failure.
+Always stop the local Compose stack and remove the disposable lane after capture.
+
+The seeded growth query counts were 25 / 18 / 46 / 50 / 24 for Hoje / Clientes /
+workspace / cycle detail / portal Início. The workspace explicitly selects the
+seeded September 2026 period and proves its cycle is present, rather than measuring
+an empty current-month workspace. The three compliant reads enforce 25;
+the original Hoje test is unchanged. `ops/perf/followups.json` records workspace and
+cycle-detail excess as open work, without a larger ceiling or caching workaround.
+Timing excess is likewise reported in the JSON rather than turned into a CI failure.
+Throttled click-to-swapped-content p95 remains **pending T25**; no interactive value
+is fabricated. The current browser harness can exercise and screenshot these pages,
+but that smoke check is not the missing 9 Mbps / 170 ms RTT Android measurement.
+
 ## Database roles
 
 Tenant isolation in this product is enforced by PostgreSQL row-level security, and RLS
@@ -1188,6 +1248,39 @@ The retiring OCI box still carries `app-mei-caddy:latest` from before the images
 costs 154 MB and `docker image prune -f` will not touch it because it is tagged. Untag
 it (`docker rmi app-mei-caddy:latest`) or leave it. Recorded so that its presence is not
 mistaken for a live tag during a rollback.
+
+## Malware scanning (ClamAV sidecar)
+
+Client uploads against a request are written under `quarantine/{tenant}/{client}/`
+and reach nobody -- staff, other portal users, parsers -- until a scan says clean;
+then the bytes are copied to their final key and the quarantine copy is deleted. A
+refused original (wrong type, or malware) is retained under `quarantine/` and never
+served. The beat task `scan-quarantine` (every minute, `cycles_r1` firms only)
+streams each pending upload to clamd with INSTREAM; a scanner that stays down is
+retried with backoff (1, 5, 15, 30, then 60 minutes) until 24 h after the upload, and
+then the file becomes `verificacao_indisponivel` and a cycle exception opens.
+
+**Off by default.** `CLAMAV_ENABLED=False` makes every new upload
+`verificacao_indisponivel`: staff can download it only after a warning dialog, each
+such download is recorded on the cycle timeline, and the portal never re-serves it.
+Turning scanning on needs both `CLAMAV_ENABLED=True` in `.env.prod` and the compose
+profile that creates the sidecar:
+
+    COMPOSE_PROFILES=clamav docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait
+
+**Memory is the constraint.** The `clamav` service (image pinned by digest,
+`mem_limit: 1536m`) holds the signature database in RAM, about 1.2 GiB with the
+official databases -- more than the whole current box (954 MiB + swap, see the sizing
+note at the top of `docker-compose.prod.yml`). Enabling it is gated on the host upsize
+(owner decision OD-11) and on operator gate OG-05: record on the production host, in
+`.evidence/AXR1-012-operator.txt`, `free -m` before and after start, `docker stats
+--no-stream` for the sidecar, and two successive freshclam updates from
+`docker compose logs clamav`. The quarantine prefix itself needs the bucket prefix and
+lifecycle rule of OG-04. None of these gates is closed by the code change.
+
+`reconcile_documents` checks each document at the key its bytes must be at (the
+quarantine key until verified) and descends into `quarantine/` when listing the
+bucket, so a leftover quarantine copy is reported as an orphan.
 
 ## Operator runsheets: procedures and as-executed records
 

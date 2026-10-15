@@ -8,7 +8,8 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, TypedDict
+from urllib.parse import parse_qs, urlsplit
 
 from allauth.account.internal.flows.login import AUTHENTICATION_METHODS_SESSION_KEY
 from allauth.mfa.models import Authenticator
@@ -29,6 +30,19 @@ if TYPE_CHECKING:
 
 DESKTOP: Final = ViewportSize(width=1440, height=900)
 MOBILE: Final = ViewportSize(width=390, height=844)
+ANDROID_USER_AGENT: Final = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 6a) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+)
+ANDROID_PROFILE: Final = {
+    "download_mbps": 9,
+    "upload_mbps": 9,
+    "rtt_ms": 170,
+    "cpu_slowdown": 4,
+    "viewport": {"width": 390, "height": 844},
+    "device_scale_factor": 2.625,
+    "user_agent": ANDROID_USER_AGENT,
+}
 VIEWPORTS: Final[dict[str, ViewportSize]] = {"desktop": DESKTOP, "mobile": MOBILE}
 
 # axe impact levels that fail a test. `moderate` and `minor` are reported by axe
@@ -47,6 +61,126 @@ class AxeViolationsError(AssertionError):
 
 class PolicedRoleError(AssertionError):
     """A live request ran as a role the row-level-security policies do not bind."""
+
+
+class SwapTiming(TypedDict):
+    """Browser-clock latency ends at the actual populated replacement DOM."""
+
+    elapsed_ms: float
+    response_url: str
+    populated_total: int
+
+
+def throttle_android(page: Page) -> None:
+    """Apply CDP transport and CPU throttling to an already mobile context."""
+    session = page.context.new_cdp_session(page)
+    session.send("Network.enable")
+    session.send(
+        "Network.emulateNetworkConditions",
+        {
+            "offline": False,
+            "latency": 170,
+            "downloadThroughput": 9_000_000 / 8,
+            "uploadThroughput": 9_000_000 / 8,
+            "connectionType": "cellular4g",
+        },
+    )
+    session.send("Emulation.setCPUThrottlingRate", {"rate": 4})
+
+
+def measure_briefing_swap(
+    page: Page, period: str, *, absent_signal: bool = False
+) -> tuple[SwapTiming, Response]:
+    """Subscribe before clicking; require the matching response and replacement DOM.
+
+    The failure control cancels only this real request's swap, never its HTTP
+    response. Its bounded missing-signal error must not become a latency sample.
+    """
+    form = page.locator('form[hx-target="#briefing-content"]')
+    form.locator('[name="periodo"]').fill(period)
+    form.locator('[name="escopo"]').select_option("team")
+    button = form.locator('button[type="submit"]')
+    button.scroll_into_view_if_needed()
+    page.evaluate(
+        """({period, absentSignal}) => {
+            const original = document.getElementById('briefing-content');
+            const form = original.querySelector('form[hx-target="#briefing-content"]');
+            const button = form.querySelector('button[type="submit"]');
+            const expected = new URL(form.getAttribute('hx-get'), location.href);
+            let started;
+            let timer;
+            const matches = event => {
+                const xhr = event.detail.xhr;
+                if (!xhr || !xhr.responseURL) return false;
+                const url = new URL(xhr.responseURL);
+                return url.origin === expected.origin &&
+                    url.pathname === expected.pathname &&
+                    url.searchParams.get('periodo') === period &&
+                    url.searchParams.get('escopo') === 'team';
+            };
+            const cancel = event => {
+                if (matches(event) && absentSignal) event.detail.shouldSwap = false;
+            };
+            window.__axr1PerfSwap = new Promise((resolve, reject) => {
+                const cleanup = () => {
+                    clearTimeout(timer);
+                    document.removeEventListener('htmx:afterSwap', swapped);
+                    document.removeEventListener('htmx:beforeSwap', cancel);
+                    button.removeEventListener('click', clicked, true);
+                };
+                const swapped = event => {
+                    if (!matches(event) || started === undefined) return;
+                    const current = document.getElementById('briefing-content');
+                    if (!current || current === original || original.isConnected ||
+                        event.detail.target.id !== 'briefing-content') return;
+                    if (current.querySelector('#briefing-error, #briefing-unavailable'))
+                        return;
+                    const selected = current.querySelector('[name="periodo"]');
+                    const total = current.querySelector('[data-briefing-total]');
+                    if (!selected || selected.value !== period || !total ||
+                        Number(total.dataset.briefingTotal) <= 0) return;
+                    const elapsed = performance.now() - started;
+                    cleanup();
+                    resolve({elapsed_ms: elapsed,
+                        response_url: event.detail.xhr.responseURL,
+                        populated_total: Number(total.dataset.briefingTotal)});
+                };
+                const clicked = () => {
+                    started = performance.now();
+                    timer = setTimeout(() => {
+                        cleanup();
+                        reject(new Error('AXR1 missing exact populated HTMX swap'));
+                    }, 15000);
+                };
+                // Event subscriptions exist before Playwright triggers the click.
+                document.addEventListener('htmx:afterSwap', swapped);
+                document.addEventListener('htmx:beforeSwap', cancel);
+                button.addEventListener('click', clicked, {once: true, capture: true});
+            });
+            // Avoid an unhandled rejection if expect_response fails first.
+            window.__axr1PerfSwap.catch(() => {});
+        }""",
+        {"period": period, "absentSignal": absent_signal},
+    )
+
+    def matching_response(response: Response) -> bool:
+        url = urlsplit(response.url)
+        query = parse_qs(url.query)
+        return (
+            url.netloc == urlsplit(page.url).netloc
+            and url.path == "/"
+            and query.get("periodo") == [period]
+            and query.get("escopo") == ["team"]
+            and response.request.method == "GET"
+            and response.request.headers.get("hx-request") == "true"
+        )
+
+    with page.expect_response(matching_response, timeout=15_000) as response_info:
+        button.click(timeout=15_000)
+    response = response_info.value
+    assert response.status == 200, response.status
+    timing: SwapTiming = page.evaluate("() => window.__axr1PerfSwap")
+    return timing, response
 
 
 def axe_check(page: Page) -> list[dict[str, Any]]:
@@ -166,7 +300,8 @@ class BrowserPage:
             return None
         path = Path(directory) / f"{name}-{self.viewport}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.page.screenshot(path=str(path), full_page=True)
+        # Hiding the caret leaves empty inline styles that HTMX history re-parses.
+        self.page.screenshot(path=str(path), full_page=True, caret="initial")
         return path
 
 

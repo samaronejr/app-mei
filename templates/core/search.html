@@ -1,0 +1,43 @@
+{% extends "base.html" %}{% load i18n %}{% comment %}
+The search results page: what the header form lands on, with or without script.
+
+Context (from apps.core.search_views.search_view):
+  query      -- the text as typed; rendered back into the field, never into an
+                expression.
+  groups     -- (kind, label, hits) in palette order, at most five hits per kind,
+                already scoped to the account's own book by apps.core.search.
+  too_short  -- the query is under min_length characters; nothing was searched.
+
+Ordinary links, not a listbox: a page of results is read and tabbed through like
+any other list. No total is shown -- a count of matches is a fact about rows the
+page does not show.
+{% endcomment %}
+{% block title %}{% translate "Busca" %}{% endblock %}
+{% block heading %}{% translate "Busca" %}{% endblock %}
+{% block content %}
+  <form role="search" method="get" action="{% url 'search' %}" class="search-page-form" aria-label="{% translate 'Refinar busca' %}">
+    <div class="ui-field">
+      <label for="busca-pagina" class="ui-field-label">{% translate "Buscar clientes, ciclos, solicitações e documentos" %}</label>
+      <input id="busca-pagina" type="search" name="q" value="{{ query }}" class="ui-field-input" autocomplete="off">
+    </div>
+    <button type="submit" class="ui-btn ui-btn-primary">{% translate "Buscar" %}</button>
+  </form>
+
+  {% if too_short %}
+    <p class="search-hint">{% blocktranslate %}Digite ao menos {{ min_length }} caracteres.{% endblocktranslate %}</p>
+  {% elif groups %}
+    {% for kind, label, hits in groups %}
+      <section class="search-group" aria-labelledby="busca-{{ kind }}">
+        <h2 id="busca-{{ kind }}" class="search-group-title">{{ label }}</h2>
+        <ul class="search-list">
+          {% for hit in hits %}<li class="search-item" data-kind="{{ hit.kind }}">
+            <a class="link min-w-0 break-words" href="{{ hit.url }}">{{ hit.label }}</a>
+            {% if hit.detail %}<span class="search-detail min-w-0 break-words">{{ hit.detail }}</span>{% endif %}
+          </li>{% endfor %}
+        </ul>
+      </section>
+    {% endfor %}
+  {% else %}
+    <p class="search-hint">{% translate "Nenhum resultado na sua carteira." %}</p>
+  {% endif %}
+{% endblock %}

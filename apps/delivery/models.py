@@ -7,6 +7,7 @@ from django.db import models
 from django.utils import timezone
 
 from apps.core.models import TenantScopedModel
+from apps.core.retention import RetentionClass
 from apps.cycles.records import ClientRecord
 
 
@@ -32,11 +33,30 @@ class OutboundMessage(ClientRecord):
         "cycles.ServiceCycle", on_delete=models.PROTECT, null=True, blank=True
     )
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    retry_of = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="retries",
+    )
+    # T11: the portal invitation a `portal_invite` message delivers, or the one a
+    # request notice embeds for a contact without a seat. The token is minted at
+    # dispatch and never stored here; this is only the reference.
+    invite = models.ForeignKey(
+        "tenants.Invite", on_delete=models.PROTECT, null=True, blank=True
+    )
+    # T11: the request a reminder is about, re-read by the pre-send hook.
+    evidence_request = models.ForeignKey(
+        "cycles.EvidenceRequest", on_delete=models.PROTECT, null=True, blank=True
+    )
     proposal_id = models.UUIDField(null=True, blank=True)
     kind = models.SlugField(max_length=64, default="notice")
     idempotency_key = models.CharField(max_length=64)
     business_intent_key = models.CharField(max_length=64)
     content_digest = models.CharField(max_length=64)
+    notice_authorization_bytes = models.BinaryField(null=True, blank=True)
+    notice_authorization_digest = models.BinaryField(null=True, blank=True)
     recipients_json = models.JSONField(default=list)
     subject = models.CharField(max_length=255)
     body_ref = models.CharField(max_length=255)
@@ -56,6 +76,13 @@ class OutboundMessage(ClientRecord):
     decision_note = models.TextField(blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(default=timezone.now)
+    retention_class = models.CharField(
+        max_length=24,
+        choices=RetentionClass.choices,
+        default=RetentionClass.COMMUNICATION_BODY,
+        db_default=RetentionClass.COMMUNICATION_BODY,
+    )
+    redacted_at = models.DateTimeField(null=True)
 
     class Meta(ClientRecord.Meta):
         """Both caller and natural keys are private to the client."""
@@ -70,11 +97,27 @@ class OutboundMessage(ClientRecord):
                 fields=["tenant", "client", "idempotency_key"],
                 name="outbound_idempotency_uniq",
             ),
+            models.UniqueConstraint(
+                fields=["tenant", "client", "retry_of"],
+                name="outbound_retry_parent_uniq",
+            ),
         ]
         indexes: ClassVar[list[models.Index]] = [
             *ClientRecord.Meta.indexes,
             models.Index(
                 fields=["tenant", "state", "next_attempt_at"], name="outbound_queue_idx"
+            ),
+            models.Index(
+                fields=["tenant", "state", "created_at"],
+                condition=models.Q(
+                    state__in=[
+                        MessageState.QUEUED,
+                        MessageState.TEMPORARY,
+                        MessageState.REJECTED,
+                        MessageState.UNKNOWN,
+                    ]
+                ),
+                name="outbound_health_idx",
             ),
         ]
 
@@ -123,6 +166,11 @@ class AutomationPause(TenantScopedModel):
     version = models.PositiveIntegerField(default=1)
     quota_day = models.DateField(default=timezone.localdate)
     reserved_today = models.PositiveIntegerField(default=0)
+    # Bounded sweeps rotate over request IDs, including requests with no audience,
+    # so an unsendable oldest request cannot starve the remainder of this firm.
+    reminder_cursor = models.UUIDField(null=True, blank=True)
+    # A partial request resumes after this contact before the request cursor moves.
+    reminder_contact_cursor = models.UUIDField(null=True, blank=True)
 
     class Meta(TenantScopedModel.Meta):
         """One dispatcher coordination row per firm."""
@@ -134,4 +182,61 @@ class AutomationPause(TenantScopedModel):
         ]
         indexes: ClassVar[list[models.Index]] = [
             models.Index(fields=["tenant", "quota_day"], name="delivery_pause_day_idx"),
+        ]
+
+
+class TenantNoticePolicy(TenantScopedModel):
+    """Current exact notice grants; acknowledgement never substitutes for access."""
+
+    version = models.PositiveIntegerField(default=1)
+    grants_json = models.JSONField(default=list, blank=True)
+    acknowledged_version = models.PositiveIntegerField(null=True, blank=True)
+    acknowledged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True
+    )
+    ack_membership_id = models.UUIDField(null=True, blank=True)
+    ack_membership_version = models.PositiveIntegerField(null=True, blank=True)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledgement_code = models.CharField(max_length=64, blank=True)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(TenantScopedModel.Meta):
+        """One retained, monotonically versioned policy per firm."""
+
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["tenant"], name="notice_policy_tenant_uniq"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0), name="notice_policy_version_positive"
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        acknowledged_version__isnull=True,
+                        acknowledged_by__isnull=True,
+                        ack_membership_id__isnull=True,
+                        ack_membership_version__isnull=True,
+                        acknowledged_at__isnull=True,
+                        acknowledgement_code="",
+                    )
+                    | (
+                        models.Q(
+                            acknowledged_version=models.F("version"),
+                            acknowledged_by__isnull=False,
+                            ack_membership_id__isnull=False,
+                            ack_membership_version__gt=0,
+                            acknowledged_at__isnull=False,
+                        )
+                        & ~models.Q(acknowledgement_code="")
+                        & ~models.Q(grants_json=[])
+                    )
+                ),
+                name="notice_policy_ack_complete",
+            ),
+        ]
+        indexes: ClassVar[list[models.Index]] = [
+            models.Index(
+                fields=["tenant", "version"], name="notice_policy_revision_idx"
+            ),
         ]

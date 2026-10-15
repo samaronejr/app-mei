@@ -1,0 +1,6 @@
+{% comment %}Shared URL-addressed native drawer, scoped by exception_context.{% endcomment %}
+<div class="border-t pt-3" data-reason="{{ row.exception.reason_code }}" data-exception-id="{{ row.exception.pk }}">
+  <a class="ui-link font-semibold" id="{{ row.trigger_id }}" href="{{ row.url }}" aria-haspopup="dialog" aria-controls="{{ row.dialog_id }}">Pendência: {{ row.label }}.</a>
+  <p class="text-sm text-ink-700">Responsável: {{ row.exception.owner.get_full_name|default:row.exception.owner.email }}. {% if row.exception.due_on %}Prazo: {{ row.exception.due_on|date:"d/m/Y" }}{% else %}Revisar até {{ row.exception.review_on|date:"d/m/Y" }}{% endif %}. {{ row.exception.get_state_display }}{% if row.is_active and row.exception.blocks_completion %} · bloqueia a conclusão{% endif %}</p>
+  {% include "partials/ui/drawer.html" with dialog_id=row.dialog_id title=row.title body_template="cycles/_exception_body.html" open_on_load=row.selected open_url=row.url close_url=row.close_url opener_id=row.trigger_id %}
+</div>

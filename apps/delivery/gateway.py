@@ -7,6 +7,7 @@ from django.core.mail import EmailMessage
 
 from apps.core.tasks import assert_no_transaction
 from apps.delivery.contracts import Claim, Reply
+from apps.delivery.frozen import FrozenEmailMessage
 from apps.delivery.models import MessageState
 
 SMTP_TEMPORARY_MIN = 400
@@ -44,24 +45,32 @@ def send(claim: Claim, *, before_network_io: Callable[[], None] | None = None) -
     from apps.delivery import journal  # noqa: PLC0415 - phased service dependency
     from apps.delivery.policy import content_digest, render_body  # noqa: PLC0415
     from apps.delivery.privacy import delivery_secrets  # noqa: PLC0415
-    from apps.delivery.services import authorize_send  # noqa: PLC0415
+    from apps.delivery.services import authorize_and_prepare  # noqa: PLC0415
 
     assert_no_transaction()
     if before_network_io is not None:
         before_network_io()
-    message = authorize_send(claim)
+    message, secrets = authorize_and_prepare(claim)
     if message.state != MessageState.SENDING:
         return Reply(message.state, message.last_error_code)
-    email = EmailMessage(
-        subject=message.subject,
-        body=render_body(message),
-        to=message.recipients_json,
-        headers={"Message-ID": f"<{message.pk}@outbox.local>"},
-    )
-    if content_digest(message, rendered_body=str(email.body)) != message.content_digest:
+    public_body = render_body(message)
+    if content_digest(message, rendered_body=public_body) != message.content_digest:
         return Reply(MessageState.CANCELLED, "content_changed")
+    email = (
+        FrozenEmailMessage(message, secrets)
+        if "frozen_mime" in secrets
+        else EmailMessage(
+            subject=message.subject,
+            body=render_body(message, secrets) if secrets else public_body,
+            to=message.recipients_json,
+            headers={"Message-ID": f"<{message.pk}@outbox.local>"},
+        )
+    )
     with delivery_secrets(
-        str(email.subject), str(email.body), *message.recipients_json
+        str(email.subject),
+        str(email.body),
+        *message.recipients_json,
+        *secrets.values(),
     ):
         journal.append(message, "intent_started")
         reply = smtp_send(email)
