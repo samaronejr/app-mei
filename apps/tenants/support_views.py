@@ -46,6 +46,7 @@ from apps.authz.support import in_support_mode
 from apps.clients.models import ClientCompany
 from apps.clients.views import require_tenant
 from apps.core.flags import require_feature
+from apps.core.refusal import sentences
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Tenant
 from apps.tenants.support import (
@@ -117,7 +118,7 @@ def support_request_view(request: HttpRequest) -> HttpResponse:
                     purpose=str(form.cleaned_data["purpose"]),
                 )
             except (Http404, ValidationError) as error:
-                form.add_error(None, str(error))
+                form.add_error(None, sentences(error))
             else:
                 messages.success(
                     request,
@@ -198,7 +199,7 @@ def approve_support_view(request: AuthenticatedRequest, grant_id: UUID) -> HttpR
     try:
         approve_support_grant(request.user, tenant.pk, grant_id, decision)
     except (Http404, ValidationError) as error:
-        messages.error(request, str(error))
+        messages.error(request, sentences(error))
     else:
         messages.success(request, "Acesso de suporte concedido.")
     return HttpResponseRedirect(reverse("firm-suporte"))
@@ -218,7 +219,7 @@ def revoke_support_view(request: AuthenticatedRequest, grant_id: UUID) -> HttpRe
     try:
         revoke_support_grant(request.user, tenant.pk, grant_id)
     except (Http404, ValidationError) as error:
-        messages.error(request, str(error))
+        messages.error(request, sentences(error))
     else:
         messages.success(request, "Acesso de suporte encerrado.")
     return HttpResponseRedirect(reverse("firm-suporte"))

@@ -7,6 +7,10 @@
     text, never as a field: it is the firm-wide identity key every duplicate check
     and import dedupe is measured against. The version the page read travels as a
     hidden field and a stale save answers 409 instead of overwriting.
+
+    `unsavedGuard` (AXR1-040) runs only under the product shell, which registers
+    it. A bound form here is always a refused save (success redirects), so it comes
+    back marked `data-unsaved`.
   {% endcomment %}
   {% if client %}
     <p class="mb-4 text-sm"><a class="link" href="{% url 'client-setup' client.pk %}">{% blocktranslate with name=client.legal_name %}Voltar ao cadastro de {{ name }}{% endblocktranslate %}</a></p>
@@ -16,7 +20,7 @@
     {% if client %}
       <p class="mb-4 text-sm text-ink-700">{% translate "CNPJ" %}: <span class="tabular">{{ client.cnpj|cnpj_mask }}</span></p>
     {% endif %}
-    <form method="post" class="space-y-4" novalidate>
+    <form method="post" class="space-y-4" novalidate{% if r1_shell %} x-data="unsavedGuard"{% if form.is_bound %} data-unsaved{% endif %}{% endif %}>
       {% csrf_token %}
       {% include "partials/pure/form_errors.html" %}
       {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}

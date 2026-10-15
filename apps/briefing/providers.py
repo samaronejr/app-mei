@@ -1,13 +1,14 @@
 """Registered briefing sources and their explainable, non-persisted items."""
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from logging import getLogger
 from typing import Final
 from uuid import UUID
 
 from django.db import DatabaseError, transaction
-from django.urls import reverse
+from django.urls import get_script_prefix, reverse
+from django.utils import timezone
 
 from apps.briefing.coverage_source import coverage_items
 from apps.briefing.cycle_sources import approvals, exceptions, requests
@@ -39,42 +40,88 @@ PROVIDER_LABELS: Final = {
     "document": "Documentos divergentes",
     "coverage": "Cobertura desatualizada",
 }
+_PATH_PLACEHOLDER: Final = UUID(int=0)
 
 
-def _item(row: SourceRow, now: datetime) -> BriefingItem:
+class _Paths:
+    """Reverse each route once per read; queue item paths differ only by one UUID.
+
+    The script prefix is read once when the read starts and kept verbatim. Only the
+    route segment holding the single UUID argument is substituted; a reversed URL
+    whose shape cannot be proved that way is reversed again for every item.
+    """
+
+    def __init__(self) -> None:
+        self._prefix = get_script_prefix()
+        self._routes: dict[tuple[str, int], tuple[str, str] | None] = {}
+
+    def __call__(self, name: str, *args: object) -> str:
+        if len(args) > 1 or not all(isinstance(arg, UUID) for arg in args):
+            return reverse(name, args=list(args))
+        key = (name, len(args))
+        if key not in self._routes:
+            self._routes[key] = self._route(name, with_argument=bool(args))
+        route = self._routes[key]
+        if route is None:
+            return reverse(name, args=list(args))
+        head, tail = route
+        argument = str(args[0]) if args else ""
+        return f"{self._prefix}{head}{argument}{tail}"
+
+    def _route(self, name: str, *, with_argument: bool) -> tuple[str, str] | None:
+        url = reverse(name, args=[_PATH_PLACEHOLDER] if with_argument else None)
+        if not url.startswith(self._prefix):
+            return None
+        route = url[len(self._prefix) :]
+        if not with_argument:
+            return route, ""
+        marker = str(_PATH_PLACEHOLDER)
+        if route.count(marker) != 1:
+            return None
+        head, tail = route.split(marker)
+        return head, tail
+
+
+def _item(
+    row: SourceRow,
+    now: datetime,
+    path: _Paths | None = None,
+    today: date | None = None,
+) -> BriefingItem:
+    path = path or _Paths()
     title = row.title
     match row.kind:
         case "obligation":
             facts = PriorityFacts(statutory_due_on=row.due_on)
-            url = reverse("client-detail", args=[row.client_id])
+            url = path("client-detail", row.client_id)
             if row.period is not None:
                 url += f"?periodo={row.period:%Y-%m}"
         case "request":
             facts = PriorityFacts(request_due_on=row.due_on)
-            url = reverse("cycle-detail", args=[row.target_id])
+            url = path("cycle-detail", row.target_id)
         case "exception":
             facts = PriorityFacts(client_visible_exception=row.client_visible)
             reason = reason_for(row.title)
             title = reason.label if reason is not None else "Pendência do ciclo"
             url = (
-                f"{reverse('cycle-detail', args=[row.target_id])}"
+                f"{path('cycle-detail', row.target_id)}"
                 f"?pendencia={row.subject_ref}#pendencias"
             )
         case "approval":
             facts = PriorityFacts(approval_requested_at=row.observed_at)
-            url = reverse("approval-card", args=[row.target_id])
+            url = path("approval-card", row.target_id)
         case "delivery":
             facts = PriorityFacts(delivery_problem=True)
             url = (
-                f"{reverse('delivery-queue')}?mensagem={row.subject_ref}"
+                f"{path('delivery-queue')}?mensagem={row.subject_ref}"
                 f"#message-{row.subject_ref}"
             )
         case "document":
             facts = PriorityFacts(divergent_document=True)
             url = (
-                reverse("document-review", args=[row.target_id])
+                path("document-review", row.target_id)
                 if row.target_id is not None
-                else reverse("client-detail", args=[row.client_id])
+                else path("client-detail", row.client_id)
             )
         case _:
             # Only the registered SQL projections can produce this internal code.
@@ -89,7 +136,7 @@ def _item(row: SourceRow, now: datetime) -> BriefingItem:
         owner_name=row.owner_name,
         due_on=row.due_on,
         fact_version=row.fact_version,
-        factors=priority_factors(facts, now=now),
+        factors=priority_factors(facts, now=now, today=today),
         source_observed_at=row.observed_at,
         next_action=row.next_action,
         evidence_refs=(str(row.subject_ref),),
@@ -105,7 +152,9 @@ def source_items(context: SourceContext) -> list[BriefingItem]:
     """Execute the registered projections together without an OFFSET or count query."""
     queries = [provider(context) for provider in PROVIDERS.values()]
     combined = queries[0].union(*queries[1:], all=True)
-    return [_item(SourceRow(*row), context.now) for row in combined]
+    path = _Paths()
+    today = timezone.localtime(context.now).date()
+    return [_item(SourceRow(*row), context.now, path, today) for row in combined]
 
 
 def isolated_source_items(
@@ -114,11 +163,14 @@ def isolated_source_items(
     """Identify failed sources after the combined read has been rolled back."""
     items = []
     failed = []
+    path = _Paths()
+    today = timezone.localtime(context.now).date()
     for kind, provider in PROVIDERS.items():
         try:
             with transaction.atomic():
                 available = [
-                    _item(SourceRow(*row), context.now) for row in provider(context)
+                    _item(SourceRow(*row), context.now, path, today)
+                    for row in provider(context)
                 ]
             items.extend(available)
         except DatabaseError:

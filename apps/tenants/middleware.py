@@ -24,6 +24,7 @@ Both are load-bearing, and `core.E001`/`core.E005` fail startup if either is mis
 from collections.abc import Callable
 from uuid import UUID
 
+from allauth.account.views import logout
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
@@ -77,13 +78,13 @@ class TenantMiddleware:
 
     def __call__(self, request: TenantHttpRequest) -> HttpResponseBase:
         """Establish tenant context, run the request inside it, and tear it down."""
-        if self._is_non_atomic(request):
+        if self.is_non_atomic(request):
             return self._run_without_database_context(request)
         if portal_slug_from_host(request.get_host()) is not None:
             # PortalMiddleware owns this request entirely. Touch neither the ContextVar
             # nor the database.
             #
-            # Placed AFTER the _is_non_atomic guard, never before it: get_host() raises
+            # Placed AFTER the is_non_atomic guard, never before it: get_host() raises
             # DisallowedHost, and /healthz is @non_atomic_requests and must keep serving
             # on hosts outside ALLOWED_HOSTS without opening a connection.
             #
@@ -107,7 +108,7 @@ class TenantMiddleware:
         return self._run_in_tenant_context(request, granted)
 
     @staticmethod
-    def _is_non_atomic(request: HttpRequest) -> bool:
+    def is_non_atomic(request: HttpRequest) -> bool:
         """Report whether the target view opted out of request transactions.
 
         `@transaction.non_atomic_requests` is how a view declares it must not touch
@@ -201,6 +202,22 @@ class TenantMiddleware:
                 request.support_grant = resolve_support_grant(user.pk, resolved.pk)
                 if request.support_grant is not None:
                     return resolved
+            # An account denied this firm still owns its authentication session.
+            # Admit only the registered allauth logout callback, without granting
+            # tenant context. Active members/grants keep the normal path above,
+            # including support request auditing.
+            try:
+                match = resolve(
+                    request.path_info, urlconf=getattr(request, "urlconf", None)
+                )
+            except Resolver404:
+                match = None
+            if (
+                match is not None
+                and match.view_name == "account_logout"
+                and match.func is logout
+            ):
+                return None
             msg = "This account has no active membership for this firm."
             raise PermissionDenied(msg)
         return resolved

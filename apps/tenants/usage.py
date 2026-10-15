@@ -6,7 +6,7 @@ from decimal import Decimal
 from uuid import UUID, uuid5
 
 from django.conf import settings
-from django.db.models import Sum
+from django.db.models import Count, Max, Sum
 from django.http import Http404
 
 from apps.accounts.models import User
@@ -71,6 +71,9 @@ class UsageLine:
     label: str
     quantity: int | None
     unit_price: Decimal | None
+    covered_through: date | None = None
+    measured_days: int | None = None
+    partial: bool = False
 
     @property
     def cost(self) -> Decimal | None:
@@ -90,7 +93,7 @@ class CostEstimate:
     @property
     def complete(self) -> bool:
         """Report whether every component has a measured quantity and known price."""
-        return all(line.cost is not None for line in self.lines)
+        return all(line.cost is not None and not line.partial for line in self.lines)
 
     @property
     def total(self) -> Decimal | None:
@@ -117,12 +120,27 @@ def cost_estimate(actor: User, tenant_id: UUID, *, on: date) -> CostEstimate:
     lines = []
     for metric in UsageMetric:
         readings = current.filter(metric=metric)
+        covered_through = None
+        measured_days = None
+        partial = False
+        if metric == UsageMetric.EMAILS_SENT:
+            coverage = readings.aggregate(
+                through=Max("period"), days=Count("period", distinct=True)
+            )
+            covered_through = coverage["through"]
+            measured_days = coverage["days"]
+            partial = measured_days < on.day
         quantity = (
             readings.order_by("-period", "-created_at")
             .values_list("quantity", flat=True)
             .first()
             if metric in {UsageMetric.ACTIVE_CLIENTS, UsageMetric.STORAGE_BYTES}
-            else readings.aggregate(total=Sum("quantity", default=0))["total"]
+            else readings.aggregate(
+                total=Sum(
+                    "quantity",
+                    default=None if metric == UsageMetric.EMAILS_SENT else 0,
+                )
+            )["total"]
         )
         price = settings.USAGE_UNIT_PRICES_BRL.get(metric)
         lines.append(
@@ -131,6 +149,9 @@ def cost_estimate(actor: User, tenant_id: UUID, *, on: date) -> CostEstimate:
                 str(metric.label),
                 int(quantity) if quantity is not None else None,
                 Decimal(str(price)) if price is not None else None,
+                covered_through,
+                measured_days,
+                partial,
             )
         )
     return CostEstimate(start, tuple(lines))

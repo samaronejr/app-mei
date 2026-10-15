@@ -3,6 +3,7 @@
 import json
 from dataclasses import dataclass
 from datetime import timedelta
+from http import HTTPStatus
 
 import pytest
 from django.db import connection
@@ -24,6 +25,7 @@ from apps.tenants.models import TenantRole
 from tests.browser.harness import mfa_session_cookie
 from tests.cycles.approval_fixtures import ApprovalGraph, approval_graph
 from tests.support import enrol_totp
+from tests.ui.refusal_contract import assert_readable_page
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -170,6 +172,44 @@ def test_create_form_uses_real_selected_ids_and_escapes_frozen_text(desk: Desk) 
         assert frozen["payload"]["body"] == body
         assert frozen["recipients"][0]["contact_id"] == str(setup.contact.pk)
         assert not Approval.objects.filter(proposal=created).exists()
+
+
+def test_a_refused_decision_reads_in_plain_sentences(desk: Desk) -> None:
+    """AXR1-054: a refusal without a reason is the service's sentence on the card."""
+    response = desk.owner.post(
+        f"/acoes/{desk.setup.proposal.pk}/",
+        {"action": "reject", "reason": "", "expected_version": 1},
+    )
+    assert_readable_page(
+        response,
+        status=HTTPStatus.UNPROCESSABLE_CONTENT,
+        reason="Informe o motivo para não aprovar.",
+    )
+
+
+def test_a_refused_proposal_reads_in_plain_sentences(desk: Desk) -> None:
+    """AXR1-054: propose's ValidationError is a form error in sentences."""
+    setup = desk.setup
+    response = desk.staff.post(
+        f"/ciclos/{setup.cycle.pk}/propor/",
+        {
+            "expected_version": setup.cycle.version,
+            "action_kind": "email_notice",
+            "step_key": "http-notice-expired",
+            "occurrence": 1,
+            "recipients": [str(setup.contact.pk)],
+            "subject": "Synthetic subject",
+            "body": "Synthetic body",
+            "expires_at": timezone.localtime(
+                timezone.now() - timedelta(hours=2)
+            ).strftime("%Y-%m-%dT%H:%M"),
+        },
+    )
+    assert_readable_page(
+        response,
+        status=HTTPStatus.UNPROCESSABLE_CONTENT,
+        reason="Informe uma validade futura e um início anterior ao vencimento.",
+    )
 
 
 def test_create_form_offers_the_period_calendar_observation(desk: Desk) -> None:
