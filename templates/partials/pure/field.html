@@ -1,4 +1,4 @@
-{% load i18n %}{% comment %}
+{% load i18n field_values %}{% comment %}
 One form field -- label, control, help, error -- from context alone.
 
 Context:
@@ -37,13 +37,13 @@ A password value is never echoed back into the markup, and neither is a file inp
 
 Grouped `<optgroup>` choices are not rendered; no form in this project uses them.
 {% endcomment %}{% with aid=field.auto_id kind=field.widget_type itype=field.field.widget.input_type|default:'text' %}{% if field.is_hidden %}
-<input type="hidden" name="{{ field.html_name }}" id="{{ aid }}" value="{{ field.value|default_if_none:'' }}">
+<input type="hidden" name="{{ field.html_name }}" id="{{ aid }}" value="{{ field|input_value|default_if_none:'' }}">
 {% else %}
 <div class="field">
   {% if kind == 'checkbox' %}<div class="flex items-center gap-2">{% else %}
   <label class="field-label" for="{{ aid }}">{{ field.label }}{% if field.field.required %} <span class="text-late-ink" aria-hidden="true">*</span>{% endif %}</label>
   {% endif %}
-  {% if kind == 'select' or kind == 'selectmultiple' %}<select{% if kind == 'selectmultiple' %} multiple{% endif %}{% elif kind == 'textarea' %}<textarea rows="4"{% else %}<input type="{{ itype }}"{% if itype != 'password' and itype != 'file' and itype != 'checkbox' %} value="{{ field.value|default_if_none:'' }}"{% endif %}{% if kind == 'checkbox' and field.value %} checked{% endif %}{% if field.field.max_length %} maxlength="{{ field.field.max_length }}"{% endif %}{% endif %} name="{{ field.html_name }}" id="{{ aid }}" class="{% if kind == 'checkbox' %}h-4 w-4 shrink-0 rounded-control border border-ink-300{% else %}field-input{% endif %}"{% if field.field.required %} required{% endif %}{% if field.errors %} aria-invalid="true"{% endif %}{% if field.help_text and field.errors %} aria-describedby="{{ aid }}_help {{ aid }}_error"{% elif field.help_text %} aria-describedby="{{ aid }}_help"{% elif field.errors %} aria-describedby="{{ aid }}_error"{% endif %}>{% if kind == 'select' or kind == 'selectmultiple' %}{% for choice_value, choice_label in field.field.choices %}<option value="{{ choice_value }}"{% if choice_value|stringformat:'s' == field.value|default_if_none:''|stringformat:'s' %} selected{% endif %}>{{ choice_label }}</option>{% endfor %}</select>{% elif kind == 'textarea' %}{{ field.value|default_if_none:'' }}</textarea>{% endif %}
+  {% if kind == 'select' or kind == 'selectmultiple' %}<select{% if kind == 'selectmultiple' %} multiple{% endif %}{% elif kind == 'textarea' %}<textarea rows="4"{% else %}<input type="{{ itype }}"{% if itype != 'password' and itype != 'file' and itype != 'checkbox' %} value="{{ field|input_value|default_if_none:'' }}"{% endif %}{% if kind == 'checkbox' and field.value %} checked{% endif %}{% if field.field.max_length %} maxlength="{{ field.field.max_length }}"{% endif %}{% endif %} name="{{ field.html_name }}" id="{{ aid }}" class="{% if kind == 'checkbox' %}h-4 w-4 shrink-0 rounded-control border border-ink-300{% else %}field-input{% endif %}"{% if field.field.required %} required{% endif %}{% if field.errors %} aria-invalid="true"{% endif %}{% if field.help_text and field.errors %} aria-describedby="{{ aid }}_help {{ aid }}_error"{% elif field.help_text %} aria-describedby="{{ aid }}_help"{% elif field.errors %} aria-describedby="{{ aid }}_error"{% endif %}>{% if kind == 'select' or kind == 'selectmultiple' %}{% for choice_value, choice_label in field.field.choices %}<option value="{{ choice_value }}"{% if kind == 'selectmultiple' and choice_value in field.value or kind == 'select' and choice_value|stringformat:'s' == field.value|default_if_none:''|stringformat:'s' %} selected{% endif %}>{{ choice_label }}</option>{% endfor %}</select>{% elif kind == 'textarea' %}{{ field.value|default_if_none:'' }}</textarea>{% endif %}
   {% if kind == 'checkbox' %}<label class="field-label" for="{{ aid }}">{{ field.label }}</label></div>{% endif %}
   {% if field.help_text %}<p id="{{ aid }}_help" class="field-help">{{ field.help_text }}</p>{% endif %}
   {% if field.errors %}<p id="{{ aid }}_error" class="field-error">{% for error in field.errors %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</p>{% endif %}

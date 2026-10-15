@@ -16,6 +16,15 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Assunto",
         "Ativa",
         "Ativo",
+        (
+            "Autorizo somente os tipos e a regra automática marcados para os "
+            "destinatários elegíveis deste escritório. Esta autorização não vale para "
+            "entregas que exigem aprovação."
+        ),
+        (
+            "Autorizar lembretes automáticos: um por solicitação atrasada e contato "
+            "elegível por dia, sem recuperar dias perdidos."
+        ),
         "Atualidade da fonte",
         "Ação",
         "CNAE principal",
@@ -96,6 +105,7 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Texto para o cliente",
         "Tipo de solicitação",
         "Tipo",
+        "Tipos manuais autorizados",
         "UF",
         "Último dia de serviço",
         "Vale a partir de",
@@ -104,6 +114,12 @@ PT_BR_LABELS: Final[frozenset[str]] = frozenset(
         "Valores extraídos",
         "Versão publicada",
         "Visível no portal",
+        # T23: owner-facing support-grant form labels in /configuracoes/suporte/.
+        "Firma",
+        "Finalidade do acesso",
+        "Tipo de acesso",
+        "Duração (horas)",
+        "Clientes visíveis (vazio = somente dados do escritório)",
     }
 )
 APPROVED_ENGLISH_LABELS: Final[dict[str, str]] = {}

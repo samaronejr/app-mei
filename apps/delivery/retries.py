@@ -20,6 +20,8 @@ def root_intent(message: OutboundMessage) -> str:
             or current.content_digest != parent.content_digest
             or current.proposal_id != parent.proposal_id
             or current.kind != parent.kind
+            or current.notice_authorization_bytes != parent.notice_authorization_bytes
+            or current.notice_authorization_digest != parent.notice_authorization_digest
             or parent.state != MessageState.CANCELLED
             or parent.last_error_code != "staff_retry"
             or not DeliveryEffect.objects.filter(
