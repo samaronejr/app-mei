@@ -7,8 +7,8 @@ stopping at a 10 s deadline between pages; the extraction task that calls it (T1
 runs under a Celery soft time limit of the same budget, which also bounds one slow
 page.
 
-`parse_intake_*` refuse any intake that is not `verificado`: nothing is parsed before
-the scanner has said clean.
+`parse_intake_*` refuse any intake the scanner has not declared clean (`verificado`,
+or a later clean state, T13): nothing is parsed before the scanner has said clean.
 """
 
 import time
@@ -22,7 +22,7 @@ from defusedxml import ElementTree as SafeElementTree
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
-from apps.cycles.evidence import DocumentIntake, IntakeState
+from apps.cycles.evidence import CLEAN_STATES, DocumentIntake
 
 PDF_MAX_PAGES: Final = 50
 PDF_TIMEOUT_SECONDS: Final = 10.0
@@ -47,7 +47,7 @@ class UnsafeDocument(Exception):  # noqa: N818 - domain vocabulary
 
 def require_verified(intake: DocumentIntake) -> None:
     """Refuse to parse anything the scanner has not declared clean."""
-    if intake.state != IntakeState.VERIFIED:
+    if intake.state not in CLEAN_STATES:
         raise UnsafeDocument(NOT_VERIFIED)
 
 

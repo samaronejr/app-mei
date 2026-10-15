@@ -98,9 +98,14 @@ def _unsettled(
     tenant_id: UUID | None,
     assignee: User | None = None,
 ) -> QuerySet[Obligation]:
+    return unsettled_for(_book(user, tenant_id, assignee))
+
+
+def unsettled_for(clients: QuerySet[ClientCompany]) -> QuerySet[Obligation]:
+    """Narrow unsettled calendar facts to an already authorized portfolio."""
     return (
         Obligation.objects.filter(
-            client__in=_book(user, tenant_id, assignee),
+            client__in=clients,
         )
         .exclude(status__in=SETTLED)
         # Both are rendered on every row of the queue. Without this the template
@@ -230,4 +235,5 @@ __all__ = [
     "onboarding_blocked",
     "overdue",
     "threshold_warning",
+    "unsettled_for",
 ]

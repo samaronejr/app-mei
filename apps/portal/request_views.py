@@ -36,7 +36,9 @@ from apps.core.flags import tenant_has, tenant_row_has
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
     CLIENT_VISIBLE_STATES,
+    EvidenceLink,
     EvidenceRequest,
+    ReviewDecision,
     counted_links,
 )
 from apps.cycles.intake import (
@@ -45,6 +47,8 @@ from apps.cycles.intake import (
     UploadTooLarge,
     intake_upload,
 )
+from apps.cycles.models import Exception as CycleException
+from apps.cycles.services.exceptions import ACTIVE_STATES
 from apps.cycles.services.requests import client_status
 from apps.portal.hosts import portal_slug_from_host
 from apps.portal.middleware import SELECTED_CLIENT_SESSION_KEY, PortalHttpRequest
@@ -69,6 +73,9 @@ STATUS_HINTS: Final[dict[str, str]] = {
     "recebido": "Recebemos seu arquivo. A equipe ainda vai conferir.",
     "atrasada": "O prazo passou. Envie assim que puder.",
     "solicitado": "Envie o arquivo pelo botão abaixo.",
+    "rejeitado": (
+        "A equipe não aceitou o arquivo enviado. Veja o motivo e envie de novo."
+    ),
 }
 
 
@@ -84,6 +91,14 @@ class RequestRow:
     status_label: str
     hint: str
     open: bool
+    cycle_id: UUID
+    # T17: a receipt request tells the client which document proves payment.
+    kind: str = "documento"
+
+    @property
+    def actionable(self) -> bool:
+        """A counted submission waits for review; it is not another upload task."""
+        return self.open and self.status != "recebido"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +109,15 @@ class SentFile:
     size_label: str
     sent_at: object
     relinked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DeclinedFile:
+    """A file the team did not accept, with the reason it wrote for the client (T13)."""
+
+    name: str
+    reason: str
+    reviewed_at: object
 
 
 REJECTED_MESSAGE: Final = (
@@ -119,19 +143,20 @@ def _row(request: EvidenceRequest, *, submitted: bool, today: date) -> RequestRo
         status_label=STATUS_LABELS.get(status, "Pendente"),
         hint=STATUS_HINTS.get(status, ""),
         open=request.state in CLIENT_OPEN_STATES,
+        cycle_id=request.cycle_id,
+        kind=request.kind,
     )
 
 
-def open_requests(today: date) -> list[RequestRow]:
+def open_requests(today: date, *, cycle_id: UUID | None = None) -> list[RequestRow]:
     """Return the client's open requests with their derived chips, in two queries.
 
     No client filter: the RESTRICTIVE policy confines both tables to this client.
     """
-    rows = list(
-        EvidenceRequest.objects.filter(state__in=CLIENT_OPEN_STATES).order_by(
-            "due_on", "created_at", "pk"
-        )
-    )
+    requests = EvidenceRequest.objects.filter(state__in=CLIENT_OPEN_STATES)
+    if cycle_id is not None:
+        requests = requests.filter(cycle_id=cycle_id)
+    rows = list(requests.order_by("due_on", "created_at", "pk"))
     submitted = set(
         counted_links()
         .filter(request_id__in=[row.pk for row in rows])
@@ -139,6 +164,33 @@ def open_requests(today: date) -> list[RequestRow]:
         .distinct()
     )
     return [_row(row, submitted=row.pk in submitted, today=today) for row in rows]
+
+
+@dataclass(frozen=True, slots=True)
+class HelpRow:
+    """One exception the firm chose to show: its fixed client sentence and date."""
+
+    message: str
+    due_on: date | None
+
+
+def client_help(cycle_id: UUID | None = None) -> list[HelpRow]:
+    """Open exceptions shown as "Precisamos da sua ajuda" (T14, S8.2).
+
+    No client and no `client_visible` filter here: the RESTRICTIVE portal policy
+    confines cycles_exception to this client's client-visible rows, so a test that
+    weakens the policy sees the leak. Only the client columns are selected; the
+    firm's next action and owner are never loaded.
+    """
+    rows = CycleException.objects.filter(state__in=ACTIVE_STATES)
+    if cycle_id is not None:
+        rows = rows.filter(cycle_id=cycle_id)
+    return [
+        HelpRow(message=message, due_on=due_on)
+        for message, due_on in rows.order_by(
+            "due_on", "review_on", "created_at", "pk"
+        ).values_list("client_message", "due_on")
+    ]
 
 
 def _visible_request(pk: UUID) -> EvidenceRequest:
@@ -165,11 +217,35 @@ def _files(request: EvidenceRequest) -> list[SentFile]:
     ]
 
 
+def _declined(request: EvidenceRequest) -> list[DeclinedFile]:
+    """Files the team did not accept, read from the link's review projection.
+
+    The portal never reads `cycles_review` (S8.2): the review service writes the
+    decision and the client's reason on the link, which the portal may SELECT.
+    """
+    links = (
+        EvidenceLink.objects.filter(
+            request=request, review_decision=ReviewDecision.REJECTED
+        )
+        .select_related("document")
+        .order_by("-reviewed_at", "pk")
+    )
+    return [
+        DeclinedFile(
+            name=link.document.original_filename,
+            reason=link.client_reason,
+            reviewed_at=link.reviewed_at,
+        )
+        for link in links
+    ]
+
+
 def _status_context(request: EvidenceRequest) -> dict[str, object]:
     files = _files(request)
     return {
         "req": _row(request, submitted=bool(files), today=timezone.localdate()),
         "files": files,
+        "declined": _declined(request),
     }
 
 

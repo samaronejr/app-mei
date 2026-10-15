@@ -99,6 +99,20 @@ class AuditAction(models.TextChoices):
     IMPORT_COMMIT_FAILED = "import_commit_failed", _("client import commit failed")
     IMPORT_COMMITTED = "import_committed", _("client import committed")
     IMPORT_ROLLED_BACK = "import_rolled_back", _("client import rolled back")
+    BRIEFING_VIEW_SAVED = "briefing_view_saved", _("briefing view saved")
+    BRIEFING_VIEW_DELETED = "briefing_view_deleted", _("briefing view deleted")
+    BRIEFING_DISMISSED = "briefing_dismissed", _("briefing item dismissed")
+    # The support-grant lifecycle (AXR1-023): request, owner decision, and the
+    # two ways a grant ends. Written as both streams — a PlatformEvent for the
+    # platform-side actor and a tenant Event the owner's audit page shows — so
+    # neither side can read its own log and see silence.
+    SUPPORT_GRANT_REQUESTED = "support.grant_requested", _("support grant requested")
+    SUPPORT_GRANT_APPROVED = "support.grant_approved", _("support grant approved")
+    SUPPORT_GRANT_REVOKED = "support.grant_revoked", _("support grant revoked")
+    SUPPORT_SESSION_STARTED = "support.session_started", _("support session started")
+    # The per-request trail (AXR1-023 review B2): every request answered under a
+    # live grant, GETs included — a once-per-session signal is not an audit.
+    SUPPORT_REQUEST = "support.request", _("support request")
 
 
 class Event(TenantScopedModel):

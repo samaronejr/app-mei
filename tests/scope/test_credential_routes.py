@@ -54,6 +54,7 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "portal-cycle-detail",
         # T11
         "cycle-request-action",
+        "cycle-exception-action",
         "portal-request-detail",
         "portal-request-upload",
         "playbook-detail",
@@ -61,6 +62,39 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "playbook-retire",
         # T12
         "staff-document-download",
+        # T13: firm-side review and inline preview of one submission (link id),
+        # portfolio-scoped by load_visible_client before any byte is read.
+        "document-review",
+        "document-preview",
+        # T15: portfolio-scoped object IDs, never bearer credentials.
+        "approval-card",
+        "proposal-create",
+        # T16: scoped publication/link identifiers, never bearer credentials.
+        "portal-publication-detail",
+        "portal-publication-download",
+        "publication-withdraw",
+        # T18: explicit staff-session/capability/portfolio decisions for object IDs.
+        "cycle-reopen",
+        "evidence-index",
+        "evidence-export-detail",
+        "evidence-export-download",
+        # T19: a user- and tenant-owned saved selection, never a bearer credential.
+        "briefing-delete-view",
+        # T20: private operation IDs, scoped before preview/results/CSV access.
+        "bulk-detail",
+        "bulk-progress",
+        "bulk-report-csv",
+        # T22: owner-scoped account ids and explicitly authorized operator billing.
+        "account-export-detail",
+        "account-export-download",
+        "firm-retention",
+        "firm-hold-release",
+        "admin:tenants_tenant_billing",
+        # T23: support grant row ids resolved under a live owner seat inside the
+        # firm's settings page; object ids, never bearer credentials.
+        "firm-suporte-approve",
+        "firm-suporte-revoke",
+        "firm-suporte-trilha",
         "admin:*",
     },
 )

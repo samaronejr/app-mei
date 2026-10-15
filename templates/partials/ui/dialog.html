@@ -27,7 +27,7 @@ component: both need script to act, and a control that cannot act must not be
 offered.
 {% endcomment %}<div x-data="dialog" class="contents">
   {% if trigger_label %}<button type="button" class="ui-btn ui-btn-quiet" hidden x-bind:hidden="controlHidden" aria-haspopup="dialog" aria-controls="{{ dialog_id }}" x-on:click="show">{{ trigger_label }}</button>{% endif %}
-  <dialog id="{{ dialog_id }}" class="{% if variant == 'drawer' %}ui-drawer{% else %}ui-dialog{% endif %}" aria-labelledby="{{ dialog_id }}-title" x-ref="dialog" x-on:close="restoreFocus"{% if open_on_load %} open{% endif %}>
+  <dialog id="{{ dialog_id }}" class="{% if variant == 'drawer' %}ui-drawer{% else %}ui-dialog{% endif %}" aria-labelledby="{{ dialog_id }}-title" x-ref="dialog" x-on:close="restoreFocus" x-on:click="rememberLink"{% if open_url %} data-open-url="{{ open_url }}" data-close-url="{{ close_url }}" data-opener-id="{{ opener_id }}"{% endif %}{% if open_on_load %} open{% endif %}>
     <div class="overlay-head">
       <h2 id="{{ dialog_id }}-title" class="overlay-title">{{ title }}</h2>
       <button type="button" class="ui-icon-btn" hidden x-bind:hidden="controlHidden" x-on:click="close">{% include "partials/pure/icons/x.html" %}<span class="visually-hidden">{% translate "Fechar" %}</span></button>

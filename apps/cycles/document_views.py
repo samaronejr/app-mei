@@ -3,7 +3,8 @@
 The portfolio decides first: the document's client must be in the actor's book, or
 404 (an unassigned staff accountant learns nothing). Then the intake decides:
 
-- `verificado`: served from the final key;
+- `verificado` and the later clean states (T13: `classificado`, `divergente`,
+  `vinculado`): served from the final key;
 - `recebido` / `quarentena`: 409, no byte -- the scan has not answered yet;
 - `rejeitado_tipo` / `rejeitado_malware`: 403, no byte -- retained, never served;
 - `verificacao_indisponivel` (scanner off or down past 24 h) and vault uploads that
@@ -30,12 +31,13 @@ from apps.accounts.views import AuthenticatedRequest
 from apps.authz.objects import load_visible_client
 from apps.authz.services import require_can
 from apps.clients.views import require_tenant
+from apps.core.refusal import forbidden_page
 from apps.cycles.evidence import (
+    CLEAN_STATES,
     PENDING_SCAN_STATES,
     REJECTED_STATES,
     DocumentIntake,
     EvidenceLink,
-    IntakeState,
 )
 from apps.cycles.records import CycleEvent
 from apps.cycles.services.cycle import require_enabled
@@ -97,7 +99,7 @@ def staff_document_download(request: AuthenticatedRequest, pk: UUID) -> HttpResp
         raise Http404
     load_visible_client(request.user, document.client_id)
     intake = DocumentIntake.objects.filter(document=document).first()
-    if intake is not None and intake.state == IntakeState.VERIFIED:
+    if intake is not None and intake.state in CLEAN_STATES:
         if request.method != "GET":
             raise Http404
         return _serve(document, document.storage_key)
@@ -108,10 +110,9 @@ def staff_document_download(request: AuthenticatedRequest, pk: UUID) -> HttpResp
             content_type="text/plain; charset=utf-8",
         )
     if intake is not None and intake.state in REJECTED_STATES:
-        return HttpResponse(
+        return forbidden_page(
+            request,
             "Arquivo recusado na verificação. Ele fica guardado e não é entregue.",
-            status=HTTPStatus.FORBIDDEN,
-            content_type="text/plain; charset=utf-8",
         )
     # Unscanned (verificacao_indisponivel, or a vault upload without an intake):
     # the warning first; the bytes only after its POST.
