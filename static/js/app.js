@@ -444,6 +444,12 @@
    * x-data="unsavedGuard" on the form. Any input or change marks it dirty; its own
    * submit marks it clean, so saving never triggers the warning.
    *
+   * A form the server sent back unsaved -- refused, with the reader's values still
+   * in its fields -- carries data-unsaved and starts dirty. The submit that cleaned
+   * it saved nothing, so leaving now loses those values exactly as leaving before
+   * the submit would have. Only the server knows the save was refused, so only the
+   * server sets the marker.
+   *
    * beforeunload is the only warning a browser permits here, and it shows the
    * browser's own wording: a page may ask, it may not choose the sentence.
    */
@@ -454,6 +460,7 @@
 
       init: function () {
         var state = this;
+        this.dirty = this.$el.hasAttribute("data-unsaved");
         this.handler = function (event) {
           if (state.dirty) {
             event.preventDefault();

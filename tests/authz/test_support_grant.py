@@ -59,6 +59,7 @@ from tests.support import enrol_totp, pinned_totp_window, totp_code
 from tests.tenants import urls as tenant_test_urls
 from tests.tenants.test_cancellation_retention import enabled_firm
 from tests.ui.factories import PASSWORD, Firm, add_member
+from tests.ui.refusal_contract import assert_readable_page
 
 if TYPE_CHECKING:
     from django.urls import URLPattern, URLResolver
@@ -192,6 +193,36 @@ def test_revoke_denies_the_next_request() -> None:
         == HTTPStatus.FOUND
     )
     assert session.get("/").status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.parametrize(
+    ("action", "data", "reason"),
+    [
+        (
+            "aprovar",
+            {"scope": SupportScope.READ_ONLY, "hours": 2},
+            "Esta solicitação já foi decidida.",
+        ),
+        ("revogar", {}, "Esta concessão já está encerrada."),
+    ],
+)
+def test_a_refused_support_decision_reads_in_plain_sentences(
+    action: str, data: dict[str, str | int], reason: str
+) -> None:
+    """AXR1-054: a decided grant's refusal flashes the service's sentence."""
+    firm = enabled_firm(f"support-refusal-{action}")
+    grant = _grant_for(firm.tenant, firm.owner, _staff())
+    owner = _session_for(firm.owner, _firm_host(firm))
+    url = f"/configuracoes/suporte/{grant.pk}/{action}/"
+    if action == "revogar":
+        assert owner.post(url).status_code == HTTPStatus.FOUND
+
+    refused = owner.post(url, data)
+
+    assert refused.status_code == HTTPStatus.FOUND
+    assert_readable_page(
+        owner.get(refused.headers["Location"]), status=HTTPStatus.OK, reason=reason
+    )
 
 
 def test_support_session_is_recorded_once_and_carries_the_banner() -> None:

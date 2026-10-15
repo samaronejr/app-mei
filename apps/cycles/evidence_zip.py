@@ -9,7 +9,7 @@ from collections.abc import Buffer, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import IO, Final
+from typing import IO, Final, TypedDict
 from uuid import UUID
 
 from django.core.files.storage import Storage
@@ -69,6 +69,15 @@ class Original:
     def member(self) -> str:
         """Derive a safe unique member from trusted identity and media type."""
         return f"originals/{self.id}.{EXTENSIONS.get(self.content_type, 'bin')}"
+
+
+class ExcludedOriginal(TypedDict):
+    """Freeze the identity and eligibility reason without any storage key."""
+
+    id: str
+    filename: str
+    code: str
+    reason: str
 
 
 class _CappedFile(io.BufferedIOBase):
@@ -141,6 +150,44 @@ def _write_original(
     return count
 
 
+def _metadata_members(
+    index_bytes: bytes,
+    originals: tuple[Original, ...],
+    excluded_originals: tuple[ExcludedOriginal, ...],
+    byte_cap: int,
+) -> tuple[tuple[str, bytes], ...]:
+    """Keep notices bounded and preserve the old metadata when nothing is omitted."""
+    excluded_bytes = (
+        json.dumps(
+            excluded_originals,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        if excluded_originals
+        else b""
+    )
+    if len(index_bytes) + len(excluded_bytes) > METADATA_CAP:
+        raise ZipError(ZipErrorCode.METADATA_LIMIT)
+    html = render_to_string(
+        "cycles/evidence_bundle.html",
+        {
+            "index_text": index_bytes.decode(),
+            "originals": originals,
+            "excluded_originals": excluded_originals,
+        },
+    ).encode()
+    if len(html) + len(index_bytes) + len(excluded_bytes) > byte_cap:
+        raise ZipError(ZipErrorCode.BYTE_CAP)
+    members: tuple[tuple[str, bytes], ...] = (
+        ("index.json", index_bytes),
+        ("index.html", html),
+    )
+    if excluded_bytes:
+        members += (("excluded-originals.json", excluded_bytes),)
+    return members
+
+
 @contextmanager
 def build_archive(
     index: dict[str, JSONValue],
@@ -148,6 +195,7 @@ def build_archive(
     *,
     storage: Storage,
     byte_cap: int = BYTE_CAP,
+    excluded_originals: tuple[ExcludedOriginal, ...] = (),
 ) -> Iterator[Bundle]:
     """Yield a closed, hashed ZIP spool; close every handle even on refusal."""
     unique = tuple({source.id: source for source in originals}.values())
@@ -168,20 +216,12 @@ def build_archive(
             metadata.write(encoded)
         metadata.seek(0)
         index_bytes = metadata.read(METADATA_CAP + 1)
-        html = render_to_string(
-            "cycles/evidence_bundle.html",
-            {
-                "index_text": index_bytes.decode(),
-                "originals": unique,
-            },
-        ).encode()
-        if len(html) + len(index_bytes) > byte_cap:
-            raise ZipError(ZipErrorCode.BYTE_CAP)
+        members = _metadata_members(index_bytes, unique, excluded_originals, byte_cap)
         manifest = []
         with zipfile.ZipFile(
             _CappedFile(spool, byte_cap), "w", compression=zipfile.ZIP_STORED
         ) as archive:
-            for name, content in (("index.json", index_bytes), ("index.html", html)):
+            for name, content in members:
                 archive.writestr(name, content)
                 manifest.append(f"{hashlib.sha256(content).hexdigest()}  {name}\n")
             total = 0

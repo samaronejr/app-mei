@@ -57,11 +57,29 @@ def parse_period(value: str | None) -> date:
 
 
 def available_actions(
-    actor: User, cycle: ServiceCycle, *, unmet: list[str] | None = None
+    actor: User,
+    cycle: ServiceCycle,
+    *,
+    unmet: list[str] | None = None,
+    allowed: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
-    """UI only; transition_cycle repeats each decision under the lock."""
+    """Offer UI transitions; transition_cycle repeats decisions under the lock.
+
+    The cycle-detail display may supply its own live capability cut. Other
+    callers still resolve each capability here; navigation never uses this cut.
+    """
     gates = {CYCLES_OPERATE, CYCLES_REVIEW, CYCLES_COMPLETE}
-    allowed = {gate: can(actor, gate, tenant_id=cycle.tenant_id) for gate in gates}
+    if allowed is None:
+        allowed = frozenset(
+            gate for gate in gates if can(actor, gate, tenant_id=cycle.tenant_id)
+        )
+    return actions_for(cycle, allowed, unmet=unmet)
+
+
+def actions_for(
+    cycle: ServiceCycle, allowed: frozenset[str], *, unmet: list[str] | None = None
+) -> tuple[str, ...]:
+    """Project transitions from this reader's live capability decision."""
     result = []
     for target in sorted(TRANSITIONS[cycle.state]):
         gate = (
@@ -71,7 +89,7 @@ def available_actions(
             if target in {CycleState.REVIEW, CycleState.APPROVAL}
             else CYCLES_OPERATE
         )
-        if allowed[gate] and (
+        if gate in allowed and (
             target != CycleState.COMPLETED
             or not (completion_unmet(cycle) if unmet is None else unmet)
         ):
@@ -180,12 +198,21 @@ def timeline(actor: User, client_id: UUID, period: date) -> list[TimelineEntry]:
     return sorted(entries, key=lambda entry: (entry.when, entry.id), reverse=True)[:100]
 
 
-def portal_projection(cycle: ServiceCycle) -> dict[str, object]:
-    """Exactly three visible fields; never hand a model with private joins to HTML."""
+def portal_projection(
+    cycle: ServiceCycle,
+    *,
+    has_actionable_requests: bool = False,
+    has_submitted_requests: bool = False,
+) -> dict[str, object]:
+    """Three client fields; request work outranks the stored cycle state."""
     return {
         "period": cycle.period_start,
         "state_label": cycle.get_state_display(),
-        "next_action": "Entre em contato com o escritório para saber o que falta."
+        "next_action": "Envie os documentos solicitados para este ciclo."
+        if has_actionable_requests
+        else "Seus arquivos deste ciclo foram recebidos. A equipe ainda vai conferir."
+        if has_submitted_requests
+        else "Entre em contato com o escritório para saber o que falta."
         if cycle.state == CycleState.WAITING
-        else "Aguarde a próxima orientação do escritório.",
+        else "Acompanhe as solicitações e publicações deste ciclo no portal.",
     }
