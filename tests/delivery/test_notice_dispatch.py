@@ -116,8 +116,10 @@ def test_dispatch_start_commits_first_one_send_survives_later_revoke(
         authority: Authority | None,
         tenant: Tenant,
         kind: str,
+        *,
+        automatic: bool = False,
     ) -> dict[str, JSONValue]:
-        basis = original_basis(policy, authority, tenant, kind)
+        basis = original_basis(policy, authority, tenant, kind, automatic=automatic)
         if not authority_held.is_set():
             authority_held.set()
             assert release_authority.wait(15), "Dispatch authority was not released"

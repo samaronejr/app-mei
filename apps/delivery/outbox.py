@@ -8,6 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.http import Http404
 
 from apps.accounts.models import User
 from apps.clients.models import ClientContact
@@ -29,10 +30,16 @@ from apps.delivery.policy import (
     KINDS,
     BusinessIntent,
     content_digest,
+    enabled_kinds,
     resolve_recipient,
 )
 from apps.delivery.services import record
 from apps.tenants.models import Invite
+
+
+def idempotency_digest(idempotency_key: str) -> str:
+    """Return the stored caller key for a caller-supplied idempotency key."""
+    return hashlib.sha256(idempotency_key.encode()).hexdigest()
 
 
 def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and revision
@@ -69,9 +76,14 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
             msg = "Tipo de mensagem não registrado."
             raise ValidationError(msg)
         if cycle_id is not None:
-            cycle = load_cycle(actor, cycle_id)
+            cycle = (
+                scope.cycle
+                if scope.reminder_on is not None
+                else load_cycle(actor, cycle_id)
+            )
             if (
-                cycle.client_id != client.pk
+                cycle is None
+                or cycle.client_id != client.pk
                 or cycle.engagement_id != intent.engagement
                 or cycle.playbook_id != intent.playbook
                 or cycle.period_start != intent.period_start
@@ -81,11 +93,7 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
                 msg = "A intenção não corresponde ao ciclo."
                 raise ValidationError(msg)
         key = intent.key(tenant_id())
-        caller_key = (
-            hashlib.sha256(idempotency_key.encode()).hexdigest()
-            if idempotency_key
-            else key
-        )
+        caller_key = idempotency_digest(idempotency_key) if idempotency_key else key
         parts = urlsplit(settings.PLATFORM_URL)
         host = f"{client.tenant.slug}-portal.{parts.hostname}"
         if parts.port:
@@ -138,7 +146,12 @@ def enqueue(  # noqa: PLR0913 - exact effect needs scope, intent, recipient and 
         message.save()
         client.version += 1
         client.save(update_fields=["version"])
-        record(message, message.state, actor=actor, code="enqueued")
+        record(
+            message,
+            message.state,
+            actor=None if scope.reminder_on is not None else actor,
+            code="enqueued",
+        )
         return message
 
 
@@ -171,6 +184,7 @@ def enqueue_portal_invite(
     invite: Invite,
     contact: ClientContact,
     *,
+    kind: str = "portal_invite",
     notice_scope: NoticeScope | None = None,
 ) -> OutboundMessage:
     """Queue the delivery of one portal invitation inside the issuing transaction.
@@ -185,16 +199,19 @@ def enqueue_portal_invite(
     One message per invitation, keyed on the invitation id: a replay returns the same
     row instead of queueing a second mail.
     """
-    require_enabled()
+    if kind not in {"portal_invite", "contact_portal_invite"} or (
+        kind not in enabled_kinds(tenant_id())
+    ):
+        raise Http404
     if invite.client_id is None:
         msg = "O convite não pertence a este cliente."
         raise ValidationError(msg)
     scope = notice_scope or lock_notice_scope(
         actor,
-        NoticeOrigin("portal_invite", invite.client_id),
+        NoticeOrigin(kind, invite.client_id),
     )
     actor = scope.actor
-    definition = KINDS["portal_invite"]
+    definition = KINDS[kind]
     key = hashlib.sha256(
         f"portal_invite:{tenant_id()}:{invite.pk}".encode()
     ).hexdigest()
@@ -209,7 +226,7 @@ def enqueue_portal_invite(
         client_id=invite.client_id,
         contact=recipient,
         created_by=actor,
-        kind="portal_invite",
+        kind=kind,
         business_intent_key=key,
         idempotency_key=key,
         recipients_json=[recipient.email],

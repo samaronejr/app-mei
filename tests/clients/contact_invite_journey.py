@@ -131,7 +131,7 @@ def contact_journey(settings: SettingsWrapper) -> Journey:
         {
             "action": "save",
             "expected_version": 0,
-            "kinds": ["portal_invite"],
+            "kinds": ["contact_portal_invite"],
             "acknowledged": "on",
         },
     )
@@ -164,7 +164,7 @@ def contact_journey(settings: SettingsWrapper) -> Journey:
         cycle = ServiceCycle.objects.get(pk=ref.id)
         send_requests(firm.owner, cycle.pk, expected_version=cycle.version)
         cycle.refresh_from_db()
-        invitation = OutboundMessage.objects.get(kind="portal_invite")
+        invitation = OutboundMessage.objects.get(kind="contact_portal_invite")
         request_mail = OutboundMessage.objects.get(kind="request_notice")
         assert request_mail.invite_id == invitation.invite_id
         assert request_mail.contact_id == invitation.contact_id == contact.pk

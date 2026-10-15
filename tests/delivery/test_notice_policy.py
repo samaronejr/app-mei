@@ -120,7 +120,7 @@ def test_owner_save_readback_revoke_and_pause_are_live(
 
 @pytest.mark.parametrize(
     "kinds",
-    [["approved_email"], ["contact_portal_invite"], ["unknown"], ["notice", "notice"]],
+    [["approved_email"], ["automatic_reminder"], ["unknown"], ["notice", "notice"]],
 )
 def test_unknown_consequential_and_unimplemented_grants_refuse(
     graph: CycleSetup, kinds: list[str]

@@ -62,7 +62,7 @@ def graph(settings: SettingsWrapper) -> CycleSetup:
     with tenant_context(setup.tenant.pk):
         configure(
             setup.actor,
-            kinds=("portal_invite",),
+            kinds=("portal_invite", "contact_portal_invite"),
             acknowledged=True,
             expected_version=0,
         )
@@ -97,7 +97,11 @@ def _invite_contact(graph: CycleSetup, contact: ClientContact) -> None:
 
 def _messages(graph: CycleSetup) -> list[OutboundMessage]:
     with tenant_context(graph.tenant.pk):
-        return list(OutboundMessage.objects.filter(kind="portal_invite"))
+        return list(
+            OutboundMessage.objects.filter(
+                kind__in=["portal_invite", "contact_portal_invite"]
+            )
+        )
 
 
 def _tokens(server: FakeSMTP) -> list[str]:

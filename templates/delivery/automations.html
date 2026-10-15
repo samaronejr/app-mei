@@ -66,7 +66,13 @@
   <div class="ui-panel divide-y divide-ink-200">
   {% for job in jobs %}
     <article class="grid gap-3 p-4 md:grid-cols-3" data-job="{{ job.name }}">
-      <div class="min-w-0"><h3 class="break-words font-semibold">{{ job.label }}</h3>{% if not job.enabled %}<p class="mt-1 text-sm">Sem próxima execução ativa</p>{% endif %}</div>
+      <div class="min-w-0">
+        <h3 class="break-words font-semibold">{{ job.label }}</h3>
+        {% if not job.enabled %}<p class="mt-1 text-sm">Sem próxima execução ativa</p>{% endif %}
+        {% if job.last_attempt_at %}<p class="mt-2 text-sm">Última tentativa: <time>{{ job.last_attempt_at|date:'d/m/Y H:i' }}</time></p>{% endif %}
+        {% if job.last_error_code %}<p class="mt-2 break-words text-sm" data-job-error="{{ job.last_error_code }}">{% if job.last_error_code == "reminder_sweep_failed" %}A última rodada falhou. Totais abaixo incluem somente as etapas concluídas; uma etapa com falha pode ter deixado avisos na fila.{% elif job.last_error_code == "reminder_sweep_running" %}Rodada iniciada, sem conclusão registrada. Se estiver atrasada, consulte o operador.{% endif %} Código: {{ job.last_error_code }}</p>{% endif %}
+        {% for label, count in job.outcomes %}<p class="mt-1 text-sm">{{ label }}: {{ count }}</p>{% endfor %}
+      </div>
       <div><p class="text-sm text-ink-600">Última conclusão registrada</p><p>{% if job.last_completed_at %}<time>{{ job.last_completed_at|date:'d/m/Y H:i' }}</time>{% else %}Sem conclusão registrada{% endif %}</p></div>
       <div><p class="text-sm text-ink-600">Próxima execução prevista</p><p>{% if job.due %}Execução devida{% elif job.next_run_at %}<time>{{ job.next_run_at|date:'d/m/Y H:i' }}</time>{% else %}Sem previsão{% endif %}</p></div>
     </article>

@@ -36,32 +36,38 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _queue(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: SettingsWrapper, tmp_path: Path, *, kind: str
 ) -> tuple[ContactOffer, OutboundMessage]:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
     offer = contact_offer()
-    offer.firm.tenant.features = ["cycles_r1", "import_r1"]
+    offer.firm.tenant.features = (
+        ["import_r1"] if kind == "contact_portal_invite" else ["cycles_r1", "import_r1"]
+    )
     offer.firm.tenant.save(update_fields=["features"])
     with tenant_context(offer.firm.tenant.pk):
         configure(
             offer.firm.owner,
-            kinds=("portal_invite",),
+            kinds=(kind,),
             acknowledged=True,
             expected_version=0,
         )
-        message = enqueue_portal_invite(offer.firm.owner, offer.invite, offer.contact)
+        message = enqueue_portal_invite(
+            offer.firm.owner, offer.invite, offer.contact, kind=kind
+        )
     return offer, message
 
 
 @pytest.mark.parametrize("existing_account", [True, False])
+@pytest.mark.parametrize("kind", ["portal_invite", "contact_portal_invite"])
 def test_acceptance_commits_first_dispatch_refuses_without_data(
     settings: SettingsWrapper,
     tmp_path: Path,
     smtp_server: Callable[[str], FakeSMTP],
     existing_account: bool,
+    kind: str,
 ) -> None:
-    offer, message = _queue(settings, tmp_path)
+    offer, message = _queue(settings, tmp_path, kind=kind)
     user = verified_invitee() if existing_account else None
     claim = claim_batch(offer.firm.tenant.pk)[0]
     held, release = Event(), Event()
@@ -98,15 +104,24 @@ def test_acceptance_commits_first_dispatch_refuses_without_data(
         assert message.send_started_at is None
 
 
-@pytest.mark.parametrize("existing_account", [True, False])
+@pytest.mark.parametrize(
+    "case",
+    [
+        (existing_account, kind)
+        for kind in ("portal_invite", "contact_portal_invite")
+        for existing_account in (True, False)
+    ],
+    ids=lambda case: f"{case[1]}-{'existing' if case[0] else 'new'}",
+)
 def test_dispatch_start_first_preserves_stale_token_guard_and_one_send(
     settings: SettingsWrapper,
     tmp_path: Path,
     smtp_server: Callable[[str], FakeSMTP],
     monkeypatch: pytest.MonkeyPatch,
-    existing_account: bool,
+    case: tuple[bool, str],
 ) -> None:
-    offer, message = _queue(settings, tmp_path)
+    existing_account, kind = case
+    offer, message = _queue(settings, tmp_path, kind=kind)
     user = verified_invitee() if existing_account else None
     claim = claim_batch(offer.firm.tenant.pk)[0]
     minted, release_authority = Event(), Event()

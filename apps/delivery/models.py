@@ -166,6 +166,11 @@ class AutomationPause(TenantScopedModel):
     version = models.PositiveIntegerField(default=1)
     quota_day = models.DateField(default=timezone.localdate)
     reserved_today = models.PositiveIntegerField(default=0)
+    # Bounded sweeps rotate over request IDs, including requests with no audience,
+    # so an unsendable oldest request cannot starve the remainder of this firm.
+    reminder_cursor = models.UUIDField(null=True, blank=True)
+    # A partial request resumes after this contact before the request cursor moves.
+    reminder_contact_cursor = models.UUIDField(null=True, blank=True)
 
     class Meta(TenantScopedModel.Meta):
         """One dispatcher coordination row per firm."""

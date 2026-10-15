@@ -13,6 +13,7 @@ from apps.accounts.views import AuthenticatedRequest
 from apps.authz.services import require_can
 from apps.clients.maintenance import load_client
 from apps.clients.views import require_tenant
+from apps.core.refusal import sentences
 from apps.cycles.effects.build import BuildError
 from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.models import ClientPublication
@@ -57,7 +58,7 @@ def publication_withdraw(request: AuthenticatedRequest, pk: UUID) -> HttpRespons
                 form.add_error(None, str(error))
                 status = 409
             except (ValidationError, IllegalTransition, BuildError) as error:
-                form.add_error(None, str(error))
+                form.add_error(None, sentences(error))
                 status = 422
             else:
                 return redirect("approval-card", pk=proposal.pk)

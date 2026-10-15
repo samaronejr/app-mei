@@ -30,6 +30,7 @@ from apps.delivery.models import (
     MessageState,
     OutboundMessage,
 )
+from apps.delivery.policy import enabled_kinds
 
 # S8.1: pausing and resuming automations is its own capability.
 AUTOMATIONS_MANAGE = "automations.manage"
@@ -176,7 +177,8 @@ def claim_batch(tid: UUID) -> list[Claim]:
     """Commit SKIP LOCKED claims before the caller can perform any network I/O."""
     assert_no_transaction()
     with tenant_context(tid):
-        if not tenant_has(tid, "cycles_r1"):
+        kinds = enabled_kinds(tid)
+        if not kinds:
             return []
         control = _control()
         now = timezone.now()
@@ -184,7 +186,7 @@ def claim_batch(tid: UUID) -> list[Claim]:
         # still be transmitting. Only an explicit human decision can resolve them.
         expired = list(
             OutboundMessage.objects.select_for_update(skip_locked=True)
-            .filter(state=MessageState.SENDING, lease_until__lte=now)
+            .filter(kind__in=kinds, state=MessageState.SENDING, lease_until__lte=now)
             .order_by("pk")[:CLAIM_LIMIT]
         )
         paused = settings.DELIVERY_PAUSED or control.paused
@@ -198,6 +200,7 @@ def claim_batch(tid: UUID) -> list[Claim]:
             list(
                 OutboundMessage.objects.select_for_update(skip_locked=True)
                 .filter(
+                    kind__in=kinds,
                     state__in=[MessageState.QUEUED, MessageState.TEMPORARY],
                     next_attempt_at__lte=now,
                     attempts__lt=MAX_ATTEMPTS,
@@ -294,7 +297,7 @@ def prepare_claim(claim: Claim) -> tuple[OutboundMessage, dict[str, str]]:
     if (
         settings.DELIVERY_PAUSED
         or control.paused
-        or not tenant_has(claim.tenant_id, "cycles_r1")
+        or message.kind not in enabled_kinds(claim.tenant_id)
     ):
         valid, reason = False, "delivery_paused"
     else:
