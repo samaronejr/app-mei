@@ -10,7 +10,7 @@
       <dl class="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         <div><dt class="text-sm text-ink-500">{% translate "Faixa contratada" %}</dt><dd class="mt-1 font-semibold">{{ billing.plan_band|default:"Não informada" }}</dd></div>
         <div><dt class="text-sm text-ink-500">{% translate "Cobrança manual" %}</dt><dd class="mt-1 font-semibold">{{ billing.get_status_display|default:"Registro pendente" }}</dd></div>
-        <div><dt class="text-sm text-ink-500">{% translate "Próxima cobrança" %}</dt><dd class="mt-1 tabular">{{ billing.next_invoice_on|data }}</dd></div>
+        <div><dt class="text-sm text-ink-500">{% translate "Próxima cobrança" %}</dt><dd class="mt-1 tabular">{% if billing %}{{ billing.next_invoice_on|data }}{% else %}—{% endif %}</dd></div>
         <div><dt class="text-sm text-ink-500">{% translate "Clientes ativos" %}</dt><dd class="mt-1 tabular">{{ allowance.active }} / {% if allowance.limit is None %}{% translate "sem limite" %}{% else %}{{ allowance.limit }}{% endif %}</dd></div>
       </dl>
       <p class="mt-5 text-sm text-ink-600">{% translate "Clientes em implantação também ocupam uma vaga. O limite não impede a leitura dos dados existentes. Para mudar a faixa ou acertar a cobrança, fale com a operação da plataforma." %}</p>
@@ -23,11 +23,11 @@
         <thead><tr><th scope="col">{% translate "Métrica" %}</th><th scope="col">{% translate "Quantidade" %}</th><th scope="col">{% translate "Custo estimado" %}</th></tr></thead>
         <tbody>{% for line in estimate.lines %}<tr>
           <th scope="row">{{ line.label }}</th>
-          <td data-label="{% translate 'Quantidade' %}" class="tabular">{% if line.quantity is None %}{% translate "Sem medição" %}{% else %}{{ line.quantity }}{% endif %}</td>
+          <td data-label="{% translate 'Quantidade' %}" class="tabular">{% if line.quantity is None %}{% translate "Sem medição" %}{% else %}{{ line.quantity }}{% endif %}{% if line.partial %}<p class="mt-1 text-sm text-ink-600">{% if line.covered_through %}{% translate "Medição parcial. Último dia medido:" %} {{ line.covered_through|data }}. {% translate "Dias medidos no mês:" %} {{ line.measured_days }}. {% translate "Envios após essa data e dias sem medição aguardam apuração." %}{% else %}{% translate "Apuração de e-mails pendente." %}{% endif %}</p>{% endif %}</td>
           <td data-label="{% translate 'Custo estimado' %}" class="tabular">{% if line.cost is None %}{% translate "Não calculado" %}{% else %}{{ line.cost|brl }}{% endif %}</td>
         </tr>{% endfor %}</tbody>
       </table></div>
-      <p class="mt-3 text-sm font-semibold">{% if estimate.complete %}{% translate "Total estimado:" %} {{ estimate.total|brl }}{% else %}{% translate "Estimativa incompleta: faltam preços unitários ou medições. Não significa custo zero." %}{% endif %}</p>
+      <p class="mt-3 text-sm font-semibold">{% if estimate.complete %}{% translate "Total estimado:" %} {{ estimate.total|brl }}{% else %}{% translate "Estimativa incompleta: faltam preços unitários ou medições, ou há medição parcial. Não significa custo zero." %}{% endif %}</p>
     </section>
     <section class="card p-6" aria-labelledby="exportacao">
       <h2 id="exportacao" class="mb-3 text-lg font-semibold">{% translate "Exportar dados da conta" %}</h2>

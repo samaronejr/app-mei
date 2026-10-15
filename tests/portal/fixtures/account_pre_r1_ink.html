@@ -1,0 +1,76 @@
+{% extends "portal/base.html" %}
+{% load i18n %}{% comment %}
+Three things a client can do to their own sign-in, and the address they are signed in
+as. Nothing on this page is read from a table.
+
+The email is the only value here, and it is the one attribute the shell already draws in
+its header. Repeated deliberately: the header line is chrome a reader stops seeing after
+the second screen, and "which account am I about to change the password of" is the
+question this page exists to answer before it offers the three controls below. It costs
+nothing to answer twice, because `request.user` is materialised by the middleware BEFORE
+the transaction opens and before the role switch -- so reading its address issues no
+query, under no role, against no table. That is exactly why the guard allows this path
+and only two others through the same object; anything further is a query, and it lands
+on the table the password hashes live in.
+
+Every destination is written with the DIRECT form of the url tag. Captured into a
+variable with `as`, the tag fails SILENTLY on a name this tree does not carry and emits
+`href=""` on a page that still answers 200 -- and this page is nothing BUT links, so
+that failure mode would hollow it out completely while every status assertion stayed
+green. The direct form raises during rendering instead. A companion case reads these
+names off this file's SOURCE and reverses each against the portal tree, because a name
+that fails to reverse never reaches a rendered document at all: scanning the render
+could only ever see the links that already worked.
+
+The two allauth destinations are named as allauth registers them, verified against the
+tree `apps/portal/urls.py` actually mounts rather than guessed from memory.
+`mfa_index` is the overview -- what is enrolled, and the controls to change it -- which
+is what a person arriving from the word "autenticação de dois fatores" is looking for.
+`mfa_activate_totp` is the enrolment FORM, one step inside it, and sending an already
+enrolled client there would offer to set up a thing she finished setting up months ago.
+
+Signing out is a POST and never an anchor. A GET that ends a session is a link, and a
+link is something a prefetching browser, a link scanner, a chat client generating a
+preview or an accidental swipe can follow on the client's behalf -- so the session ends
+without anybody having asked. The token is the form's first child.
+
+The chevron is decorative and says so. It marks these rows as leading somewhere; the
+pt-BR words beside it carry the whole meaning, so a reader who cannot see the glyph
+loses nothing.
+
+String literals inside a tag that sits within an HTML attribute are single-quoted
+throughout this project: the class-token scanner reads attributes with a regex before it
+strips template syntax, so a double quote inside one ends the attribute early and feeds
+the tag's own words to the stale-stylesheet guard as class names.
+{% endcomment %}
+
+{% block heading %}{% translate "Conta" %}{% endblock %}
+
+{% block content %}
+  <div class="space-y-4">
+    <dl class="card grid grid-cols-2 gap-y-3 px-5 py-4 text-sm">
+      <dt class="text-ink-500">{% translate "Conectado como" %}</dt>
+      <dd class="truncate text-ink-900">{{ request.user.email }}</dd>
+    </dl>
+
+    <ul class="space-y-3">
+      <li class="card">
+        <a class="flex items-center gap-3 px-5 py-4 text-sm font-medium text-ink-900" href="{% url 'account_change_password' %}">
+          <span class="grow">{% translate "Alterar senha" %}</span>
+          {% include "partials/pure/icons/chevron-right.html" %}
+        </a>
+      </li>
+      <li class="card">
+        <a class="flex items-center gap-3 px-5 py-4 text-sm font-medium text-ink-900" href="{% url 'mfa_index' %}">
+          <span class="grow">{% translate "Autenticação de dois fatores" %}</span>
+          {% include "partials/pure/icons/chevron-right.html" %}
+        </a>
+      </li>
+    </ul>
+
+    <form method="post" action="{% url 'account_logout' %}">
+      {% csrf_token %}
+      <button class="btn btn-danger btn-lg w-full" type="submit">{% translate "Sair" %}</button>
+    </form>
+  </div>
+{% endblock %}

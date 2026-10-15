@@ -21,6 +21,7 @@ from apps.briefing.presentation import briefing_view
 from apps.briefing.providers import PROVIDER_LABELS
 from apps.briefing.saved_views import delete_view, save_view
 from apps.clients.views import require_tenant
+from apps.core.refusal import sentences
 from apps.cycles.errors import VersionConflict
 
 
@@ -88,7 +89,9 @@ def save_view_action(request: AuthenticatedRequest) -> HttpResponse:
             if isinstance(invalid, VersionConflict)
             else HTTPStatus.UNPROCESSABLE_ENTITY
         )
-        return briefing_view(request, values=values, error=str(invalid), status=status)
+        return briefing_view(
+            request, values=values, error=sentences(invalid), status=status
+        )
     return redirect(f"{reverse('dashboard')}?{urlencode({'vista': str(saved.pk)})}")
 
 
@@ -118,7 +121,9 @@ def delete_view_action(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             if isinstance(invalid, VersionConflict)
             else HTTPStatus.UNPROCESSABLE_ENTITY
         )
-        return briefing_view(request, values=values, error=str(invalid), status=status)
+        return briefing_view(
+            request, values=values, error=sentences(invalid), status=status
+        )
     return redirect(return_url)
 
 
@@ -156,5 +161,7 @@ def dismiss_action(request: AuthenticatedRequest) -> HttpResponse:
             if isinstance(invalid, VersionConflict)
             else HTTPStatus.UNPROCESSABLE_ENTITY
         )
-        return briefing_view(request, values=values, error=str(invalid), status=status)
+        return briefing_view(
+            request, values=values, error=sentences(invalid), status=status
+        )
     return redirect(return_url)

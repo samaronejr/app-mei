@@ -95,6 +95,9 @@ def test_frozen_card_is_accessible_and_keyboard_approval_records_only_a_decision
     expect(page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.APPROVED
     )
+    expect(page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "manual"
+    )
     with tenant_context(setup.graph.tenant.pk):
         decision = Approval.objects.get(proposal=setup.proposal)
         assert decision.digest == setup.proposal.digest
@@ -123,6 +126,9 @@ def test_stale_real_browser_form_is_409_without_a_second_decision(
     expect(current.page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.APPROVED
     )
+    expect(
+        current.page.locator("[data-proposal-state] .status-badge")
+    ).to_have_attribute("data-state", "manual")
     with tenant_context(setup.graph.tenant.pk):
         event_count = CycleEvent.objects.count()
     stale.page.get_by_label("Motivo para não aprovar").fill("A stale submitted reason.")
@@ -134,6 +140,9 @@ def test_stale_real_browser_form_is_409_without_a_second_decision(
     expect(stale.page.get_by_role("alert")).to_be_visible()
     expect(stale.page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.APPROVED
+    )
+    expect(stale.page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "manual"
     )
     with tenant_context(setup.graph.tenant.pk):
         assert Approval.objects.filter(proposal=setup.proposal).count() == 1
@@ -157,6 +166,9 @@ def test_reject_then_revise_and_cancel_preserves_the_original_decision(
     expect(page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.REJECTED
     )
+    expect(page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "blocked"
+    )
     page.locator('a[href*="revisao_de="]').click()
     expect(page.locator("[data-proposal-form]")).to_be_visible()
     expect(page.locator('input[name="recipients"]:checked')).to_have_value(
@@ -171,6 +183,9 @@ def test_reject_then_revise_and_cancel_preserves_the_original_decision(
     page.locator('button[value="cancel"]').click()
     expect(page.locator("[data-proposal-state]")).to_have_attribute(
         "data-proposal-state", ProposalState.CANCELLED
+    )
+    expect(page.locator("[data-proposal-state] .status-badge")).to_have_attribute(
+        "data-state", "blocked"
     )
     with tenant_context(setup.graph.tenant.pk):
         original = Approval.objects.get(proposal=setup.proposal)

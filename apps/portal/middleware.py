@@ -42,13 +42,15 @@ Four things here are easy to get wrong and silent when wrong:
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from http import HTTPStatus
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from django.core.exceptions import PermissionDenied
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
 from django.http import Http404, HttpRequest, StreamingHttpResponse
 from django.http.response import HttpResponseBase
+from django.shortcuts import render
 from django.urls import Resolver404, resolve
 
 from apps.authz.matrix import CAPABILITY_SLUGS
@@ -76,6 +78,7 @@ if TYPE_CHECKING:
 PORTAL_ROLE = "app_portal"
 ADMIN_PREFIX = "/admin/"
 PORTAL_URLCONF = "apps.portal.urls"
+ACCESS_ENDED: Final = "O prazo de acesso deste cliente encerrou."
 
 # Account management runs WITHOUT the portal role, in the same shape as an anonymous
 # request: both GUCs empty, still app_runtime.
@@ -386,8 +389,14 @@ class PortalMiddleware:
                     and tenant_row_has(tenant, "firm_settings_r1")
                     and not portal_engagement_current(client_id)
                 ):
-                    msg = "O prazo de acesso deste cliente encerrou."
-                    raise PermissionDenied(msg)
+                    # A reason the client is owed, so it is rendered rather than
+                    # raised: the shared refusal page never shows exception text.
+                    return render(
+                        request,
+                        "403.html",
+                        {"reason": ACCESS_ENDED},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
                 request.client = (
                     self._attach_companies(request, membership, client_ids)
                     if membership

@@ -24,6 +24,7 @@ from redis.exceptions import RedisError
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
 from apps.delivery.models import MessageState, OutboundMessage
+from apps.delivery.notice_authority import configure
 from apps.delivery.outbox import enqueue
 from apps.delivery.policy import BusinessIntent
 from tests.cycles.cycle_fixtures import PERIOD, cycle_setup
@@ -177,6 +178,7 @@ def queued_outbox(settings: SettingsWrapper) -> OutboundMessage:
             name="Synthetic readiness contact",
             email="readiness@example.test",
         )
+        configure(graph.actor, kinds=("notice",), acknowledged=True, expected_version=0)
         return enqueue(
             graph.actor,
             graph.client.pk,

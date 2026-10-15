@@ -34,6 +34,7 @@ OBSERVATION_KIND_LABELS: dict[str, str] = {
     ObservationKind.PAYMENT: "Pagamento",
     ObservationKind.FILING: "Entrega",
     ObservationKind.GUIDE_ISSUED: "Emissão de guia",
+    ObservationKind.CALENDAR_SCHEDULED: "Vencimento no calendário",
 }
 OBSERVATION_SOURCE_LABELS: dict[str, str] = {
     ObservationSourceKind.OFFICIAL_API: "Consulta oficial",

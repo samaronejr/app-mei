@@ -14,13 +14,14 @@ from apps.clients.maintenance import load_client
 from apps.cycles.services.cycle import require_actor, require_enabled, tenant_id
 from apps.delivery.errors import IntentConflict, VersionConflict
 from apps.delivery.models import DeliveryEffect, MessageState, OutboundMessage
+from apps.delivery.notice_authority import validate_notice
 from apps.delivery.policy import still_valid
 from apps.delivery.retries import retry_key
 from apps.delivery.services import AUTOMATIONS_MANAGE, _control, record
 
 
 def _locked_dead_letter(
-    actor: User, message_id: UUID, expected_version: int
+    actor: User, message_id: UUID, expected_version: int, *, for_retry: bool = False
 ) -> tuple[User, OutboundMessage]:
     """Use the dispatch lock order: control, message, authority, client, sources."""
     require_enabled()
@@ -28,12 +29,26 @@ def _locked_dead_letter(
     message = OutboundMessage.objects.select_for_update().filter(pk=message_id).first()
     if message is None:
         raise Http404
-    authority = lock_authorities(
-        {actor.pk},
-        tenant_id=tenant_id(),
-        extra_capabilities=(AUTOMATIONS_MANAGE,),
-    )[actor.pk]
-    fresh_actor = authority.user
+    if for_retry and message.kind not in {
+        "approved_email",
+        "approved_publication_notice",
+    }:
+        valid, reason = validate_notice(message, extra_actor=actor)
+        if not valid:
+            msg = f"O envio mudou e não pode ser repetido ({reason}). Revise a origem."
+            raise ValidationError(
+                msg,
+                code=reason,
+            )
+        # PLATFORM_QUERY_OK: manager was included in the complete authority union.
+        fresh_actor = User.objects.get(pk=actor.pk)
+    else:
+        authority = lock_authorities(
+            {actor.pk},
+            tenant_id=tenant_id(),
+            extra_capabilities=(AUTOMATIONS_MANAGE,),
+        )[actor.pk]
+        fresh_actor = authority.user
     if not fresh_actor.is_active:
         raise PermissionDenied
     load_client(fresh_actor, tenant_id(), message.client_id, lock=True)
@@ -70,7 +85,9 @@ def retry_dead_letter(
     actor: User, message_id: UUID, *, expected_version: int
 ) -> OutboundMessage:
     """Queue one explicit successor; accepted/uncertain journal barriers still win."""
-    fresh_actor, message = _locked_dead_letter(actor, message_id, expected_version)
+    fresh_actor, message = _locked_dead_letter(
+        actor, message_id, expected_version, for_retry=True
+    )
     valid, reason = still_valid(message)
     if not valid:
         msg = f"O envio mudou e não pode ser repetido ({reason}). Revise a origem."
@@ -96,6 +113,8 @@ def retry_dead_letter(
         idempotency_key=key,
         business_intent_key=key,
         content_digest=message.content_digest,
+        notice_authorization_bytes=message.notice_authorization_bytes,
+        notice_authorization_digest=message.notice_authorization_digest,
         recipients_json=message.recipients_json,
         subject=message.subject,
         body_ref=message.body_ref,
