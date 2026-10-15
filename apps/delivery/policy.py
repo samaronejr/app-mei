@@ -1,0 +1,168 @@
+"""Typed intent keys, trusted templates and contact-only recipient resolution."""
+
+import hashlib
+import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID
+
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
+from django.template.loader import render_to_string
+
+from apps.clients.models import ClientContact
+from apps.core.flags import tenant_has
+from apps.cycles.effects.manifest import normalize_email
+from apps.cycles.models import CycleState
+from apps.delivery import intents
+from apps.delivery.models import OutboundMessage
+
+# The natural identity lives in `intents`; existing importers keep this path.
+BusinessIntent = intents.BusinessIntent
+
+
+@dataclass(frozen=True, slots=True)
+class MessageKind:
+    """Only application code registers templates and pre-send validity hooks.
+
+    `prepare` (T11) runs inside the gateway's authorization transaction, after
+    `still_valid` passed and under the message lock, and returns values that exist
+    only for this one send -- a freshly minted invitation link. They are rendered into
+    the outgoing body, registered with the redaction scope, and never stored: the
+    content digest is computed over the body rendered WITHOUT them.
+
+    `on_rejected` (T14) runs in the finalizing transaction, under the message lock,
+    when the provider's refusal is recorded as `recusada_pelo_provedor`.
+    """
+
+    subject: str
+    template: str
+    still_valid: Callable[[OutboundMessage], tuple[bool, str]]
+    prepare: Callable[[OutboundMessage], dict[str, str]] | None = None
+    on_rejected: Callable[[OutboundMessage], None] | None = None
+
+
+KINDS: dict[str, MessageKind] = {
+    "notice": MessageKind(
+        "Há uma atualização no seu portal",
+        "delivery/email/notice.txt",
+        lambda _message: (True, ""),
+    ),
+}
+
+
+def register_kind(kind: str, definition: MessageKind) -> None:
+    """T11 registers reminder/request checks; unknown kinds always fail closed."""
+    if kind in KINDS:
+        raise ValueError(kind)
+    KINDS[kind] = definition
+
+
+def enabled_kinds(tenant_id: UUID) -> frozenset[str]:
+    """Filter trusted kinds before claiming rows or reserving quota."""
+    cycles = tenant_has(tenant_id, "cycles_r1")
+    importing = tenant_has(tenant_id, "import_r1")
+    return frozenset(
+        kind
+        for kind in KINDS
+        if (importing if kind == "contact_portal_invite" else cycles)
+    )
+
+
+def resolve_recipient(client_id: UUID, contact_id: UUID | str) -> ClientContact:
+    """Accept an identifier, never an address, uploaded filename or display name."""
+    try:
+        identifier = UUID(str(contact_id))
+    except ValueError:
+        msg = "Selecione um contato ativo autorizado."
+        raise ValidationError(msg) from None
+    contact = ClientContact.objects.filter(
+        pk=identifier,
+        client_id=client_id,
+        active=True,
+        channel_email_allowed=True,
+    ).first()
+    if contact is None:
+        msg = "Selecione um contato ativo autorizado."
+        raise ValidationError(msg)
+    try:
+        validate_email(contact.email)
+    except ValidationError:
+        msg = "O contato precisa de um endereço de e-mail válido."
+        raise ValidationError(msg) from None
+    if "\n" in contact.email or "\r" in contact.email:
+        msg = "O endereço de e-mail contém caracteres inválidos."
+        raise ValidationError(msg)
+    return contact
+
+
+def render_body(message: OutboundMessage, secrets: dict[str, str] | None = None) -> str:
+    """Render a shipped template, never a user-controlled path.
+
+    Without `secrets` this is the digest-bound public body; with them, the body
+    actually sent. Templates must render a secret only when it is present.
+    """
+    if message.kind in {"approved_email", "approved_publication_notice"}:
+        # The protected proposal digest in body_ref binds the frozen MIME. There
+        # is no template to re-render or ORM read outside the dispatch transaction.
+        return ""
+    return render_to_string(
+        KINDS[message.kind].template,
+        {"portal_url": message.portal_url, **(secrets or {})},
+    )
+
+
+def content_digest(
+    message: OutboundMessage, *, rendered_body: str | None = None
+) -> str:
+    """Bind recipient identity, address, subject and the actual rendered bytes."""
+    content = [
+        str(message.contact_id),
+        message.recipients_json,
+        message.subject,
+        message.body_ref,
+        render_body(message) if rendered_body is None else rendered_body,
+    ]
+    return hashlib.sha256(
+        json.dumps(content, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def still_valid(
+    message: OutboundMessage, *, clock: Callable[[], datetime] | None = None
+) -> tuple[bool, str]:
+    """Re-read consent, cycle closure, template bytes and domain-specific state."""
+    definition = KINDS.get(message.kind)
+    if definition is None:
+        return False, "unregistered_kind"
+    approved = message.kind in {"approved_email", "approved_publication_notice"}
+    if not approved:
+        from apps.delivery.notice_authority import validate_notice  # noqa: PLC0415
+
+    if approved:
+        valid, reason = definition.still_valid(message)
+    elif clock is not None:
+        valid, reason = validate_notice(message, clock=clock)
+    else:
+        valid, reason = validate_notice(message)
+    if not valid:
+        return valid, reason
+    try:
+        contact = resolve_recipient(message.client_id, message.contact_id)
+    except ValidationError:
+        return False, "recipient_not_allowed"
+    address = normalize_email(contact.email) if approved else contact.email
+    if message.recipients_json != [address]:
+        return False, "recipient_changed"
+    if message.cycle is not None and message.cycle.state in {
+        CycleState.COMPLETED,
+        CycleState.CANCELLED,
+        CycleState.WITH_PENDING,
+    }:
+        reason = "cycle_closed"
+    elif message.content_digest != content_digest(message):
+        reason = "content_changed"
+    else:
+        return (True, "") if approved else definition.still_valid(message)
+    return False, reason

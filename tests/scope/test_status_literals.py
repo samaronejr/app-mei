@@ -34,6 +34,183 @@ class LiteralPin:
 
 APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
     LiteralPin(
+        "apps/cycles/bulk.py",
+        "pending",
+        'PENDING = "pending", "Pendente"',
+    ): "The bulk item state declaration, independent of onboarding status.",
+    LiteralPin(
+        "apps/cycles/bulk.py",
+        "done",
+        'DONE = "done", "Processado"',
+    ): "The bulk item state declaration, not an onboarding completion branch.",
+    LiteralPin(
+        "apps/cycles/bulk_views.py",
+        "active",
+        '"active": operation.state in ACTIVE_OPERATIONS,',
+    ): "A template polling/control flag, not a client status comparison.",
+    LiteralPin(
+        "apps/cycles/services/cycle.py",
+        "owner",
+        '"owner",',
+    ): "The ORM update_fields entry for the migrated task owner relation.",
+    LiteralPin(
+        "apps/tenants/billing_models.py",
+        "active",
+        'ACTIVE = "active", "Ativa (registro manual)"',
+    ): "T22 BillingStatus declaration; subscription state is not ClientStatus.",
+    LiteralPin(
+        "apps/tenants/billing_models.py",
+        "suspended",
+        'SUSPENDED = "suspended", "Suspensa"',
+    ): "T22 BillingStatus declaration; its own pt-BR labels ship on the enum.",
+    LiteralPin(
+        "apps/tenants/export_models.py",
+        "pending",
+        'PENDING = "pending", "Na fila"',
+    ): "T22 AccountExportState declaration, not an obligation or onboarding state.",
+    LiteralPin(
+        "apps/automation/types.py",
+        "pending",
+        'PENDING = "pending"',
+    ): (
+        "AXR1-024: RunState declares the private AI reservation lifecycle, not "
+        "an onboarding or reader-facing review status."
+    ),
+    LiteralPin(
+        "apps/automation/types.py",
+        "unknown",
+        'UNKNOWN = "unknown"',
+    ): (
+        "AXR1-024: DocType declares the provider document-category vocabulary, "
+        "not verification confidence or a client's fiscal regime."
+    ),
+    LiteralPin(
+        "apps/cycles/cycle_views.py",
+        "owner",
+        ').select_related("client", "engagement", "owner", "playbook", "tax_profile")',
+    ): "ORM relation name, not the tenant owner role or a status comparison.",
+    LiteralPin(
+        "apps/cycles/display_reads.py",
+        "owner",
+        'tasks=tuple(cycle.tasks.select_related("owner")),',
+    ): (
+        "AXR1-036: ORM task owner relation, loaded once for the cycle detail "
+        "display projection (moved here from cycle_views)."
+    ),
+    LiteralPin(
+        "apps/cycles/display_reads.py",
+        "owner",
+        '.select_related("owner", "cycle__client", "cycle__engagement")',
+    ): "AXR1-036: ORM exception owner relation for the cycle detail display.",
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "owner",
+        '"owner",',
+    ): (
+        "AXR1-035: ServiceCycle field name in the workspace aggregate's "
+        "serialized field list."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "active",
+        '"active",',
+    ): (
+        "AXR1-035: ClientContact boolean field name in the aggregate's "
+        "serialized field list."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "owner",
+        'cycle.owner = _person(payload["owner"])',
+    ): (
+        "AXR1-035: aggregate payload key restoring the cycle owner relation, "
+        "not a role."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "unknown",
+        'coverage=("unknown",),',
+    ): (
+        "AXR1-035: the same not-yet-evaluated coverage placeholder as "
+        "apps/cycles/workspace.py."
+    ),
+    LiteralPin(
+        "apps/cycles/exception_context.py",
+        "owner",
+        '.select_related("owner", "cycle__client", "cycle__engagement")',
+    ): "AXR1-014: ORM exception owner relation for the drawer, not a role literal.",
+    LiteralPin(
+        "apps/cycles/openers.py",
+        "owner",
+        '.select_related("client", "engagement__responsible", "owner")',
+    ): "AXR1-014: ORM cycle owner relation for the sweep's owner chain.",
+    LiteralPin(
+        "apps/cycles/records.py",
+        "blocked",
+        'BLOCKED = "blocked", "Bloqueada"',
+    ): "The TaskState declaration, independent of the onboarding status enum.",
+    LiteralPin(
+        "apps/cycles/records.py",
+        "waived",
+        'WAIVED = "waived", "Dispensada"',
+    ): "The TaskState declaration, independent of obligation settlement states.",
+    LiteralPin(
+        "apps/cycles/workspace.py",
+        "unknown",
+        'coverage=("unknown",),',
+    ): "The explicit missing-observation projection until the coverage domain lands.",
+    LiteralPin(
+        "apps/obligations/models/observations.py",
+        "scheduled",
+        'SCHEDULED = "scheduled", _("scheduled")',
+        count=2,
+    ): (
+        "AXR1-017: ObservationOutcome.SCHEDULED is the outcome vocabulary's own "
+        "member; the literal merely mirrors ObligationStatus's value, which is a "
+        "different domain."
+    ),
+    LiteralPin(
+        "apps/obligations/observations.py",
+        "scheduled",
+        'OUTCOME_SCHEDULED: Final = "scheduled"',
+    ): (
+        "AXR1-017: module-level alias for ObservationOutcome.SCHEDULED used in "
+        "assert_fact's outcome comparison; not an obligation status."
+    ),
+    LiteralPin(
+        "apps/obligations/coverage.py",
+        "unknown",
+        'UNKNOWN: Final = "unknown"',
+    ): (
+        "AXR1-017: CoverageState is the panel's coverage vocabulary, not the "
+        "onboarding status whose value it happens to share."
+    ),
+    LiteralPin(
+        "apps/obligations/coverage.py",
+        "not_applicable",
+        'NOT_APPLICABLE: Final = "not_applicable"',
+    ): (
+        "AXR1-017: CoverageState.NOT_APPLICABLE is the engagement-coverage "
+        "answer, not OnboardingStatus's member."
+    ),
+    LiteralPin(
+        "apps/obligations/presentation.py",
+        "unknown",
+        'PAYMENT_STATES: Final = frozenset({"verified", "manual", "stale", "unknown"})',
+    ): (
+        "AXR1-017: PAYMENT_STATES declares the portal adapter's vocabulary; "
+        "'unknown' names the portal's no-verified-claim state, not a model enum."
+    ),
+    LiteralPin(
+        "apps/obligations/presentation.py",
+        "unknown",
+        'return "unknown"',
+        count=2,
+    ): (
+        "AXR1-017: the adapter's 'unknown' return is the portal state name, "
+        "documented and rendered verbatim; it is not an enum value."
+    ),
+    LiteralPin(
         "apps/accounts/models.py",
         "active",
         'is_active = models.BooleanField(_("active"), default=True)',
@@ -90,6 +267,26 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         "OnboardingStatus or ClientStatus branch."
     ),
     LiteralPin(
+        "apps/clients/models/contact.py",
+        "active",
+        'active = models.BooleanField(_("active"), default=True)',
+    ): (
+        "The word is translatable field metadata for contact availability, not a "
+        "ClientStatus branch."
+    ),
+    LiteralPin(
+        "apps/clients/models/tax_profile.py",
+        "unknown",
+        'UNKNOWN = "unknown", _("unknown")',
+        count=2,
+    ): (
+        "TaxRegime is the effective-dated regime enum; its declaration line is not a "
+        "member of the watched status-render enums, so it is pinned here — twice on "
+        "one line, the value and its msgid, the same shape GovBrTrustLevel already "
+        "carries. The value is load-bearing: the backfill writes it for every "
+        "non-MEI client rather than inventing a regime."
+    ),
+    LiteralPin(
         "apps/core/checks.py",
         "client_owner",
         'portal_roles = ("client_owner", "client_collaborator")',
@@ -120,6 +317,24 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
     ): (
         "This is an operational health response when the heartbeat store is "
         "unreadable, not a client gov.br tier."
+    ),
+    LiteralPin(
+        "apps/obligations/models/observations.py",
+        "unknown",
+        'UNKNOWN = "unknown", _("unknown")',
+        count=2,
+    ): (
+        "ObservationVerificationStatus is a data-provenance enum — 'unknown' is the "
+        "honest default for unverified legacy writes — not a watched render status; "
+        "both the value and its translation msgid are declared on this pinned line."
+    ),
+    LiteralPin(
+        "apps/obligations/models/observations.py",
+        "not_applicable",
+        'NOT_APPLICABLE = "not_applicable", _("not applicable")',
+    ): (
+        "ObservationVerificationStatus marks observations that cannot carry a "
+        "verification outcome; the declaration is not a render-status branch."
     ),
     LiteralPin(
         "apps/fiscal/capabilities.py",
@@ -169,6 +384,14 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
     ): (
         "This sentinel keys a rate-limit bucket when no submitted identity exists and "
         "is unrelated to every presentation enum."
+    ),
+    LiteralPin(
+        "apps/cycles/forms.py",
+        "unknown",
+        '"unknown": "Desconhecido",',
+    ): (
+        "The pt-BR label for the same applies_to literal — a dictionary value, not a "
+        "status the render policy covers."
     ),
     LiteralPin(
         "apps/tenants/models.py",

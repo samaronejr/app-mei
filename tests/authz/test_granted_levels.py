@@ -21,8 +21,10 @@ from apps.tenants.models import CLIENT_ROLES, Membership, Tenant, TenantRole
 pytestmark = pytest.mark.django_db
 
 ALL_SLUGS = [row.slug for row in MATRIX]
-# One capability existence check, one membership read, one grant read.
-BULK_QUERY_BUDGET = 3
+# AXR1-019 combines capability, membership and role-grant reads in one statement.
+# The whole owner matrix still needs one user-grant lookup for non-FULL levels.
+# This is a downward count registration, not a shared authorization answer.
+BULK_QUERY_BUDGET = 2
 
 
 @pytest.fixture

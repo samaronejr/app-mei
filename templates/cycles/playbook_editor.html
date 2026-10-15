@@ -1,0 +1,150 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{{ playbook.name }} — v{{ version.number }}{% endblock %}
+{% block heading %}{{ playbook.name }} — v{{ version.number }}{% endblock %}
+{% block content %}
+  {% comment %}
+    The editor is a typed form list, not a canvas (S5.4 M3). Reordering is a
+    pair of submit buttons per step — one keystroke each, reachable by Tab and
+    announced by name — because a drag-only interaction excludes everyone who
+    does not use a pointer (WCAG 2.5.7). Each button posts through its own tiny
+    form referenced by `form=`: HTML forbids nested forms, so the move forms
+    live at the bottom and the buttons point at them.
+
+    `expected_version` rides every POST; the service refuses a write against a
+    row that moved since the page was rendered, and the refusal is the 409 the
+    banner renders.
+
+    Only a draft's step form carries `unsavedGuard` (AXR1-040): a version that is
+    not a draft cannot be saved, so it has nothing to lose. `unsaved` is set by the
+    view when it refused this form's own save or preview, and marks the re-render
+    `data-unsaved`; a refused move or publish posted none of these fields.
+  {% endcomment %}
+
+  {% if errors %}
+    {% for error in errors %}
+      {% include "partials/pure/notice.html" with message=error variant="error" only %}
+    {% endfor %}
+  {% endif %}
+
+  {% if not is_draft %}
+    {% translate "Esta versão não está em rascunho e não pode ser editada." as not_draft_message %}
+    {% include "partials/pure/notice.html" with message=not_draft_message variant="info" only %}
+  {% endif %}
+
+  {% if preview %}
+    {% comment %}
+      The numbers a publish would produce, shown before it runs — S8.1 makes the
+      preview a precondition of publishing, so it renders as data, not prose.
+    {% endcomment %}
+    <section class="ui-panel mb-6" aria-labelledby="preview-heading">
+      <h2 id="preview-heading" class="ui-panel-heading">{% translate "Pré-visualização da publicação" %}</h2>
+      <div class="px-4 py-4 text-sm">
+        <p>
+          {% blocktranslate with period=preview.period_start count=preview.matching_clients pinned=preview.pinned_open_cycles %}
+          Publicar geraria ciclos para {{ count }} cliente(s) no período de {{ period }}; {{ pinned }} ciclo(s) aberto(s) continuam fixados em versões anteriores.
+          {% endblocktranslate %}
+        </p>
+        {% comment %}
+          Publish lives INSIDE the preview panel (S8.1: preview precedes
+          publish). Its form carries the signed revision token the preview
+          rendered; a draft changed since refuses with 409 rather than
+          publishing under a count nobody confirmed.
+        {% endcomment %}
+        <form method="post" class="mt-3">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="publish">
+          <input type="hidden" name="expected_version" value="{{ version.version }}">
+          <input type="hidden" name="preview_token" value="{{ preview_token }}">
+          <button type="submit" class="ui-btn ui-btn-primary">{% translate "Publicar esta pré-visualização" %}</button>
+        </form>
+      </div>
+    </section>
+  {% endif %}
+
+  <form method="post" id="steps-form" novalidate{% if is_draft %} x-data="unsavedGuard"{% if unsaved %} data-unsaved{% endif %}{% endif %}>
+    {% csrf_token %}
+    {{ formset.management_form }}
+    <input type="hidden" name="expected_version" value="{{ version.version }}">
+
+    <section class="ui-panel mb-6" aria-labelledby="cabecalho">
+      <h2 id="cabecalho" class="ui-panel-heading">{% translate "Identidade e público" %}</h2>
+      <div class="grid gap-4 px-4 py-4">
+        {% for field in form %}
+          {% include "partials/pure/field.html" with field=field only %}
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="ui-panel" aria-labelledby="etapas">
+      <h2 id="etapas" class="ui-panel-heading">{% translate "Etapas" %}</h2>
+      <ol class="divide-y divide-ink-100">
+        {% for step_form in formset %}
+          <li class="px-4 py-4">
+            <fieldset{% if is_draft %}{% else %} disabled{% endif %}>
+              <legend class="text-sm font-medium text-ink-800">
+                {% blocktranslate with counter=forloop.counter %}Etapa {{ counter }}{% endblocktranslate %}
+              </legend>
+              <div class="mt-2 flex flex-wrap items-start gap-2">
+                {% if is_draft %}
+                  {% comment %}
+                    Real buttons, always the first controls of the card: up, then
+                    down, disabled at the ends of the list. They submit the move
+                    forms below through the `form` attribute.
+                  {% endcomment %}
+                  <button type="submit" form="move-{{ forloop.counter0 }}-up" class="ui-icon-btn"{% if forloop.first %} disabled{% endif %} aria-label="{% blocktranslate with counter=forloop.counter %}Mover etapa {{ counter }} para cima{% endblocktranslate %}">&#8593;</button>
+                  <button type="submit" form="move-{{ forloop.counter0 }}-down" class="ui-icon-btn"{% if forloop.last %} disabled{% endif %} aria-label="{% blocktranslate with counter=forloop.counter %}Mover etapa {{ counter }} para baixo{% endblocktranslate %}">&#8595;</button>
+                {% endif %}
+                <div class="grid min-w-0 flex-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {% for field in step_form %}
+                    {% include "partials/pure/field.html" with field=field only %}
+                  {% endfor %}
+                </div>
+              </div>
+            </fieldset>
+          </li>
+        {% endfor %}
+      </ol>
+    </section>
+
+    {% if is_draft %}
+      <div class="mt-6 flex flex-wrap items-center gap-3">
+        <button type="submit" name="action" value="save" class="ui-btn ui-btn-quiet">{% translate "Salvar rascunho" %}</button>
+        <button type="submit" name="action" value="preview" class="ui-btn ui-btn-quiet">{% translate "Pré-visualizar publicação" %}</button>
+        {% comment %}
+          Publishing without a preview is refused at the view; the disabled
+          control keeps that visible rather than hiding the outcome. The active
+          publish button is rendered by the preview panel itself.
+        {% endcomment %}
+        <button type="submit" name="action" value="publish" class="ui-btn ui-btn-primary" disabled>{% translate "Publicar versão" %}</button>
+      </div>
+    {% endif %}
+  </form>
+
+  {% if is_draft %}
+    {% comment %}
+      The move forms the step buttons submit: one per step per direction, each
+      a complete POST — action, step key, direction and the version counter —
+      so no JavaScript assembles anything and a keyboard press is a real submit.
+    {% endcomment %}
+    {% for step_form in formset %}
+      {% with current_key=step_form.key.value %}
+        {% if current_key %}
+          <form id="move-{{ forloop.counter0 }}-up" method="post" hidden>
+            {% csrf_token %}
+            <input type="hidden" name="action" value="move">
+            <input type="hidden" name="step" value="{{ current_key }}">
+            <input type="hidden" name="direction" value="up">
+            <input type="hidden" name="expected_version" value="{{ version.version }}">
+          </form>
+          <form id="move-{{ forloop.counter0 }}-down" method="post" hidden>
+            {% csrf_token %}
+            <input type="hidden" name="action" value="move">
+            <input type="hidden" name="step" value="{{ current_key }}">
+            <input type="hidden" name="direction" value="down">
+            <input type="hidden" name="expected_version" value="{{ version.version }}">
+          </form>
+        {% endif %}
+      {% endwith %}
+    {% endfor %}
+  {% endif %}
+{% endblock %}

@@ -1,0 +1,224 @@
+{% extends "base.html" %}{% load i18n ptbr firm_settings %}
+{% block title %}{% blocktranslate with name=client.legal_name %}Cadastro de {{ name }}{% endblocktranslate %}{% endblock %}
+{% block heading %}{{ client.legal_name }}{% endblock %}
+{% block actions %}
+  <div class="flex flex-wrap gap-2">
+    <a class="btn btn-quiet" href="{% url 'client-edit' client.pk %}">{% translate "Editar dados cadastrais" %}</a>
+    <a class="btn btn-quiet" href="{% url 'client-detail' client.pk %}">{% translate "Ver ficha do cliente" %}</a>
+  </div>
+{% endblock %}
+{% block content %}
+  {% comment %}
+    The client's setup (AXR1-007): what the firm does for this client, which tax
+    rules apply, who the firm talks to, and who in the firm is responsible. Each
+    section posts to its own endpoint and comes back here; a rejected form is
+    re-rendered on this page with 422 and its errors bound to the fields.
+
+    Every multi-row control that repeats per row carries the row's id in its own
+    id, so the page never holds two elements with one id.
+
+    The four section forms that edit the client carry `unsavedGuard` (AXR1-040)
+    under the product shell, the only shell that registers it. A section the server
+    refused comes back bound and marked `data-unsaved`: nothing on it was saved.
+    The invite and remove forms carry none; pressing their button is their input.
+  {% endcomment %}
+  <p class="mb-4 text-sm"><a class="link" href="{% url 'clients-list' %}">{% translate "Voltar para Clientes" %}</a></p>
+
+  <p class="mb-6 text-sm text-ink-700">{% translate "CNPJ" %}: <span class="tabular">{{ client.cnpj|cnpj_mask }}</span></p>
+  {% notice_policy_href request as policy_href %}{% if policy_href %}<p class="mb-6 text-sm"><a class="link" href="{{ policy_href }}">Política de avisos manuais</a></p>{% endif %}
+
+  <div class="grid gap-8">
+    <section id="servicos" aria-labelledby="servicos-titulo" class="card p-5">
+      <h2 id="servicos-titulo" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Serviços contratados" %}</h2>
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <caption class="visually-hidden">{% translate "Serviços deste cliente" %}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Serviço" %}</th>
+              <th scope="col">{% translate "Início" %}</th>
+              <th scope="col">{% translate "Fim" %}</th>
+              <th scope="col">{% translate "Responsável" %}</th>
+              <th scope="col">{% translate "Ações" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in engagements %}
+              <tr>
+                <td data-label="{% translate 'Serviço' %}">{{ item.service }}</td>
+                <td data-label="{% translate 'Início' %}">{{ item.row.starts_on|data }}</td>
+                <td data-label="{% translate 'Fim' %}">{% if item.row.ends_on %}{{ item.row.ends_on|data }}{% else %}{% translate "Sem data de fim" %}{% endif %}</td>
+                <td data-label="{% translate 'Responsável' %}">{{ item.responsible|default:"—" }}</td>
+                <td data-label="{% translate 'Ações' %}"><a class="link" href="{% url 'client-engagement-edit' client.pk item.row.pk %}">{% blocktranslate with name=item.service %}Editar {{ name }}{% endblocktranslate %}</a></td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="empty-state">{% translate "Nenhum serviço cadastrado para este cliente." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <form method="post" action="{% url 'client-engagement-create' client.pk %}" class="mt-4 grid gap-4 sm:grid-cols-2" novalidate{% if r1_shell %} x-data="unsavedGuard"{% if engagement_form.is_bound %} data-unsaved{% endif %}{% endif %}>
+        {% csrf_token %}
+        {% with form=engagement_form %}
+          <div class="sm:col-span-2">{% include "partials/pure/form_errors.html" %}</div>
+          {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        {% endwith %}
+        <div class="sm:col-span-2"><button type="submit" class="btn btn-primary">{% translate "Adicionar serviço" %}</button></div>
+      </form>
+    </section>
+
+    <section id="perfil" aria-labelledby="perfil-titulo" class="card p-5">
+      <h2 id="perfil-titulo" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Perfil tributário" %}</h2>
+      {% comment %}
+        Only the CURRENT beliefs are listed; corrections keep the superseded rows as
+        history. A new claim from a date closes the previous one on that date.
+      {% endcomment %}
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <caption class="visually-hidden">{% translate "Regimes registrados" %}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Regime" %}</th>
+              <th scope="col">{% translate "Categoria" %}</th>
+              <th scope="col">{% translate "Vale a partir de" %}</th>
+              <th scope="col">{% translate "Vale até" %}</th>
+              <th scope="col">{% translate "Origem" %}</th>
+              <th scope="col">{% translate "Observação" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in profiles %}
+              <tr>
+                <td data-label="{% translate 'Regime' %}">{{ item.regime }}</td>
+                <td data-label="{% translate 'Categoria' %}">{{ item.category|default:"—" }}</td>
+                <td data-label="{% translate 'Vale a partir de' %}">{{ item.row.valid_from|data }}</td>
+                <td data-label="{% translate 'Vale até' %}">{% if item.row.valid_to %}{{ item.row.valid_to|data }}{% else %}{% translate "Em vigor" %}{% endif %}</td>
+                <td data-label="{% translate 'Origem' %}">{{ item.origin }}</td>
+                <td data-label="{% translate 'Observação' %}">{{ item.row.note|default:"—" }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="6" class="empty-state">{% translate "Sem informação: nenhum regime registrado para este cliente." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <form method="post" action="{% url 'client-tax-profile' client.pk %}" class="mt-4 grid gap-4 sm:grid-cols-2" novalidate{% if r1_shell %} x-data="unsavedGuard"{% if tax_form.is_bound %} data-unsaved{% endif %}{% endif %}>
+        {% csrf_token %}
+        {% with form=tax_form %}
+          <div class="sm:col-span-2">{% include "partials/pure/form_errors.html" %}</div>
+          {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        {% endwith %}
+        <div class="sm:col-span-2"><button type="submit" class="btn btn-primary">{% translate "Registrar regime" %}</button></div>
+      </form>
+    </section>
+
+    <section id="contatos" aria-labelledby="contatos-titulo" class="card p-5">
+      <h2 id="contatos-titulo" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Contatos e acessos" %}</h2>
+      {% with form=invite_form %}{% include "partials/pure/form_errors.html" %}{% endwith %}
+      {% if invite_failed %}<div class="mb-3">{% include "partials/pure/notice.html" with message=invite_failed variant="error" only %}</div>{% endif %}
+      {% if invite_sent %}<div class="mb-3">{% include "partials/pure/notice.html" with message=invite_sent variant="info" only %}</div>{% endif %}
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <caption class="visually-hidden">{% translate "Contatos deste cliente" %}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Nome" %}</th>
+              <th scope="col">{% translate "E-mail" %}</th>
+              <th scope="col">{% translate "Situação" %}</th>
+              <th scope="col">{% translate "Portal" %}</th>
+              <th scope="col">{% translate "Ações" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in contacts %}
+              <tr>
+                <td data-label="{% translate 'Nome' %}">{{ item.row.name }}{% if item.row.role_label %} <span class="text-xs text-ink-500">({{ item.row.role_label }})</span>{% endif %}</td>
+                <td data-label="{% translate 'E-mail' %}">{{ item.row.email|default:"—" }}{% if item.row.email and not item.row.channel_email_allowed %} <span class="text-xs text-ink-500">{% translate "não quer receber e-mails" %}</span>{% endif %}</td>
+                <td data-label="{% translate 'Situação' %}">{% if item.row.active %}<span class="badge badge-ok">{% translate "ativo" %}</span>{% else %}<span class="badge badge-neutral">{% translate "inativo" %}</span>{% endif %}</td>
+                <td data-label="{% translate 'Portal' %}">
+                  {% if item.row.membership_id %}
+                    {% translate "Com acesso" %}
+                  {% elif item.pending_invite_id %}
+                    <span>{% translate "Convite pendente" %}{% if item.pending_delivery %}<span class="block text-xs text-ink-600">{% blocktranslate with state=item.pending_delivery %}Mensagem do convite: {{ state }}{% endblocktranslate %}</span>{% endif %}</span>
+                    {% if may_assign %}<a class="link" href="{% url 'invite-revoke' item.pending_invite_id %}">{% blocktranslate with name=item.row.name %}Cancelar convite pendente de {{ name }}{% endblocktranslate %}</a>{% endif %}
+                  {% elif item.invitable and may_assign %}
+                    <form method="post" action="{% url 'client-contact-invite' client.pk item.row.pk %}" class="flex flex-wrap items-end gap-2">
+                      {% csrf_token %}
+                      <input type="hidden" name="convite-version" value="{{ item.row.version }}">
+                      <div class="ui-field">
+                        <label class="ui-field-label" for="convite-{{ item.row.pk }}-role">{% blocktranslate with name=item.row.name %}Papel de {{ name }} no portal{% endblocktranslate %}</label>
+                        <select name="convite-role" id="convite-{{ item.row.pk }}-role" class="ui-field-input">
+                          {% for option in portal_roles %}<option value="{{ option.value }}">{{ option.label }}</option>{% endfor %}
+                        </select>
+                      </div>
+                      <button type="submit" class="btn btn-quiet">{% blocktranslate with name=item.row.name %}Convidar {{ name }} para o portal{% endblocktranslate %}</button>
+                    </form>
+                  {% else %}
+                    {% translate "Sem acesso ao portal" %}
+                  {% endif %}
+                </td>
+                <td data-label="{% translate 'Ações' %}"><a class="link" href="{% url 'client-contact-edit' client.pk item.row.pk %}">{% blocktranslate with name=item.row.name %}Editar {{ name }}{% endblocktranslate %}</a></td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="empty-state">{% translate "Nenhum contato cadastrado para este cliente." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <h3 class="mt-6 mb-3 text-sm font-semibold text-ink-700">{% translate "Adicionar contato" %}</h3>
+      <form method="post" action="{% url 'client-contact-create' client.pk %}" class="grid gap-4 sm:grid-cols-2" novalidate{% if r1_shell %} x-data="unsavedGuard"{% if contact_form.is_bound %} data-unsaved{% endif %}{% endif %}>
+        {% csrf_token %}
+        {% with form=contact_form %}
+          <div class="sm:col-span-2">{% include "partials/pure/form_errors.html" %}</div>
+          {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        {% endwith %}
+        <div class="sm:col-span-2"><button type="submit" class="btn btn-primary">{% translate "Adicionar contato" %}</button></div>
+      </form>
+    </section>
+
+    <section id="responsaveis" aria-labelledby="responsaveis-titulo" class="card p-5">
+      <h2 id="responsaveis-titulo" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Responsáveis no escritório" %}</h2>
+      <div class="table-wrap">
+        <table class="data-table row-stack">
+          <caption class="visually-hidden">{% translate "Pessoas da equipe atribuídas a este cliente" %}</caption>
+          <thead>
+            <tr>
+              <th scope="col">{% translate "Pessoa" %}</th>
+              <th scope="col">{% translate "Papel" %}</th>
+              <th scope="col">{% translate "Ações" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in assignments %}
+              <tr>
+                <td data-label="{% translate 'Pessoa' %}">{{ item.name|default:"—" }}</td>
+                <td data-label="{% translate 'Papel' %}">{{ item.role }}</td>
+                <td data-label="{% translate 'Ações' %}">
+                  {% if may_assign %}
+                    <form method="post" action="{% url 'client-assignment-remove' client.pk item.row.pk %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="state" value="{{ assignment_state }}">
+                      <button type="submit" class="btn btn-quiet">{% blocktranslate with name=item.name %}Remover {{ name }}{% endblocktranslate %}</button>
+                    </form>
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="3" class="empty-state">{% translate "Ninguém da equipe foi atribuído a este cliente." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if may_assign %}
+        <form method="post" action="{% url 'client-assignment-add' client.pk %}" class="mt-4 grid gap-4 sm:grid-cols-2" novalidate{% if r1_shell %} x-data="unsavedGuard"{% if assignment_form.is_bound %} data-unsaved{% endif %}{% endif %}>
+          {% csrf_token %}
+          {% with form=assignment_form %}
+            <div class="sm:col-span-2">{% include "partials/pure/form_errors.html" %}</div>
+            {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+          {% endwith %}
+          <div class="sm:col-span-2"><button type="submit" class="btn btn-primary">{% translate "Atribuir" %}</button></div>
+        </form>
+      {% endif %}
+    </section>
+  </div>
+{% endblock %}

@@ -51,6 +51,13 @@ NFSE_ALLOWED_FILES = frozenset(
         "apps/fiscal/migrations/0001_initial.py",
         "apps/fiscal/migrations/0002_seed_capitals.py",
         "apps/fiscal/models.py",
+        # AXR1-013 (superseded restriction): the R1 plan (T13, S5.4 M5) commissions
+        # READING a national NFS-e XML the client uploaded. No request workflow,
+        # audit action or capability: the forbidden files below stay at zero.
+        "apps/cycles/extraction/__init__.py",
+        "apps/cycles/extraction/nfse_xml.py",
+        # AXR1-024: synthetic XML generator only; no issuance or invoice workflow.
+        "apps/automation/dataset.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -81,12 +88,62 @@ CONNECTOR_ALLOWED_FILES = frozenset(
 # future *field* named `esocial_*` cannot slip in under the same allowance.
 ESOCIAL_ALLOWED_LOCATION = "apps/clients/models/company.py:151"
 
-# Row 7. The only URL name matching `report|kpi|export` is T-033's client CSV export,
-# which the plan commissioned. Anything else is Reports v1 arriving early.
-EXPORT_URL_NAMES = frozenset({"clients-export-csv"})
+# Row 10, AXR1-013 (superseded restriction): the R1 plan (T13, S5.4 M5) commissions a
+# read-only NF-e XML extractor for client uploads. Issuing, transmitting or managing
+# NF-e stays out of scope: only these two files may name it.
+NFE_READ_ONLY_FILES = frozenset(
+    {
+        "apps/cycles/extraction/__init__.py",
+        "apps/cycles/extraction/nfe_xml.py",
+        # AXR1-024: synthetic XML generator only.
+        "apps/automation/dataset.py",
+    },
+)
+
+# Row 3. AXR1-022 explicitly commissions firm owner invitations and opted-in summaries,
+# housed inside tenants. No notifications app, push channel or mail-template subsystem.
+FIRM_NOTIFICATION_MODULES = frozenset(
+    {
+        "apps/tenants/notification_models.py",
+        "apps/tenants/notification_tasks.py",
+        "apps/tenants/notifications.py",
+    }
+)
+
+# Row 7. T-033 commissioned the client CSV export. AXR1-018 explicitly commissions
+# per-cycle evidence bundles (.omo/plans/axorim-pivot-r1.md:1839), including their
+# status and download routes. AXR1-020/S7.3 commissions the private per-item bulk
+# result CSV. AXR1-022 adds owner-only account portability, not portfolio KPI
+# reports. Portfolio Reports v1 and an audit UI remain excluded.
+EXPORT_URL_NAMES = frozenset(
+    {
+        "clients-export-csv",
+        "evidence-export-detail",
+        "evidence-export-download",
+        "bulk-report-csv",
+        "account-export-request",
+        "account-export-detail",
+        "account-export-download",
+    }
+)
 
 # Row 4. The fiscal app is a municipal registry, full stop.
 FISCAL_MODEL_NAMES = frozenset({"Municipality", "MunicipalityCapability"})
+
+# Row 10, AXR1-023: the plan's own todo-23 block commissions the owner-facing
+# support-grant pages under `/configuracoes/suporte/` ("The owner approves in
+# /configuracoes/suporte/"). Those four routes are an owner approval surface,
+# not the excluded support *console* — a console is the staff-facing tenant
+# switcher, which still must not exist. The exemption names the exact routes
+# and nothing else: any other route whose name carries either spelling fails.
+SUPPORT_GRANT_OWNER_ROUTES = frozenset(
+    {
+        "firm-suporte",
+        "firm-suporte-approve",
+        "firm-suporte-revoke",
+        "firm-suporte-trilha",
+    }
+)
 
 
 def _sources(roots: Sequence[str], suffixes: Iterable[str] = (".py",)) -> list[Path]:
@@ -147,10 +204,11 @@ def test_row_3_no_notifications() -> None:
         if re.search(r"mail", path.name, re.IGNORECASE)
     ]
 
-    # Then all three are empty. The two mails this scope does send are built inline at
-    # `apps/accounts/views.py:109` and `apps/lgpd/views.py:57` — a `send_mail` call with
-    # a literal body is a feature; a template directory is the start of Phase 2.
-    assert modules == [], _report("notifications module", modules)
+    # T22 supersedes only the exact three firm-notice modules above. The installed
+    # app and mail-template prohibitions remain unchanged; another module still fails.
+    assert set(modules) == FIRM_NOTIFICATION_MODULES, _report(
+        "notifications module outside T22", modules
+    )
     assert installed == [], _report("notifications app installed", installed)
     assert mail_templates == [], _report("project email template", mail_templates)
 
@@ -255,9 +313,9 @@ def test_row_7_no_reports_v1_and_no_audit_ui() -> None:
         name for name in names if re.search(r"report|kpi|export", name, re.IGNORECASE)
     }
 
-    # Then the only reporting-shaped route is T-033's commissioned client CSV export.
+    # Then only the explicitly commissioned CSV exports are reachable.
     assert reporting == set(EXPORT_URL_NAMES), _report(
-        "reporting route beyond the commissioned client export",
+        "reporting route beyond the commissioned CSV exports",
         sorted(reporting - set(EXPORT_URL_NAMES)),
     )
 
@@ -322,11 +380,13 @@ def test_row_10_no_esocial_nfe_whatsapp_or_support_console() -> None:
     # fail on legitimate code.
     whatsapp = _grep(sources, r"whatsapp")
     esocial = _grep(sources, r"esocial")
-    nfe = _grep(sources, r"\bnf-?e\b|\bnfc-?e\b")
+    nfe = _outside(_grep(sources, r"\bnf-?e\b|\bnfc-?e\b"), NFE_READ_ONLY_FILES)
     console = sorted(
         name
         for name in get_resolver().reverse_dict
-        if isinstance(name, str) and "support" in name.lower()
+        if isinstance(name, str)
+        and re.search(r"support|suporte", name, re.IGNORECASE)
+        and name not in SUPPORT_GRANT_OWNER_ROUTES
     )
 
     # Then WhatsApp, NF-e/NFC-e and support-console routes are absent outright, and the

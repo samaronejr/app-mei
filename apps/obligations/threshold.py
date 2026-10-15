@@ -32,7 +32,8 @@ from enum import StrEnum
 
 from django.db import models
 
-from apps.clients.models import ClientCompany
+from apps.clients.models import ClientCompany, TaxProfile
+from apps.clients.services import claim_at
 from apps.obligations.models import MonthlyRevenue
 from apps.obligations.parameters import ParameterCache
 
@@ -82,9 +83,9 @@ def _months_active_in(client: ClientCompany, year: int) -> int:
 
 
 def _ceiling_for(
-    client: ClientCompany,
     year: int,
     months: int,
+    category: str | None,
     parameters: ParameterCache,
 ) -> Decimal:
     # Resolved as of 1 January: the limit that governs a calendar year is the one in
@@ -92,8 +93,8 @@ def _ceiling_for(
     # mid-year. An enacted increase carries valid_from = 1 January and is picked up.
     on_date = date(year, 1, 1)
     if months == MONTHS_IN_YEAR:
-        return parameters.value(CEILING_KEY, on_date, client.mei_category)
-    monthly = parameters.value(PROPORTIONAL_KEY, on_date, client.mei_category)
+        return parameters.value(CEILING_KEY, on_date, category)
+    monthly = parameters.value(PROPORTIONAL_KEY, on_date, category)
     return monthly * months
 
 
@@ -129,28 +130,72 @@ def _effective_date_for(
     return date(year, 1, 1)
 
 
+class _NotProvided:
+    """Sentinel type for "the caller did not say" — distinct from an empty list.
+
+    `profile_rows=[]` means "the timeline has never claimed anything for this
+    client", a real answer the caller already knows. A bare `[]` as a default could
+    never say that apart from "go look it up", and looking it up per client is the
+    N+1 the queue budgets exist to forbid.
+    """
+
+
+_NOT_PROVIDED = _NotProvided()
+
+
+def _mei_category_for(
+    client: ClientCompany,
+    year: int,
+    profile_rows: list[TaxProfile] | _NotProvided,
+) -> str | None:
+    """Resolve the MEI category this year's ceiling is measured against.
+
+    The claim lives on the effective-dated profile, resolved as of 1 January for the
+    same reason the ceiling is: the category that governs a calendar year is the one
+    in force when that year began, so a mid-year correction does not restate a
+    finished comparison.
+
+    The distinction between "no timeline" and "a silent one" is deliberate. Rows
+    exist but none covers the year: the firm's own timeline is the answer, and a
+    claim that ended or a non-MEI regime carries no category — `None`, which the
+    parameter resolver reads as the common ceiling, the conservative direction.
+    NO rows at all means the backfill never reached this client, and then the
+    legacy column answers — the assertion it was itself backfilled from.
+    """
+    if isinstance(profile_rows, _NotProvided):
+        profile_rows = list(TaxProfile.objects.filter(client_id=client.pk))
+    if not profile_rows:
+        return client.mei_category
+    claim = claim_at(profile_rows, date(year, 1, 1))
+    return claim.mei_category if claim is not None else None
+
+
 def threshold_status(
     client: ClientCompany,
     year: int,
     *,
     accumulated: Decimal | None = None,
     parameters: ParameterCache | None = None,
+    profile_rows: list[TaxProfile] | _NotProvided = _NOT_PROVIDED,
 ) -> ThresholdStatus:
     """Evaluate this client's revenue for `year` against the ceiling that applies to it.
 
     Must be called inside the client's own tenant context: the revenue rows are
     tenant-scoped and would otherwise sum to zero under the fail-closed policy.
 
-    Both keyword arguments exist so a portfolio-wide sweep can reach the same
+    The keyword arguments exist so a portfolio-wide sweep can reach the same
     arithmetic without one query per client — `accumulated` lets the caller supply a
-    total it already aggregated in a single grouped query, and `parameters` lets it
-    share one resolver across every client. Neither changes the result; omitting both
-    performs the reads here, which is what every single-client caller does.
+    total it already aggregated in a single grouped query, `parameters` shares one
+    resolver across every client, and `profile_rows` carries the tax-profile rows
+    the caller already fetched for this client. None of them changes the result;
+    omitting all performs the reads here, which is what every single-client caller
+    does.
     """
     resolver = parameters if parameters is not None else ParameterCache()
     months = _months_active_in(client, year)
     is_opening_year = months != MONTHS_IN_YEAR
-    ceiling = _ceiling_for(client, year, months, resolver)
+    category = _mei_category_for(client, year, profile_rows)
+    ceiling = _ceiling_for(year, months, category, resolver)
 
     if accumulated is None:
         accumulated = MonthlyRevenue.objects.filter(
@@ -161,7 +206,7 @@ def threshold_status(
         )["total"]
 
     consumed = accumulated / ceiling
-    tolerance = resolver.value(TOLERANCE_KEY, date(year, 1, 1), client.mei_category)
+    tolerance = resolver.value(TOLERANCE_KEY, date(year, 1, 1), category)
     band = _band_for(consumed, tolerance)
 
     return ThresholdStatus(
