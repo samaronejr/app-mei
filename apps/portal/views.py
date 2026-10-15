@@ -15,22 +15,35 @@ raises `permission denied`, which is why the template renders `request.client`
 rather than `request.tenant`.
 """
 
-import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from http import HTTPStatus
 from typing import Any, Final
+from uuid import UUID
 
 import sentry_sdk
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.paginator import EmptyPage, Page, Paginator
-from django.db.models import Count, Q, QuerySet
-from django.http import HttpRequest, HttpResponse, HttpResponseBadRequest
+from django.db.models import (
+    BooleanField,
+    Case,
+    Count,
+    Exists,
+    OuterRef,
+    Q,
+    QuerySet,
+    When,
+)
+from django.http import (
+    Http404,
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBadRequest,
+)
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -39,7 +52,26 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.models import User
 from apps.authz.services import require_can
 from apps.clients.models import ClientCompany
-from apps.obligations.models import Document, Obligation
+from apps.core.flags import tenant_has
+from apps.core.tenancy import current_tenant_id
+from apps.cycles.evidence import PORTAL_SERVABLE_STATES
+from apps.cycles.intake import (
+    UploadMissing,
+    UploadRejected,
+    UploadTooLarge,
+    vault_upload,
+)
+from apps.cycles.models import ServiceCycle
+from apps.cycles.serving import document_response
+from apps.cycles.workspace import portal_projection
+from apps.obligations.models import (
+    Document,
+    Obligation,
+    ObservationKind,
+    ObservationSubjectKind,
+    SourceObservation,
+)
+from apps.obligations.presentation import current_observation, payment_state
 from apps.obligations.queries import SETTLED
 from apps.portal.middleware import PortalHttpRequest
 
@@ -69,6 +101,10 @@ OVERSIZED: Final = "oversized"
 # worked, which is not what she was asking; she sent the file so that somebody would act
 # on it, and this is the sentence that answers the question she actually had.
 UPLOAD_CONFIRMATION = _("Documento enviado. Sua contadora já pode vê-lo.")
+VAULT_REJECTED: Final = (
+    "Este arquivo não foi aceito. Envie um PDF, XML, PNG ou JPEG que não seja o "
+    "arquivo recusado."
+)
 
 
 class PortalVaultRequest(PortalHttpRequest):
@@ -119,6 +155,12 @@ class Payment:
 
     `status` is the raw column. The pt-BR word beside it and the sentence explaining
     what it costs are presentation, and the template owns both.
+
+    `payment_source` is the `source_kind` of the newest payment observation on the
+    row, or `None` when the tenant's `cycles_r1` flag is off or nothing has been
+    observed. The raw value is passed down — never a translated label — because the
+    same rule that keeps `obligation_type` labels in the template keeps source
+    words there: the view hands over scalars and the page owns the pt-BR.
     """
 
     type_code: str
@@ -127,6 +169,10 @@ class Payment:
     due_date: date
     rolled: bool
     status: str
+    payment_source: str | None = None
+    payment_verification: str | None = None
+    payment_outcome: str | None = None
+    payment_state: str | None = None
 
 
 def _situation(today: date) -> tuple[int, int]:
@@ -151,8 +197,8 @@ def _situation(today: date) -> tuple[int, int]:
     return int(totals["total"]), int(totals["overdue"])
 
 
-def _next_action(today: date) -> NextAction | None:
-    """Return the earliest unsettled obligation still ahead, or `None` if there is none.
+def _next_action(today: date, *, include_overdue: bool = False) -> NextAction | None:
+    """Return the earliest unsettled calendar entry; legacy only considers future dates.
 
     `.values()` rather than a model instance, and `obligation_type_id` rather than the
     relation: the code IS the primary key of `ObligationType`, so the local column
@@ -160,10 +206,11 @@ def _next_action(today: date) -> NextAction | None:
     breaks ties, so two obligations sharing a due date resolve to the same one on every
     request instead of alternating between renders.
     """
+    obligations = Obligation.objects.exclude(status__in=SETTLED)
+    if not include_overdue:
+        obligations = obligations.filter(resolved_due_date__gte=today)
     row = (
-        Obligation.objects.exclude(status__in=SETTLED)
-        .filter(resolved_due_date__gte=today)
-        .order_by("resolved_due_date", "pk")
+        obligations.order_by("resolved_due_date", "pk")
         .values(
             "obligation_type_id",
             "competence_month",
@@ -190,7 +237,7 @@ def _next_action(today: date) -> NextAction | None:
 
 
 @login_required
-def portal_home(request: HttpRequest) -> HttpResponse:
+def portal_home(request: PortalVaultRequest) -> HttpResponse:
     """Render the client's own company, where they stand, and what to do next."""
     client = getattr(request, "client", None)
     # No client filter is applied on purpose, here or in either helper below. The
@@ -200,6 +247,89 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     # pass anyway, hiding the very failure it exists to catch.
     today = timezone.localdate()
     obligation_count, overdue_count = _situation(today)
+    tenant_id = current_tenant_id.get()
+    cycles_r1 = bool(tenant_id and tenant_has(tenant_id, "cycles_r1"))
+    cycles = []
+    requests = []
+    help_rows = []
+    publications = []
+    next_request = None
+    next_publication = None
+    if cycles_r1:
+        # T11: the client's open requests, confined by RLS like every figure here.
+        from apps.portal.request_views import (  # noqa: PLC0415
+            client_help,
+            open_requests,
+        )
+
+        requests = open_requests(today)
+        next_request = next((row for row in requests if row.actionable), None)
+        for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]:
+            has_actionable_requests = any(
+                row.cycle_id == cycle.pk and row.actionable for row in requests
+            )
+            has_submitted_requests = any(
+                row.cycle_id == cycle.pk and row.status == "recebido"
+                for row in requests
+            )
+            cycles.append(
+                {
+                    "id": cycle.pk,
+                    "has_actionable_requests": has_actionable_requests,
+                    "has_submitted_requests": has_submitted_requests,
+                    **portal_projection(
+                        cycle,
+                        has_actionable_requests=has_actionable_requests,
+                        has_submitted_requests=has_submitted_requests,
+                    ),
+                }
+            )
+        help_rows = client_help()
+        from apps.cycles.models import (  # noqa: PLC0415
+            ClientAcknowledgement,
+            ClientPublication,
+            PublicationState,
+        )
+
+        publications = list(
+            ClientPublication.objects.annotate(
+                revised=Exists(
+                    ClientPublication.objects.filter(supersedes_id=OuterRef("pk"))
+                ),
+                acknowledged=Exists(
+                    ClientAcknowledgement.objects.filter(
+                        publication_id=OuterRef("pk"),
+                        publication_digest=OuterRef("publication_digest"),
+                        user_id=request.user.id,
+                    )
+                ),
+            )
+            .annotate(
+                awaiting_confirmation=Case(
+                    When(
+                        state=PublicationState.PUBLISHED,
+                        revised=False,
+                        acknowledged=False,
+                        then=True,
+                    ),
+                    default=False,
+                    output_field=BooleanField(),
+                ),
+            )
+            # Keep outstanding confirmations ahead of history before applying the cap.
+            .order_by("-awaiting_confirmation", "-published_at", "pk")
+            .values(
+                "id",
+                "title",
+                "state",
+                "published_at",
+                "revised",
+                "awaiting_confirmation",
+            )[:12]
+        )
+        next_publication = next(
+            (row for row in publications if row["awaiting_confirmation"]), None
+        )
     return render(
         request,
         "portal/home.html",
@@ -207,7 +337,14 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "client": client,
             "obligation_count": obligation_count,
             "overdue_count": overdue_count,
-            "next_action": _next_action(today),
+            "next_action": _next_action(today, include_overdue=cycles_r1),
+            "next_request": next_request,
+            "next_publication": next_publication,
+            "cycles": cycles,
+            "cycles_r1": cycles_r1,
+            "requests": requests,
+            "help_rows": help_rows,
+            "publications": publications,
         },
     )
 
@@ -255,6 +392,57 @@ def _payment(row: Mapping[str, Any]) -> Payment:
     )
 
 
+def _latest_payment_source(
+    obligations: list[Mapping[str, Any]],
+) -> dict[UUID, tuple[str, str, str, str]]:
+    """Return each obligation's current payment claim, classified for the card.
+
+    One query for the whole page rather than one per card — the per-row pattern
+    is the N+1 the page's query budget exists to forbid. "Current" means the
+    claim chain's heads: superseded rows are excluded (the table is
+    append-only, so a rejected receipt's positive claim never resurfaces), and
+    among the surviving heads the newest USABLE one wins — a rejected or
+    retracted head is knowledge about a claim, not a claim. Periods match the
+    row's competence or are unscoped (the T9 backfill wrote period-free rows),
+    and the final word on what the row LOOKS like is `payment_state`'s,
+    computed here so the template can never diverge from the coverage panel.
+    """
+    subject_ids = [row["id"] for row in obligations]
+    if not subject_ids:
+        return {}
+    rows = list(
+        SourceObservation.objects.filter(
+            subject_kind=ObservationSubjectKind.OBLIGATION,
+            kind=ObservationKind.PAYMENT,
+            subject_ref_id__in=subject_ids,
+        ).order_by("observed_at", "pk")
+    )
+    answers: dict[UUID, tuple[str, str, str, str]] = {}
+    moment = timezone.now()
+    for obligation in obligations:
+        head = current_observation(
+            rows,
+            subject_id=obligation["id"],
+            period=obligation["competence_month"],
+            kind=ObservationKind.PAYMENT,
+        )
+        if head is None:
+            continue
+        answers[obligation["id"]] = (
+            head.source_kind,
+            head.verification_status,
+            head.outcome,
+            payment_state(
+                head.source_kind,
+                head.verification_status,
+                head.outcome,
+                observed_at=head.observed_at,
+                now=moment,
+            ),
+        )
+    return answers
+
+
 @require_http_methods(["GET"])
 @login_required
 def portal_payments(request: HttpRequest) -> HttpResponse:
@@ -284,8 +472,16 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
     `pk` breaks ties after the competence month, so a client with two obligations in one
     month reads them in the same order on every request rather than alternating between
     renders and between pages.
+
+    Payment labels come from `obligations_sourceobservation` — one more table on the
+    portal's SELECT allow-list — but ONLY for tenants carrying `cycles_r1`. The flag
+    is answered from the portal stash rather than queried: `tenants_tenant` is
+    denied to `app_portal` inside this transaction, and `tenant_has` resolves it
+    without a query for exactly that reason. Unflagged tenants get today's
+    rendering, byte for byte, because the read below is skipped entirely.
     """
     rows = Obligation.objects.order_by("-competence_month", "pk").values(
+        "id",
         "obligation_type_id",
         "competence_month",
         "nominal_due_date",
@@ -293,12 +489,29 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
         "status",
     )
     page = _payments_page(rows, request)
+    tenant = getattr(request, "tenant", None)
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
+    sources = _latest_payment_source(list(page.object_list)) if cycles_r1 else {}
+    payments = []
+    for row in page.object_list:
+        payment = _payment(row)
+        source = sources.get(row["id"])
+        if source is not None:
+            payment = replace(
+                payment,
+                payment_source=source[0],
+                payment_verification=source[1],
+                payment_outcome=source[2],
+                payment_state=source[3],
+            )
+        payments.append(payment)
     return render(
         request,
         "portal/payments.html",
         {
             "page": page,
-            "payments": [_payment(row) for row in page.object_list],
+            "payments": payments,
+            "cycles_r1": cycles_r1,
         },
     )
 
@@ -345,6 +558,26 @@ def _documents_page(
         return paginator.page(1)
 
 
+def _served() -> Q:
+    """Match the documents the portal may serve; everything else fails closed.
+
+    Quarantine rule (T12, T13): a client upload -- through a request or through this
+    vault -- reaches no portal user, its uploader and the other accounts of the same
+    client included, until the scanner has said clean (`verificado`, and the clean
+    states after it). A document of another company (`divergente`) is suspended and
+    not re-served either; quarantined, refused and unscanned files never are.
+
+    Fail closed (T13, plan C-09): a client upload WITHOUT any intake -- the vault
+    before T13, or any writer that forgets one -- is not served at all. Only a firm
+    upload (`client_upload=False`, which the portal role cannot INSERT) keeps the
+    vault's old semantics without an intake. RLS still confines every row to the
+    client; this only narrows further.
+    """
+    return Q(intakes__state__in=PORTAL_SERVABLE_STATES) | Q(
+        client_upload=False, intakes__isnull=True
+    )
+
+
 @require_http_methods(["GET"])
 @login_required
 @require_can(VAULT_CAPABILITY)
@@ -382,8 +615,13 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     needs one figure this model does not store, and computing it here keeps the template
     rendering values instead of deriving them.
     """
-    rows = Document.objects.order_by("-created_at", "pk")
+    rows = Document.objects.filter(_served()).order_by("-created_at", "pk")
     page = _documents_page(rows, request)
+    # T45: the R1 ink for this page and the layout around it, answered from the portal
+    # stash without a query exactly as on `portal_payments`. Unflagged tenants keep
+    # their bytes.
+    tenant = request.tenant
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
     return render(
         request,
         "portal/documents.html",
@@ -394,6 +632,7 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
                 for document in page.object_list
             ],
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+            "cycles_r1": cycles_r1,
         },
     )
 
@@ -403,9 +642,9 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
 def portal_account(request: HttpRequest) -> HttpResponse:
     """Render the three things a client can do to their own sign-in, and nothing else.
 
-    **Zero data reads, and no context, which is the finished shape rather than a page
-    still waiting to be filled in.** Every destination this screen offers is a static
-    address the URL tree already carries, and the one value it shows —
+    **Zero data reads, and one flag of context, which is the finished shape rather than
+    a page still waiting to be filled in.** Every destination this screen offers is a
+    static address the URL tree already carries, and the one value it shows —
     `request.user.email` — is materialised by the middleware BEFORE the transaction
     opens and before the role switch, so the template reads it without issuing
     anything. `tests/portal/test_portal_templates_render.py:102-106` allows exactly
@@ -429,8 +668,14 @@ def portal_account(request: HttpRequest) -> HttpResponse:
     The links are named, not built. `account_logout` is reached by a POST form in the
     template rather than an anchor, because a signing-out GET is a link any prefetch,
     scanner or preloading browser can follow on the client's behalf.
+
+    The one context value is `cycles_r1` (T45), answered from the portal stash without
+    a query exactly as on `portal_payments`. It gives the layout and this page the R1
+    ink; unflagged tenants keep their bytes.
     """
-    return render(request, "portal/account.html")
+    tenant = getattr(request, "tenant", None)
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
+    return render(request, "portal/account.html", {"cycles_r1": cycles_r1})
 
 
 def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
@@ -448,24 +693,23 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
     The page carries the upload form again rather than a link back to it. A refusal that
     dead-ends is a client who gives up, and a file input cannot be pre-filled anyway, so
     the retry costs exactly one form and saves a navigation.
+
+    T63: `cycles_r1` rides along exactly as on `portal_documents`, answered from the
+    portal stash without a query, so the layout and the retry form keep the vault's R1
+    ink on the 400 as on the 200. Unflagged tenants keep their bytes.
     """
+    tenant = request.tenant
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
     return render(
         request,
         "portal/upload_error.html",
         {
             "reason": reason,
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+            "cycles_r1": cycles_r1,
         },
         status=HTTPStatus.BAD_REQUEST,
     )
-
-
-def _delete_saved_document(saved_name: str) -> None:
-    """Delete only the object name returned by this request's storage write."""
-    try:
-        default_storage.delete(saved_name)  # PILOT-205-COMPENSATING-DELETE
-    except Exception as error:  # noqa: BLE001
-        _capture_storage_error(error)
 
 
 def _capture_storage_error(error: Exception) -> None:
@@ -504,31 +748,26 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
     if upload.size is None or upload.size > settings.PORTAL_UPLOAD_MAX_BYTES:
         return _upload_refused(request, OVERSIZED)
 
-    payload = upload.read()
-    obligation_id = request.POST.get("obligation") or None
-    document = Document(
-        tenant=request.tenant,
-        client=request.client,
-        obligation_id=obligation_id,
-        sha256=hashlib.sha256(payload).hexdigest(),
-        original_filename=upload.name or "documento",
-        content_type=upload.content_type or "application/octet-stream",
-        byte_size=len(payload),
-        uploaded_by=request.user,
-    )
-    saved_name = default_storage.save(document.storage_key, ContentFile(payload))
-    if saved_name != document.storage_key:
-        _delete_saved_document(saved_name)
-        msg = "storage changed the requested document key"
-        raise RuntimeError(msg)
-
+    # T13: the same sniff -> quarantine -> intake path as a request upload. The file
+    # is served to nobody in the portal until the scanner says clean (`_served`).
+    if request.tenant is None:
+        raise Http404
     try:
-        document.save(force_insert=True)
-    except Exception:
-        _delete_saved_document(saved_name)
-        raise
-    # Back to the vault rather than to the landing page, so the client lands on the list
-    # their upload just joined and can see it there. The confirmation is queued rather
+        vault_upload(
+            request.user,
+            upload,
+            tenant=request.tenant,
+            client=request.client,
+            obligation_id=request.POST.get("obligation") or None,
+        )
+    except UploadTooLarge:
+        return _upload_refused(request, OVERSIZED)
+    except UploadMissing:
+        return _upload_refused(request, MISSING_FILE)
+    except UploadRejected:
+        return _upload_refused(request, VAULT_REJECTED)
+    # Back to the vault rather than to the landing page; the file joins the list once
+    # the scanner has said clean. The confirmation is queued rather
     # than rendered here: this response is a redirect, and a message written into the
     # session survives it because the session is written back in a response phase that
     # runs OUTSIDE the portal transaction, after the role and both GUCs are gone.
@@ -540,7 +779,7 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
 @login_required
 @require_can(VAULT_CAPABILITY)
 def document_download(
-    request: PortalVaultRequest,  # noqa: ARG001
+    request: PortalVaultRequest,  # noqa: ARG001 - the decorators read it
     storage_key: str,
 ) -> HttpResponse:
     """Return one document's bytes, authorised against the row before storage is asked.
@@ -556,7 +795,9 @@ def document_download(
     because its iterator would be consumed after the transaction closes and the role and
     both GUCs are gone, yielding nothing.
     """
-    document = get_object_or_404(Document, storage_key=storage_key)
+    document = get_object_or_404(
+        Document.objects.filter(_served()), storage_key=storage_key
+    )
 
     try:
         # Size from metadata BEFORE the body. Under object storage this is a HEAD rather
@@ -579,8 +820,8 @@ def document_download(
             status=HTTPStatus.SERVICE_UNAVAILABLE,
         )
 
-    response = HttpResponse(payload, content_type=document.content_type)
-    response["Content-Disposition"] = (
-        f'attachment; filename="{document.original_filename}"'
+    return document_response(
+        payload,
+        content_type=document.content_type,
+        filename=document.original_filename,
     )
-    return response

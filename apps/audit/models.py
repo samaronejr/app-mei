@@ -72,6 +72,9 @@ class AuditAction(models.TextChoices):
     INVOICE_ATTEMPTED = "invoice_attempted", _("invoice attempted")
     DAS_CONFIRMED = "das_confirmed", _("DAS confirmed")
     DECLARATION_SUBMITTED = "declaration_submitted", _("declaration submitted")
+    PLAYBOOK_UPDATED = "playbook_updated", _("playbook updated")
+    PLAYBOOK_PUBLISHED = "playbook_published", _("playbook published")
+    PLAYBOOK_RETIRED = "playbook_retired", _("playbook retired")
     EXPORT = "export", _("export")
     IMPERSONATION = "impersonation", _("impersonation")
     TENANT_SELECTED = "tenant_selected", _("tenant selected")
@@ -86,6 +89,30 @@ class AuditAction(models.TextChoices):
     # A correction is one event even when it splits a row into three: the trail
     # asks "who restated the timeline" before it asks how many rows moved.
     TAX_PROFILE_CORRECTED = "tax_profile_corrected", _("tax profile corrected")
+    # In-product portfolio maintenance (AXR1-007). References only in metadata.
+    CLIENT_CREATED = "client_created", _("client created")
+    CLIENT_UPDATED = "client_updated", _("client updated")
+    ENGAGEMENT_CHANGED = "engagement_changed", _("engagement changed")
+    CONTACT_CHANGED = "contact_changed", _("contact changed")
+    IMPORT_PLANNED = "import_planned", _("client import planned")
+    IMPORT_QUEUED = "import_queued", _("client import queued")
+    IMPORT_COMMIT_FAILED = "import_commit_failed", _("client import commit failed")
+    IMPORT_COMMITTED = "import_committed", _("client import committed")
+    IMPORT_ROLLED_BACK = "import_rolled_back", _("client import rolled back")
+    BRIEFING_VIEW_SAVED = "briefing_view_saved", _("briefing view saved")
+    BRIEFING_VIEW_DELETED = "briefing_view_deleted", _("briefing view deleted")
+    BRIEFING_DISMISSED = "briefing_dismissed", _("briefing item dismissed")
+    # The support-grant lifecycle (AXR1-023): request, owner decision, and the
+    # two ways a grant ends. Written as both streams — a PlatformEvent for the
+    # platform-side actor and a tenant Event the owner's audit page shows — so
+    # neither side can read its own log and see silence.
+    SUPPORT_GRANT_REQUESTED = "support.grant_requested", _("support grant requested")
+    SUPPORT_GRANT_APPROVED = "support.grant_approved", _("support grant approved")
+    SUPPORT_GRANT_REVOKED = "support.grant_revoked", _("support grant revoked")
+    SUPPORT_SESSION_STARTED = "support.session_started", _("support session started")
+    # The per-request trail (AXR1-023 review B2): every request answered under a
+    # live grant, GETs included — a once-per-session signal is not an audit.
+    SUPPORT_REQUEST = "support.request", _("support request")
 
 
 class Event(TenantScopedModel):

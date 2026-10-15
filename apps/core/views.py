@@ -6,6 +6,7 @@ from django.http import HttpRequest, JsonResponse
 from redis.exceptions import RedisError
 
 from apps.core.release import current_release
+from apps.delivery.readiness import outbox_reason
 from apps.obligations.heartbeat import DiskHeadroom, read_heartbeats
 
 OK = 200
@@ -68,11 +69,15 @@ def healthz(_request: HttpRequest) -> JsonResponse:
 
 @transaction.non_atomic_requests
 def readyz(_request: HttpRequest) -> JsonResponse:
-    """Report whether the database and Redis can serve application traffic."""
+    """Report dependency availability and unresolved outbox backlog."""
     database_status = "ok"
+    reason = ""
     try:
         with connections["default"].cursor() as cursor:
-            cursor.execute("SELECT 1")
+            # The fixed aggregate exposes no rows and needs no tenant transaction.
+            cursor.execute("SELECT * FROM public.delivery_outbox_health()")
+            oldest_queued_at, dead_letters = cursor.fetchone()
+            reason = outbox_reason(oldest_queued_at, dead_letters)
     except DatabaseError:
         database_status = "error"
 
@@ -88,13 +93,16 @@ def readyz(_request: HttpRequest) -> JsonResponse:
             redis_status = "error"
     except (InvalidCacheBackendError, RedisError):
         redis_status = "error"
-    ready = database_status == redis_status == "ok"
+    ready = database_status == redis_status == "ok" and not reason
+    payload = {
+        "status": "ready" if ready else "unready",
+        "database": database_status,
+        "redis": redis_status,
+    }
+    if reason:
+        payload["reason"] = reason
     return JsonResponse(
-        {
-            "status": "ready" if ready else "unready",
-            "database": database_status,
-            "redis": redis_status,
-        },
+        payload,
         status=OK if ready else SERVICE_UNAVAILABLE,
     )
 

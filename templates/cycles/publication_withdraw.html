@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Retirar publicação{% endblock %}
+{% block heading %}Retirar publicação{% endblock %}
+{% block content %}
+<div class="mx-auto max-w-3xl space-y-5">
+  <a class="ui-link" href="{% url 'delivery-queue' %}">Voltar à comunicação</a>
+  <section class="ui-panel min-w-0 space-y-3 p-5">
+    <h2 class="font-semibold break-words">{{ publication.title }}</h2>
+    <p>A retirada exige uma nova proposta e outra aprovação. Até a execução dessa proposta, a publicação continua disponível.</p>
+    <p class="text-sm text-ink-600">O histórico e os recebimentos já registrados serão preservados. Um novo aviso será colocado na fila; retirar não recolhe mensagens já iniciadas.</p>
+    <form method="post" class="space-y-4" novalidate>{% csrf_token %}
+      {% include "partials/pure/form_errors.html" with form=form only %}
+      {% for field in form %}
+        {% include "partials/pure/field.html" with field=field only %}
+      {% endfor %}
+      <button type="submit" class="ui-btn ui-btn-primary">Propor retirada para aprovação</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

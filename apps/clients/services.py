@@ -11,7 +11,9 @@ current rows it overlaps, restates their uncovered slices, and writes one event 
 never an UPDATE that rewrites what the firm believed.
 """
 
+from collections.abc import Iterable
 from datetime import date
+from uuid import UUID
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
@@ -32,6 +34,12 @@ from apps.clients.models import (
     OnboardingItemTemplate,
     ProfileConfidence,
     TaxProfile,
+    TaxRegime,
+)
+from apps.tenants.entitlements import (
+    ACTIVE_CLIENT_STATES,
+    lock_entitlement,
+    require_client_capacity,
 )
 
 OBJECT_TYPE = "clients.ClientAssignment"
@@ -53,6 +61,7 @@ class TaxProfileConflictError(Exception):
 FAR_FUTURE = date.max
 
 
+@transaction.atomic
 def assign_client(
     *,
     actor: User,
@@ -61,6 +70,7 @@ def assign_client(
     role: str = AssignmentRole.PRIMARY,
 ) -> ClientAssignment:
     """Put an account on a client, recording who did it."""
+    client = ClientCompany.objects.select_for_update(no_key=True).get(pk=client.pk)
     assignment = ClientAssignment(
         tenant_id=client.tenant_id,
         client=client,
@@ -72,6 +82,7 @@ def assign_client(
     return assignment
 
 
+@transaction.atomic
 def unassign_client(*, actor: User, assignment: ClientAssignment) -> None:
     """Take an account off a client, recording who did it.
 
@@ -79,6 +90,10 @@ def unassign_client(*, actor: User, assignment: ClientAssignment) -> None:
     readable, and both land in the same request transaction — a rollback discards
     the pair together rather than leaving a record of a removal that did not happen.
     """
+    ClientCompany.objects.select_for_update(no_key=True).get(pk=assignment.client_id)
+    assignment = ClientAssignment.objects.select_for_update(no_key=True).get(
+        pk=assignment.pk
+    )
     _record(actor=actor, assignment=assignment, change="unassigned")
     assignment.delete()
 
@@ -131,6 +146,33 @@ def _open_or_ends_after(on: date) -> Q:
     return Q(valid_to__isnull=True) | Q(valid_to__gt=on)
 
 
+def claim_at(
+    rows: Iterable[TaxProfile],
+    on: date,
+) -> TaxProfile | None:
+    """Pick the current claim covering `on` from rows already in memory.
+
+    The in-memory half of `profile_at`: the exclusion constraint guarantees at most
+    one *current* row covers any day, so "latest start among the covering rows" is
+    a selection rule, never arbitration. Superseded rows are skipped rather than
+    trusted to be absent, because callers fetch with a broad filter and history is
+    precisely what `superseded_at` leaves behind.
+
+    The half-open rule mirrors `_open_or_ends_after`: `valid_to` NULL means
+    open-ended, and the boundary day belongs to the successor, never to both.
+    """
+    covering = [
+        row
+        for row in rows
+        if row.superseded_at is None
+        and row.valid_from <= on
+        and (row.valid_to is None or row.valid_to > on)
+    ]
+    if not covering:
+        return None
+    return max(covering, key=lambda row: row.valid_from)
+
+
 def profile_at(client: ClientCompany, on: date) -> TaxProfile | None:
     """Answer what the system currently believes the client's regime was `on`.
 
@@ -138,16 +180,142 @@ def profile_at(client: ClientCompany, on: date) -> TaxProfile | None:
     timeline is the honest answer the exclusion constraint exists to make
     representable: the day before a client's earliest claim is *unknown*, and
     surfacing it is what keeps a correction from quietly inventing history.
+
+    Resolved through `claim_at` so the half-open rule is written once and the
+    per-client path can never drift from the batched one below.
     """
-    return (
-        TaxProfile.objects.filter(
-            client_id=client.id,
-            superseded_at__isnull=True,
-            valid_from__lte=on,
-        )
-        .filter(_open_or_ends_after(on))
-        .order_by("-valid_from")
+    return claim_at(
+        TaxProfile.objects.filter(client_id=client.id),
+        on,
+    )
+
+
+def current_profiles(clients: Iterable[ClientCompany]) -> dict[UUID, list[TaxProfile]]:
+    """Fetch every tax profile of the given clients in one query, keyed by client.
+
+    The batched half of the timeline: a portfolio sweep or queue that called
+    `profile_at` per client would read this table once per client, which is the N+1
+    the queue budgets exist to forbid. Rows are grouped and sorted newest-first so
+    `claim_at` answers the same way `profile_at` does. A client with no rows maps
+    to no key — the caller reads `.get(client.id, [])`, and the empty list is the
+    honest "nobody has ever claimed a regime for this company".
+    """
+    ids = [client.pk for client in clients]
+    if not ids:
+        return {}
+    grouped: dict[UUID, list[TaxProfile]] = {}
+    for row in (
+        TaxProfile.objects.filter(client_id__in=ids)
+        .order_by("client_id", "-valid_from")
+        .iterator()
+    ):
+        grouped.setdefault(row.client_id, []).append(row)
+    return grouped
+
+
+def lock_tax_profile_client(
+    *, actor: User, client: ClientCompany, expected_revision: int
+) -> ClientCompany:
+    """Authorize a snapshot under the row lock; callers hold the transaction open."""
+    locked = (
+        visible_clients(actor, tenant_id=client.tenant_id)
+        .select_for_update()
+        .filter(pk=client.pk)
         .first()
+    )
+    if locked is None:
+        raise Http404
+    if not can(actor, "clients.edit_tax_profile", locked):
+        msg = f"{actor} lacks clients.edit_tax_profile on client {client.pk}"
+        raise PermissionDenied(msg)
+    if locked.tax_profile_revision != expected_revision:
+        msg = (
+            f"client {client.pk} tax timeline is at revision "
+            f"{locked.tax_profile_revision}, not {expected_revision}"
+        )
+        raise TaxProfileConflictError(msg)
+    return locked
+
+
+@transaction.atomic
+def save_client_registry(*, actor: User, client: ClientCompany, created: bool) -> None:
+    """Save legacy fields and their claim only after checking the locked revision."""
+    tenant = lock_entitlement(client.tenant_id)
+    if created:
+        if not can(actor, "clients.edit_tax_profile", client):
+            raise PermissionDenied
+        previous_status = None
+    else:
+        locked = lock_tax_profile_client(
+            actor=actor, client=client, expected_revision=client.tax_profile_revision
+        )
+        previous_status = locked.status
+    if (
+        client.status in ACTIVE_CLIENT_STATES
+        and previous_status not in ACTIVE_CLIENT_STATES
+    ):
+        require_client_capacity(tenant)
+    client.save()
+    sync_profile_flag(actor=actor, client=client, created=created)
+    client.refresh_from_db(fields=["tax_profile_revision"])
+
+
+@transaction.atomic
+def sync_profile_flag(
+    *,
+    actor: User,
+    client: ClientCompany,
+    created: bool,
+    today: date | None = None,
+) -> TaxProfile | None:
+    """Write the profile row the legacy `is_mei`/`mei_category` fields now claim.
+
+    The dual-write half of the flag's retirement: callers keep writing `is_mei` and
+    `mei_category` exactly as before, and this service carries the same claim into
+    the effective-dated timeline. On creation the claim opens at the earlier of the
+    client's opening date and today — matching what `backfill_v1` asserted for the
+    rows it migrated — and on edit it opens today, because a flag change asserts
+    the regime the client is under NOW; history before it stays with the claims
+    that were already believed.
+
+    The edit path goes through `correct_tax_profile`, so superseding, audit and the
+    capability check are the same machinery a deliberate correction uses. A save
+    whose derived claim equals today's adds no row: dual-write is an invariant over
+    content, not a write-per-save ritual.
+    """
+    lock_tax_profile_client(
+        actor=actor, client=client, expected_revision=client.tax_profile_revision
+    )
+    today = today or timezone.localdate()
+    regime = TaxRegime.MEI if client.is_mei else TaxRegime.UNKNOWN
+    category = client.mei_category if client.is_mei else None
+
+    if not created:
+        current = profile_at(client, today)
+        if (
+            current is not None
+            and current.regime == regime
+            and current.mei_category == category
+        ):
+            return None
+        valid_from = today
+    else:
+        valid_from = min(client.opened_on or today, today)
+
+    return correct_tax_profile(
+        client=client,
+        regime=regime,
+        valid_from=valid_from,
+        actor=actor,
+        recorded_by=actor,
+        provenance="dual_write",
+        confidence=ProfileConfidence.STAFF_RECORDED,
+        note=(
+            "Asserted by the client registry's dual-write of the legacy "
+            "is_mei/mei_category fields."
+        ),
+        mei_category=category,
+        expected_revision=client.tax_profile_revision,
     )
 
 
@@ -198,42 +366,9 @@ def correct_tax_profile(  # noqa: PLR0913
         raise ValueError(msg)
 
     with transaction.atomic():
-        # Resolve through the actor's portfolio AND lock in one statement: the row
-        # is selected by the same visibility rule the views use
-        # (visible_clients: firm-wide roles see the firm, staff see assignments,
-        # nobody sees outside the tenant), and select_for_update holds it until
-        # commit. An invisible pk answers Http404 rather than a denial — 404
-        # refuses to confirm the row exists at all.
-        locked_client = (
-            visible_clients(actor, tenant_id=client.tenant_id)
-            .select_for_update()
-            .filter(pk=client.pk)
-            .first()
+        locked_client = lock_tax_profile_client(
+            actor=actor, client=client, expected_revision=expected_revision
         )
-        if locked_client is None:
-            raise Http404
-        # The capability re-check sits INSIDE the lock: the row it protects and the
-        # permission it requires are settled in the same instant, so a revoked
-        # assignment cannot outrun the check.
-        if not can(actor, "clients.edit_tax_profile", locked_client):
-            msg = (
-                f"{actor} lacks clients.edit_tax_profile on client {client.pk}: "
-                "a tax-timeline correction needs the capability, not only a view."
-            )
-            raise PermissionDenied(msg)
-        # The version check — the third thing a domain service owes its caller
-        # besides the lock and the capability. Read under the row lock it is
-        # checked under, so a concurrent correction cannot slip between the
-        # compare and the bump. A stale snapshot is refused before a single
-        # profile row is touched, and nothing — not even an event — is written.
-        if locked_client.tax_profile_revision != expected_revision:
-            msg = (
-                f"client {client.pk} tax timeline is at revision "
-                f"{locked_client.tax_profile_revision}, not {expected_revision}: "
-                "the snapshot this correction was built from is stale — re-read "
-                "the timeline and correct again."
-            )
-            raise TaxProfileConflictError(msg)
 
         now = timezone.now()
         # Half-open overlap: a row's range [valid_from, valid_to) meets the
@@ -342,8 +477,13 @@ def correct_tax_profile(  # noqa: PLR0913
 __all__ = [
     "TaxProfileConflictError",
     "assign_client",
+    "claim_at",
     "correct_tax_profile",
     "create_default_checklist",
+    "current_profiles",
+    "lock_tax_profile_client",
     "profile_at",
+    "save_client_registry",
+    "sync_profile_flag",
     "unassign_client",
 ]

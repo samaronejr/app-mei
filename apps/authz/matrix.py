@@ -229,6 +229,11 @@ MATRIX: Final[tuple[CapabilityRow, ...]] = (
         "Acknowledge publications",
         (NONE, NONE, NONE, NONE, FULL, FULL),
     ),
+    CapabilityRow(
+        "tenants.account",
+        "Export and cancel firm account, view estimated costs",
+        (NONE, FULL, NONE, NONE, NONE, NONE),
+    ),
 )
 
 CAPABILITY_SLUGS: Final[frozenset[str]] = frozenset(row.slug for row in MATRIX)

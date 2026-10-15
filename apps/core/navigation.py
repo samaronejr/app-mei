@@ -22,6 +22,7 @@ from django.utils.translation import pgettext_lazy
 from apps.authz.models import GrantLevel
 from apps.authz.services import Actor, granted_levels
 from apps.core.flags import tenant_has
+from apps.cycles.capabilities import CYCLES_REVIEW, PLAYBOOK_GATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,13 +76,17 @@ PRODUCT_SHELL_FLAG: Final = "cycles_r1"
 # and Gestão at the team screen until playbooks and automations join it. The
 # MEI-era queues are reached from the dashboard's own counts, as they are today.
 #
-# Not listed yet, deliberately: Ciclos (added by AXR1-009, cycles), Comunicação
-# (AXR1-010, outbox) and Documentos (AXR1-013, document review). A flagged tenant is
-# never shown a control that leads nowhere, so each joins in the todo that ships its
-# route, in the S5.3 position above.
+# Documentos joined with its working review queue (AXR1-013), gated on the
+# capability its route requires (S8.1 cycles.review).
 NAV_R1: Final[tuple[NavItem, ...]] = (
     NavItem(_("Hoje"), "dashboard", "clients.view_assigned"),
     NavItem(_("Clientes"), "clients-list", "clients.view_assigned"),
+    NavItem(_("Ciclos"), "cycle-list", "clients.view_assigned"),
+    NavItem(_("Documentos"), "document-queue", CYCLES_REVIEW),
+    NavItem(_("Comunicação"), "delivery-queue", "clients.view_assigned"),
+    # Playbooks join the shell here, before Gestão: the first working
+    # destination under the gestão umbrella, gated on playbooks.manage.
+    NavItem(_("Playbooks"), "playbook-list", PLAYBOOK_GATE),
     NavItem(_("Gestão"), "team", "users.create"),
 )
 
@@ -115,6 +120,15 @@ class ProductShell:
     product_name: str
     tenant_name: str
     items: tuple[ResolvedNavItem, ...]
+    # The header search field and the Ctrl/Cmd+K palette (AXR1-021) are drawn
+    # only for an account the search endpoint will answer.
+    searchable: bool = False
+
+
+# The search endpoint requires the capability that earns "Clientes" in NAV_R1, so
+# the resolved bar already holds the answer: reading it costs no query and cannot
+# drift from the registry's own gate.
+SEARCH_DESTINATION: Final = "clients-list"
 
 
 def product_shell(request: HttpRequest | None) -> ProductShell | None:
@@ -137,10 +151,13 @@ def product_shell(request: HttpRequest | None) -> ProductShell | None:
         return None
     if not tenant_has(tenant.pk, PRODUCT_SHELL_FLAG):
         return None
+    items = visible_nav_items(user, NAV_R1)
+    search_gate = reverse(SEARCH_DESTINATION)
     return ProductShell(
         product_name=settings.PRODUCT_NAME,
         tenant_name=tenant.name,
-        items=visible_nav_items(user, NAV_R1),
+        items=items,
+        searchable=any(item.url == search_gate for item in items),
     )
 
 
