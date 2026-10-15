@@ -158,6 +158,25 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
     search_fields = ("legal_name", "trade_name", "cnpj", "cpf")
     readonly_fields: ClassVar[tuple[str, ...]] = ("created_at", "updated_at")
 
+    def get_queryset(self, request: HttpRequest) -> QuerySet[ClientCompany]:
+        """Scope the changelist the way the firm's own support screens do.
+
+        Under a support grant the firm's screens answer through
+        ``support_clients()`` — empty ``client_ids`` is firm-metadata only and
+        resolves ``.none()``. The admin queryset must answer the same: the
+        default manager would otherwise hand the console the firm's whole book.
+        """
+        from apps.authz.support import support_clients  # noqa: PLC0415
+
+        granted = support_clients()
+        if granted is not None:
+            return (
+                super()
+                .get_queryset(request)
+                .filter(pk__in=granted.values_list("pk", flat=True))
+            )
+        return super().get_queryset(request)
+
     def get_form(
         self,
         request: HttpRequest,

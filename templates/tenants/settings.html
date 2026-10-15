@@ -33,9 +33,13 @@
         <a href="{% url 'team' %}" class="link font-semibold">{% translate "Equipe e permissões" %}</a>
         <p class="mt-2 text-sm text-ink-600">{% translate "Convide pessoas, revise acessos e gerencie quem pode revisar o trabalho." %}</p>
       </div>{% endif %}
-      {% if may_account %}<div>
+      {% if may_account %}<div class="border-b border-ink-200 pb-5">
         <a href="{% url 'firm-account' %}" class="link font-semibold">{% translate "Plano, uso e encerramento" %}</a>
         <p class="mt-2 text-sm text-ink-600">{% translate "Consulte o registro de cobrança, exporte os dados e confira as regras de retenção." %}</p>
+      </div>
+      <div>
+        <a href="{% url 'firm-suporte' %}" class="link font-semibold">{% translate "Acesso de suporte" %}</a>
+        <p class="mt-2 text-sm text-ink-600">{% translate "Autorize e acompanhe acessos da equipe da plataforma à sua firma." %}</p>
       </div>{% endif %}
     </section>
   </div>

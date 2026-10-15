@@ -13,6 +13,7 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import can, require_can
+from apps.authz.support import in_support_mode
 from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.services.cycle import require_enabled, tenant_id
@@ -130,7 +131,9 @@ def communication(request: AuthenticatedRequest) -> HttpResponse:
         "delivery/queue.html",
         {
             "page": page,
-            "communications": message_history(list(page.object_list)),
+            "communications": message_history(
+                list(page.object_list), redact=in_support_mode()
+            ),
             "states": MessageState.choices,
             "selected": selected,
             "selected_message": message_id,

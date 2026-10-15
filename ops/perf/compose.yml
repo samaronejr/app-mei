@@ -1,0 +1,38 @@
+# Standalone LOCAL harness. Never combine with the production Compose stack.
+# Compose run has no --cpus flag; service constraints apply to one-off runs.
+x-local: &local
+  build:
+    context: ../..
+  image: axr1-t28-perf:local
+  network_mode: host
+  cpus: 1
+  # Same web limit as docker-compose.prod.yml; runtime cgroups are attested.
+  mem_limit: 400m
+  working_dir: /app
+  environment:
+    DJANGO_SETTINGS_MODULE: ops.perf.settings
+    DJANGO_ENV_FILE: /nonexistent
+    SECRET_KEY: ${SECRET_KEY:?local lane secret required}
+    DATABASE_URL: ${DATABASE_URL:?local lane runtime URL required}
+    REDIS_URL: ${REDIS_URL:?local lane Redis URL required}
+    ALLOWED_HOSTS: localhost,127.0.0.1,.localhost
+    CONN_MAX_AGE: "60"
+    DELIVERY_PAUSED: "True"
+  volumes:
+    - ../../.evidence:/app/.evidence
+
+services:
+  web:
+    <<: *local
+    command:
+      - sh
+      - -c
+      - >-
+        python manage.py collectstatic --noinput --skip-checks &&
+        exec gunicorn ops.perf.wsgi:application
+        --bind 127.0.0.1:${AXR1_PERF_PORT:?reserve a local lane port}
+        --workers=2 --threads=2 --worker-class=gthread
+        --timeout=60 --max-requests=400 --max-requests-jitter=40
+  measure:
+    <<: *local
+    entrypoint: ["python", "-m", "ops.perf.measure_reads"]

@@ -32,6 +32,7 @@ PORTAL_DENIED_TABLES = (
     "automation_agentrun",
     "automation_evalrun",
     "authz_usercapabilitygrant",
+    "clients_clientcontact",
     "clients_importbatch",
     "clients_importrow",
     # Playbook definitions are firm-internal editor content (todo 8): no portal
@@ -66,12 +67,18 @@ PORTAL_DENIED_TABLES = (
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
     "delivery_automationpause",
+    "delivery_tenantnoticepolicy",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
     "tenants_firmoutboundmessage",
     "tenants_accountexport",
     "tenants_accountexportattempt",
+    # T23: a support grant names the platform actor and the owner's decision —
+    # firm-internal by definition, so the portal never sees the table at all.
+    # Mirrors `-- PORTAL_NONE: tenants_supportgrant` in ops/sql/roles.sql and the
+    # DenyPortalAccess policy in tenants.0012.
+    "tenants_supportgrant",
 )
 
 # Tables whose migrations revoke write access. Listed here rather than discovered so
@@ -90,6 +97,11 @@ APPEND_ONLY_TABLES = (
     "delivery_deliveryeffect",
     "tenants_usagerecord",
 )
+
+# AXR1-023: writable-but-undeletable tables — UPDATE stays (revocation sets
+# revoked_at) while DELETE is refused, because the row is the audit trail. The
+# same REVOKE+GRANT pair lives in ops/sql/roles.sql and tenants.0012.
+NO_DELETE_TABLES = ("tenants_supportgrant",)
 
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
 # rather than blanket so every other table — accounts_user, mfa_authenticator,
@@ -115,6 +127,17 @@ PORTAL_TABLES = (
     "obligations_document",
     "obligations_sourceobservation",
 )
+
+# T60: exact receipt lookup only, not table-wide SELECT. Keep this decision separate
+# from PORTAL_TABLES so SELECT * and every other receipt column remain refused.
+PORTAL_COLUMN_SELECT: dict[str, tuple[str, ...]] = {
+    "cycles_clientacknowledgement": (
+        "tenant_id",
+        "publication_id",
+        "publication_digest",
+        "user_id",
+    ),
+}
 
 # app_portal's WRITE allow-list, mirroring the second DO block in ops/sql/roles.sql. A
 # separate tuple from the read list because the two are different sets and always will
@@ -171,6 +194,19 @@ def django_db_setup(
                 $$
                 """,
             )
+        for table in NO_DELETE_TABLES:
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.{table}') IS NOT NULL THEN
+                        REVOKE ALL ON {table} FROM {RUNTIME_ROLE};
+                        GRANT SELECT, INSERT, UPDATE ON {table} TO {RUNTIME_ROLE};
+                    END IF;
+                END
+                $$
+                """,
+            )
         # roles.sql runs from the init hook against an empty cluster, so its own guarded
         # grant reaches none of these tables. Without the grant below every portal
         # assertion dies with `permission denied` before it reaches a policy — and the
@@ -200,6 +236,11 @@ def django_db_setup(
                 $$
                 """,
             )
+        # T60: mirror roles.sql's column-only lookup; SELECT * stays denied.
+        cursor.execute(
+            "GRANT SELECT (tenant_id, publication_id, publication_digest, user_id) "
+            "ON cycles_clientacknowledgement TO app_portal"
+        )
 
 
 def _wants_database(request: pytest.FixtureRequest) -> bool:

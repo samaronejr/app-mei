@@ -11,7 +11,6 @@ answers 409 with a reload prompt, a missing capability 403.
 """
 
 import logging
-from functools import partial
 from http import HTTPStatus
 from smtplib import SMTPException
 from typing import Any, Final
@@ -20,7 +19,6 @@ from uuid import UUID
 import sentry_sdk
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import transaction
 from django.forms import Form
 from django.http import Http404, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
@@ -77,7 +75,10 @@ from apps.clients.models import (
     TaxProfile,
 )
 from apps.clients.views import ONBOARDING_FLAG, require_tenant
-from apps.core.flags import require_feature, tenant_has
+from apps.core.flags import require_feature, tenant_row_has
+from apps.delivery.models import OutboundMessage
+from apps.delivery.notice_authority import NoticeOrigin, lock_notice_scope
+from apps.delivery.outbox import enqueue_portal_invite
 from apps.tenants.models import Invite, Membership, Tenant
 
 FLAG: Final = ONBOARDING_FLAG
@@ -121,6 +122,11 @@ INVITE_SENT_NOTICE: Final = (
 # says so, and the Comunicação queue shows what the SMTP server later answered.
 INVITE_QUEUED_NOTICE: Final = (
     "Convite na fila de envio. Acompanhe o envio na fila de comunicação; um aceite "
+    "do servidor de e-mail não confirma a leitura."
+)
+# T48: an import-only firm has no Comunicação queue; its contact row shows the state.
+INVITE_QUEUED_CONTACT_NOTICE: Final = (
+    "Convite na fila de envio. A situação do convite aparece neste contato; um aceite "
     "do servidor de e-mail não confirma a leitura."
 )
 INVITE_QUEUED: Final = "na-fila"
@@ -203,6 +209,14 @@ def _setup_context(
     )
     # email -> the open invitation, so a pending one can be cancelled from here.
     pending_by_email = {invite.email.lower(): invite.pk for invite in pending}
+    # T48: the durable outbox answers after the request; without a Comunicação
+    # queue (import-only), this row is the only place the answer can be seen.
+    delivery_by_invite = {
+        message.invite_id: message.get_state_display()
+        for message in OutboundMessage.objects.filter(
+            invite_id__in=list(pending_by_email.values()),
+        ).order_by("created_at", "pk")
+    }
     state = assignment_state(client)
     return {
         "client": client,
@@ -231,6 +245,9 @@ def _setup_context(
             {
                 "row": contact,
                 "pending_invite_id": pending_by_email.get(contact.email.lower()),
+                "pending_delivery": delivery_by_invite.get(
+                    pending_by_email.get(contact.email.lower()),
+                ),
                 "invitable": bool(
                     contact.active
                     and contact.email
@@ -278,7 +295,9 @@ def _setup_page(
     }.get(invite_outcome, "")
     context["invite_sent"] = {
         INVITE_SENT: _(INVITE_SENT_NOTICE),
-        INVITE_QUEUED: _(INVITE_QUEUED_NOTICE),
+        INVITE_QUEUED: _(INVITE_QUEUED_NOTICE)
+        if tenant_row_has(_tenant(request), "cycles_r1")
+        else _(INVITE_QUEUED_CONTACT_NOTICE),
     }.get(invite_outcome, "")
     return render(request, SETUP_TEMPLATE, context, status=status)
 
@@ -725,9 +744,9 @@ def contact_invite_view(
 
     `invite_contact` issues under the client and contact locks, against the
     contact version the page was rendered with and the contact's current e-mail
-    permission, and refuses a second live invitation (409). The mail is sent only
-    after the request transaction commits (`_deliver_invitation`), and the result
-    comes back to the setup page as a message: sent, or not sent and retryable.
+    permission, and refuses a second live invitation (409). The durable message
+    shares that transaction under the exact import-origin notice policy, even
+    without cycles entitlement; the separate legacy account door is unchanged.
     """
     tenant = _tenant(request)
     tenant_id = _tenant_id(request)
@@ -742,8 +761,11 @@ def contact_invite_view(
             invite_form=form,
         )
     try:
-        invite, raw_token = invite_contact(
-            actor=request.user,
+        scope = lock_notice_scope(
+            request.user, NoticeOrigin("contact_portal_invite", client.pk)
+        )
+        invite, _raw_token = invite_contact(
+            actor=scope.actor,
             tenant=tenant,
             client_id=client.pk,
             contact_id=contact.pk,
@@ -762,26 +784,16 @@ def contact_invite_view(
             HTTPStatus.UNPROCESSABLE_ENTITY,
             invite_form=form,
         )
-    if tenant_has(tenant.pk, "cycles_r1"):
-        # Same transaction as the invitation, under the locks invite_contact took:
-        # the message commits with the invite or not at all, and no I/O runs here.
-        from apps.delivery.outbox import enqueue_portal_invite  # noqa: PLC0415
-
-        enqueue_portal_invite(request.user, invite, contact)
-        return HttpResponseRedirect(f"{setup_url}?convite={INVITE_QUEUED}#contatos")
-    response = HttpResponseRedirect(f"{setup_url}#contatos")
-    transaction.on_commit(
-        partial(
-            _deliver_invitation,
-            response=response,
-            setup_url=setup_url,
-            actor=request.user,
-            invite=invite,
-            tenant=tenant,
-            raw_token=raw_token,
-        ),
+    # The origin and authority checks above precede every write; no callback can
+    # bypass them. This message commits with its invitation, without request I/O.
+    enqueue_portal_invite(
+        scope.actor,
+        invite,
+        contact,
+        kind="contact_portal_invite",
+        notice_scope=scope,
     )
-    return response
+    return HttpResponseRedirect(f"{setup_url}?convite={INVITE_QUEUED}#contatos")
 
 
 @require_POST

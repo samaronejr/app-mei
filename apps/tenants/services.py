@@ -13,6 +13,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.services import can
+from apps.authz.support import current_support
 from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id
 from apps.tenants.account_state import require_writable
@@ -20,6 +21,7 @@ from apps.tenants.authority import lock_users
 from apps.tenants.branding import validate_logo
 from apps.tenants.branding_updates import store_logo
 from apps.tenants.models import Membership, NotificationPreference, Tenant
+from apps.tenants.support_models import SupportGrant, SupportScope
 
 
 class TenantConflictError(Exception):
@@ -43,12 +45,43 @@ def lock_firm_settings(actor: User, tenant_id: UUID) -> tuple[User, Tenant]:
     fresh = lock_users((actor.pk,)).get(actor.pk)
     if fresh is None or not fresh.is_active:
         raise PermissionDenied
-    tenant = (
-        Tenant.objects.for_user(fresh)
-        .select_for_update(no_key=True)
-        .filter(pk=tenant_id, is_active=True)
-        .first()
-    )
+    support = current_support.get()
+    if support is not None:
+        # The read_write_settings scope buys exactly this write: the grant IS the
+        # membership substitute here. Hold the exact admitted grant's row
+        # through commit, using the same fence as owner revocation: a revoke
+        # either commits first and refuses this write, or follows its commit.
+        live = (
+            SupportGrant.objects.select_for_update(no_key=True)
+            .filter(
+                pk=support.grant_id,
+                tenant_id=tenant_id,
+                requested_by=fresh,
+            )
+            .first()
+        )
+        if live is not None and live.scope == SupportScope.READ_WRITE_SETTINGS:
+            tenant = (
+                # PLATFORM_QUERY_OK: the exact locked grant row names
+                # exactly this tenant for this actor; a support session has no
+                # membership row, so there is no portfolio to scope through.
+                Tenant.objects.select_for_update(no_key=True)
+                .filter(pk=tenant_id, is_active=True)
+                .first()
+            )
+            # Time can advance while either fence is acquired. Check the window
+            # after the locks, not against the middleware's admitted snapshot.
+            if not live.is_active():
+                tenant = None
+        else:
+            tenant = None
+    else:
+        tenant = (
+            Tenant.objects.for_user(fresh)
+            .select_for_update(no_key=True)
+            .filter(pk=tenant_id, is_active=True)
+            .first()
+        )
     if tenant is None or not tenant_has(tenant_id, "firm_settings_r1"):
         raise Http404
     return fresh, tenant
