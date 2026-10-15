@@ -1,0 +1,28 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    Approval behaviour as T15/T16 shipped it: exact-effect approval, invalidation on
+    change, revocation before dispatch. Recipient names on the card are T25's
+    (apps/cycles/approval_views.py).
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="regra">
+    <h2 id="regra" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}A regra{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Publicações de documentos e e-mails de texto livre só são executados depois que alguém com permissão aprova o conteúdo exato, os destinatários e os anexos. O cartão de aprovação mostra tudo isso antes dos botões de decisão, com cada destinatário pelo nome do contato.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="modelos">
+    <h2 id="modelos" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Avisos e lembretes sem cartão{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Avisos, lembretes e convites com texto de modelo não exigem cartão de aprovação. A autorização vem da versão publicada do playbook ou da política do escritório, conforme o tipo de mensagem. Um convite ao portal pode ser enviado sem estar ligado a um ciclo. As permissões e o destinatário são verificados novamente antes do envio, que fica registrado.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="mudou">
+    <h2 id="mudou" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando algo muda depois da aprovação{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Se o conteúdo, um destinatário ou um anexo mudar depois de aprovado, a aprovação deixa de valer e o cartão avisa que está desatualizado. É preciso revisar e aprovar de novo.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="revogar">
+    <h2 id="revogar" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Revogar{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Uma aprovação pode ser revogada enquanto o envio não começou. Se o envio já tiver começado, a tela mostra o estado real dele, sem fingir que foi cancelado.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="politica">
+    <h2 id="politica" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quem aprova{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Em Gestão, na página de aprovações, o escritório define a política de aprovação. Operações em lote mostram uma prévia com cada item antes de executar.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

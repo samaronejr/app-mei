@@ -17,13 +17,14 @@ guess this module exists to avoid.
 
 from collections.abc import Callable, Iterable
 from functools import wraps
-from typing import Any, Concatenate, Final, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Final, ParamSpec, TypeVar
 from uuid import UUID
 
 from django.apps import apps as django_apps
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied
-from django.db.models import Q
+from django.db.models import OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.http import HttpRequest
 from django.http.response import HttpResponseBase
 from django.utils import timezone
@@ -33,7 +34,13 @@ from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
 from apps.authz.models import Capability, GrantLevel, RoleGrant
 from apps.authz.stash import portal_stash, stashed_level
+from apps.authz.support import in_support_mode, support_level
 from apps.core.tenancy import current_client_id, current_tenant_id
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
+    from apps.tenants.models import Membership
 
 _P = ParamSpec("_P")
 _ResponseT = TypeVar("_ResponseT", bound=HttpResponseBase)
@@ -101,25 +108,10 @@ def resolve_level(
     there anyway — the ORM does not know the caller's intent — must resolve to
     exactly what it would have resolved to absent the row.
     """
-    # Before _capability, which reads authz_capability — denied to app_portal, and a
-    # denied read aborts the transaction rather than refusing.
-    stashed = stashed_level(user, action, tenant_id, current_tenant_id.get())
-    if stashed is not None:
-        return stashed
-    capability = _capability(action)
-    if not user.is_authenticated:
-        return GrantLevel.NONE
-    if user.is_superuser:
-        return GrantLevel.FULL
-    role = role_of(user, tenant_id)
-    if role is None:
-        return GrantLevel.NONE
-    grant = RoleGrant.objects.filter(role=role, capability=capability).first()
-    role_level = grant.level if grant is not None else GrantLevel.NONE
-    if role_level == GrantLevel.FULL:
-        return role_level
-    user_level = _user_grant_level(user, action, role, tenant_id)
-    return _max_level(role_level, user_level)
+    _, levels = _resolve_levels_and_role(
+        user, (action,), tenant_id=tenant_id, include_superuser_role=False
+    )
+    return levels[action]
 
 
 def can(
@@ -160,9 +152,9 @@ def granted_levels(
 ) -> dict[str, str]:
     """Resolve several capabilities in one round trip, with `resolve_level`'s answers.
 
-    A navigation bar asks about every item it might draw, and `resolve_level` costs
-    two queries per question — so a six-item nav is twelve queries on every page.
-    This is the same two reads for the whole set.
+    Registered capabilities, active membership and role grants share one live SQL
+    statement. Non-FULL firm-role answers may add one batched user-grant read.
+    No result is retained or passed to another authorization answerer.
 
     It is not a second policy source: the resolution order, the superuser
     short-circuit and the missing-grant default are the same, and
@@ -217,9 +209,19 @@ def _resolve_levels_and_role(
                 for slug in slugs
             },
         )
-    known = set(
-        Capability.objects.filter(slug__in=slugs).values_list("slug", flat=True),
-    )
+    # A support session answers from the owner's grant decision, never from the
+    # platform account's role or the superuser short-circuit — which is precisely
+    # why this check precedes it. The stash is set only inside a request whose
+    # middleware re-read the live grant for THIS request. Placed in this shared
+    # helper so resolve_level, resolve_levels and granted_levels_with_role all
+    # answer identically (test_bulk_resolution_agrees_with_resolve_level).
+    if in_support_mode():
+        return (
+            None,
+            {slug: support_level(slug) or GrantLevel.NONE for slug in slugs},
+        )
+    rows = _role_grant_rows(user, slugs, tenant_id)
+    known = {slug for slug, _, _ in rows}
     unknown = [slug for slug in slugs if slug not in known]
     if unknown:
         msg = (
@@ -232,15 +234,10 @@ def _resolve_levels_and_role(
     if user.is_superuser:
         role = role_of(user, tenant_id) if include_superuser_role else None
         return role, dict.fromkeys(slugs, GrantLevel.FULL)
-    role = role_of(user, tenant_id)
+    role = rows[0][1] if rows else role_of(user, tenant_id)
     if role is None:
         return None, dict.fromkeys(slugs, GrantLevel.NONE)
-    resolved = dict(
-        RoleGrant.objects.filter(
-            role=role,
-            capability__slug__in=slugs,
-        ).values_list("capability__slug", "level"),
-    )
+    resolved = {slug: level for slug, _, level in rows}
     non_full = tuple(slug for slug in slugs if resolved.get(slug) != GrantLevel.FULL)
     user_levels = (
         _user_grant_levels(user, non_full, role, tenant_id) if non_full else {}
@@ -254,16 +251,32 @@ def _resolve_levels_and_role(
     }
 
 
-def _user_grant_level(
+def _role_grant_rows(
     user: Actor,
-    action: str,
-    role: str,
+    slugs: tuple[str, ...],
     tenant_id: UUID | None,
-) -> str:
-    """Return the live grant level for one capability, or NONE when none applies."""
-    return _user_grant_levels(user, (action,), role, tenant_id).get(
-        action,
-        GrantLevel.NONE,
+) -> list[tuple[str, str | None, str]]:
+    """Read registered capabilities and this answerer's live role grants together."""
+    if not user.is_authenticated or user.is_superuser:
+        return [
+            (slug, None, GrantLevel.NONE)
+            for slug in Capability.objects.filter(slug__in=slugs).values_list(
+                "slug", flat=True
+            )
+        ]
+    memberships = _membership_rows(user, tenant_id)
+    grants = RoleGrant.objects.filter(
+        capability_id=OuterRef("pk"), role=OuterRef("_actor_role")
+    )
+    return list(
+        Capability.objects.filter(slug__in=slugs)
+        .annotate(_actor_role=Subquery(memberships.values("role")[:1]))
+        .annotate(
+            _role_level=Coalesce(
+                Subquery(grants.values("level")[:1]), Value(GrantLevel.NONE)
+            )
+        )
+        .values_list("slug", "_actor_role", "_role_level")
     )
 
 
@@ -360,17 +373,6 @@ def _record_refusal(request: HttpRequest, action: str) -> None:
     )
 
 
-def _capability(action: str) -> Capability:
-    capability = Capability.objects.filter(slug=action).first()
-    if capability is None:
-        msg = (
-            f"{action!r} is not a capability in the permission matrix. Returning "
-            f"False here would hide a permanently broken gate behind a plausible 403."
-        )
-        raise UnknownCapability(msg)
-    return capability
-
-
 def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
     """Return this account's active role in the named firm, or None if it has none.
 
@@ -379,10 +381,16 @@ def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
     the read that feeds one belongs here too rather than being re-implemented next to
     the comparison.
     """
+    role = _membership_rows(user, tenant_id).values_list("role", flat=True).first()
+    return str(role) if role is not None else None
+
+
+def _membership_rows(user: User, tenant_id: UUID | None) -> "QuerySet[Membership]":
+    """Keep the identity, tenant and client membership boundary in one place."""
+    membership_model: type[Membership] = django_apps.get_model("tenants", "Membership")
     resolved = tenant_id or current_tenant_id.get()
     if resolved is None:
-        return None
-    membership_model = django_apps.get_model("tenants", "Membership")
+        return membership_model.objects.none()
     # PLATFORM_QUERY_OK: keyed on the actor and one explicit tenant. This query IS
     # the authorization check, so routing it through for_user would be circular.
     # The client filter is what keeps this ONE path rather than two. Outside a portal
@@ -392,13 +400,12 @@ def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
     # selects that user's membership over that one client. It also makes `.first()`
     # deterministic: a user holding both a firm and a client role in one firm has two
     # rows, and without this filter the ordering between them is arbitrary.
-    membership = membership_model.objects.filter(
+    return membership_model.objects.filter(
         user=user,
         tenant_id=resolved,
         is_active=True,
         client=current_client_id.get(),
-    ).first()
-    return str(membership.role) if membership is not None else None
+    ).order_by("pk")
 
 
 def _is_attached_to(user: User, obj: object | None) -> bool:

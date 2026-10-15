@@ -1,31 +1,41 @@
-{% load i18n %}{% comment %}Payment evidence only. Work status must never select this badge.{% endcomment %}
-{% if row.payment_source == 'legacy_status' or row.payment_source == 'staff_recorded' or row.payment_source == 'client_submitted' %}
+{% load i18n %}{% comment %}
+Payment evidence only. Work status must never select this badge.
+
+The state arrives classified (`row.payment_state`): the view — through
+`payment_state()` in apps/obligations/presentation.py — decides what the
+source columns mean, so this file and the firm-side coverage panel can never
+diverge on what a row LOOKS like. Copy stays here; classification does not.
+
+Every branch ends on something the reader can DO, and no branch uses the word
+the render policy forbids: a manual claim is informed, never "confirmado".
+{% endcomment %}
+{% if row.payment_state == 'manual' %}
   <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="manual">
     <span class="badge badge-neutral">{% translate "Pagamento informado" %}</span>
-    {% if row.payment_source == 'legacy_status' %}{% translate "Pagamento registrado manualmente (legado). Ainda não verificamos junto à Receita." %}{% else %}{% translate "Registro manual, aguardando conferência. Ainda não verificamos junto à Receita." %}{% endif %}
+    {% if row.payment_source == 'legacy_status' %}{% translate "Pagamento registrado manualmente (legado). Ainda não verificamos junto à Receita." %}
+    {% elif row.payment_source == 'client_submitted' and row.payment_verification == 'pending_review' %}{% translate "Comprovante enviado pelo cliente — aguardando conferência. Ainda não verificamos junto à Receita." %}
+    {% else %}{% translate "Registro manual, aguardando conferência. Ainda não verificamos junto à Receita." %}{% endif %}
   </p>
-{% elif row.payment_source == 'official_api' or row.payment_source == 'official_file_import' %}
-  {% if row.payment_verification == 'verified' %}
-    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="verified">
-      <span class="badge badge-ok">{% translate "Pagamento verificado" %}</span>
-      {% translate "Pagamento verificado na fonte oficial." %}
-    </p>
-  {% elif row.payment_verification == 'stale' %}
-    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="stale">
+{% elif row.payment_state == 'verified' %}
+  <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="verified">
+    <span class="badge badge-ok">{% translate "Pagamento verificado" %}</span>
+    {% translate "Pagamento verificado na fonte oficial." %}
+  </p>
+{% elif row.payment_state == 'stale' %}
+  <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="stale">
+    {% if row.payment_verification == 'refresh_failed' or row.payment_outcome == 'refresh_failed' %}
+      <span class="badge badge-neutral">{% translate "Falha na conferência" %}</span>
+      {% translate "Não foi possível atualizar a informação de pagamento. Peça uma nova conferência à sua contadora." %}
+    {% else %}
       <span class="badge badge-neutral">{% translate "Desatualizado" %}</span>
-      {% translate "A última verificação está desatualizada. Peça uma nova conferência à sua contadora." %}
-    </p>
-  {% elif row.payment_verification == 'not_applicable' %}
-    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="not_applicable">
-      <span class="badge badge-neutral">{% translate "Não se aplica" %}</span>
-      {% translate "Esta fonte não cobre o pagamento desta obrigação." %}
-    </p>
-  {% else %}
-    <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="unknown">
-      <span class="badge badge-neutral">{% translate "Sem informação" %}</span>
-      {% translate "Não temos uma verificação do pagamento nesta fonte." %}
-    </p>
-  {% endif %}
+      {% translate "Esta informação de pagamento está desatualizada. Peça uma nova conferência à sua contadora." %}
+    {% endif %}
+  </p>
+{% elif row.payment_verification == 'not_applicable' %}
+  <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="not_applicable">
+    <span class="badge badge-neutral">{% translate "Não se aplica" %}</span>
+    {% translate "Esta fonte não cobre o pagamento desta obrigação." %}
+  </p>
 {% else %}
   <p class="flex flex-wrap items-center gap-2 text-sm text-ink-700" data-payment-state="unknown">
     <span class="badge badge-neutral">{% translate "Sem informação" %}</span>

@@ -91,6 +91,14 @@ class RequestRow:
     status_label: str
     hint: str
     open: bool
+    cycle_id: UUID
+    # T17: a receipt request tells the client which document proves payment.
+    kind: str = "documento"
+
+    @property
+    def actionable(self) -> bool:
+        """A counted submission waits for review; it is not another upload task."""
+        return self.open and self.status != "recebido"
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,19 +143,20 @@ def _row(request: EvidenceRequest, *, submitted: bool, today: date) -> RequestRo
         status_label=STATUS_LABELS.get(status, "Pendente"),
         hint=STATUS_HINTS.get(status, ""),
         open=request.state in CLIENT_OPEN_STATES,
+        cycle_id=request.cycle_id,
+        kind=request.kind,
     )
 
 
-def open_requests(today: date) -> list[RequestRow]:
+def open_requests(today: date, *, cycle_id: UUID | None = None) -> list[RequestRow]:
     """Return the client's open requests with their derived chips, in two queries.
 
     No client filter: the RESTRICTIVE policy confines both tables to this client.
     """
-    rows = list(
-        EvidenceRequest.objects.filter(state__in=CLIENT_OPEN_STATES).order_by(
-            "due_on", "created_at", "pk"
-        )
-    )
+    requests = EvidenceRequest.objects.filter(state__in=CLIENT_OPEN_STATES)
+    if cycle_id is not None:
+        requests = requests.filter(cycle_id=cycle_id)
+    rows = list(requests.order_by("due_on", "created_at", "pk"))
     submitted = set(
         counted_links()
         .filter(request_id__in=[row.pk for row in rows])

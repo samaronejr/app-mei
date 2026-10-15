@@ -1,0 +1,36 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    Export and cancellation rules of T22 (firm settings, account export, scheduled
+    cancellation, engagement offboarding), plus two T25 states: the account page with no
+    billing record (templates/tenants/account.html) and the pt-BR refusal page
+    (templates/403.html) an offboarded client meets.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="exportar">
+    <h2 id="exportar" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Exportar os dados{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Em Configurações, na área Plano, uso e encerramento, o responsável pela conta pode pedir uma exportação. Ela gera um arquivo ZIP com planilhas CSV de clientes, serviços contratados, ciclos, solicitações e dados das mensagens, mais uma lista dos documentos.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}A exportação é preparada em segundo plano. Quando estiver pronta, o download aparece na mesma página.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="encerrar">
+    <h2 id="encerrar" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Encerrar a conta{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}O responsável pela conta agenda uma data de encerramento. Até lá, tudo funciona normalmente.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Depois da data, a conta fica somente para leitura, e a exportação continua disponível por 90 dias.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Depois desse prazo, os dados são removidos conforme a regra de retenção de cada tipo de dado. Hoje essa remoção ainda não é executada: ela aguarda a revisão jurídica dos prazos.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="cobranca">
+    <h2 id="cobranca" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Cobrança{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Uma cobrança em atraso nunca bloqueia a exportação. Uma conta suspensa fica somente para leitura, e a exportação continua permitida.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Enquanto a operação da plataforma não registra a cobrança manual da sua conta, a página Plano, uso e encerramento mostra Registro pendente, e a próxima cobrança aparece como um traço. A página abre normalmente nesse estado.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="cliente-sai">
+    <h2 id="cliente-sai" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando um cliente sai do escritório{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Ao terminar o serviço de um cliente, o acesso dele ao portal termina depois de um prazo de carência, de 30 dias por padrão. Os registros continuam guardados conforme a regra de retenção.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Depois desse prazo, o portal mostra ao cliente a página Acesso não permitido, em português, com a orientação de falar com o escritório de contabilidade.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="retencao">
+    <h2 id="retencao" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Retenção{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}As regras de retenção e as retenções legais em vigor aparecem em Configurações, na página de retenção.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

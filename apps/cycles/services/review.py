@@ -24,6 +24,7 @@ from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.cycles import receipt_observations
 from apps.cycles.capabilities import CYCLES_REVIEW
 from apps.cycles.errors import IllegalTransition
 from apps.cycles.evidence import (
@@ -41,6 +42,7 @@ from apps.cycles.evidence import (
 )
 from apps.cycles.extraction import FIELD_LABELS, is_cnpj_field
 from apps.cycles.records import CycleEvent
+from apps.cycles.services.approvals import _lock_scope
 from apps.cycles.services.cycle import (
     OPEN_STATES,
     check_version,
@@ -148,6 +150,32 @@ def _save_corrections(
     )
 
 
+def _reviewable_intake(
+    link: EvidenceLink, *, lock: bool = False
+) -> DocumentIntake | None:
+    """Never wait for a pending finalizer while holding its cycle.
+
+    Scan/extraction only claim pending/VERIFIED intakes and move forward into
+    reviewable states. A filtered lock cannot acquire a still-pending row.
+    Missing legacy intake is distinct from an existing but unready intake.
+    """
+    rows = DocumentIntake.objects.filter(
+        document_id=link.document_id, client_id=link.client_id
+    )
+    selected = (
+        rows.filter(state__in=REVIEWABLE_STATES).select_for_update(of=("self",))
+        if lock
+        else rows
+    )
+    intake = selected.first()
+    if (intake is not None and intake.state not in REVIEWABLE_STATES) or (
+        intake is None and lock and rows.exists()
+    ):
+        msg = "Aguarde a verificação e a leitura automática do arquivo."
+        raise IllegalTransition(msg)
+    return intake
+
+
 def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
     actor: User,
     link_id: UUID,
@@ -158,44 +186,44 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
     expected_version: int,
     third_party: bool = False,
     override_reason: str = "",
+    payment_relevant: bool = False,
 ) -> ReviewRef:
-    """Decide on one submitted file against the request revision the page showed."""
+    """Decide on one submitted file against the request revision the page showed.
+
+    Preserve cycle, request and link ordering. Read readiness before locking
+    the cycle, then lock only a reviewable intake; an in-flight finalizer is
+    refused instead of being waited on under its cycle fence. The link lock
+    excludes the joined document. Receipt subjects are locked last.
+    """
     reason, override = _validate(decision, client_reason, override_reason)
     cleaned = _clean_corrections(corrections)
     with transaction.atomic():
         candidate = EvidenceLink.objects.filter(pk=link_id).first()
         if candidate is None:
             raise Http404
-        cycle_id = (
-            EvidenceRequest.objects.filter(pk=candidate.request_id)
-            .values_list("cycle_id", flat=True)
-            .get()
-        )
-        cycle = load_cycle(actor, cycle_id, lock=True)
+        scoped = load_cycle(actor, candidate.request.cycle_id)
+        _reviewable_intake(candidate)
+        scope = _lock_scope(actor, scoped, set())
+        scope.require(CYCLES_REVIEW)
+        cycle, reviewer = scope.cycle, scope.actor
         request = EvidenceRequest.objects.select_for_update().get(
-            pk=candidate.request_id
+            pk=candidate.request_id, client_id=cycle.client_id, cycle=cycle
         )
+        request.cycle = cycle
         check_version(request.version, expected_version)
-        require_actor(actor, CYCLES_REVIEW)
+        require_actor(reviewer, CYCLES_REVIEW)
         if cycle.state not in OPEN_STATES or request.state in CLOSED_REQUESTS:
             msg = "Esta solicitação não está aberta para revisão."
             raise IllegalTransition(msg)
         link = (
-            EvidenceLink.objects.select_for_update()
+            EvidenceLink.objects.select_for_update(of=("self",))
             .select_related("document")
             .get(pk=candidate.pk)
         )
         if link.review_decision:
             msg = "Este arquivo já foi revisado."
             raise IllegalTransition(msg)
-        intake = (
-            DocumentIntake.objects.select_for_update()
-            .filter(document_id=link.document_id)
-            .first()
-        )
-        if intake is not None and intake.state not in REVIEWABLE_STATES:
-            msg = "Aguarde a verificação e a leitura automática do arquivo."
-            raise IllegalTransition(msg)
+        intake = _reviewable_intake(link, lock=True)
         accepting = decision == ReviewDecision.ACCEPTED
         is_divergent = intake is not None and intake.state == IntakeState.DIVERGENT
         if accepting and is_divergent and not (third_party and override):
@@ -222,11 +250,17 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
                 }
                 for correction in cleaned
             ],
-            reviewer=actor,
+            reviewer=reviewer,
             reviewed_at=now,
             document_sha256=link.document.sha256,
+            payment_relevant=(
+                payment_relevant
+                and receipt_observations.payment_evidence_eligible(
+                    request, link, intake
+                )
+            ),
         )
-        _save_corrections(link, actor, cleaned, now)
+        _save_corrections(link, reviewer, cleaned, now)
         link.review_decision = decision
         link.client_reason = reason
         link.reviewed_at = now
@@ -257,7 +291,7 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
             tenant_id=cycle.tenant_id,
             client_id=cycle.client_id,
             cycle=cycle,
-            actor=actor,
+            actor=reviewer,
             type="document.reviewed",
             aggregate_type="EvidenceRequest",
             aggregate_id=request.pk,
@@ -271,6 +305,14 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
                 "to": request.state,
                 "corrections": len(cleaned),
             },
+        )
+        # T17: a bound receipt's decision becomes an observation under the
+        # subject lock, taken last, inside this same transaction.
+        receipt_observations.apply_review(
+            request=request,
+            link=link,
+            review=review,
+            intake=intake,
         )
         return ReviewRef(review.pk, decision, request.version)
 

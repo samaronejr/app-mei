@@ -1,0 +1,171 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}Hoje{% endblock %}
+{% block heading %}Hoje{% endblock %}
+{% block actions %}
+  <a class="ui-btn ui-btn-quiet" href="{% url 'dashboard' %}">Recarregar fila</a>
+{% endblock %}
+{% block content %}
+<div id="briefing-content" class="space-y-8">
+  <div class="flex flex-wrap items-center justify-between gap-3 text-sm text-ink-600">
+    <p>Decisões da sua carteira, com o motivo de cada prioridade.</p>
+    {% if page %}<p class="tabular-nums">Calculado às <time id="briefing-computed-at" datetime="{{ page.computed_at|date:'c' }}">{{ page.computed_at|date:'H:i' }}</time></p>{% endif %}
+  </div>
+
+  {% if page %}
+    <div id="briefing-stale" role="alert" hidden>
+      {% include "partials/ui/state_stale.html" with title="Consulta anterior mantida" checked_at=page.computed_at checked_label="Última consulta:" message="A atualização falhou. Os itens e totais abaixo continuam sendo os da última consulta." refresh_url=request.get_full_path refresh_label="Tentar novamente" only %}
+    </div>
+  {% endif %}
+
+  {% if error %}
+    <section id="briefing-error" class="notice notice-error" role="alert" aria-labelledby="briefing-error-title">
+      <h2 id="briefing-error-title" class="font-semibold">Revise esta seleção</h2>
+      <p>{{ error }}</p>
+      <a class="ui-link" href="{% url 'dashboard' %}">Recomeçar a fila</a>
+    </section>
+  {% endif %}
+
+  {% if failed_provider_labels %}
+    <section id="briefing-unavailable" class="notice notice-error" role="alert" aria-labelledby="briefing-unavailable-title">
+      <h2 id="briefing-unavailable-title" class="font-semibold">{% if all_providers_failed %}Não foi possível consultar a fila{% else %}Fila parcial{% endif %}</h2>
+      <p>Fontes indisponíveis: {{ failed_provider_labels|join:", " }}. Seus itens e totais não estão incluídos nesta consulta.</p>
+      <p class="mt-2 text-sm">Tentativa de consulta em {{ page.computed_at|date:"d/m/Y H:i" }}. Não use esta fila incompleta para concluir a revisão.</p>
+      <a class="ui-link mt-2 inline-block" href="{% url 'dashboard' %}{% if filter_query %}?{{ filter_query }}{% endif %}">Tentar novamente</a>
+    </section>
+  {% endif %}
+
+  <details{% if error %} open{% endif %}>
+    <summary id="briefing-filters" class="ui-link cursor-pointer font-semibold">Filtrar fila{% if filter_values.periodo %} · {{ filter_values.periodo }}{% endif %}</summary>
+    <form method="get" class="mt-4 space-y-4 rounded-panel border border-ink-200 bg-surface p-4" aria-labelledby="briefing-filters"
+          hx-get="{% url 'dashboard' %}" hx-target="#briefing-content" hx-select="#briefing-content"
+          hx-swap="outerHTML" hx-push-url="true" hx-indicator="#briefing-loading, #briefing-results"
+          hx-disabled-elt="find button[type='submit']" hx-sync="this:replace">
+      <div class="grid gap-4 sm:grid-cols-3">
+        {% include "partials/pure/field.html" with field=filter_form.escopo only %}
+        {% include "partials/pure/field.html" with field=filter_form.periodo only %}
+        {% include "partials/pure/field.html" with field=filter_form.motivo only %}
+      </div>
+      {% include "partials/pure/field.html" with field=filter_form.cliente only %}
+      <details>
+        <summary class="ui-link cursor-pointer">Responsável, serviço e outros filtros</summary>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {% include "partials/pure/field.html" with field=filter_form.responsavel only %}
+          {% include "partials/pure/field.html" with field=filter_form.servico only %}
+          {% include "partials/pure/field.html" with field=filter_form.regime only %}
+          {% include "partials/pure/field.html" with field=filter_form.uf only %}
+          {% include "partials/pure/field.html" with field=filter_form.municipio only %}
+          {% include "partials/pure/field.html" with field=filter_form.estado only %}
+          {% include "partials/pure/field.html" with field=filter_form.fonte only %}
+        </div>
+      </details>
+      <div class="flex flex-wrap items-center gap-3">
+        <button class="ui-btn ui-btn-primary" type="submit">Aplicar filtros</button>
+        <a class="ui-btn ui-btn-quiet" href="{% url 'dashboard' %}">Limpar seleção</a>
+      </div>
+    </form>
+  </details>
+
+  <div id="briefing-loading" class="htmx-indicator hidden space-y-4 [&.htmx-request]:block" role="status">
+    <p class="text-sm text-ink-600">Atualizando a fila…</p>
+    <div class="space-y-6 motion-safe:animate-pulse" aria-hidden="true">
+      {% for row in "123" %}
+        <div class="space-y-3 border-b border-ink-200 pb-6" data-briefing-skeleton>
+          <div class="h-4 w-2/3 rounded-field bg-ink-200"></div>
+          <div class="h-3 w-1/2 rounded-field bg-ink-200"></div>
+          <div class="h-3 w-1/3 rounded-field bg-ink-200"></div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <details{% if selected_view %} open{% endif %}>
+    <summary id="briefing-saved" class="ui-link cursor-pointer">Visualizações salvas{% if selected_view %} · {{ selected_view.name }}{% endif %}</summary>
+    <div class="mt-4 flex flex-wrap items-end gap-4">
+      {% if saved_views %}
+        <form method="get" class="flex min-w-0 flex-wrap items-end gap-2">
+          <div class="field min-w-0">
+            <label class="field-label" for="saved-view">Visualização</label>
+            <select class="field-input max-w-full" id="saved-view" name="vista">
+              {% for saved in saved_views %}<option value="{{ saved.pk }}"{% if selected_view.pk == saved.pk %} selected{% endif %}>{{ saved.name }}</option>{% endfor %}
+            </select>
+          </div>
+          <button class="ui-btn ui-btn-quiet" type="submit">Abrir visualização</button>
+        </form>
+      {% endif %}
+      <details class="min-w-0">
+        <summary class="ui-link cursor-pointer">{% if selected_view %}Atualizar visualização{% else %}Salvar esta seleção{% endif %}</summary>
+        <form method="post" action="{% url 'briefing-save-view' %}" class="mt-3 flex flex-wrap items-end gap-3">
+          {% csrf_token %}
+          {% for key, value in filter_values.items %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+          <input type="hidden" name="expected_version" value="{{ selected_view.version|default:0 }}">
+          <div class="field">
+            <label class="field-label" for="view-name">Nome da visualização</label>
+            <input class="field-input" id="view-name" name="name" maxlength="80" required value="{{ selected_view.name|default:'' }}"{% if selected_view %} readonly{% endif %}>
+          </div>
+          <button class="ui-btn ui-btn-quiet" type="submit">Salvar visualização</button>
+        </form>
+      </details>
+      {% if selected_view %}
+        <form method="post" action="{% url 'briefing-delete-view' selected_view.pk %}">
+          {% csrf_token %}
+          {% for key, value in filter_values.items %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+          <input type="hidden" name="expected_version" value="{{ selected_view.version }}">
+          <button class="ui-btn ui-btn-quiet" type="submit">Excluir visualização</button>
+        </form>
+        <a class="ui-link" href="{% url 'dashboard' %}?{{ filter_query }}">Salvar como nova</a>
+      {% endif %}
+    </div>
+    <p class="mt-3 text-xs text-ink-600">Uma visualização guarda filtros, não permissões. Sua carteira é conferida a cada acesso.</p>
+  </details>
+
+  {% if page and not all_providers_failed %}
+  <div id="briefing-results" class="space-y-8 [&.htmx-request]:hidden">
+    <section aria-labelledby="briefing-queue">
+      <div class="flex flex-wrap items-baseline justify-between gap-3 border-b border-ink-200 pb-4">
+        <h2 id="briefing-queue" class="text-xl font-semibold">O que precisa de atenção <span class="text-sm font-normal text-ink-600" data-briefing-total="{{ page.total }}">({{ page.total }})</span></h2>
+        <p class="text-xs text-ink-600">Somente clientes que você pode acessar</p>
+      </div>
+      <dl class="flex flex-wrap gap-x-6 gap-y-3 border-b border-ink-200 py-4 text-sm">
+        {% for count in page.counts %}
+          <div class="flex items-center gap-2" data-briefing-count="{{ count.kind }}" data-count="{{ count.total }}">
+            <dt class="text-ink-600">{{ count.label }}</dt>
+            <dd class="font-semibold tabular-nums">{{ count.total }}</dd>
+          </div>
+        {% endfor %}
+      </dl>
+      {% if page.items %}
+        <ol>
+          {% for item in page.items %}{% include "briefing/_item.html" %}{% endfor %}
+        </ol>
+      {% elif page.failed_providers %}
+        <div class="py-10">
+          <h3 class="text-base font-semibold">Nenhum item nas fontes disponíveis</h3>
+          <p class="mt-2 text-sm text-ink-600">As fontes listadas acima ainda precisam ser consultadas. Tente novamente antes de encerrar a revisão.</p>
+        </div>
+      {% else %}
+        <div class="py-10">
+          <h3 class="text-base font-semibold">{% if page.total %}Nenhum item nesta página{% else %}Nada exige sua decisão nesta seleção{% endif %}</h3>
+          <p class="mt-2 max-w-2xl text-sm text-ink-600">A fila considera apenas as fontes e os clientes acessíveis nesta seleção. Isso não confirma a situação fiscal fora dessas fontes.</p>
+          <a class="ui-link mt-3 inline-block" href="{% url 'dashboard' %}{% if filter_query %}?{{ filter_query }}{% endif %}">Voltar ao início da seleção</a>
+        </div>
+      {% endif %}
+      {% if next_query %}<a class="ui-btn ui-btn-quiet mt-4" href="{% url 'dashboard' %}?{{ next_query }}">Próximos itens</a>{% endif %}
+    </section>
+
+    <section aria-labelledby="briefing-changes">
+      <h2 id="briefing-changes" class="mb-4 text-base font-semibold">Mudanças desde ontem</h2>
+      <ul class="space-y-3">
+        {% for change in page.changes %}
+          <li class="flex flex-wrap items-baseline justify-between gap-2 border-b border-ink-200 pb-3 text-sm">
+            <a class="ui-link min-w-0 break-words" href="{{ change.url }}">{{ change.client_name }} · {{ change.label }}</a>
+            <time class="text-xs tabular-nums text-ink-600" datetime="{{ change.occurred_at|date:'c' }}">{{ change.occurred_at|date:"d/m H:i" }}</time>
+          </li>
+        {% empty %}
+          <li class="text-sm text-ink-600">Nenhuma mudança registrada desde ontem nos ciclos desta seleção.</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

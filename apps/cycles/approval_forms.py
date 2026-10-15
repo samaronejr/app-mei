@@ -10,9 +10,11 @@ from apps.clients.models import ClientContact
 from apps.cycles.effects.inputs import MoneyBinding, ProposalDraft, ProposalInput
 from apps.cycles.effects.manifest import ActionKind
 from apps.cycles.models import (
+    ClientPublication,
     EvidenceLink,
     EvidenceRequest,
     ExtractedField,
+    PublicationState,
     ServiceCycle,
 )
 from apps.obligations.models import (
@@ -32,6 +34,7 @@ OBSERVATION_KIND_LABELS: dict[str, str] = {
     ObservationKind.PAYMENT: "Pagamento",
     ObservationKind.FILING: "Entrega",
     ObservationKind.GUIDE_ISSUED: "Emissão de guia",
+    ObservationKind.CALENDAR_SCHEDULED: "Vencimento no calendário",
 }
 OBSERVATION_SOURCE_LABELS: dict[str, str] = {
     ObservationSourceKind.OFFICIAL_API: "Consulta oficial",
@@ -73,6 +76,23 @@ class ProposalForm(forms.Form):
     action_kind = forms.ChoiceField(label="Ação", choices=tuple(ACTION_LABELS.items()))
     step_key = forms.SlugField(label="Etapa", max_length=64, initial="manual")
     occurrence = forms.IntegerField(label="Ocorrência", min_value=1, initial=1)
+    completion_state = forms.ChoiceField(
+        label="Resultado para conclusão do ciclo",
+        choices=[
+            ("concluido", "Concluir ciclo"),
+            ("encerrado_com_pendencias", "Encerrar com pendências justificadas"),
+        ],
+        initial="concluido",
+        required=False,
+    )
+    supersedes_publication_id = forms.ChoiceField(
+        label="Publicação anterior revisada",
+        required=False,
+        help_text=(
+            "Selecione apenas ao publicar uma revisão. "
+            "Os recebimentos antigos ficam preservados."
+        ),
+    )
     recipients = forms.MultipleChoiceField(
         label="Destinatários", required=False, widget=forms.CheckboxSelectMultiple
     )
@@ -126,6 +146,17 @@ class ProposalForm(forms.Form):
 
     def set_choices(self, cycle: ServiceCycle) -> None:
         """Constrain selections to this already-authorized cycle and client."""
+        cast("forms.ChoiceField", self.fields["supersedes_publication_id"]).choices = [
+            ("", "Sem publicação anterior"),
+            *[
+                (str(row.pk), row.title)
+                for row in ClientPublication.objects.filter(
+                    cycle=cycle,
+                    state=PublicationState.PUBLISHED,
+                    revisions__isnull=True,
+                ).order_by("-published_at", "pk")
+            ],
+        ]
         cast("forms.MultipleChoiceField", self.fields["recipients"]).choices = [
             (str(row.pk), f"{row.name} · {row.email}")
             for row in ClientContact.objects.filter(client_id=cycle.client_id).order_by(
@@ -207,6 +238,12 @@ class ProposalForm(forms.Form):
                 subject=data["subject"],
                 body=data["body"],
                 reason=data["reason"],
+                completion_state=data["completion_state"] or "concluido",
+                supersedes_publication_id=(
+                    UUID(data["supersedes_publication_id"])
+                    if data["supersedes_publication_id"]
+                    else None
+                ),
             ),
             data["expires_at"],
             not_before=data["not_before"],
@@ -225,6 +262,7 @@ class DecisionForm(forms.Form):
             ("reject", "reject"),
             ("cancel", "cancel"),
             ("revalidate", "revalidate"),
+            ("execute", "execute"),
         ]
     )
     reason = forms.CharField(max_length=2000, required=False)

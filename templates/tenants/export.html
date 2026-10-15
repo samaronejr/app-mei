@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% load i18n ptbr %}
+{% block title %}{% translate "Exportação da conta" %}{% endblock %}
+{% block heading %}{% translate "Exportação da conta" %}{% endblock %}
+{% block content %}
+  <p class="mb-5 text-sm"><a class="link" href="{% url 'firm-account' %}">{% translate "Voltar à conta" %}</a></p>
+  <section class="card max-w-2xl space-y-4 p-6" aria-labelledby="estado">
+    <h2 id="estado" class="text-lg font-semibold">{{ export.get_state_display }}</h2>
+    <p class="text-sm text-ink-600">{% translate "Solicitada em" %} {{ export.created_at|data_hora }}.</p>
+    {% if is_preparing %}<p class="text-sm">{% translate "O arquivo será preparado em segundo plano. Atualize para consultar o resultado." %}</p><a class="btn btn-quiet" href="{% url 'account-export-detail' export.pk %}">{% translate "Atualizar situação" %}</a>{% endif %}
+    {% if ready %}
+      <p class="text-sm">{% translate "Arquivo disponível até" %} {{ export.expires_at|data_hora }}{% translate ", respeitado o prazo de acesso da conta." %}</p>
+      <a class="btn btn-primary" href="{% url 'account-export-download' export.pk %}">{% translate "Baixar ZIP" %}</a>
+      <p class="text-xs text-ink-500">{% translate "O manifesto SHA-256 acompanha o arquivo para conferir sua integridade." %}</p>
+    {% elif not is_preparing %}<p class="notice notice-warn">{% translate "Este arquivo não está disponível. Volte à conta para solicitar uma nova exportação, se o prazo permitir." %}</p>{% endif %}
+  </section>
+{% endblock %}
