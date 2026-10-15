@@ -100,7 +100,10 @@ def _build_export(tenant_id: str, export_id: str) -> None:
     try:
         assert_no_transaction()
         with build_archive(
-            claim.data, claim.originals, storage=default_storage
+            claim.data,
+            claim.originals,
+            storage=default_storage,
+            excluded_originals=claim.excluded_originals,
         ) as bundle:
             _upload(claim, bundle)
             won = finalize_export(claim, size=bundle.byte_size, sha256=bundle.sha256)

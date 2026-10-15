@@ -693,13 +693,20 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
     The page carries the upload form again rather than a link back to it. A refusal that
     dead-ends is a client who gives up, and a file input cannot be pre-filled anyway, so
     the retry costs exactly one form and saves a navigation.
+
+    T63: `cycles_r1` rides along exactly as on `portal_documents`, answered from the
+    portal stash without a query, so the layout and the retry form keep the vault's R1
+    ink on the 400 as on the 200. Unflagged tenants keep their bytes.
     """
+    tenant = request.tenant
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
     return render(
         request,
         "portal/upload_error.html",
         {
             "reason": reason,
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+            "cycles_r1": cycles_r1,
         },
         status=HTTPStatus.BAD_REQUEST,
     )
