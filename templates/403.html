@@ -3,8 +3,15 @@ Every 403 the product answers. The exception text Django passes in is deliberate
 not shown: refusals are raised with developer wording, in either language. A caller
 that owes the reader a specific reason renders this template itself with `reason`,
 in the words a client or accountant should read.
+
+A refusal about the state of the account or of a file rather than about who may see
+the page (a write while the firm is read only, a file the scan refused) comes through
+apps.core.refusal.forbidden_page with `reason_only`: its reason is the whole answer,
+and the line on whom to ask for access would send a firm's own accountant to "the
+accounting firm" (AXR1-059).
 {% endcomment %}
 {% block content %}
-    <p class="mt-4 text-ink-800" data-refusal-reason>{% if reason %}{{ reason }}{% else %}{% translate "Esta conta não tem acesso a esta página." %}{% endif %}</p>
-    <p class="mt-2 text-ink-700">{% translate "Se o acesso deveria existir, fale com o escritório de contabilidade responsável." %}</p>
+    <p class="mt-4 text-ink-800" data-refusal-reason>{% if reason %}{{ reason }}{% else %}{% translate "Esta conta não tem acesso a esta página." %}{% endif %}</p>{% if not reason_only %}
+    <p class="mt-2 text-ink-700">{% translate "Se o acesso deveria existir, fale com o escritório de contabilidade responsável." %}</p>{% endif %}
+    {% include "refusal/way_out.html" %}
 {% endblock %}

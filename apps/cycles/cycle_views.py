@@ -24,6 +24,7 @@ from apps.clients.maintenance import load_client
 from apps.clients.models import Engagement, TaxRegime
 from apps.clients.views import require_tenant
 from apps.core.flags import tenant_has
+from apps.core.refusal import WayBack, refusal_page, sentences
 from apps.cycles.capabilities import CYCLES_OPERATE, CYCLES_REOPEN
 from apps.cycles.display_completion import display_completion_items
 from apps.cycles.display_reads import load_cycle_detail
@@ -140,7 +141,13 @@ def cycle_list(request: AuthenticatedRequest) -> HttpResponse:
             UUID(request.GET["responsavel"]) if request.GET.get("responsavel") else None
         )
     except ValueError:
-        return HttpResponse("Filtros inválidos.", status=422)
+        return refusal_page(
+            request,
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+            heading="Não foi possível filtrar os ciclos",
+            reason="Filtros inválidos.",
+            back=WayBack(reverse("cycle-list"), "Voltar aos ciclos"),
+        )
     clients = visible_clients(request.user, tenant_id=tenant_id())
     rows = ServiceCycle.objects.filter(
         client_id__in=clients.values("pk"), period_start=period
@@ -261,9 +268,9 @@ def cycle_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                     )
                 return redirect("cycle-detail", pk=pk)
             except (VersionConflict, StaleObservationError) as exc:
-                error, status = str(exc), HTTPStatus.CONFLICT
+                error, status = sentences(exc), HTTPStatus.CONFLICT
             except (IllegalTransition, ValidationError) as exc:
-                error, status = str(exc), HTTPStatus.UNPROCESSABLE_CONTENT
+                error, status = sentences(exc), HTTPStatus.UNPROCESSABLE_CONTENT
     return _render_detail(request, cycle.pk, error, status)
 
 
@@ -624,9 +631,17 @@ def cycle_open(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     """Open from the workspace, checking the submitted engagement belongs here."""
     require_enabled()
     load_client(request.user, tenant_id(), pk)
+    heading = "Não foi possível abrir o ciclo"
+    workspace = reverse("client-detail", args=[pk])
     form = OpenForm(request.POST)
     if not form.is_valid():
-        return HttpResponse("Dados inválidos para abrir o ciclo.", status=422)
+        return refusal_page(
+            request,
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+            heading=heading,
+            reason="Dados inválidos para abrir o ciclo.",
+            back=WayBack(workspace, "Voltar ao espaço do cliente"),
+        )
     data = form.cleaned_data
     engagement = get_object_or_404(
         Engagement.objects.filter(client_id=pk), pk=data["engagement_id"]
@@ -640,7 +655,16 @@ def cycle_open(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             idempotency_key=f"workspace:{pk}:{data['periodo']}",
         )
     except ValidationError as exc:
-        return HttpResponse(str(exc), status=422)
+        return refusal_page(
+            request,
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+            heading=heading,
+            reason=" ".join(exc.messages),
+            back=WayBack(
+                f"{workspace}?periodo={data['periodo']:%Y-%m}",
+                "Voltar ao espaço do cliente",
+            ),
+        )
     return redirect("cycle-detail", pk=ref.id)
 
 
