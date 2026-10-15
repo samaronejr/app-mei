@@ -1,0 +1,33 @@
+{% load i18n %}{% comment %}
+The upload control of one request (T11). A plain multipart POST that works without
+scripts; with them, htmx posts it and the `uploadList` component (static/js/app.js)
+shows progress, lets the client cancel, and keeps the chosen file for a retry.
+
+The component reads its limits from data attributes rather than expressions: `x-*`
+values are evaluated after the browser decodes entities, so nothing is interpolated
+into them (tests/ui/test_csp.py). The accepted types are a recommendation; the server
+enforces the size cap and remains the authority.
+
+String literals inside a tag that sits within an HTML attribute are single-quoted,
+because the class-token scanner reads attributes with a regex.
+{% endcomment %}<form id="upload-form" class="card space-y-4 px-5 py-5" method="post" action="{% url 'portal-request-upload' req.id %}" enctype="multipart/form-data" hx-post="{% url 'portal-request-upload' req.id %}" hx-target="#request-status" hx-swap="outerHTML" x-data="uploadList" data-max-bytes="{{ max_bytes }}" data-max-label="{{ max_size_label }}" data-accept=".pdf,.xml,.jpg,.jpeg,.png" x-on:htmx:before-request="onStart" x-on:htmx:xhr:progress="onProgress" x-on:htmx:after-request="onDone">
+  {% csrf_token %}
+  <div class="field">
+    <label class="field-label" for="arquivo">{% translate "Escolha o arquivo" %}</label>
+    <input class="upload-field w-full" type="file" name="file" id="arquivo" required accept=".pdf,.xml,.jpg,.jpeg,.png" x-ref="input" x-on:change="refresh" aria-describedby="arquivo-ajuda arquivo-estado">
+    <p id="arquivo-ajuda" class="field-help text-ink-600">{% translate "Envie PDF, XML, JPG ou PNG." %} {% blocktranslate with limite=max_size_label %}Até {{ limite }} por arquivo.{% endblocktranslate %}</p>
+  </div>
+  <div class="space-y-2" hidden x-bind:hidden="isIdle">
+    <progress class="upload-progress" max="100" value="0" x-bind:value="progress" aria-label="{% translate 'Progresso do envio' %}"></progress>
+    <p class="text-sm text-ink-700" x-text="progressLabel"></p>
+  </div>
+  <p id="arquivo-estado" class="text-sm text-ink-900" role="status" aria-live="polite" x-text="message"></p>
+  <div class="flex flex-wrap gap-2">
+    <button class="btn btn-primary" type="submit" x-bind:disabled="isUploading">
+      {% include "partials/pure/icons/upload.html" %}
+      {% translate "Enviar arquivo" %}
+    </button>
+    <button class="btn btn-quiet" type="button" hidden x-bind:hidden="notUploading" x-on:click="cancel">{% translate "Cancelar envio" %}</button>
+    <button class="btn btn-quiet" type="button" hidden x-bind:hidden="cannotRetry" x-on:click="retry">{% translate "Tentar de novo" %}</button>
+  </div>
+</form>

@@ -1,0 +1,11 @@
+Olá,
+
+Seu escritório de contabilidade pediu documentos para concluir o trabalho do período.
+
+Veja o que falta e envie os arquivos pelo portal:
+{{ portal_url }}
+{% if accept_url %}
+Você ainda não tem acesso ao portal. Para criar seu acesso, use este convite (válido por 7 dias, uso único):
+{{ accept_url }}
+{% endif %}
+Este e-mail não contém anexos. Os documentos ficam somente no portal.

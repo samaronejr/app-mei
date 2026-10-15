@@ -7,10 +7,14 @@ adds views that report what the database actually sees while the request is open
 
 from django.db import connection, transaction
 from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
+from django.test.utils import CaptureQueriesContext
 from django.urls import include, path
+from django.views.decorators.http import require_POST
 
 from apps.authz.services import require_can
 from apps.authz.stash import portal_stash
+from apps.core.flags import require_portal_feature, tenant_has
+from apps.portal.middleware import PortalHttpRequest
 
 
 def probe(_request: HttpRequest) -> JsonResponse:
@@ -84,10 +88,58 @@ def fake_admin(_request: HttpRequest) -> HttpResponse:
     return HttpResponse("ADMIN REACHED")
 
 
+@require_portal_feature("cycles_r1")
+def flagged(_request: HttpRequest) -> HttpResponse:
+    """Stand in for an R1 portal surface, gated exactly the way it will ship.
+
+    `require_portal_feature` answers from the stash the middleware built before
+    `SET LOCAL ROLE app_portal`, so this route is where the zero-query contract is
+    proven: after the switch, `tenants_tenant` is denied to the effective role.
+    """
+    return HttpResponse("reached")
+
+
+def flagged_queries(request: PortalHttpRequest) -> JsonResponse:
+    """Count the queries one `tenant_has` call makes inside the portal transaction.
+
+    Anonymous and unconfined requests get no stash and no tenant, so the answer is
+    reported as `None` rather than guessed.
+    """
+    tenant = request.tenant
+    if tenant is None:
+        return JsonResponse({"has": False, "queries": None})
+    with CaptureQueriesContext(connection) as seen:
+        answered = tenant_has(tenant.pk, "cycles_r1")
+    return JsonResponse({"has": answered, "queries": len(seen)})
+
+
+@require_can("publications.acknowledge")
+@require_portal_feature("cycles_r1")
+@require_POST
+def acknowledge(_request: HttpRequest) -> JsonResponse:
+    """Stand in for the client-facing acknowledge, gated as S8.1 ships it.
+
+    `require_can` OUTERMOST, and that order is load-bearing rather than cosmetic:
+    `core.E010` enumerates gates by walking this urlconf and looking each callback
+    up in `PORTAL_CAPABILITY_GATES`, which maps the wrapped function — put another
+    decorator on top and the check sees an unregistered wrapper and skips the gate
+    entirely. `publications.acknowledge` is the one new capability FULL for both
+    client roles, which is the only level a portal gate may carry.
+    """
+    return JsonResponse({"acknowledged": True})
+
+
 urlpatterns = [
     path("probe", probe, name="portal-probe"),
     path("gated", gated, name="portal-gated"),
     path("stash", stash_probe, name="portal-stash"),
+    path(
+        "publicacoes/reconhecer",
+        acknowledge,
+        name="portal-publication-acknowledge",
+    ),
+    path("flagged-portal", flagged, name="portal-flagged"),
+    path("flagged-queries", flagged_queries, name="portal-flagged-queries"),
     path("streamer", streamer, name="portal-streamer"),
     path("nodb", no_database, name="portal-nodb"),
     path("admin/", fake_admin, name="portal-fake-admin"),

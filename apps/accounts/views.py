@@ -20,6 +20,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
 from django.db import transaction
+from django.db.models import Q
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.template.response import TemplateResponse
@@ -46,6 +47,7 @@ from apps.accounts.invites import (
     InviteRevokedError,
     InviteScope,
     InviteScopeMismatchError,
+    InviteTokenSupersededError,
     accept_invite,
     issue_client_invite,
     issue_invite,
@@ -56,9 +58,26 @@ from apps.accounts.invites import (
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
+from apps.authz.grants import (
+    GrantConflictError,
+    GrantNotPermittedError,
+    GrantSeatError,
+    reviewer_eligible,
+    set_review_capability,
+    with_reviewer_state,
+)
 from apps.authz.portfolio import visible_clients
-from apps.authz.services import require_can
+from apps.authz.services import can, require_can
+from apps.clients.models import ClientCompany
+from apps.core.flags import tenant_has
+from apps.delivery.notice_authority import (
+    NoticeOrigin,
+    NoticeRefusalError,
+    NoticeScope,
+    lock_notice_scope,
+)
 from apps.portal.middleware import PORTAL_URLCONF
+from apps.tenants.authority import lock_users
 from apps.tenants.models import Invite, Membership, Tenant, TenantRole
 from apps.tenants.validators import PORTAL_HOST_SUFFIX
 
@@ -102,6 +121,9 @@ _STATUS_BY_ERROR: dict[type[InviteError], HTTPStatus] = {
     # person holding the link: this credential existed and no longer works. Which of
     # the three it was is carried by the reason the page renders, not by the code.
     InviteRevokedError: HTTPStatus.GONE,
+    # T11: a link whose token a later dispatch re-minted. The invitation exists; this
+    # copy of the link is dead, which is what 410 says.
+    InviteTokenSupersededError: HTTPStatus.GONE,
     InviteEmailMismatchError: HTTPStatus.FORBIDDEN,
     InviteAccountExistsError: HTTPStatus.CONFLICT,
 }
@@ -167,7 +189,7 @@ def issue_invite_view(request: AuthenticatedRequest) -> HttpResponse:
         return TemplateResponse(
             request,
             "accounts/team.html",
-            _team_context(request, tenant, form),
+            _team_context(request, tenant, form, with_reviewers=False),
         )
     return HttpResponseRedirect(reverse("invite-issued"))
 
@@ -285,9 +307,14 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
             {"reason": _("Dados inválidos.")},
             status=HTTPStatus.BAD_REQUEST,
         )
+    scope = None
     try:
+        if tenant_has(tenant.pk, "cycles_r1"):
+            scope = lock_notice_scope(
+                request.user, NoticeOrigin("portal_invite", client.pk)
+            )
         _invite, raw_token = issue_client_invite(
-            actor=request.user,
+            actor=scope.actor if scope else request.user,
             tenant=tenant,
             client=client,
             email=form.cleaned_data["email"],
@@ -295,6 +322,22 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
         )
     except InviteNotPermittedError as error:
         raise PermissionDenied(str(error)) from error
+    except NoticeRefusalError as error:
+        return render(
+            request,
+            REFUSAL_TEMPLATE,
+            {"reason": error.messages[0]},
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        )
+    if tenant_has(tenant.pk, "cycles_r1"):
+        # T11: onto the outbox, inside this request's transaction. The send used to
+        # happen here, inside the tenant transaction, and could 500 when it raced an
+        # import rollback; now nothing leaves until the dispatcher claims the row
+        # after commit, and a rollback takes the message with the invitation.
+        if scope is None:
+            raise PermissionDenied
+        _queue_portal_invitation(scope.actor, client, _invite, scope)
+        return HttpResponseRedirect(reverse("invite-issued"))
     try:
         _mail_portal_invitation(
             form.cleaned_data["email"],
@@ -314,6 +357,42 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
             status=HTTPStatus.OK,
         )
     return HttpResponseRedirect(reverse("invite-issued"))
+
+
+def _queue_portal_invitation(
+    actor: User, client: ClientCompany, invite: Invite, scope: NoticeScope
+) -> None:
+    """Queue the invitation for the contact at its address, creating the contact.
+
+    The outbox resolves recipients from contacts only (never from a typed address),
+    so the address the firm typed is matched to an active contact of this client
+    allowed to receive e-mail, and a new contact is registered for it when none
+    exists. The client row lock serializes this with contact edits.
+    """
+    from apps.clients.models import ClientContact  # noqa: PLC0415
+    from apps.delivery.outbox import enqueue_portal_invite  # noqa: PLC0415
+
+    ClientCompany.objects.select_for_update().get(pk=client.pk)
+    contact = (
+        ClientContact.objects.select_for_update()
+        .filter(
+            client=client,
+            email__iexact=invite.email,
+            active=True,
+            channel_email_allowed=True,
+        )
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if contact is None:
+        contact = ClientContact.objects.create(
+            tenant_id=client.tenant_id,
+            client=client,
+            name=invite.email,
+            email=invite.email,
+            role_label=_("Convidado para o portal"),
+        )
+    enqueue_portal_invite(actor, invite, contact, notice_scope=scope)
 
 
 def assert_firm_invite(*, invite: Invite) -> None:
@@ -445,6 +524,8 @@ def _team_context(
     request: AuthenticatedRequest,
     tenant: Tenant,
     form: InviteIssueForm,
+    *,
+    with_reviewers: bool,
 ) -> dict[str, object]:
     # The outer filter is separate from the one inside for_user: that narrows WHICH
     # FIRMS the caller belongs to, while this narrows which rows come back. When the
@@ -469,6 +550,19 @@ def _team_context(
         )
         .order_by("email")
     )
+    # Annotated in Python, not annotated in the template: deciding who may carry a
+    # reviewer grant is a role question, and the role-check guard confines those to
+    # apps/authz — `reviewer_eligible` is the one place the rule lives. The read is
+    # opt-in per call site because `invite_issue_view` reaches here on its
+    # SMTP-failure re-render, where `set_rollback` has already broken the request
+    # transaction (ATOMIC_REQUESTS) and any query raises TransactionManagementError.
+    # With reviewers off the queryset is returned lazy, exactly as before, and the
+    # template's own iteration happens after the response leaves the view — outside
+    # the rolled-back block. The column then renders empty on that error page.
+    if with_reviewers:
+        memberships = with_reviewer_state(memberships)
+        for member in memberships:  # evaluated here, inside a healthy transaction
+            setattr(member, "reviewer_eligible", reviewer_eligible(member))  # noqa: B010
     return {"memberships": memberships, "pending_invites": pending, "form": form}
 
 
@@ -494,7 +588,7 @@ def team_view(request: AuthenticatedRequest) -> HttpResponse:
     return render(
         request,
         "accounts/team.html",
-        _team_context(request, tenant, InviteIssueForm()),
+        _team_context(request, tenant, InviteIssueForm(), with_reviewers=True),
     )
 
 
@@ -592,9 +686,30 @@ def _deactivate(*, actor: User, membership: Membership) -> None:
         )
         raise MemberLifecycleError(msg)
 
+    candidates = Membership.objects.for_user(actor).filter(
+        Q(pk=membership.pk)
+        | Q(client__isnull=True, role=TenantRole.OWNER, is_active=True),
+        tenant_id=membership.tenant_id,
+    )
+    discovered = list(candidates.values_list("pk", "user_id"))
+    users = lock_users([actor.pk, *(user_id for _pk, user_id in discovered)])
+    actor = users[actor.pk]
+    locked = list(
+        candidates.filter(pk__in=[pk for pk, _user_id in discovered])
+        .select_for_update(no_key=True)
+        .order_by("pk")
+    )
+    target = next((row for row in locked if row.pk == membership.pk), None)
+    if (
+        target is None
+        or target.user_id not in users
+        or not actor.is_active
+        or not can(actor, INVITE_CAPABILITY, tenant_id=membership.tenant_id)
+    ):
+        raise PermissionDenied
+    membership = target
     owners = list(
         Membership.objects.for_user(actor)
-        .select_for_update()
         .filter(
             tenant_id=membership.tenant_id,
             client__isnull=True,
@@ -625,6 +740,19 @@ def _deactivate(*, actor: User, membership: Membership) -> None:
 @transaction.atomic
 def _reactivate(*, actor: User, membership: Membership) -> None:
     """Give a previously revoked colleague their access back."""
+    users = lock_users((actor.pk, membership.user_id))
+    actor = users[actor.pk]
+    # PLATFORM_QUERY_OK: lock the explicitly scoped target from the roster view.
+    locked = Membership.objects.select_for_update(no_key=True).get(
+        pk=membership.pk, tenant_id=membership.tenant_id, client__isnull=True
+    )
+    if (
+        locked.user_id != membership.user_id
+        or not actor.is_active
+        or not can(actor, INVITE_CAPABILITY, tenant_id=locked.tenant_id)
+    ):
+        raise PermissionDenied
+    membership = locked
     membership.is_active = True
     membership.save(update_fields=["is_active"])
     record_event(
@@ -681,6 +809,76 @@ def member_deactivate_view(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
         request,
         _("O acesso de %(email)s foi desativado.") % {"email": membership.user.email},
     )
+    return HttpResponseRedirect(reverse("team"))
+
+
+@require_POST
+@login_required
+@require_can(INVITE_CAPABILITY)
+def member_review_toggle_view(
+    request: AuthenticatedRequest,
+    pk: UUID,
+) -> HttpResponse:
+    """Give or take a staff accountant's `actions.approve` reviewer grant.
+
+    Gated on the same `users.create` as the roster's other edits, and deliberately
+    a POST with an explicit `enabled` and the displayed revision. A delayed retry
+    must not overwrite a newer roster decision.
+
+    Anything the toggle cannot act on answers 404, matching `_visible_membership`'s
+    contract — for a row this control does not exist on (an owner or ops row, a
+    portal seat, a deactivated member), the route answers as if it were not there
+    rather than confirming the row is real. `GrantSeatError` collapses into the
+    same answer.
+    """
+    membership = _visible_membership(request, pk)
+    enabled = request.POST.get("enabled")
+    if enabled not in {"0", "1"}:
+        raise Http404
+    try:
+        expected_version = int(request.POST.get("expected_version", ""))
+    except ValueError as invalid:
+        raise Http404 from invalid
+    if not 0 <= expected_version <= 2**63 - 1:
+        raise Http404
+    try:
+        set_review_capability(
+            actor=request.user,
+            membership=membership,
+            enabled=enabled == "1",
+            expected_version=expected_version,
+        )
+    except GrantConflictError:
+        messages.error(
+            request,
+            _(
+                "A permissão de revisão mudou. "
+                "Confira o estado atual antes de tentar novamente."
+            ),
+        )
+        return render(
+            request,
+            "accounts/team.html",
+            _team_context(
+                request, membership.tenant, InviteIssueForm(), with_reviewers=True
+            ),
+            status=HTTPStatus.CONFLICT,
+        )
+    except GrantNotPermittedError as refused:
+        raise PermissionDenied(str(refused)) from refused
+    except GrantSeatError as refused:
+        raise Http404 from refused
+    email = membership.user.email
+    if enabled == "1":
+        messages.success(
+            request,
+            _("%(email)s pode revisar e aprovar.") % {"email": email},
+        )
+    else:
+        messages.success(
+            request,
+            _("%(email)s não pode mais revisar e aprovar.") % {"email": email},
+        )
     return HttpResponseRedirect(reverse("team"))
 
 

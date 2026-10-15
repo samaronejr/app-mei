@@ -38,6 +38,7 @@ from apps.clients.models import (
     OnboardingItem,
     OnboardingStatus,
 )
+from apps.clients.services import current_profiles
 from apps.obligations.models import Obligation, ObligationStatus
 from apps.obligations.parameters import ParameterCache
 from apps.obligations.threshold import ThresholdBand, ThresholdStatus, threshold_status
@@ -97,9 +98,14 @@ def _unsettled(
     tenant_id: UUID | None,
     assignee: User | None = None,
 ) -> QuerySet[Obligation]:
+    return unsettled_for(_book(user, tenant_id, assignee))
+
+
+def unsettled_for(clients: QuerySet[ClientCompany]) -> QuerySet[Obligation]:
+    """Narrow unsettled calendar facts to an already authorized portfolio."""
     return (
         Obligation.objects.filter(
-            client__in=_book(user, tenant_id, assignee),
+            client__in=clients,
         )
         .exclude(status__in=SETTLED)
         # Both are rendered on every row of the queue. Without this the template
@@ -196,6 +202,11 @@ def threshold_warning(
         )
         .order_by("legal_name", "pk")
     )
+    portfolio = list(clients)
+    # One profile read for the whole book: the category each client is measured
+    # against comes from the claim covering 1 January, and resolving it per client
+    # is the N+1 this function exists to avoid.
+    profiles = current_profiles(portfolio)
 
     parameters = ParameterCache()
     rows = (
@@ -206,9 +217,10 @@ def threshold_warning(
                 reference_year,
                 accumulated=client.billed,
                 parameters=parameters,
+                profile_rows=profiles.get(client.pk, []),
             ),
         )
-        for client in clients
+        for client in portfolio
     )
     return tuple(row for row in rows if row.status.band in ATTENTION_BANDS)
 
@@ -223,4 +235,5 @@ __all__ = [
     "onboarding_blocked",
     "overdue",
     "threshold_warning",
+    "unsettled_for",
 ]

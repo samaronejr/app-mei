@@ -27,7 +27,16 @@ because `AdminTenantMiddleware` is inert on this host.
 from django.urls import include, path
 
 from apps.core.views import healthz, readyz, versionz
+from apps.cycles.cycle_views import portal_cycle_detail
 from apps.portal.invite_views import portal_invite_accept
+from apps.portal.publication_views import publication_detail, publication_download
+from apps.portal.request_views import (
+    brand_logo,
+    brand_stylesheet,
+    company_select,
+    request_detail,
+    request_upload,
+)
 from apps.portal.views import (
     document_download,
     document_upload,
@@ -48,6 +57,15 @@ from apps.portal.views import (
 # duplicate `path()` does not error, it shadows, and `reverse()` then answers with
 # whichever pattern happens to come first.
 urlpatterns = [
+    path(
+        "publicacoes/<uuid:pk>/", publication_detail, name="portal-publication-detail"
+    ),
+    path(
+        "publicacoes/<uuid:pk>/documentos/<uuid:link_id>/",
+        publication_download,
+        name="portal-publication-download",
+    ),
+    path("ciclos/<uuid:pk>/", portal_cycle_detail, name="portal-cycle-detail"),
     path("healthz", healthz, name="healthz"),
     path("readyz", readyz, name="readyz"),
     path("versionz", versionz, name="versionz"),
@@ -65,6 +83,22 @@ urlpatterns = [
         name="portal-document-download",
     ),
     path("conta/", portal_account, name="portal-account"),
+    # T11, all behind cycles_r1. The request page is reached from Início, not the bar.
+    path(
+        "solicitacoes/<uuid:pk>/",
+        request_detail,
+        name="portal-request-detail",
+    ),
+    path(
+        "solicitacoes/<uuid:pk>/enviar",
+        request_upload,
+        name="portal-request-upload",
+    ),
+    # `PortalMiddleware.COMPANY_SELECT_PREFIX` matches exactly this path: it runs
+    # unconfined because rotating the session key writes django_session.
+    path("empresa/selecionar/", company_select, name="portal-company-select"),
+    path("marca/tema.css", brand_stylesheet, name="portal-brand-css"),
+    path("marca/logo.png", brand_logo, name="portal-brand-logo"),
     # Not a navigation destination and deliberately absent from the bar: it is reachable
     # only by holding a token, and an invitee is anonymous when they arrive. The prefix
     # is `convites/` because `PortalMiddleware.INVITE_PREFIX` matches on exactly that

@@ -1,0 +1,19 @@
+{% load i18n %}{% comment %}
+An evidence state, drawn as a hue, a glyph and a word -- never fewer than three.
+
+Context:
+  state -- confirmed | manual | pending | unknown | stale | blocked | danger.
+           Anything else renders as unknown: an unrecognised state is, by
+           definition, one nobody has verified, and it must not borrow the look
+           of a state somebody has.
+  label -- the pt-BR word for this particular use ("Pagamento informado").
+           Optional: absent, the shared vocabulary word for the state is used, so
+           the badge can never be a coloured shape with nothing to read.
+
+Green is `confirmed` and nothing else (plan S5.1 principle 4). The glyph and the
+word carry the meaning for a colour-blind reader, a monochrome print and a screen
+reader alike; the glyph is aria-hidden because the word already says it.
+
+The variant classes are literals on both sides of each branch, never an
+interpolated name, so the stale-stylesheet guard and Tailwind both see them.
+{% endcomment %}<span class="status-badge {% if state == 'confirmed' %}status-confirmed{% elif state == 'manual' %}status-manual{% elif state == 'pending' %}status-pending{% elif state == 'stale' %}status-stale{% elif state == 'blocked' %}status-blocked{% elif state == 'danger' %}status-danger{% else %}status-unknown{% endif %}" data-state="{% if state == 'confirmed' or state == 'manual' or state == 'pending' or state == 'stale' or state == 'blocked' or state == 'danger' %}{{ state }}{% else %}unknown{% endif %}">{% if state == 'confirmed' %}{% include "partials/pure/icons/check-circle.html" %}{% elif state == 'manual' %}{% include "partials/pure/icons/user-round.html" %}{% elif state == 'pending' %}{% include "partials/pure/icons/calendar-clock.html" %}{% elif state == 'stale' %}{% include "partials/pure/icons/clock-fading.html" %}{% elif state == 'blocked' %}{% include "partials/pure/icons/ban.html" %}{% elif state == 'danger' %}{% include "partials/pure/icons/alert-triangle.html" %}{% else %}{% include "partials/pure/icons/circle-question-mark.html" %}{% endif %}<span>{% if label %}{{ label }}{% elif state == 'confirmed' %}{% translate "Confirmado" %}{% elif state == 'manual' %}{% translate "Informado (não confirmado)" %}{% elif state == 'pending' %}{% translate "Pendente" %}{% elif state == 'stale' %}{% translate "Desatualizado" %}{% elif state == 'blocked' %}{% translate "Bloqueado" %}{% elif state == 'danger' %}{% translate "Falhou" %}{% else %}{% translate "Sem informação" %}{% endif %}</span></span>

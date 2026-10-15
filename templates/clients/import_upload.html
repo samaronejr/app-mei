@@ -1,0 +1,38 @@
+{% extends "base.html" %}{% load i18n ptbr %}
+{% block title %}{% translate "Importar clientes" %}{% endblock %}
+{% block heading %}{% translate "Importar clientes" %}{% endblock %}
+{% block content %}
+  {% comment %}
+    Wizard steps 1-2 (M2-I): upload, and column mapping when the headers were not
+    recognized. Nothing is written until the dry run succeeds; a refused file
+    answers 422 with the reason and the page ready for another attempt. When the
+    mapping is incomplete the file must be attached again with the choices: the
+    server keeps no copy of a file it has not planned.
+  {% endcomment %}
+  <p class="mb-4 text-sm"><a class="link" href="{% url 'clients-list' %}">{% translate "Voltar para Clientes" %}</a></p>
+  <div class="grid gap-8 lg:grid-cols-3">
+    <section class="card p-6 lg:col-span-2" aria-labelledby="enviar">
+      <h2 id="enviar" class="mb-4 text-sm font-semibold text-ink-700">{% if mapping_needed %}{% translate "Escolha as colunas" %}{% else %}{% translate "Enviar arquivo" %}{% endif %}</h2>
+      {% if error %}
+        <div class="mb-4">{% include "partials/pure/notice.html" with message=error variant="error" only %}</div>
+      {% endif %}
+      <p class="mb-4 text-sm text-ink-700">{% translate "Colunas reconhecidas: CNPJ e Razão social (obrigatórias), Nome fantasia, CPF, UF, Código IBGE e CNAE. CNPJs que já estão neste escritório são ignorados; nenhum cliente existente é alterado." %}</p>
+      <form method="post" enctype="multipart/form-data" class="space-y-4" novalidate>
+        {% csrf_token %}
+        {% include "partials/pure/form_errors.html" %}
+        {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        <button type="submit" class="btn btn-primary">{% translate "Gerar prévia" %}</button>
+      </form>
+    </section>
+    <section class="card p-6" aria-labelledby="recentes">
+      <h2 id="recentes" class="mb-4 text-sm font-semibold text-ink-700">{% translate "Importações recentes" %}</h2>
+      <ul class="space-y-2 text-sm">
+        {% for batch in recent %}
+          <li><a class="link" href="{% url 'client-import-batch' batch.pk %}">{{ batch.filename }}</a> <span class="text-xs text-ink-500">{{ batch.created_at|data_hora }}</span></li>
+        {% empty %}
+          <li class="empty-state">{% translate "Nenhuma importação ainda." %}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+{% endblock %}

@@ -13,12 +13,16 @@ and there is no second list to forget.
 from dataclasses import dataclass
 from typing import Final
 
+from django.conf import settings
+from django.http import HttpRequest
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from django.utils.translation import pgettext_lazy
 
 from apps.authz.models import GrantLevel
 from apps.authz.services import Actor, granted_levels
+from apps.core.flags import tenant_has
+from apps.cycles.capabilities import CYCLES_REVIEW, PLAYBOOK_GATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +63,34 @@ NAV: Final[tuple[NavItem, ...]] = (
 )
 
 
+# The flag that swaps the MEI-era bar for the product shell (plan S5.3).
+PRODUCT_SHELL_FLAG: Final = "cycles_r1"
+
+# The product shell's top level, in the S5.3 order: Hoje, Clientes, Ciclos,
+# Documentos, Comunicação, Gestão. Only destinations that exist are listed — a
+# module joins this tuple in the change that ships its route, because an entry
+# pointing at nothing is a dead link on every page, and "every shipped destination
+# resolves" (tests/ui/test_navigation.py) holds for this tuple exactly as for NAV.
+#
+# Hoje points at the dashboard until the briefing replaces it at the same address,
+# and Gestão at the team screen until playbooks and automations join it. The
+# MEI-era queues are reached from the dashboard's own counts, as they are today.
+#
+# Documentos joined with its working review queue (AXR1-013), gated on the
+# capability its route requires (S8.1 cycles.review).
+NAV_R1: Final[tuple[NavItem, ...]] = (
+    NavItem(_("Hoje"), "dashboard", "clients.view_assigned"),
+    NavItem(_("Clientes"), "clients-list", "clients.view_assigned"),
+    NavItem(_("Ciclos"), "cycle-list", "clients.view_assigned"),
+    NavItem(_("Documentos"), "document-queue", CYCLES_REVIEW),
+    NavItem(_("Comunicação"), "delivery-queue", "clients.view_assigned"),
+    # Playbooks join the shell here, before Gestão: the first working
+    # destination under the gestão umbrella, gated on playbooks.manage.
+    NavItem(_("Playbooks"), "playbook-list", PLAYBOOK_GATE),
+    NavItem(_("Gestão"), "team", "users.create"),
+)
+
+
 def visible_nav_items(
     user: Actor,
     items: tuple[NavItem, ...] = NAV,
@@ -81,4 +113,61 @@ def visible_nav_items(
     )
 
 
-__all__ = ["NAV", "NavItem", "ResolvedNavItem", "visible_nav_items"]
+@dataclass(frozen=True, slots=True)
+class ProductShell:
+    """What the product shell draws: the wordmark, the firm, and its destinations."""
+
+    product_name: str
+    tenant_name: str
+    items: tuple[ResolvedNavItem, ...]
+    # The header search field and the Ctrl/Cmd+K palette (AXR1-021) are drawn
+    # only for an account the search endpoint will answer.
+    searchable: bool = False
+
+
+# The search endpoint requires the capability that earns "Clientes" in NAV_R1, so
+# the resolved bar already holds the answer: reading it costs no query and cannot
+# drift from the registry's own gate.
+SEARCH_DESTINATION: Final = "clients-list"
+
+
+def product_shell(request: HttpRequest | None) -> ProductShell | None:
+    """Return the product shell for this request, or None for the MEI-era one.
+
+    None unless a firm context was GRANTED (`request.tenant`, set by
+    `TenantMiddleware` only after the membership check), the account is signed
+    in, and the firm carries the flag. Every other page — anonymous, platform
+    host, a flag-off firm — keeps the header it had, byte for byte.
+
+    `tenant_has` answers from the per-request flag cache the middleware primed,
+    so the check itself costs no query; only the flag-on branch resolves the
+    capability table, exactly as the MEI-era bar does.
+    """
+    if request is None:
+        return None
+    tenant = getattr(request, "tenant", None)
+    user = getattr(request, "user", None)
+    if tenant is None or user is None or not user.is_authenticated:
+        return None
+    if not tenant_has(tenant.pk, PRODUCT_SHELL_FLAG):
+        return None
+    items = visible_nav_items(user, NAV_R1)
+    search_gate = reverse(SEARCH_DESTINATION)
+    return ProductShell(
+        product_name=settings.PRODUCT_NAME,
+        tenant_name=tenant.name,
+        items=items,
+        searchable=any(item.url == search_gate for item in items),
+    )
+
+
+__all__ = [
+    "NAV",
+    "NAV_R1",
+    "PRODUCT_SHELL_FLAG",
+    "NavItem",
+    "ProductShell",
+    "ResolvedNavItem",
+    "product_shell",
+    "visible_nav_items",
+]

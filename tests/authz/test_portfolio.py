@@ -175,9 +175,9 @@ def test_the_separate_resolution_query_count_is_explicit_on_every_branch(
             anonymous = granted_levels(AnonymousUser(), actions)
         with django_assert_num_queries(1):
             elevated = granted_levels(superuser, actions)
-        with django_assert_num_queries(2):
+        with django_assert_num_queries(1):
             missing = granted_levels(outsider, actions)
-        with django_assert_num_queries(4):
+        with django_assert_num_queries(2):
             widest = granted_levels(alpha.owner, actions)
             separate_role = role_of(alpha.owner)
 
@@ -215,9 +215,9 @@ def test_role_and_levels_share_one_live_resolution_on_every_branch(
             anonymous = granted_levels_with_role(AnonymousUser(), actions)
         with django_assert_num_queries(2):
             elevated = granted_levels_with_role(superuser, actions)
-        with django_assert_num_queries(2):
+        with django_assert_num_queries(1):
             missing = granted_levels_with_role(outsider, actions)
-        with django_assert_num_queries(3):
+        with django_assert_num_queries(1):
             widest = granted_levels_with_role(alpha.owner, actions)
 
     assert stashed == (

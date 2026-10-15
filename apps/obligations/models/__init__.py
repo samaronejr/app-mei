@@ -5,6 +5,13 @@ imported below or its table is never created.
 """
 
 from apps.obligations.models.documents import Document, new_storage_key
+from apps.obligations.models.observations import (
+    ObservationKind,
+    ObservationSourceKind,
+    ObservationSubjectKind,
+    ObservationVerificationStatus,
+    SourceObservation,
+)
 from apps.obligations.models.operations import (
     Obligation,
     ObligationStatus,
@@ -28,7 +35,12 @@ __all__ = [
     "ObligationDueRule",
     "ObligationStatus",
     "ObligationType",
+    "ObservationKind",
+    "ObservationSourceKind",
+    "ObservationSubjectKind",
+    "ObservationVerificationStatus",
     "Periodicity",
     "SchedulerHeartbeat",
+    "SourceObservation",
     "new_storage_key",
 ]

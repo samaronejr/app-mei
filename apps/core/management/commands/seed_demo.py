@@ -38,7 +38,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from apps.accounts.models import User
-from apps.clients.models import ClientCompany
+from apps.clients.models import ClientCompany, TaxProfile, TaxRegime
 from apps.core.tenancy import tenant_context
 from apps.obligations.generator import generate_das_calendar
 from apps.obligations.models import Obligation
@@ -129,7 +129,7 @@ def _tenant_for(slug: str) -> Tenant:
     return tenant
 
 
-def _seed_owner(tenant: Tenant, email: str) -> list[Credential]:
+def seed_owner(tenant: Tenant, email: str) -> list[Credential]:
     """Give one operator an account, a second factor, and the whole firm to look at."""
     issued: list[Credential] = []
 
@@ -190,6 +190,20 @@ def _seed_portfolio(tenant: Tenant) -> tuple[int, int]:
                     "is_mei": True,
                 },
             )
+            # The calendar sweep reads the effective-dated profile, not is_mei: a
+            # demo client with no claim on the timeline would silently drop out of
+            # every refresh. get_or_create keyed on the client keeps the re-run
+            # convergent — the same rule every write in this command follows.
+            TaxProfile.objects.get_or_create(
+                client=client,
+                defaults={
+                    "tenant": tenant,
+                    "regime": TaxRegime.MEI,
+                    "mei_category": client.mei_category,
+                    "valid_from": CLIENT_OPENED_ON,
+                    "provenance": "seed_demo",
+                },
+            )
             generate_das_calendar(client, starting_from=CALENDAR_START, rules=rules)
         return ClientCompany.objects.count(), Obligation.objects.count()
 
@@ -235,7 +249,7 @@ class Command(BaseCommand):
             credentials = [
                 credential
                 for email in emails
-                for credential in _seed_owner(tenant, email)
+                for credential in seed_owner(tenant, email)
             ]
             clients, obligations = _seed_portfolio(tenant)
             # Counted from the rows rather than from `len(emails)`: a summary derived

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Propor efeitos · {{ cycle.client.legal_name }}{% endblock %}
+{% block heading %}Propor efeitos{% endblock %}
+{% block content %}
+<div class="mx-auto max-w-4xl min-w-0">
+  <a class="ui-link" href="{% url 'cycle-detail' cycle.pk %}">Voltar ao ciclo</a>
+  <p class="mt-4 font-semibold">{{ cycle.client.legal_name }} · {{ cycle.period_start|date:'m/Y' }}</p>
+  <p class="mt-2 text-sm text-ink-600">Selecione exatamente o que será autorizado. No próximo cartão, confira os destinatários, o texto completo, os valores, os arquivos e a política antes de pedir aprovação.</p>
+  {% if may_configure %}<p class="mt-2"><a class="ui-link" href="{% url 'approval-policy' %}">Política de aprovação do escritório</a></p>{% endif %}
+  <form method="post" class="ui-panel mt-6 grid min-w-0 gap-5 p-4" data-proposal-form>{% csrf_token %}
+    {% if form.non_field_errors %}<div role="alert">{{ form.non_field_errors }}</div>{% endif %}
+    {% for field in form %}
+      {% if field.is_hidden %}{{ field }}{% elif field.field.widget.allow_multiple_selected %}
+      <fieldset class="min-w-0 break-words">
+        <legend class="ui-field-label">{{ field.label }}</legend>
+        {{ field }}
+        {% if field.help_text %}<p class="mt-1 text-xs text-ink-600">{{ field.help_text }}</p>{% endif %}
+        {% if field.errors %}<div role="alert" class="mt-1 text-sm">{{ field.errors }}</div>{% endif %}
+      </fieldset>{% else %}
+      <div class="min-w-0 break-words">
+        <label class="ui-field-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+        {% if field.help_text %}<p class="mt-1 text-xs text-ink-600">{{ field.help_text }}</p>{% endif %}
+        {% if field.errors %}<div role="alert" class="mt-1 text-sm">{{ field.errors }}</div>{% endif %}
+      </div>{% endif %}
+    {% endfor %}
+    <p class="text-sm text-ink-600">Somente os campos relevantes para a ação integram o cartão. Criar a proposta não executa o efeito.</p>
+    <div><button class="ui-btn ui-btn-primary" type="submit">Congelar efeitos e conferir cartão</button></div>
+  </form>
+</div>
+{% endblock %}

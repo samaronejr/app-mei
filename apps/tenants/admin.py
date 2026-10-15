@@ -4,18 +4,31 @@ from typing import Any
 
 from django import forms
 from django.contrib import admin
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest
+from django.urls import URLPattern, path
 from django.utils.translation import gettext_lazy as _
 
+from apps.audit.models import AuditAction
+from apps.audit.services import Origin, record_platform_event
+from apps.core.flags import FEATURES
+from apps.core.netaddr import client_ip
 from apps.core.templatetags.ptbr import TENANT_ROLE_LABELS, papel
+from apps.core.tenancy import tenant_context
+from apps.tenants.authority import lock_users
 from apps.tenants.models import (
+    BillingAccount,
     Invite,
     Membership,
     Tenant,
     TenantRole,
     firm_role_choices,
 )
+from apps.tenants.operator_views import billing_view, new_firm_view
+from apps.tenants.support_models import SupportGrant
+from apps.tenants.support_views import support_request_view
 
 # The console is the one place a role name cannot be reached from a template of ours:
 # Django draws `list_display` and the filter sidebar itself, both out of the field's
@@ -98,13 +111,141 @@ class InviteAdminForm(forms.ModelForm[Invite]):
         fields = ("tenant", "email", "role", "expires_at", "accepted_at")
 
 
+class TenantAdminForm(forms.ModelForm[Tenant]):
+    """Hold the tenant form to the flag registry the rollout contract defines.
+
+    `features` is an array of free-text slugs at the column level on purpose — a
+    new flag is a code change, not a migration — so the admin form is where an
+    unknown slug is refused. Storing one would look like a grant and answer every
+    gate with `False` forever, which is the silent shape `UnknownFeature` exists
+    to prevent at the code layer; here it becomes a field error an operator can
+    actually see and fix.
+    """
+
+    version = forms.IntegerField(required=False, widget=forms.HiddenInput)
+
+    def get_initial_for_field(self, field: forms.Field, field_name: str) -> object:
+        """Render the revision without exposing the non-editable model field."""
+        if field_name == "version":
+            return self.instance.settings_version
+        return super().get_initial_for_field(field, field_name)
+
+    @transaction.atomic
+    def clean(self) -> dict[str, object]:
+        """Fence legacy operator changes before a profile can overwrite them."""
+        cleaned = super().clean() or {}
+        previous = (
+            # PLATFORM_QUERY_OK: admin already authorized this exact root editor.
+            Tenant.objects.select_for_update(no_key=True)
+            .filter(pk=self.instance.pk)
+            .first()
+        )
+        if previous is not None:
+            if (
+                "firm_settings_r1" in (*previous.features, *cleaned.get("features", []))
+                and cleaned.get("version") != previous.settings_version
+            ):
+                msg = "As configurações mudaram. Recarregue antes de salvar."
+                raise ValidationError(msg)
+            self.instance.settings_version = previous.settings_version
+        return cleaned
+
+    class Meta:
+        """Fields listed positively: the entitlement pair is why this form exists."""
+
+        model = Tenant
+        fields = (
+            "name",
+            "slug",
+            "plan",
+            "is_active",
+            "features",
+            "active_client_limit",
+        )
+
+    def clean_features(self) -> list[str]:
+        """Refuse slugs `apps.core.flags.FEATURES` does not define."""
+        values: list[str] = self.cleaned_data["features"]
+        unknown = sorted(set(values) - FEATURES)
+        if unknown:
+            raise ValidationError(
+                _("Unknown feature flags: %(flags)s."),
+                params={"flags": ", ".join(unknown)},
+            )
+        return values
+
+
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin[Tenant]):
-    """Browse firms by the subdomain they are reached at."""
+    """Browse firms by the subdomain they are reached at.
 
+    `features` and `active_client_limit` are editable here because that is how a
+    firm joins a rollout cohort — the entitlement is data, and the console is the
+    operator surface that writes it. Every save is recorded as a `PlatformEvent`
+    naming the actor, the firm and the changed fields, so a flag appearing on a
+    tenant is never an untracked event.
+    """
+
+    form = TenantAdminForm
     list_display = ("slug", "name", "plan", "is_active")
     list_filter = ("plan", "is_active")
     search_fields = ("slug", "name")
+
+    def get_urls(self) -> list[URLPattern]:
+        """Put audited onboarding and manual billing ahead of the model catch-all."""
+        return [
+            path(
+                "nova-firma/",
+                self.admin_site.admin_view(new_firm_view),
+                name="tenants_tenant_new_firm",
+            ),
+            path(
+                "suporte/",
+                self.admin_site.admin_view(support_request_view),
+                name="tenants_tenant_support_request",
+            ),
+            path(
+                "<uuid:tenant_id>/cobranca/",
+                self.admin_site.admin_view(billing_view),
+                name="tenants_tenant_billing",
+            ),
+            *super().get_urls(),
+        ]
+
+    def save_model(
+        self,
+        request: HttpRequest,
+        obj: Tenant,
+        form: forms.ModelForm[Tenant],
+        change: bool,
+    ) -> None:
+        """Persist the firm and record the entitlement change as a PlatformEvent.
+
+        A platform event rather than a tenant-scoped Event: `tenants_tenant` is a
+        tenancy root with no tenant context of its own, so the row names the firm
+        through `tenant_id` and `subject` instead of being written inside it.
+        """
+        if change:
+            obj.settings_version += 1
+        super().save_model(request, obj, form, change)
+        if not change:
+            with tenant_context(obj.pk):
+                BillingAccount.objects.create(tenant=obj)
+        record_platform_event(
+            action=AuditAction.TENANT_UPDATED,
+            origin=Origin(
+                actor=request.user,
+                subject=obj.slug,
+                ip=client_ip(request),
+            ),
+            tenant_id=obj.pk,
+            metadata={
+                "changed_fields": sorted(form.changed_data),
+                "created": not change,
+                "features": sorted(obj.features),
+                "active_client_limit": obj.active_client_limit,
+            },
+        )
 
 
 @admin.register(Membership)
@@ -124,6 +265,46 @@ class MembershipAdmin(admin.ModelAdmin[Membership]):
     list_display = ("user", "tenant", "client", "role_name", "is_active")
     list_filter = (RoleListFilter, "is_active", "client")
     search_fields = ("user__email", "tenant__slug", "client__legal_name")
+
+    @transaction.atomic
+    def save_model(
+        self,
+        request: HttpRequest,
+        obj: Membership,
+        form: forms.ModelForm[Membership],
+        change: bool,
+    ) -> None:
+        """Fence both sides of a user/tenant move before locking the seat."""
+        # PLATFORM_QUERY_OK: the platform admin edits this exact root row.
+        # CLIENT_SCOPE_OK: the platform editor handles both firm and portal seats.
+        previous = Membership.objects.filter(pk=obj.pk).first() if change else None
+        users = {obj.user_id}
+        if previous is not None:
+            users.add(previous.user_id)
+        lock_users(users)
+        if previous is not None:
+            # PLATFORM_QUERY_OK: recheck discovery after acquiring user fences.
+            # CLIENT_SCOPE_OK: the same exact firm or portal row is being edited.
+            locked = Membership.objects.select_for_update(no_key=True).get(pk=obj.pk)
+            if locked.user_id != previous.user_id or locked.version != previous.version:
+                msg = "O acesso mudou. Recarregue antes de salvar."
+                raise ValidationError(msg)
+        super().save_model(request, obj, form, change)
+
+    @transaction.atomic
+    def delete_model(self, request: HttpRequest, obj: Membership) -> None:
+        """Use the same user fence when deleting one seat."""
+        lock_users((obj.user_id,))
+        super().delete_model(request, obj)
+
+    @transaction.atomic
+    def delete_queryset(
+        self, request: HttpRequest, queryset: QuerySet[Membership]
+    ) -> None:
+        """Fence a platform-selected batch before any member is removed."""
+        lock_users(queryset.values_list("user_id", flat=True))
+        for member in queryset.order_by("tenant_id", "pk"):
+            self.delete_model(request, member)
 
     @admin.display(description=_("Papel"), ordering="role")
     def role_name(self, obj: Membership) -> str:
@@ -155,3 +336,45 @@ class InviteAdmin(admin.ModelAdmin[Invite]):
     def role_name(self, obj: Invite) -> str:
         """Name the offered role in pt-BR, sorted by the value stored behind it."""
         return papel(obj.role)
+
+
+@admin.register(SupportGrant)
+class SupportGrantAdmin(admin.ModelAdmin[SupportGrant]):
+    """Read-only view of owner-approved support grants.
+
+    Read-only by construction: a grant's lifecycle lives on the firm's own
+    `/configuracoes/suporte/` page behind the owner seat, never on an admin
+    form where `save_model` could hand a platform operator the decision the
+    model exists to put in the owner's hands.
+    """
+
+    list_display = (
+        "tenant",
+        "requested_by",
+        "scope",
+        "approved_by_owner",
+        "starts_at",
+        "expires_at",
+        "revoked_at",
+    )
+    list_filter = ("scope",)
+    search_fields = ("requested_by__email", "tenant__slug", "purpose")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        """Refuse adding grants: they start as owner-facing requests only."""
+        del request
+        return False
+
+    def has_change_permission(
+        self, request: HttpRequest, obj: SupportGrant | None = None
+    ) -> bool:
+        """Refuse edits: the decision fields belong to the owner surface."""
+        del request, obj
+        return False
+
+    def has_delete_permission(
+        self, request: HttpRequest, obj: SupportGrant | None = None
+    ) -> bool:
+        """Refuse deletion: the row IS the audit trail, revoked never erased."""
+        del request, obj
+        return False

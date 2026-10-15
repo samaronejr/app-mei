@@ -1,0 +1,34 @@
+{% load i18n %}{% comment %}
+One version row on the playbook detail: number, state, publication stamp, and
+the actions that state allows — edit for a draft, retire for a published one.
+
+The retire form POSTs the version counter it rendered (`expected_version`), so
+a second publisher's publish or retire lands as a conflict message rather than
+a silent second write.
+{% endcomment %}<tr id="v{{ row.number }}">
+  <td data-label="{% translate 'Versão' %}">v{{ row.number }}</td>
+  <td data-label="{% translate 'Estado' %}">
+    {% if row.state == "draft" %}{% translate "Rascunho" %}
+    {% elif row.state == "published" %}{% translate "Publicada" %}
+    {% else %}{% translate "Retirada" %}{% endif %}
+  </td>
+  <td data-label="{% translate 'Publicada em' %}">
+    {% if row.published_at %}
+      {{ row.published_at|date:"d/m/Y H:i" }}
+      {% if row.published_by %}— {{ row.published_by.email }}{% endif %}
+    {% else %}
+      —
+    {% endif %}
+  </td>
+  <td data-label="{% translate 'Ações' %}">
+    {% if row.state == "draft" %}
+      <a class="ui-btn ui-btn-quiet" href="{% url 'playbook-editor' pk=row.playbook_id number=row.number %}">{% translate "Editar" %}</a>
+    {% elif row.state == "published" %}
+      <form method="post" action="{% url 'playbook-retire' pk=row.playbook_id number=row.number %}" class="inline">
+        {% csrf_token %}
+        <input type="hidden" name="expected_version" value="{{ row.version }}">
+        <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Retirar" %}</button>
+      </form>
+    {% endif %}
+  </td>
+</tr>

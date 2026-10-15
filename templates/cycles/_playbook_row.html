@@ -1,0 +1,49 @@
+{% load i18n %}{% comment %}
+One playbook row: name, key, origin (pack or own), and its versions/actions.
+
+The actions are separate small POST forms — never nested inside the row's own
+markup traps — and each carries a real label, so a keyboard or screen-reader
+user hears what the button does, not "submit".
+{% endcomment %}<tr>
+  <td data-label="{% translate 'Nome' %}">
+    <a class="ui-link" href="{% url 'playbook-detail' pk=row.pk %}">{{ row.name }}</a>
+  </td>
+  <td data-label="{% translate 'Chave' %}"><code>{{ row.key }}</code></td>
+  <td data-label="{% translate 'Origem' %}">
+    {% if row.is_system %}
+      {% translate "Pacote do sistema" as pack_label %}
+      {% include "partials/ui/status_badge.html" with state="manual" label=pack_label only %}
+    {% else %}
+      {% translate "Do escritório" %}
+    {% endif %}
+  </td>
+  <td data-label="{% translate 'Versões' %}">
+    {% with versions=row.versions.all %}
+      {% for version in versions %}
+        <a class="ui-link" href="{% url 'playbook-detail' pk=row.pk %}#v{{ version.number }}">v{{ version.number }}</a>{% if not forloop.last %} · {% endif %}
+      {% empty %}
+        {% translate "sem versões" %}
+      {% endfor %}
+    {% endwith %}
+  </td>
+  <td data-label="{% translate 'Ações' %}">
+    <form method="post" class="inline">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="clone">
+      <input type="hidden" name="playbook" value="{{ row.pk }}">
+      <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Clonar" %}</button>
+    </form>
+    {% with draft=row.open_draft %}
+      {% if draft %}
+        <a class="ui-btn ui-btn-quiet" href="{% url 'playbook-editor' pk=row.pk number=draft.number %}">{% translate "Editar rascunho v" %}{{ draft.number }}</a>
+      {% elif not row.is_system %}
+        <form method="post" class="inline">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="new_draft">
+          <input type="hidden" name="playbook" value="{{ row.pk }}">
+          <button type="submit" class="ui-btn ui-btn-quiet">{% translate "Nova versão" %}</button>
+        </form>
+      {% endif %}
+    {% endwith %}
+  </td>
+</tr>

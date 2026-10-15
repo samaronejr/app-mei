@@ -31,6 +31,8 @@ EXAMPLE_IDENTICAL_ALLOWLIST: Final = frozenset(
         "ACME_DNS_OPTION",
         "CONN_MAX_AGE",
         "DEFAULT_FROM_EMAIL",
+        "DELIVERY_DAILY_CAP",
+        "DELIVERY_PAUSED",
         "DJANGO_SETTINGS_MODULE",
         "EMAIL_PORT",
         "EMAIL_TIMEOUT",
