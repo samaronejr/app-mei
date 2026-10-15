@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["doc_type", "fields", "client_cnpj_seen", "confidence_band"],
+  "properties": {
+    "doc_type": {"type": "string", "enum": ["product_invoice", "service_invoice", "das", "statement", "receipt", "unknown"]},
+    "fields": {
+      "type": "array", "maxItems": 20,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "value", "source_span"],
+        "properties": {
+          "name": {"type": "string", "enum": ["competencia", "numero", "valor_total", "cnpj"]},
+          "value": {"type": "string", "maxLength": 255},
+          "source_span": {"type": "string", "maxLength": 255}
+        }
+      }
+    },
+    "client_cnpj_seen": {"type": "string", "maxLength": 14},
+    "confidence_band": {"type": "string", "enum": ["high", "medium", "low", "abstain"]}
+  }
+}

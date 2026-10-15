@@ -1,0 +1,69 @@
+{% extends "base.html" %}{% load i18n %}
+{% comment %}
+Every partial under templates/partials/ui/, rendered once, inside the real shell.
+Served only by tests/browser/urls.py; never reachable in any shipped URLconf.
+{% endcomment %}
+{% block title %}Componentes{% endblock %}
+{% block heading %}Componentes{% endblock %}
+{% block content %}
+<div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+  <section aria-labelledby="kit-estados" class="ui-panel lg:col-span-2">
+    <h2 id="kit-estados" class="ui-panel-heading">Estados</h2>
+    <div class="flex flex-wrap gap-2 px-4 py-3" data-kit="badges">
+      {% for state in states %}{% include "partials/ui/status_badge.html" with state=state only %}{% endfor %}
+    </div>
+  </section>
+
+  <section aria-labelledby="kit-tabela" class="lg:col-span-2 flex flex-col gap-3">
+    <h2 id="kit-tabela" class="text-sm font-semibold text-ink-800">Tabela com filtros</h2>
+    {% include "partials/ui/filter_bar.html" with label="Filtrar ciclos" filters=filters clear_url="/__ui__/kit/" %}
+    <div class="ui-panel">
+      {% include "partials/ui/table.html" with caption="Ciclos de março/2026" columns=columns rows=rows row_template=row_template %}
+    </div>
+    <div class="ui-panel">
+      {% include "partials/ui/table.html" with caption="Ciclos sem responsável" columns=columns rows=no_rows row_template=row_template comfortable=True empty_title="Nenhum ciclo sem responsável." empty_message="Quando um ciclo ficar sem responsável, ele aparece aqui." %}
+    </div>
+  </section>
+
+  <section aria-labelledby="kit-envio" class="flex flex-col gap-3">
+    <h2 id="kit-envio" class="text-sm font-semibold text-ink-800">Envio de arquivos</h2>
+    <form method="get" action="/__ui__/kit/" class="ui-panel flex flex-col gap-3 p-4" x-data="unsavedGuard" data-kit="guarded-form">
+      {% include "partials/ui/field.html" with name="observacao" field_id="kit-observacao" label="Observação para o cliente" type="textarea" help_text="O cliente vê este texto." %}
+      {% include "partials/ui/upload_list.html" with input_name="arquivos" input_id="kit-arquivos" label="Notas de serviço de março" accept=".pdf,.xml" max_bytes=2048 max_label="2 KB" help_text="PDF ou XML, até 2 KB cada." received=received %}
+      <div><button type="submit" class="ui-btn ui-btn-primary">Salvar</button></div>
+    </form>
+  </section>
+
+  <section aria-labelledby="kit-aprovacao" class="flex flex-col gap-3">
+    <h2 id="kit-aprovacao" class="text-sm font-semibold text-ink-800">Aprovação</h2>
+    {% include "partials/ui/effects_card.html" with card_id="kit-efeitos" effects=effects evidence=evidence %}
+    <div class="flex flex-wrap gap-2">
+      {% include "partials/ui/dialog.html" with dialog_id="kit-dialogo" title="Aprovar envio" trigger_label="Revisar e aprovar" body_template=dialog_body %}
+      {% include "partials/ui/drawer.html" with dialog_id="kit-gaveta" title="Documento recebido" trigger_label="Ver documento" body_template=drawer_body open_on_load=drawer_open %}
+    </div>
+  </section>
+
+  <section aria-labelledby="kit-historico" class="ui-panel">
+    <h2 id="kit-historico" class="ui-panel-heading">Histórico</h2>
+    <ol class="timeline px-4 py-4">
+      {% for entry in timeline %}{% include "partials/ui/timeline_item.html" with when=entry.when summary=entry.summary actor=entry.actor state=entry.state state_label=entry.state_label href=entry.href href_label=entry.href_label only %}{% endfor %}
+    </ol>
+  </section>
+
+  <section aria-labelledby="kit-situacoes" class="flex flex-col gap-3">
+    <h2 id="kit-situacoes" class="text-sm font-semibold text-ink-800">Vazio, falha e desatualizado</h2>
+    {% include "partials/ui/state_empty.html" with title="Nada exige sua decisão agora." message="Novas pendências aparecem aqui assim que surgirem." %}
+    {% include "partials/ui/state_error.html" with message="O serviço de guias não respondeu." retry_url="/__ui__/kit/" %}
+    {% include "partials/ui/state_stale.html" with checked_at=checked_at message="A fonte de pagamentos não é consultada há 9 dias." refresh_url="/__ui__/kit/" %}
+  </section>
+
+  <section aria-labelledby="kit-troca" class="ui-panel lg:col-span-2">
+    <h2 id="kit-troca" class="ui-panel-heading">Troca de conteúdo</h2>
+    <div class="flex flex-col items-start gap-3 px-4 py-3">
+      <button type="button" class="ui-btn ui-btn-quiet" hx-get="/__ui__/kit/swap/" hx-target="#kit-swap-zone" hx-sync="this:replace" data-kit="swap-trigger">Carregar próxima pendência</button>
+      <div id="kit-swap-zone" role="region" aria-label="Próxima pendência"></div>
+    </div>
+  </section>
+</div>
+{% include "partials/ui/toast.html" with message="Mensagem aceita pelo servidor de e-mail." variant="success" %}
+{% endblock %}

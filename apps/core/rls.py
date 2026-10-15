@@ -34,6 +34,9 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         # Platform-level reference and control data, shared across every tenant.
         "authz_capability",
         "authz_rolegrant",
+        # T24: platform-level metrics from committed synthetic data only.
+        # No client text, tenant inputs or UI; portal NONE in roles.sql.
+        "automation_evalrun",
         # The standard onboarding checklist. What a MEI must have in order is a
         # property of Brazilian tax practice, not of any one firm, so a
         # per-tenant copy would let one firm's list drift from another's. The

@@ -132,9 +132,14 @@
       five-column table -- it hid the columns past the viewport with no way to reach
       them. The scroll container goes inside the card instead, so the money columns
       stay reachable and the card keeps owning the border and the radius.
+
+      Under the product shell the container is also a named, focusable region. A
+      scroller with nothing focusable inside -- this table when it is empty -- is
+      otherwise unreachable by keyboard on a phone (axe: scrollable-region-focusable).
+      Flag-off firms keep the markup they had; the fix goes with the flag.
     {% endcomment %}
     <div class="card">
-      <div class="table-wrap">
+      <div class="table-wrap"{% if r1_shell %} tabindex="0" role="region" aria-labelledby="limite"{% endif %}>
         <table class="data-table">
           <thead>
             <tr>

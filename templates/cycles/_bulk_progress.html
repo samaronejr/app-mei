@@ -1,0 +1,27 @@
+<section id="bulk-progress" class="grid min-w-0 gap-4" data-passive-poll data-bulk-state="{{ operation.state }}"{% if active %} hx-get="{% url 'bulk-progress' operation.pk %}" hx-trigger="every 2s" hx-sync="this:drop" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  <div class="ui-panel p-4" aria-live="polite" role="status">
+    <h2 class="ui-panel-heading">{{ state_label }}</h2>
+    <p class="mt-2">{{ done_count }} processado(s) · {{ failure_count }} falha(s) · {{ remaining_count }} pendente(s)</p>
+    <progress class="mt-3 w-full accent-brand-700" value="{{ finished_count }}" max="{{ total_count|default:1 }}" aria-label="Itens com resultado registrado">{{ finished_count }} de {{ total_count }}</progress>
+    <p class="mt-2 text-sm text-ink-600">Ignorados, excluídos e cancelados não contam como efeitos executados. Avisos processados foram apenas colocados na fila de e-mail.</p>
+  </div>
+  <div class="flex flex-wrap gap-3">
+    <a id="bulk-download" class="ui-btn ui-btn-quiet" href="{% url 'bulk-report-csv' operation.pk %}">Baixar relatório CSV</a>
+    <a id="bulk-refresh" class="ui-btn ui-btn-quiet" href="{% url 'bulk-detail' operation.pk %}">Atualizar resultados</a>
+    {% if active %}<form method="post" action="{% url 'bulk-detail' operation.pk %}">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ operation.version }}"><button id="bulk-cancel" class="ui-btn ui-btn-quiet" type="submit" name="action" value="cancel">Cancelar itens pendentes</button></form>{% endif %}
+    {% if resumable %}<form method="post" action="{% url 'bulk-detail' operation.pk %}">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ operation.version }}"><button id="bulk-resume" class="ui-btn ui-btn-quiet" type="submit" name="action" value="resume">Retomar lote</button></form>{% endif %}
+  </div>
+  {% if resumable %}<p class="text-sm text-ink-600">Se o processamento foi interrompido, retome os pendentes. Uma reserva ativa não é roubada; a recuperação automática ocorre após o vencimento da reserva.</p>{% endif %}
+  <div class="ui-panel min-w-0 p-4">
+    <h2 class="ui-panel-heading">Resultado por item</h2>
+    <ul class="mt-3 grid min-w-0 gap-4">{% for row in rows %}<li class="min-w-0 border-t border-ink-200 pt-3" data-item-state="{{ row.result.state }}">
+      <p class="font-semibold break-words">{{ row.snapshot.label }}</p>
+      {% if row.snapshot.effect.action_label %}<p class="mt-1 text-sm font-semibold">{{ row.snapshot.effect.action_label }}</p>{% endif %}
+      <p class="mt-1 text-sm">{{ row.result.get_state_display }}</p>
+      {% if row.reason %}<p class="mt-1 text-sm text-ink-600">{{ row.reason }}</p>{% endif %}
+      {% if row.result.result_json.detail %}<p class="mt-1 break-words text-sm text-ink-600">{{ row.result.result_json.detail }}</p>{% endif %}
+      {% if row.result.result_json.cycle_id %}<a class="ui-link mt-2 inline-block" href="{% url 'cycle-detail' row.result.result_json.cycle_id %}">Abrir ciclo</a>{% endif %}
+      {% if row.result.result_json.proposal_id %}<a class="ui-link mt-2 inline-block" href="{% url 'approval-card' row.result.result_json.proposal_id %}">Abrir cartão de efeitos</a>{% endif %}
+    </li>{% empty %}<li>Nenhum item neste lote.</li>{% endfor %}</ul>
+  </div>
+</section>

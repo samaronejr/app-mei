@@ -358,3 +358,47 @@ papered over. This is a claim about those three guards and about nothing else.
 It covers the residual-hardening plan's own remainder. It is not a threat model, not a
 pilot-readiness checklist, and not a statement about surfaces neither plan examined.
 Absence from this page means "not adjudicated here", never "safe".
+
+---
+
+## 9. Axorim R1 accepted residuals
+
+Recorded by the wave-4 isolation sweep (AXR1-026). Append-only: these entries say
+what the sweep proved and, more usefully, what it deliberately did not.
+
+### 9.1 SMTP acceptance is not delivery — ACCEPTED
+
+The delivery ledger records that an SMTP server *accepted* a message, or that the
+acceptance could not be classified (`smtp_rcpt` deferred/unknown outcomes stay
+`unknown`, per tests/delivery/test_rcpt_not_acceptance.py and
+test_smtp_outcome_unknown.py). Nothing in the platform observes the mailbox after
+the server accepts: no bounce processing, no DMARC reporting, no recipient open
+tracking. A notice "sent" by the ledger may have been rejected downstream, dropped
+by a greylist, or quarantined by the recipient's filter. The ledger's monotonic
+status machine (test_status_monotonic.py) proves the platform does not regress a
+recorded state; it does not prove the message arrived. The sweep asserts the
+tables are isolated; it does not assert the transport delivered. That gap is
+accepted for R1 — closing it requires inbound mail processing the product does
+not operate.
+
+### 9.2 Image content is not CNPJ-verifiable — ACCEPTED
+
+The document vault verifies file-type, size, and confinement (tests/portal/
+test_document_vault.py, test_vault_quarantine.py). It does not and cannot verify
+that an uploaded image or PDF actually belongs to the client it was filed under:
+the CNPJ printed inside a scan is pixels, not data, and OCR-to-CNPJ matching was
+scoped out. A client can upload a competitor's document and it will quarantine-
+pass, dedupe-hash, and render correctly — wrongly filed but structurally valid.
+Isolation holds (the row belongs to the right tenant and client); *content truth*
+does not. Accepted for R1 as a workflow risk the firm reviews manually, not a
+boundary the platform enforces.
+
+### 9.3 The sweep proves absence by denial, not absence by audit — ACCEPTED
+
+Every isolation assertion in this wave is a black-box probe: as tenant A, ask for
+tenant B's row, observe refusal. A side channel the probe does not touch — a log
+line, an error message echoing the row, a search-suggestion endpoint added later
+— is outside what these tests see until a route or table names it. The
+enumeration lists exist precisely so new surfaces are forced into the probe set;
+the residual is that probes enumerate *declared* surfaces, and a surface nobody
+declared is unprobed by construction.

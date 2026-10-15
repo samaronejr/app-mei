@@ -1,0 +1,8 @@
+{% comment %}
+A side sheet for quick inspection -- a document's metadata, an exception -- that
+keeps the list behind it in place (S5.6 "drawers vs pages").
+
+Same element, component and context as `dialog.html`, which it renders with the
+`drawer` variant; see that file for the contract. Anything consequential (a
+cycle, a review, an approval) is a full page, never a drawer.
+{% endcomment %}{% include "partials/ui/dialog.html" with variant="drawer" %}

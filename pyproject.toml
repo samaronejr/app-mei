@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "celery",
+  # T12 (S8.3): client XML is parsed only through defusedxml, with DTDs, entities and
+  # external references forbidden (XXE, billion laughs).
+  "defusedxml>=0.7.1",
   "django==5.2.*",
   "django-allauth[mfa]",
   "django-celery-beat",
@@ -20,8 +23,16 @@ dependencies = [
   # -- which means the shipped backend is NOT the tested one, and the storage swap needs
   # its own verify-by-effect step against the real bucket.
   "django-storages[s3]",
+  # T12, dependency PROPOSED in the plan: upload type sniffing by magic numbers. Pure
+  # Python, no libmagic system package in the image.
+  "filetype>=1.2.0",
   "gunicorn",
+  # The client import wizard reads XLSX in read-only mode (apps/clients/importing.py).
+  "openpyxl>=3.1.5",
   "psycopg[binary]>=3.2",
+  # T12: embedded PDF text only (no OCR), 50-page limit and a 10 s budget
+  # (apps/cycles/parsing.py).
+  "pypdf>=5.0",
   "redis",
   "sentry-sdk[django]",
   # Python 3.13's stdlib uuid has no uuid7() (it lands in 3.14) and Django 5.2 ships no
@@ -33,15 +44,27 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "boto3-stubs[s3]",
+  "aiosmtpd>=1.4.6",
+  # Browser + accessibility harness (tests/browser, run with `-m browser`). Pinned
+  # exactly: the axe rule set ships inside this package, so an unpinned upgrade can
+  # redden or silence an accessibility check without a line of ours changing.
+  "axe-playwright-python==0.1.8",
   "django-stubs",
   "hypothesis",
+  "jsonschema>=4.26",
   "model-bakery",
   "mypy",
   "pre-commit",
   "pytest",
   "pytest-cov",
   "pytest-django",
+  "pytest-playwright==0.9.0",
+  "pytest-xdist",
   "ruff",
+  "types-defusedxml>=0.7.0.20260504",
+  "types-openpyxl>=3.1.5.20260827",
+  "types-jsonschema",
 ]
 
 [tool.uv]
@@ -93,6 +116,7 @@ python_version = "3.13"
 strict = true
 show_error_codes = true
 plugins = ["mypy_django_plugin.main"]
+mypy_path = "typings"
 
 [tool.django-stubs]
 django_settings_module = "config.settings.test"
@@ -115,6 +139,12 @@ disallow_untyped_decorators = false
 # the tenancy-aware task bases would otherwise be reported as subclassing Any.
 disallow_subclassing_any = false
 
+# filetype ships no py.typed marker. It is used in one place, `sniff` in
+# apps/cycles/sniffing.py, which reads only `guess(...).mime` and coerces it to str.
+[[tool.mypy.overrides]]
+module = ["filetype", "filetype.*"]
+ignore_missing_imports = true
+
 [[tool.mypy.overrides]]
 module = ["allauth", "allauth.*"]
 ignore_missing_imports = true
@@ -126,6 +156,13 @@ ignore_missing_imports = true
 module = ["django_ratelimit", "django_ratelimit.*"]
 ignore_missing_imports = true
 
+# axe-playwright-python ships no py.typed marker. It is used in one place, the
+# `axe_check` helper in tests/browser/harness.py, which annotates what it reads from
+# the result dict -- so the untyped surface ends at that function.
+[[tool.mypy.overrides]]
+module = ["axe_playwright_python", "axe_playwright_python.*"]
+ignore_missing_imports = true
+
 # botocore ships no py.typed marker. Its only use in this codebase is Config, built once
 # in prod.py to hand django-storages a client configuration -- so the untyped surface is
 # a single constructor call, and every value passed to it is a literal.
@@ -135,7 +172,14 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = ["-ra", "--strict-config", "--strict-markers"]
+# Browser tests need a Chromium binary (`uv run playwright install chromium`) and are
+# deselected here, so a plain `uv run pytest` never requires one; CI runs them in the
+# separate `browser` job with `uv run pytest -m browser`, whose `-m` overrides this.
+addopts = ["-ra", "--strict-config", "--strict-markers", "-m", "not browser"]
+markers = [
+  "browser: drives a real Chromium against a live server (tests/browser); deselected by default",
+  "scale: exercises the active 1,000-client portfolio envelope; included in CI",
+]
 filterwarnings = ["error"]
 pythonpath = ["."]
 testpaths = ["tests"]

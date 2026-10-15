@@ -150,6 +150,37 @@ class ClientCompany(TenantScopedModel):
     # Payroll is out of scope for v1, but the flag sizes the demand for it and keeps
     # a later eSocial decision a data question rather than a migration.
     has_employee = models.BooleanField(_("has employee"), default=False)
+    # The timeline's optimistic-concurrency counter. TaxProfile rows are immutable
+    # claims, so the version lives on the row the correction locks: every
+    # correct_tax_profile call carries the revision it read as expected_revision,
+    # and the write refuses to land when the timeline moved since that read — two
+    # callers holding the same snapshot cannot both win. Starts at 1, bumped by
+    # the service under the client row lock.
+    tax_profile_revision = models.PositiveIntegerField(
+        _("tax profile revision"),
+        default=1,
+    )
+    # Optimistic concurrency for the identity editor: the form carries the version it
+    # read, and `update_client` refuses to land on a row that moved since.
+    version = models.PositiveIntegerField(_("version"), default=1)
+    # Optimistic concurrency for the assignment SET, which has no row of its own to
+    # version: bumped under the client lock by every in-product add/remove, so a
+    # replayed old POST cannot re-add someone who was removed since (ABA).
+    assignment_version = models.PositiveIntegerField(
+        _("assignment version"),
+        default=1,
+    )
+    # Provenance: the import batch that created this client, if one did. PROTECT on
+    # the ORM side and a tenant-paired RESTRICT key in the database — a batch is
+    # history and is never deleted while its clients exist.
+    import_batch = models.ForeignKey(
+        "clients.ImportBatch",
+        on_delete=models.PROTECT,
+        related_name="clients",
+        verbose_name=_("import batch"),
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 

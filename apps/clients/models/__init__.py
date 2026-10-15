@@ -14,12 +14,26 @@ from apps.clients.models.company import (
     ClientStatus,
     GovBrTrustLevel,
 )
+from apps.clients.models.contact import ClientContact
+from apps.clients.models.engagement import Engagement, ServiceKind
+from apps.clients.models.importing import (
+    ImportBatch,
+    ImportFormat,
+    ImportRow,
+    ImportStatus,
+    RowOutcome,
+)
 from apps.clients.models.onboarding import (
     OnboardingItem,
     OnboardingItemTemplate,
     OnboardingStatus,
 )
 from apps.clients.models.tagging import ClientTag, Tag
+from apps.clients.models.tax_profile import (
+    ProfileConfidence,
+    TaxProfile,
+    TaxRegime,
+)
 
 __all__ = [
     "CNPJ_LENGTH",
@@ -29,11 +43,22 @@ __all__ = [
     "AssignmentRole",
     "ClientAssignment",
     "ClientCompany",
+    "ClientContact",
     "ClientStatus",
     "ClientTag",
+    "Engagement",
     "GovBrTrustLevel",
+    "ImportBatch",
+    "ImportFormat",
+    "ImportRow",
+    "ImportStatus",
     "OnboardingItem",
     "OnboardingItemTemplate",
     "OnboardingStatus",
+    "ProfileConfidence",
+    "RowOutcome",
+    "ServiceKind",
     "Tag",
+    "TaxProfile",
+    "TaxRegime",
 ]

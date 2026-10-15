@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "axr1/**"]
 
 # A superseded push to the same ref is wasted signal, but never cancel main: the
 # green run on main is the artifact T-021 exists to produce.
@@ -25,6 +25,10 @@ jobs:
     # commit finished in 22m02s, proving the ceiling sat inside the runner's own variance band; re-running was
     # luck, not a fix. Seventy-five minutes provides runner-variance margin, not permission for indefinite runtime growth:
     # coverage, isolation, RLS, migration, and CNPJ checks all remain mandatory and unconditional.
+    # AXR1-041: the R1 schema roughly doubled the tables every transactional test flushes, and
+    # the serial suite reached only 53% of 5190 tests in 74 minutes on this runner (run
+    # 38537217704). Both pytest steps therefore use every runner CPU (pytest-xdist, one test
+    # database per worker, whole files per worker) instead of a longer ceiling.
     timeout-minutes: 75
 
     # Every credential below is a workflow-local literal for a container that is
@@ -82,6 +86,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Stacked PRs validate their exact head; main PRs keep merge-ref testing.
+          ref: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          printf 'source_sha=%s event_sha=%s workflow_sha=%s workflow_ref=%s\n' \
+            "$source_sha" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -102,7 +120,23 @@ jobs:
       #
       # This step must stay ahead of the first step that touches the database.
       - name: Bootstrap database roles
-        run: psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+        run: |
+          psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+          # pytest-django clones each test database from template1, so extensions
+          # that exist only in app_mei never reach the suite. btree_gist in
+          # particular is asserted by the clients migration that needs it, and a
+          # test database without it fails there, not here.
+          #
+          # The URL's own database component is swapped to template1 rather than
+          # overridden with -d: psql parses a positional URI first, so URL + -d
+          # leaves the positional argument to be read as the USERNAME and the
+          # connection fails before the SQL runs.
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS unaccent;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 
       - name: Lint (ruff check)
         run: uv run ruff check .
@@ -159,6 +193,7 @@ jobs:
       - name: Tests with coverage
         run: |
           uv run pytest \
+            -n auto --dist loadfile \
             --durations=50 \
             --durations-min=1.0 \
             --cov=apps --cov=config \
@@ -213,7 +248,7 @@ jobs:
       # rather than one line inside a 450-test summary. Overlapping with the full
       # run above is deliberate.
       - name: Isolation suite
-        run: uv run pytest tests/isolation/ -v
+        run: uv run pytest tests/isolation/ -v -n auto --dist loadfile
 
       # A dedicated step for the same reason as the isolation suite above: the CNPJ
       # is this product's most fundamental identifier, alphanumeric registrations
@@ -241,6 +276,125 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  browser:
+    name: Browser + accessibility (Chromium, axe-core)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    # The browser suite drives a real Chromium against a live server, so it needs
+    # the same database and roles as the test job -- and the live server must run
+    # as app_runtime, which tests/browser/conftest.py enforces and asserts on every
+    # request. Deselected from the test job by `addopts = -m "not browser"`, so
+    # that job never needs a browser; this one selects it with `-m browser`.
+    #
+    # The service containers, the env block and every database bootstrap step
+    # below mirror the test job. Keep them in step: a bootstrap step added there
+    # and not here reddens this job for a reason unrelated to the browser.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: app_mei
+          POSTGRES_USER: app_mei
+          POSTGRES_PASSWORD: ephemeral-ci-superuser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app_mei -d app_mei"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DJANGO_ENV_FILE: /nonexistent
+      SECRET_KEY: ephemeral-ci-secret-key-not-used-outside-this-runner-0000000000
+
+      APP_MIGRATOR_PASSWORD: ephemeral-ci-app-migrator
+      APP_RUNTIME_PASSWORD: ephemeral-ci-app-runtime
+      APP_TEST_PASSWORD: ephemeral-ci-app-test
+
+      SUPERUSER_DATABASE_URL: postgres://app_mei:ephemeral-ci-superuser@localhost:5432/app_mei
+
+      DATABASE_URL: postgres://app_runtime:ephemeral-ci-app-runtime@localhost:5432/app_mei
+      DATABASE_MIGRATION_URL: postgres://app_migrator:ephemeral-ci-app-migrator@localhost:5432/app_mei
+      TEST_DB_USER: app_test
+      TEST_DB_PASSWORD: ephemeral-ci-app-test
+      CONN_MAX_AGE: "0"
+
+      REDIS_URL: redis://localhost:6379/0
+      ALLOWED_HOSTS: localhost,127.0.0.1,.localhost
+      CSRF_TRUSTED_ORIGINS: http://localhost:8000,http://127.0.0.1:8000
+
+      # Full-page screenshots of the shell and the component kit at both viewports,
+      # uploaded below so a reviewer can see what the assertions saw.
+      BROWSER_SCREENSHOT_DIR: browser-screenshots
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          printf 'source_sha=%s event_sha=%s workflow_sha=%s workflow_ref=%s\n' \
+            "$source_sha" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Same reason and same position as in the test job: service containers start
+      # before checkout, so the roles are created here, ahead of any database step.
+      # The template1 lines come with it — this job's pytest run also creates a
+      # test database cloned from template1, so the same three extensions must
+      # exist there or clients.0012's btree_gist assertion fails at CREATE DATABASE
+      # time, not at a test. Same corrected URL-swap form the test job uses.
+      - name: Bootstrap database roles
+        run: |
+          psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS unaccent;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+
+      # Needs the runner's network to reach the Playwright CDN. If that is ever
+      # blocked, the suite still runs locally and the gap is recorded (plan todo 3).
+      - name: Browser suite (Chromium + axe-core)
+        run: uv run playwright install --with-deps chromium && uv run pytest -m browser
+
+      - name: Upload screenshots
+        if: always() && hashFiles('browser-screenshots/*.png') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-screenshots-${{ github.run_id }}
+          path: browser-screenshots/
+          if-no-files-found: error
+          retention-days: 7
+
   container-smoke:
     name: Container smoke (/healthz from inside the stack)
     runs-on: ubuntu-24.04
@@ -258,6 +412,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          printf 'source_sha=%s event_sha=%s workflow_sha=%s workflow_ref=%s\n' \
+            "$source_sha" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
 
       - name: Write workflow-local .env
         # Compose requires SECRET_KEY to be set and reads the rest from .env. These
@@ -331,7 +498,7 @@ jobs:
   deploy-pilot:
     name: Deploy to the pilot host (main only, after the gates above)
     runs-on: ubuntu-24.04
-    needs: [test, container-smoke]
+    needs: [test, container-smoke, browser]
     # Both halves are load-bearing. `push` excludes pull_request runs, whose head is a
     # synthetic merge commit that exists on no branch and therefore cannot be checked
     # out on the box. The ref check excludes any branch a future trigger might add.

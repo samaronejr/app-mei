@@ -1,6 +1,11 @@
 {% extends "base.html" %}{% load authz i18n ptbr %}
 {% block title %}{{ client.legal_name }}{% endblock %}
 {% block heading %}{{ client.legal_name }}{% endblock %}
+{% block actions %}{% comment %}
+  AXR1-007: under the import_r1 flag the client's setup (services, tax profile,
+  contacts, portal invites, responsible people) is one click away. Flag off, the
+  block renders nothing and the page is unchanged.
+{% endcomment %}{% if onboarding_r1 %}<a class="btn btn-quiet" href="{% url 'client-setup' client.pk %}">{% translate "Cadastro, contatos e acessos" %}</a>{% endif %}{% endblock %}
 {% block content %}
   {% comment %}
     A read-only file ABOUT THE CLIENT. There is still no edit, no upload and no delete:
