@@ -2,13 +2,23 @@
 
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
+from django.core.files import File
 from django.core.files.storage import Storage
 from storages.backends.s3 import S3Storage
 from storages.utils import clean_name, safe_join
 
 from apps.core.tasks import assert_no_transaction
+
+if TYPE_CHECKING:
+    from apps.cycles.evidence_zip import Bundle
+
+
+def upload_archive(storage: Storage, key: str, bundle: "Bundle") -> str:
+    """Upload a completed bounded spool, never from a tenant transaction."""
+    assert_no_transaction()
+    return storage.save(key, File(bundle.file))
 
 
 class ArchiveSource(Protocol):

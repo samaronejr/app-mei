@@ -1,0 +1,25 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    Labels quoted here are the ones templates/clients/import_upload.html and
+    import_batch.html render. Change those and this page goes stale.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="arquivo">
+    <h2 id="arquivo" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Enviar a planilha{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Em Clientes, use Importar clientes e envie um arquivo CSV ou XLSX. Em Escolha as colunas, diga qual coluna da sua planilha corresponde a cada campo.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Gerar prévia não cria nenhum cliente. A prévia mostra as linhas lidas, quantos clientes serão criados, as linhas inválidas e as duplicadas, que são ignoradas.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="limite">
+    <h2 id="limite" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Limite de clientes ativos{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Se a importação passar do limite de clientes ativos do seu plano, nenhum cliente é criado. A página mostra quantas vagas faltam, e você pode revisar a lista ou falar com o responsável pela conta.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="confirmar">
+    <h2 id="confirmar" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Confirmar, corrigir e desfazer{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Depois da confirmação, a importação roda em segundo plano e a página se atualiza sozinha.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Linhas que falharam podem ser tentadas de novo pelo botão Tentar de novo as linhas com falha.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Baixar relatório de erros (CSV) traz cada linha recusada com o motivo.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Se a importação trouxe algo errado, use Desfazer esta importação na página do lote.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+{% endblock %}

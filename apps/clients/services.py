@@ -36,6 +36,11 @@ from apps.clients.models import (
     TaxProfile,
     TaxRegime,
 )
+from apps.tenants.entitlements import (
+    ACTIVE_CLIENT_STATES,
+    lock_entitlement,
+    require_client_capacity,
+)
 
 OBJECT_TYPE = "clients.ClientAssignment"
 TAX_PROFILE_OBJECT_TYPE = "clients.TaxProfile"
@@ -235,13 +240,21 @@ def lock_tax_profile_client(
 @transaction.atomic
 def save_client_registry(*, actor: User, client: ClientCompany, created: bool) -> None:
     """Save legacy fields and their claim only after checking the locked revision."""
+    tenant = lock_entitlement(client.tenant_id)
     if created:
         if not can(actor, "clients.edit_tax_profile", client):
             raise PermissionDenied
+        previous_status = None
     else:
-        lock_tax_profile_client(
+        locked = lock_tax_profile_client(
             actor=actor, client=client, expected_revision=client.tax_profile_revision
         )
+        previous_status = locked.status
+    if (
+        client.status in ACTIVE_CLIENT_STATES
+        and previous_status not in ACTIVE_CLIENT_STATES
+    ):
+        require_client_capacity(tenant)
     client.save()
     sync_profile_flag(actor=actor, client=client, created=created)
     client.refresh_from_db(fields=["tax_profile_revision"])

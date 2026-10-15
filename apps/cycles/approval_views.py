@@ -2,7 +2,9 @@
 
 import json
 from datetime import datetime, timedelta
+from enum import StrEnum, auto
 from http import HTTPStatus
+from typing import Any
 from uuid import UUID
 
 from django.contrib.auth.decorators import login_required
@@ -15,8 +17,11 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.approvals import may_configure_policy, proposal_controls
 from apps.authz.services import require_can
+from apps.authz.support import in_support_mode
 from apps.clients.maintenance import load_client
+from apps.clients.models import ClientContact
 from apps.clients.views import require_tenant
+from apps.core.refusal import sentences
 from apps.cycles.approval_forms import (
     OBSERVATION_SOURCE_LABELS,
     ApprovalPolicyForm,
@@ -75,6 +80,15 @@ REASON_LABELS = {
     "effect_context_closed": "O cliente ou o ciclo está encerrado.",
     "engagement_changed": "A vigência do serviço mudou.",
 }
+
+
+EMPTY_SECTION_LABELS = (
+    ("recipients", "destinatários externos"),
+    ("money", "valores monetários"),
+    ("documents", "documentos"),
+    ("evidence", "solicitações de evidência"),
+    ("observations", "observações de fonte"),
+)
 
 
 def _proposal(request: AuthenticatedRequest, pk: UUID) -> ActionProposal:
@@ -136,7 +150,9 @@ def _decision(
         proposal.refresh_from_db()
         return _card(request, proposal, str(error), HTTPStatus.CONFLICT)
     except (ValidationError, IllegalTransition, IntentConflict) as error:
-        return _card(request, proposal, str(error), HTTPStatus.UNPROCESSABLE_CONTENT)
+        return _card(
+            request, proposal, sentences(error), HTTPStatus.UNPROCESSABLE_CONTENT
+        )
     if result.proposal.state == ProposalState.INVALIDATED:
         proposal.refresh_from_db()
         return _card(
@@ -146,6 +162,56 @@ def _decision(
             HTTPStatus.CONFLICT,
         )
     return None
+
+
+# Message bodies never reach a support session: the frozen manifest is the
+# proposal's own archive, and the support grant buys the page, not the mail.
+# Structural fields stay untouched — digests, identifiers and decisions are what
+# make the card audit-complete; bodies, headers and addressees are the payload
+# a support visit must not carry away.
+REDACTED_PAYLOAD_FIELDS = frozenset(
+    {"subject", "body", "from", "headers", "recipients"}
+)
+
+
+class BadgeState(StrEnum):
+    """The states partials/ui/status_badge.html draws that an approval card uses."""
+
+    PENDING = auto()
+    MANUAL = auto()
+    BLOCKED = auto()
+    STALE = auto()
+    UNKNOWN = auto()
+
+
+# An approval is a human decision, never verification, so no state borrows green.
+PROPOSAL_STATE_BADGES: dict[str, BadgeState] = {
+    ProposalState.AWAITING: BadgeState.PENDING,
+    ProposalState.APPROVED: BadgeState.MANUAL,
+    ProposalState.REJECTED: BadgeState.BLOCKED,
+    ProposalState.INVALIDATED: BadgeState.STALE,
+    ProposalState.CANCELLED: BadgeState.BLOCKED,
+}
+
+
+def _redact_frozen(frozen: dict[str, Any]) -> dict[str, Any]:
+    """Return a manifest copy with message bodies and addressees replaced."""
+    payload = frozen.get("payload")
+    if not isinstance(payload, dict):
+        return frozen
+    redacted = dict(payload)
+    for field in REDACTED_PAYLOAD_FIELDS:
+        if field in redacted:
+            redacted[field] = "•••" if field != "recipients" else []
+    notice = redacted.get("notice")
+    if isinstance(notice, dict):
+        redacted["notice"] = {
+            **notice,
+            **{
+                field: "•••" for field in ("subject", "body", "from") if field in notice
+            },
+        }
+    return {**frozen, "payload": redacted}
 
 
 def _card(
@@ -160,6 +226,8 @@ def _card(
         initiation_capability(ActionKind(proposal.action_kind)),
     )
     frozen = json.loads(bytes(proposal.manifest_bytes))
+    if in_support_mode():
+        frozen = _redact_frozen(frozen)
     expires_at = datetime.fromisoformat(frozen["expires_at"])
     now = timezone.now()
     dates = {
@@ -186,6 +254,23 @@ def _card(
         }
         for row in frozen["observations"]
     ]
+    # Names identify the frozen contacts for the reader; the frozen address stays
+    # the fact. A support visit resolves none, as it carries no addressee away.
+    names = (
+        {}
+        if in_support_mode()
+        else {
+            str(pk): name
+            for pk, name in ClientContact.objects.filter(
+                client_id=proposal.client_id,
+                pk__in={row["contact_id"] for row in frozen["recipients"]},
+            ).values_list("pk", "name")
+        }
+    )
+    recipients = [
+        {**row, "name": names.get(row["contact_id"], "")}
+        for row in frozen["recipients"]
+    ]
     execution = ActionExecution.objects.filter(proposal=proposal).first()
     action_label = (
         "Reabrir ciclo"
@@ -206,10 +291,20 @@ def _card(
                 and expires_at > now
             ),
             "frozen": frozen,
+            "state_badge": PROPOSAL_STATE_BADGES.get(
+                proposal.state, BadgeState.UNKNOWN
+            ),
+            "recipients": recipients,
             "dates": dates,
             "expired": expires_at <= now,
             "observations": observations,
             "error": error,
+            # A 409 is a stale view, not a refusal: the card says so differently.
+            "conflict": status == HTTPStatus.CONFLICT,
+            # Frozen collections with nothing in them share one compact line.
+            "empty_sections": [
+                label for key, label in EMPTY_SECTION_LABELS if not frozen[key]
+            ],
             "warnings": [
                 REASON_LABELS.get(code, code) for code in proposal.invalidation_reasons
             ],
@@ -309,8 +404,11 @@ def proposal_create(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             form.add_error(None, str(error))
             status = HTTPStatus.CONFLICT
         except (ValidationError, IllegalTransition, BuildError) as error:
-            message = REASON_LABELS.get(str(error), str(error))
-            form.add_error(None, message)
+            # REASON_LABELS is keyed by machine code, which is what a BuildError's
+            # text is; a ValidationError is looked up by its joined messages and
+            # otherwise shown as those sentences, never as its list repr.
+            said = sentences(error)
+            form.add_error(None, REASON_LABELS.get(said, said))
             status = HTTPStatus.UNPROCESSABLE_CONTENT
     elif request.method == "POST":
         status = HTTPStatus.UNPROCESSABLE_CONTENT

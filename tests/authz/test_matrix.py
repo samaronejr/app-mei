@@ -1,4 +1,4 @@
-"""All 180 cells, checked against the report rather than against what seeded them.
+"""All 186 cells, checked against the report rather than against what seeded them.
 
 The obvious version of this test compares the database to `apps.authz.matrix.MATRIX`
 and proves only that the seed ran. It would pass with a transcription error in every
@@ -27,12 +27,11 @@ HEADER_PREFIX: Final[str] = "| Capability | Platform admin |"
 
 # The plan pins the table to lines 51-80 and warns that counting the header and the
 # separator gives the wrong total. Both are asserted below rather than assumed.
-# The R1 capabilities (todo 4) extended the same table to thirty rows: seventeen
-# pre-existing, thirteen seeded by apps.authz.migrations.0006_seed_r1_capabilities.
+# T4 adds thirteen R1 rows; T22 adds the owner account capability.
 EXPECTED_FIRST_DATA_LINE: Final[int] = 51
-EXPECTED_LAST_DATA_LINE: Final[int] = 80
-EXPECTED_CAPABILITIES: Final[int] = 30
-EXPECTED_CELLS: Final[int] = 180
+EXPECTED_LAST_DATA_LINE: Final[int] = 81
+EXPECTED_CAPABILITIES: Final[int] = 31
+EXPECTED_CELLS: Final[int] = 186
 
 COLUMN_TO_ROLE: Final[dict[str, str]] = {
     "Platform admin": Role.PLATFORM_ADMIN,
@@ -110,7 +109,7 @@ def test_the_published_table_sits_where_the_plan_says_it_does() -> None:
 def test_the_parse_produces_one_hundred_and_eighty_cells() -> None:
     # Given the parsed table
     # When its cells are counted
-    # Then there are 30 x 6. A broken parse would make every assertion below vacuous.
+    # Then there are 31 x 6. A broken parse would make every assertion below vacuous.
     assert len(PUBLISHED) == EXPECTED_CELLS
     assert len({label for label, _role in PUBLISHED}) == EXPECTED_CAPABILITIES
 

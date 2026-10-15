@@ -1002,6 +1002,57 @@
     @apply hidden truncate 2xl:inline;
   }
 
+  /* With the firm settings entry in the bar (AXR1-022), Configurações and the search
+   * submit yield to icon buttons from `md`, where the field shares the bar, so the
+   * account actions keep the first row at desktop widths. Each keeps its name as
+   * visually hidden text and a title; below `md` both show the text, as before. The
+   * bar never grows past `max-w-7xl`, so no window is wide enough for both texts,
+   * the signed-in address and the menu on one row: the icons stay. */
+  .shell-compact-btn {
+    @apply md:px-2;
+  }
+
+  .shell-compact-btn > .icon {
+    @apply hidden md:block;
+  }
+
+  .shell-compact-label {
+    @apply md:sr-only;
+  }
+
+  /* Under the same flag the firm's name is what gives way (AXR1-022). From `xl`
+   * upward every action shares the first row, so there the bar does not wrap: the
+   * menu, the search field and the account actions keep their own width and never
+   * wrap, and the name shrinks to the ellipsis `.shell-tenant` already carries,
+   * whatever the firm is called (Tenant.name holds 255 characters). Its full text
+   * stays in the title and the accessibility tree. The bar never grows past
+   * `max-w-7xl`, so every wider window holds what `xl` holds: the field keeps its
+   * `xl` width and the signed-in address stays hidden, as it is below `2xl`. The
+   * menu keeps 1rem clear before the search field, so the row's spare room holds by
+   * construction rather than by the length of a name. */
+  @media (width >= theme(--breakpoint-xl)) {
+    .shell-bar-fit {
+      @apply flex-nowrap;
+    }
+
+    .shell-bar-fit > :not(.shell-brand),
+    .shell-bar-fit .shell-wordmark {
+      @apply shrink-0 whitespace-nowrap;
+    }
+
+    .shell-bar-fit > .shell-disclosure {
+      @apply mr-4;
+    }
+
+    .shell-bar-fit .shell-search-input {
+      @apply w-44;
+    }
+
+    .shell-bar-fit .shell-account-email {
+      @apply hidden;
+    }
+  }
+
   .shell-search-input {
     @apply min-h-9 w-full min-w-0 rounded-field border border-ink-300 bg-surface
       px-2.5 text-sm text-ink-900 md:w-44 2xl:w-56;

@@ -12,14 +12,28 @@
 {% elif kind == 'approve_items' %}
 {% with frozen=item.effect.frozen %}
 <div class="mt-4 grid min-w-0 gap-4" data-bulk-approval>
-  <h4 class="font-semibold">{{ item.effect.action_label }} · revisão {{ frozen.proposal_revision }}</h4>
+  <h4 class="font-semibold">{% include "cycles/_bulk_approval_action.html" with frozen=frozen only %} · revisão {{ frozen.proposal_revision }}</h4>
+  {% if frozen.payload.reopen %}
+  <div class="min-w-0" data-bulk-effect="reopen">
+    <p class="font-semibold">Na execução aprovada, reabrir o ciclo com uma nova emenda, preservando a conclusão anterior.</p>
+    <p class="mt-2 text-sm">Conclusão preservada: <code class="break-all" data-bulk-generation>{{ frozen.payload.reopen.generation_id }}</code></p>
+    <p class="mt-2 text-sm font-semibold">Escopo congelado da emenda</p>
+    <ul class="mt-1 grid gap-1 text-sm">{% for subject in frozen.payload.reopen.affected_scope %}<li class="break-all" data-bulk-scope>{{ subject }}</li>{% endfor %}</ul>
+    <p class="mt-2 text-sm" data-bulk-invalidation="cycle_amended" data-proposal-states="aguardando_aprovacao aprovada" data-executed="false">Na execução, o ciclo volta a ficar em andamento. Outras propostas deste ciclo ainda aguardando aprovação ou aprovadas, mas não executadas, serão invalidadas e precisarão de nova conferência. Aprovar este lote apenas registra a decisão; não reabre o ciclo.</p>
+  </div>
+  {% elif frozen.payload.completion_state %}
+  <div class="min-w-0" data-bulk-effect="cycle_completion" data-bulk-completion-state="{{ frozen.payload.completion_state }}">
+    <p class="font-semibold">Na execução aprovada, {% if frozen.payload.completion_state == 'encerrado_com_pendencias' %}encerrar o ciclo com as pendências justificadas abaixo{% else %}concluir o ciclo, se todas as condições forem atendidas{% endif %}. Aprovar este lote apenas registra a decisão; não encerra o ciclo.</p>
+    {% if frozen.payload.completion_reasons %}<dl class="mt-2 grid gap-2 text-sm">{% for key, reason in frozen.payload.completion_reasons.items %}<div><dt class="break-all font-semibold" data-bulk-reason-key="{{ key }}">{{ key }}</dt><dd class="mt-1 whitespace-pre-wrap break-words">{{ reason }}</dd></div>{% endfor %}</dl>{% endif %}
+  </div>
+  {% endif %}
   <div><p class="text-sm font-semibold">Destinatários exatos</p><ul class="mt-1 grid gap-1 text-sm">{% for recipient in frozen.recipients %}<li class="break-all">{{ recipient.address }} · {{ recipient.channel }}</li>{% empty %}<li>Sem destinatários externos.</li>{% endfor %}</ul></div>
   {% if frozen.payload.subject %}<p class="font-semibold break-words">{{ frozen.payload.subject }}</p>{% endif %}
   {% if frozen.payload.from %}<p class="break-all text-sm">Remetente: {{ frozen.payload.from }}</p>{% endif %}
   {% if frozen.payload.body %}<pre class="whitespace-pre-wrap break-words font-sans text-sm" data-frozen-body>{{ frozen.payload.body }}</pre>{% endif %}
   {% if frozen.payload.reason %}<p class="break-words text-sm">{{ frozen.payload.reason }}</p>{% endif %}
   <div><p class="text-sm font-semibold">Valores e documentos</p><ul class="mt-1 grid gap-2 text-sm">{% for amount in frozen.money %}<li>{{ amount.decimal }} {{ amount.currency }} · {{ amount.rounding_rule }}</li>{% endfor %}{% for document in frozen.documents %}<li class="min-w-0"><a class="ui-link break-all" href="{% url 'document-review' document.link_id %}">Conferir documento {{ document.document_id }}</a><p>Vínculo {{ document.link_revision }} · {{ document.size }} bytes</p><code class="block break-all text-xs">{{ document.sha256 }}</code></li>{% empty %}<li>Nenhum documento selecionado.</li>{% endfor %}</ul></div>
-  <div><p class="text-sm font-semibold">Condições desta decisão</p><p class="mt-1 text-sm">Exige {{ frozen.approval_rule.quorum }} aprovação(ões). {% if frozen.approval_rule.separation_of_duties %}Quem propôs não pode aprovar.{% else %}Autoaprovação somente no cartão individual.{% endif %}</p><p class="mt-1 text-sm break-words">Destino: {{ frozen.destination.provider }} · {{ item.effect.action_label }}.</p></div>
+  <div><p class="text-sm font-semibold">Condições desta decisão</p><p class="mt-1 text-sm">Exige {{ frozen.approval_rule.quorum }} aprovação(ões). {% if frozen.approval_rule.separation_of_duties %}Quem propôs não pode aprovar.{% else %}Autoaprovação somente no cartão individual.{% endif %}</p><p class="mt-1 text-sm break-words">Destino: {% include "cycles/_effect_destination.html" with action_kind=frozen.action_kind only %} · {% include "cycles/_bulk_approval_action.html" with frozen=frozen only %}.</p></div>
   <div><p class="text-sm font-semibold">Resumo criptográfico deste item</p><code class="mt-1 block break-all text-xs" data-bulk-digest>{{ item.effect.proposal_digest }}</code></div>
   <a class="ui-link" href="{% url 'approval-card' item.subject_ref %}">Conferir todas as fontes, prazos e decisões deste cartão</a>
 </div>
