@@ -29,6 +29,8 @@ def populated_round_trip() -> None:
     migration = importlib.import_module(
         "apps.authz.migrations.0006_seed_r1_capabilities"
     )
+    # T22's later R1 capability is also reversed by the target below.
+    r1_slugs = (*migration.SLUGS, "tenants.account")
     historical = (
         MigrationExecutor(connection)
         .loader.project_state([("authz", "0005_usercapabilitygrant")])
@@ -72,12 +74,10 @@ def populated_round_trip() -> None:
                 capability=Capability.objects.get(slug="clients.view_all"),
                 level=GrantLevel.FULL,
             )
-    non_r1 = list(
-        Capability.objects.exclude(slug__in=migration.SLUGS).order_by("pk").values()
-    )
+    non_r1 = list(Capability.objects.exclude(slug__in=r1_slugs).order_by("pk").values())
     non_r1_roles = [
         dict(row)
-        for row in RoleGrant.objects.exclude(capability__slug__in=migration.SLUGS)
+        for row in RoleGrant.objects.exclude(capability__slug__in=r1_slugs)
         .order_by("pk")
         .values()
     ]
@@ -85,7 +85,7 @@ def populated_round_trip() -> None:
         dict(row)
         # ALL_OBJECTS_OK: migration authority inspects both tenants without a GUC.
         for row in UserCapabilityGrant.all_objects.exclude(
-            capability__slug__in=migration.SLUGS
+            capability__slug__in=r1_slugs
         )
         .order_by("pk")
         .values()
@@ -93,7 +93,7 @@ def populated_round_trip() -> None:
     # ALL_OBJECTS_OK: compare the append-only evidence across both migrated tenants.
     audit = list(Event.all_objects.order_by("pk").values())
     matrix = list(
-        RoleGrant.objects.filter(capability__slug__in=migration.SLUGS)
+        RoleGrant.objects.filter(capability__slug__in=r1_slugs)
         .order_by("capability__slug", "role")
         .values_list("capability__slug", "role", "level")
     )
@@ -101,7 +101,7 @@ def populated_round_trip() -> None:
     assert len(non_r1_grants) == 2
     try:
         call_command("migrate", "authz", "0005", interactive=False, verbosity=1)
-        assert not Capability.objects.filter(slug__in=migration.SLUGS).exists()
+        assert not Capability.objects.filter(slug__in=r1_slugs).exists()
         assert (
             # ALL_OBJECTS_OK: remove active/revoked R1 grants in both tenants.
             list(UserCapabilityGrant.all_objects.order_by("pk").values(*grant_fields))
@@ -119,7 +119,7 @@ def populated_round_trip() -> None:
         call_command("migrate", interactive=False, verbosity=1)
     assert (
         list(
-            RoleGrant.objects.filter(capability__slug__in=migration.SLUGS)
+            RoleGrant.objects.filter(capability__slug__in=r1_slugs)
             .order_by("capability__slug", "role")
             .values_list("capability__slug", "role", "level")
         )

@@ -25,6 +25,11 @@ from apps.audit.models import AuditAction, Event
 from apps.core.tenancy import tenant_context
 from apps.tenants.admin_tenancy import ADMIN_TENANT_SESSION_KEY
 from apps.tenants.models import Membership, Tenant, TenantRole
+from apps.tenants.support import (
+    SupportApproval,
+    approve_support_grant,
+    request_support_grant,
+)
 from tests.support import enrol_totp
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -167,17 +172,38 @@ def test_a_superuser_needs_a_reason_to_reach_a_firm_they_do_not_belong_to(
     assert ADMIN_TENANT_SESSION_KEY not in client.session
 
 
-def test_break_glass_with_a_reason_is_granted_and_recorded_as_impersonation(
+def test_break_glass_with_a_reason_needs_an_owner_grant_first(
     data: Fixture,
 ) -> None:
-    # Given the same superuser
+    # Given the same superuser — since AXR1-023 a stated reason alone is not
+    # enough: the firm's owner must have approved a live support grant for this
+    # exact account, or the selector refuses with no impersonation recorded.
     root = _staff_user("root@platform.example", superuser=True)
     client = _client_for(root)
 
-    # When they state a reason
-    response = _select(client, data.beta, reason="Chamado #4711, suporte solicitado")
+    # When they state a reason but hold no grant
+    refused = _select(client, data.beta, reason="Chamado #4711, suporte solicitado")
+    assert refused.status_code == HTTPStatus.FORBIDDEN
+    assert ADMIN_TENANT_SESSION_KEY not in client.session
 
-    # Then access is granted AND an impersonation event names actor, target and reason
+    # When Beta's owner approves the pending request for this account
+    owner = _staff_user("owner@beta.example")
+    Membership.objects.create(user=owner, tenant=data.beta, role=TenantRole.OWNER)
+
+    grant = request_support_grant(
+        root, data.beta.pk, purpose="Chamado #4711, suporte solicitado"
+    )
+    with tenant_context(data.beta.pk):
+        approve_support_grant(
+            owner,
+            data.beta.pk,
+            grant.pk,
+            SupportApproval(scope="read_only", hours=2, client_ids=()),
+        )
+
+    # Then the same stated reason is granted AND an impersonation event names
+    # actor, target and reason
+    response = _select(client, data.beta, reason="Chamado #4711, suporte solicitado")
     assert response.status_code == HTTPStatus.FOUND
     with tenant_context(data.beta.id):
         impersonation = Event.objects.get(action=AuditAction.IMPERSONATION)

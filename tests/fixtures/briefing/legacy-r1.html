@@ -42,8 +42,13 @@
           
         </nav>
       </details>
+      <form role="search" method="get" action="/busca/" class="shell-search" aria-label="Busca">
+        <label for="shell-search-q" class="visually-hidden">Buscar</label>
+        <input id="shell-search-q" type="search" name="q" class="shell-search-input" placeholder="Buscar (Ctrl+K)" autocomplete="off">
+        <button type="submit" class="ui-btn ui-btn-quiet">Buscar</button>
+      </form>
       <div class="shell-account">
-        <span class="hidden truncate sm:inline">owner@t19-byte-baseline.example.com</span>
+        <span class="shell-account-email">owner@t19-byte-baseline.example.com</span>
         <form method="post" action="/accounts/logout/">
           <input type="hidden" name="csrfmiddlewaretoken" value="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
           <button type="submit" class="ui-btn ui-btn-quiet">Sair</button>
@@ -51,6 +56,23 @@
       </div>
     </div>
   </header>
+  <div x-data="palette" class="contents">
+  <dialog id="palette" class="ui-dialog palette" aria-labelledby="palette-title" x-ref="dialog" x-on:close="restoreFocus">
+    <div class="overlay-head">
+      <h2 id="palette-title" class="overlay-title">Buscar</h2>
+      <button type="button" class="ui-icon-btn" x-on:click="close"><svg xmlns="http://www.w3.org/2000/svg" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+<span class="visually-hidden">Fechar</span></button>
+    </div>
+    <div class="overlay-body palette-body">
+      <label for="palette-q" class="ui-field-label">Buscar clientes, ciclos, solicitações e documentos</label>
+      <input id="palette-q" type="text" name="q" role="combobox" class="ui-field-input" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="palette-results" aria-expanded="false" aria-describedby="palette-keys" x-ref="input" x-bind:aria-expanded="expanded" x-bind:aria-activedescendant="activeId" x-on:keydown="onKeydown" hx-get="/busca/" hx-trigger="input changed delay:250ms" hx-target="#palette-results" hx-swap="innerHTML" hx-sync="this:replace">
+      <p id="palette-keys" class="palette-hint">Setas para escolher, Enter para abrir, Esc para fechar.</p>
+      <p class="visually-hidden" role="status" x-ref="status"></p>
+      <div id="palette-results" class="palette-results" data-swap-keeps-focus x-ref="results"></div>
+    </div>
+  </dialog>
+</div>
+
   <div id="toasts" class="toast-region" role="status" aria-live="polite"></div>
 
 
@@ -92,6 +114,7 @@
       
     </div>
 
+    
     
 
   <section aria-labelledby="filas" class="mb-8">

@@ -16,7 +16,16 @@ from tests.security.test_csrf_trusted_origins_contract import (
 
 
 @pytest.mark.parametrize(
-    "overrides", [{}, {"DELIVERY_PAUSED": "False", "DELIVERY_DAILY_CAP": "7"}]
+    "overrides",
+    [
+        {},
+        {
+            "DELIVERY_PAUSED": "False",
+            "DELIVERY_DAILY_CAP": "7",
+            "OUTBOX_MAX_QUEUED_AGE_SECONDS": "31",
+            "OUTBOX_MAX_DEAD_LETTERS": "4",
+        },
+    ],
 )
 def test_production_processes_receive_delivery_controls(
     overrides: dict[str, str],
@@ -53,4 +62,10 @@ def test_production_processes_receive_delivery_controls(
         assert actual["DELIVERY_PAUSED"] == overrides.get("DELIVERY_PAUSED", "True")
         assert actual["DELIVERY_DAILY_CAP"] == overrides.get(
             "DELIVERY_DAILY_CAP", "100"
+        )
+        assert actual["OUTBOX_MAX_QUEUED_AGE_SECONDS"] == overrides.get(
+            "OUTBOX_MAX_QUEUED_AGE_SECONDS", "900"
+        )
+        assert actual["OUTBOX_MAX_DEAD_LETTERS"] == overrides.get(
+            "OUTBOX_MAX_DEAD_LETTERS", "0"
         )

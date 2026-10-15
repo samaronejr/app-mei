@@ -62,7 +62,15 @@ name. The repository, the README headline and customer-facing copy stay "app-mei
 until the name is cleared.
 
 - **Ids.** The plan has 29 original numbered todos in five waves, the added
-  `AXR1-030` certificate guard, and a final verification wave. Todo N is cited
+  `AXR1-030` certificate guard, `AXR1-031` customer-facing label repair,
+  `AXR1-032` support-authority repair, `AXR1-033` contact-invitation binding,
+  `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
+  routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
+  support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, `AXR1-060` portal next action for awaiting publications, `AXR1-061` email metering states, `AXR1-062` R1 client flows in pt-BR, `AXR1-063` upload-refusal ink, `AXR1-064` refused playbook creation form, `AXR1-057` evidence export with unscanned originals, and a final verification wave.
+  Required follow-up `AXR1-041` is delivered and waits only for its integrated top-of-stack CI run; repair items
+  `AXR1-055` to `AXR1-064` follow it in the stack; optional proposals 051/052 are not
+  accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
 - **Delivery.** One open pull request per todo in a linear stack: the first is
@@ -478,8 +486,687 @@ statements. Evidence:
 `-fix-green-overflow.txt`, `-fix-gates.txt` and the reviewers' `T19-RV-*` and
 `T19-RV2-*` artifacts. Every owner/operator gate remains **open**.
 
+`AXR1-020` (bulk operations with an eligibility preview, per-item results,
+cancel and resume; `cycles.0017`) is recorded on the final `AXR1-019` branch.
+For tenants with `bulk_r1`, a `BulkOperation` freezes its preview as a
+snapshot with a digest and an expiry, and execution uses only that snapshot.
+An expired or changed preview is refused, and confirming requires typing the
+exact item count. Each `BulkItem` is unique per tenant, client, operation and
+subject. That key is also the runner's claim and idempotency key. The runner
+processes each item in its own tenant transaction, with a fenced claim and
+per-item capability and version checks. A changed record is skipped as
+changed, cancel stops before the next claim, and resume after a crash creates
+no duplicate effect. Bulk approval delegates every item to the `AXR1-015`
+per-item digest and revalidation. The results page polls and stops at a
+terminal state. It says "Concluído com falhas: N" whenever an item failed, and
+its CSV export is formula-safe. Published playbook versions are labelled with
+the playbook name and version number, and the preview shows how much of the
+daily quota remains.
+
+The independent gate review found one blocker at `da8da54`: notice previews
+did not show the remaining daily quota the plan requires (with a cap of 100
+and 97 sends reserved, the preview omitted the 3 left). Repair `1bec524` read
+the same `remaining_quota()` helper the Comunicação queue uses, but stored the
+value when the preview was created; its confirmation review found that
+reloading a preview after reservations rose to 100 still showed 3 while the
+queue showed 0. Repair `549d202` reads the remaining quota live on every
+render of the preview (one read per render, none per item and none on the
+progress poll), says when the previewed notices exceed it and that the excess
+waits in the queue until reservations renew, and removes the stored value.
+Previewing reserves nothing; execution still uses the frozen item snapshot
+and the send-time quota. Tests failed before each repair and pass after it,
+and rendering a stale or capped value makes them fail again.
+An independent confirmation of repair 2 returned **confirmed**
+with zero blockers: the same preview showed 3 at 97/100, stayed 3 after
+another firm's reservations and reloaded to 0 after its own; a confirmed run
+used the frozen digest, version and audience, queued one notice and made no
+send attempt; and rendering the stale value makes the HTTP test fail. Evidence:
+`.evidence/AXR1-020-happy-placed.txt`, `-failure.txt`, `-rv-quota.md`,
+`-fix-red.txt`, `-fix-green.txt`, `-fix-mutation.txt`, `-fix2-red.txt`,
+`-fix2-green.txt`, `-fix2-mutation.txt`, `-fix2-gates.txt` and the reviewers'
+`T20-RV*` artifacts. Every owner/operator gate remains
+**open**.
+
+`AXR1-021` (permission-scoped search and command palette; `core.0001`) is
+recorded on the final `AXR1-020` branch. For tenants with `cycles_r1` (the R1 product shell; search answers 404
+otherwise),
+`search(actor, q, kinds)` reads only querysets scoped by `visible_clients`,
+needs at least two characters and returns at most five results per kind
+without revealing counts. Documents are found by filename only, never by their
+contents. Standalone and vault documents are included and open the page the
+actor is allowed to use, and a document whose extracted CNPJ diverges never
+surfaces. Matching is accent-insensitive through `unaccent` and `pg_trgm`, with
+trigram GIN indexes on client names, the normalized CNPJ and request labels;
+the migration asserts that both extensions exist and does not create them.
+Full-width wildcards match only themselves. A header search field and a
+`Ctrl/Cmd+K` palette render server results as a keyboard-navigable listbox,
+no tenant value is interpolated into `x-*` or `hx-*` attributes, and the
+portal has no global search in R1. Long filenames, client names and labels
+wrap at phone width. Tailwind no longer scans the frozen legacy-dashboard test
+fixture; the only stylesheet change from that is the removal of the unused
+small-breakpoint inline-display rule.
+
+The pre-placement adversarial review found standalone documents unsearchable
+and full-width wildcards unescaped; both were fixed with regression tests that
+failed first. The independent gate review at `5235bea` returned **confirmed** with zero
+blockers after attacking scope, runtime, the migration, mutations and keyboard
+and browser behaviour; its own serial gates passed (3916 default, isolation
+288, CNPJ 29, browser 78). It also noted that a permitted long, unbroken filename did not reflow
+at 390 px (palette list 2507 px wide inside 318 px; `/busca/` 2540 px). Repair
+`51afd08` makes names wrap in both renderings, and a 390/320 px browser test
+failed before it and passes after. The confirmation review of the unchanged
+`51afd08` returned **confirmed** with zero blockers: long names wrapped at every
+tested width, with full accessible names and keyboard selection intact, and the
+pre-repair layout failed its four new tests. Evidence: `.evidence/AXR1-021-failure.txt`,
+`-static-drift.txt`, `-gates-place2.txt`, `-fix-red.txt`, `-fix-green.txt`,
+`-fix-visual.md`, `-fix-gates.txt` and the reviewers' `t21-rv-*` and
+`T21-RV2-*` artifacts. Every owner/operator gate remains **open**.
+
+`AXR1-022` (firm onboarding, settings, entitlements, usage, manual billing path,
+export and offboarding; `authz.0008`, `tenants.0011`) is recorded on the final
+`AXR1-021` branch. The admin "Nova firma" flow creates a tenant, an owner
+invitation through the outbox and the default flags, and writes a
+`PlatformEvent`. Behind `firm_settings_r1`, `/configuracoes/` covers firm profile
+and branding, team and capability grants, entitlements, per-user daily summary
+e-mail, retention classes and legal holds, account export and cancellation. A
+tenant quota fence serializes every client writer before the client lock;
+exceeding the active-client limit is a soft block, and the import preview shows
+the limit. The account export is an asynchronous, owner-only ZIP of CSV metadata
+with a documents manifest and a SHA-256 manifest, built by the `AXR1-018`
+`PhasedTenantTask` machinery. Cancellation makes the firm read-only after the end
+date, keeps export open for 90 days and then runs the per-class purge, which stays
+a dry run until OG-08. The manual `BillingAccount` is operator-maintained:
+`past_due` shows the owner a banner and `suspended` makes the firm read-only with
+export still allowed; no card data is stored. Append-only `UsageRecord`s, written
+nightly, feed an owner-only monthly cost estimate that is labelled as an estimate
+and marked incomplete while any unit price is unknown. Ending an engagement
+deactivates the client's portal memberships after a 30-day grace period. The new
+owner-only capability `tenants.account` guards export, cancellation and the
+estimate.
+
+The independent gate review at the placed head `6a78683` attacked placement fidelity, the
+guard registrations, the active-client limit under a race, cancellation and suspension, owner-only
+export, usage and billing, offboarding and the header. Its own serial gates passed (4072, isolation
+306, CNPJ 29, browser 90). It returned **needs-fix** with one blocker: with `firm_settings_r1` on, at 1280 px with a classic scrollbar,
+an ordinary 22-character firm name left only 2-6 px of spare room in the header row.
+Repair `b05d7af` lets the firm name shrink and truncate between xl and 2xl, keeping
+the full name accessible and 16 px reserved before search. Repair `af8e053` holds the
+row at 1536 and 1920 px as well, where the text labels and e-mail return. The flag-off
+header stays byte-identical to `AXR1-021`. The confirmation review of both commits
+returned **confirmed** with zero blockers: the
+header held one row with at least 16 px spare in 90 measured cases from 1280 to 1920 px and at each
+breakpoint boundary, the flag-off bytes matched `AXR1-021`, removing the rule failed the test,
+and its own reruns passed (22 header, 471 UI and 77 briefing tests, static equality). The first full run's five failures
+were guard registrations for T22's additions (capability count, a no-edit trigger,
+a composite-key anchor, four platform-query justifications, fourteen labels); no
+guard was weakened. Evidence: `.evidence/AXR1-022-happy.txt`, `-failure.txt`,
+`-failure-restored.txt`, `-fix-redgreen.txt`, `-gates-final.txt`,
+`-placement.md`, `-gates-placed.txt` and the reviewer's `T22-RV*` artifacts.
+OD-04 and OG-08 remain **open**, as does every other owner/operator gate.
+
+`AXR1-024` (AI evaluation harness and shadow document-classification runner;
+`automation.0001`) is recorded on the final `AXR1-022` branch. It is an offline synthetic
+harness and a private, closed-by-default shadow runner, not an AI product feature: no view
+or admin shows `AgentRun` or `EvalRun`, and deterministic extraction and review are
+unchanged. A real call needs `AI_PROVIDER`, a lifted global disable, real-data approval and
+the tenant's `ai_shadow` flag.
+- **Clients and transport.** Clients split `prepare()` (all local checks, no I/O) from
+  `send()` (one bounded HTTPS request with no tools, redirects or retry).
+- **Harness.** `build_eval_set` regenerates 300 synthetic documents and an injection corpus
+  byte-for-byte. `run_eval` reports per-field precision and recall, wrong-client attribution
+  with a Clopper-Pearson 95% upper bound, abstention, injection success, latency and cost.
+- **Shadow runner.** It takes only clean, linked documents and enforces advisory-locked
+  caps: per source and client, per tenant and day (100 calls and R$5), and R$50 globally per
+  month. It also has a kill switch, and it reserves R$0.025 per attempt before any I/O.
+- **Output validation.** Rejects other clients' identifiers and web references in any
+  script.
+- **Usage metering.** One confirmed `UsageRecord(ai_shadow_calls)` per run that reaches the
+  provider, committed between `prepare()` and `send()`, so local refusals count nothing.
+
+The independent gate review of the placed head `17ccfe8` returned **needs-fix** on two
+blockers:
+- runs refused before dispatch were metered;
+- Unicode web addresses passed the ASCII-only output check.
+
+Everything else it attacked held. Repair `5b2c242` fixes both, each with a red test, a green
+run and a mutation. The confirmation review of `5b2c242` returned **confirmed** with zero
+blockers: the refusal paths record no usage, a dispatched call counts once, Unicode web references are
+refused before storage, both mutations fail, and its targeted reruns passed (432). Evidence:
+`.evidence/AXR1-024-happy.txt`, `-failure.txt`, `-placement.md`, `-usage-*.txt`, `-fix-*.txt`,
+`-gates-placed-17ccfe8.txt`, `-gates-final.txt` and the reviewers' `T24-RV*` artifacts.
+OD-05 and every other owner/operator gate remain **open**, and `ai_shadow` is off everywhere.
+
+`AXR1-027` (operational signals and the restore path for the delivery outbox; `delivery.0004`,
+`delivery.0005`) is recorded on the final `AXR1-024` branch.
+- **Readiness.** `/readyz` returns 503 with a `reason` key when the oldest queued message or the
+  dead-letter count passes its env-configured threshold. `/healthz` and its monitored keywords are
+  byte-identical.
+- **Automações page.** A capability-gated Automações page under Comunicação shows registered jobs
+  with their last and next runs. Every shipped job has a pt-BR label. The page lets the firm pause
+  and resume delivery, and retry or cancel dead letters: a retry creates one successor and cancels
+  the original, and a stale submission returns 409.
+- **Restore and runbooks.** `ops/RESTORE.md` adds the Axorim restore: pause delivery, restore,
+  `reconcile_documents`, `reconcile_effects`, review `resultado_incerto`, unpause.
+  `ops/PILOT-RUNBOOK.md` maps the new alerts to actions, and `docs/lgpd.md` documents the outbox kill
+  switches.
+- **Log hygiene.** The log scrubber's canaries cover outbox payloads.
+
+Placement onto T24 needed one label fix (`c1451a2`). The header is no worse than its parent in
+any of 312 measured cells. The independent gate review at `c1451a2` returned **confirmed** with zero
+blockers: readiness thresholds (503 with reason keys), byte-identical `/healthz`, the Automações controls at
+both viewports with tenant denials, restore reconciliation without replay, a biting mutation, and its own
+serial gates (4253, isolation 309, CNPJ 29, browser 94).
+Evidence: `.evidence/AXR1-027-*` (the worker's original gates and failure control, plus placement,
+geometry, labels red/green, adversarial probes, placed gates) and the reviewer's `T27-RV*`
+artifacts. OG-06, the operator restore drill on an isolated host, and every other
+owner/operator gate remain **open**.
+
+`AXR1-028` (synthetic scale data, query budgets and read-latency measurement) is recorded on the final
+`AXR1-027` branch.
+- **Seed.** `seed_axorim_demo` builds three deterministic firms of 100, 1,000 and 1,000 clients with
+  messy data, and it refuses to run against production.
+- **Budget tests.** Query-budget tests cover the named reads, with a database-wide `ANALYZE` after seeding
+  so planner statistics reflect the seeded volume. There are no wall-clock limits in tests.
+- **Measurement.** `ops/perf/measure_reads.py` reports constrained-local p50/p95 per named read, and
+  `ops/perf/followups.json` lists the reads over target: Hoje p95 574 ms against 500 (676 ms at the placed head), and the client
+  workspace (46) and cycle detail (50) against the 25-query target. No SLO is claimed.
+
+A suite-order stall of the perf test is recorded with a candidate cause (mixed planner statistics),
+reproduced only as a 12x slowdown, not proven. The independent review at `6bdbd41` returned **confirmed** with zero
+blockers; every owner/operator gate remains **open**.
+
+`AXR1-023` (time- and purpose-limited support grants; `tenants.0012` and `0013`) is recorded on the final `AXR1-028`
+branch.
+- **Grant model.** An owner approves a `SupportGrant` at `/configuracoes/suporte/`. The grant names its
+  purpose and scope, can be limited to clients, and lasts at most 72 hours, enforced in the database. It can
+  be revoked immediately and is never extended silently.
+- **Support mode.** Platform staff with an active grant enter through the middleware with a visible "Acesso
+  de suporte ativo até …" banner. Document bytes and message bodies are redacted, and approving, sending or
+  downloading is refused.
+- **Audit and admin.** Every support request is audited for the owner. The superuser admin needs an active
+  grant for tenant data.
+
+Placement added a root-required commit:
+- the "no support console" guard now also sees `suporte`, with exactly the three owner routes allowed;
+- the app role can no longer delete support grants (no code path needs it; revoke-then-grant in the migration);
+- unscoped reads are pinned to the grant;
+- support mode covers the T24 and T27 surfaces;
+- the inactive banner renders no bytes, so the legacy dashboard stays byte-identical.
+
+The first independent review found three blockers: client data under a metadata-only grant, unaudited page
+views and writes accepted after revocation. Two more came from T25 and T29: the approval form's
+unnamed and colliding client checkboxes, and the owner having no view of the request trail.
+The next review found six additional gaps: sibling audit-admin scope, the admin banner,
+write/revocation ordering, silent window extension, unreachable historical trail pages,
+and credentials in audited URL paths. Six focused commits repaired them with failing-first
+tests. CF2 independently **confirmed** `b02cf0e` with zero blockers: 625 targeted tests,
+312 isolation tests, 29 CNPJ tests, 102 browser tests, 16 additional cases and a populated
+migration round-trip. The delivered code at `d477b7e` is identical apart from this status
+document. Both author and reviewer lanes were torn down with receipts.
+Evidence: `.evidence/T23-CF2-review.md`, `T23-CF2-cleanup.txt` and `AXR1-023-fix3-teardown.txt`.
+Every owner/operator gate remains **open**.
+
+`AXR1-025` (golden browser journeys and accessibility evidence; `tenants.0013_backfill_billing_accounts`,
+ordered after `AXR1-023`'s `0013_support_grant_window_immutable`) is recorded on the final `AXR1-023` branch.
+- **Journeys.** Journey A and failure journeys B, D/Q, I, J and K run in a real browser at both viewports,
+  with a slow-network upload retry and no fixed sleeps.
+- **Accessibility evidence.** axe covers every S5.5 screen, Automações and Suporte included; focus lands on
+  the updated heading after swaps; and keyboard paths are tested. `ops/AXORIM-A11Y-CHECKLIST.md` holds the
+  manual screen-reader scripts, with an operator table that is still open.
+- **Fixes.** The journeys forced five product fixes: a calendar-label 500, focus after swaps, pt-BR refusals,
+  the billing-account backfill for older firms, and the approval card's recipient name and state badges.
+
+No WCAG conformance is claimed. The independent review **confirmed** `b4c9a66` with zero blockers: it reran the full suite (4336),
+isolation (312), CNPJ (29) and the browser suite (134, the 32 new cases three times), checked the populated
+migrations and reproduced the Journey I failure proof. Evidence: `.evidence/T25-RV4-review.md`. Every owner/operator gate remains
+**open**.
+
+`AXR1-026` (cross-tenant and cross-client isolation sweep; tests and engineering documentation only)
+is recorded on the final `AXR1-025` branch. The explicit 45-model registry covers real RLS reads,
+portal decisions, vacuity controls and catalog-derived composite foreign keys. Route checks include
+the support trail and company selection, with no foreign markers or counts in denial bodies.
+The suite also covers tenant-aware tasks, real same-CNPJ imports followed by search/export,
+assigned-client permissions and cross-firm support grants.
+
+Independent review repaired five checks that did not prove their intended protection, plus a
+company-selection denial-body omission found during confirmation. The final review **confirmed**
+`80fe953` with no blockers: exact-head isolation passed **628** tests with **28** schema-justified
+skips (15 client-parent, 13 tenant-parent), and nine mutation invocations produced **16** expected
+assertion failures. All restored checks passed. Synthetic FK probes verify role, trigger, policy
+and row restoration after both successful and refused INSERTs; production protections are unchanged.
+Evidence: `.evidence/T26-RV5-review.md`, `T26-RV5-live.txt` and `T26-RV5-cleanup.txt`.
+Accepted limits remain in `docs/residual-risks.md`; every owner/operator gate remains **open**.
+
+`AXR1-029` (launch-readiness engineering) is recorded on the final `AXR1-026` branch.
+Nine pt-BR help articles and their index explain shipped behavior; apex-only product and pricing
+pages retain the app-mei name and "Fale conosco". Exact approval is distinguished from authorization
+of templated messages by a published playbook or tenant policy, including cycle-independent invitations.
+The document guidance distinguishes extractable PDF/XML identifiers from images requiring manual review.
+The public/help footer meets the measured contrast threshold without changing the frozen legacy output.
+
+Independent review **confirmed** `46e1eed` with no blockers. Real SMTP and image probes agreed with
+the copy; both legacy dashboard byte comparisons passed; all **44** public/help renders fitted at
+1440 and 360 pixels with no serious/critical axe violations and measured footer contrast **7.1043:1**.
+A fresh forbidden-claim mutation failed as intended and was restored.
+Evidence: `.evidence/T29-RV-review.md`, `T29-RV-final-runtime.txt`,
+`T29-RV-final-pages2.txt`, `AXR1-029-RV-final-happy.txt` and `AXR1-029-RV-final-failure.txt`.
+The five legal/partner drafts remain private MINUTA documents for professional review.
+Every owner/operator/contact/cohort gate in `ops/AXORIM-R1-GO-NO-GO.md` remains **open**.
+This is engineering approval, not launch authorization or a WCAG-conformance claim.
+
+`AXR1-031` (customer-facing destination labels) is recorded on the final `AXR1-029` branch.
+Individual and bulk cards show meaningful destinations for publication, email, completion and waiver,
+and the quota explanation uses neutral wording. Stored manifests, internal provider identifiers,
+canonical bytes, digests and execution code are unchanged.
+Independent review **confirmed** `bc2c0cb` with no blockers, resolving F1's naming finding B1.
+Its own 108 render/manifest checks and 12 browser cases passed, including individual reopening.
+The reviewer inspected 20 author captures and 24 independent captures at desktop/mobile widths
+and verified its resource teardown. Evidence: `.evidence/AXR1-031-review.md`,
+`AXR1-031-review-verdict.json`, `AXR1-031-F1-delta.md`, `AXR1-031-happy.txt`
+and `AXR1-031-failure.txt`. Test-oracle limitations and the inherited generic bulk reopening
+label remain documented in that review. No owner/operator gate is closed by this repair.
+
+`AXR1-032` (support decision authority) is recorded on delivered `AXR1-031`.
+Both approval and revocation lock a fresh actor before rechecking activity, the owner
+seat and the account capability, then lock the grant. Authority removal that commits
+first prevents the decision and its audits; a decision holding the fence commits first.
+Existing scope, immutable windows, grant locking and both audit streams are preserved.
+Independent review **confirmed** `f4e8c87` with no blockers, passing 14 independent
+checks and closing F2-B1. The worker's failing-first result was eight failures and two
+passes, followed by 48 targeted passes. Reviewer and author resources are removed.
+Evidence: `.evidence/AXR1-032-review.md`, `AXR1-032-review-verdict.json`,
+`AXR1-032-F2-delta.md`, `AXR1-032-review-live.txt`, `AXR1-032-failure.txt`
+and `AXR1-032-integrated-gates-summary.txt`.
+Final F2 code-quality verification is **APPROVE** at that implementation head;
+`.evidence/AXR1-F2.txt` records its scope and limits. Whole F1, F3/F4 and all
+OG/OD gates remain open. No launch, merge or deployment is authorized here.
+
 Execution of the full plan resumed on 2026-10-05 at the owner's instruction.
-Todos 20 to 29 and the final verification wave remain open.
+The final verification wave remains open.
+
+`AXR1-033` (accepted invitation contact binding) is recorded on delivered `AXR1-032`.
+Contact-issued invitations retain an explicit nullable origin through token refresh.
+Acceptance atomically links only that eligible same-client contact to the accepted
+membership; address-only and historical invitations do not guess a contact by email.
+Mailbox, consent, token, expiry and existing-association checks remain enforced.
+The original firm-roster contract and unchanged publication recipient guard are preserved.
+Independent review **APPROVE**, high confidence, at `c6653b0`: 71 independent
+checks passed, losing the contact link broke both publication journeys as expected,
+restoration passed, and the populated migration reversed/reapplied as `app_migrator`.
+Root's actual desktop/mobile continuation accepted a fresh invitation for the
+retained Aurora contact and created its publication approval card; consumed-token
+replay returned 410. No fixture assigned the contact's membership.
+Evidence: `.evidence/AXR1-033-review.md`, `AXR1-033-review-cleanup.txt`,
+`AXR1-033-root-qa.md`, `AXR1-033-gates-summary.txt`, `AXR1-033-happy.txt`
+and `AXR1-033-failure.txt`. Author and reviewer runtime lanes are removed;
+separate retained F3 data remains for the unfinished final journey.
+This approves T33, not publication execution/acknowledgement/closure, wider
+F3/F4 fidelity, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-053` (versioned tenant notice authorization) is recorded on delivered `AXR1-033`.
+A tenant-scoped, monotonically versioned notice policy holds exact manual kind grants
+that only a fresh ordinary owner can save or revoke, under lock, expected version,
+capability check and an append-only event carrying the acknowledgement snapshot.
+Templated intents bind their authorization basis immutably at enqueue: either the
+cycle's published playbook or the acknowledged policy revision. Dispatch revalidates
+policy revision, owner seat, capability and recipient before any SMTP; revocation or
+re-acknowledgement cancels obsolete intents with zero sends. No migration consent,
+historical acknowledgement or consequential-effect allowlisting. The policy table is
+RLS-forced, portal NONE, and its migration grants `app_runtime` explicitly.
+The owner surface was exercised for real (password and MFA) in cycles and import-only
+shells at desktop and mobile. Independent review **APPROVE**, high confidence, at
+`136a267`: focused, adversarial, Chromium/axe and fake-SMTP checks passed; removing
+the pre-send authority check made the policy-revision test transmit and fail, and
+restoring it passed. The reviewer relied on source equivalence for the full default,
+isolation and CNPJ suites, which ran at `f0a2d9e` (only a browser fixture differs).
+Evidence: `.evidence/AXR1-053-happy.txt`, `AXR1-053-failure.txt`, `AXR1-053-review.md`,
+`AXR1-053-review-cleanup.txt`, `AXR1-053-root-ui.md`, `AXR1-053-final-gates-r3.txt`
+and `AXR1-053-final-browser-r1.txt`. This approves T53, not T48 import-origin routing,
+T39 automatic reminders, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-048` (import-only invitation routing) is recorded on delivered `AXR1-053`. The
+import-gated contact door now issues a durable `contact_portal_invite` intent under the
+owner's exact, separately acknowledged notice-policy grant, bound with feature
+`import_r1`, instead of refusing when cycles is off; a `portal_invite` grant does not
+authorize it. Claim, egress and worker selection admit each kind only under its own
+originating flag and global kill. Migration `delivery.0007` widens only the T53 binding
+guard for the new kind and reverses to 0006. The import-only shell names no unreachable
+Comunicacao queue, the policy page states each invitation's route, and the client setup
+row shows the invitation message's own delivery state. Verified for real: owner
+acknowledgement, refusal, queueing, revoke and reinvite at desktop and mobile; one
+accepted fake-SMTP send with a refused duplicate; crash-after-send left uncertain with no
+resend; new-account acceptance bound to the contact. Independent review rejected `b53ad6b` on one AA contrast defect in
+the new row label; the fix `e400a96` was confirmed **APPROVE**: high confidence, no blockers: all 12 rendered labels measured 7.43:1 in queued and SMTP-accepted states at 1440 and 390, including the cycles-global-killed surface, with assets clean and no new contrast nodes or overflow. Evidence: `.evidence/AXR1-048-happy.txt`,
+`AXR1-048-failure.txt`, `AXR1-048-review.md`, `AXR1-048-final-gates-r1.txt`.
+This approves T48, not T39 automatic reminders, launch, merge or deployment. Every OG/OD
+gate remains open.
+
+`AXR1-039` (policy-authorized automatic reminders) is recorded on delivered `AXR1-048`. An
+owner opts in to one fixed rule (`request_reminder`, automatic mode, rule version 1) through a
+separate acknowledged policy grant; manual grants, playbook publication and migrations never
+create it. A five-minute `sweep_reminders` job enqueues at most one occurrence per overdue
+request, eligible contact and local day, in bounded per-tenant batches with resumable cursors,
+binding the policy revision and owner seat with `system_operation=sweep_reminders` and no
+impersonated session. Obsolete automatic reminders are cancelled before claim, including under
+pause or flag changes, and dispatch re-evaluates upload, closure, waiver, expiry and revocation.
+The heartbeat shows last attempt, last success, failure code and outcomes on the ops page.
+Verified for real: owner opt-in at desktop and mobile; the registered job run twice leaving one
+intent; one accepted fake-SMTP send with a refused duplicate; heartbeat on the ops page.
+Independent review **APPROVE** at `fdb1bd0`: no blockers; RV1's unchanged close-and-reopen probe now records one SMTP send and one accepted effect, re-acknowledgement is again a visible conflict, and the amendment race, next-day, cancellation, manual-reminder, live-owner and heartbeat checks passed. Evidence:
+`.evidence/AXR1-039-happy.txt`, `AXR1-039-failure.txt`, `AXR1-039-review.md` (RV1),
+`AXR1-039-review-rv2.md`, `AXR1-039-final-gates-r4.txt`. A first independent review rejected
+`e59045f`: an approved same-day close and reopen sent a second reminder for the same request and
+contact, because the reminder identity included the cycle amendment. The daily request/contact/day
+key is now the enqueue idempotency key (database-unique); a same-day reopen or re-acknowledgement is
+reported as a conflict and sends nothing. Regression test kept. This approves T39, not T49 or later follow-ups, launch, merge
+or deployment. Every OG/OD gate remains open.
+
+`AXR1-049` (logout recovery after support or tenant denial) is recorded on delivered `AXR1-039`.
+When an authenticated account has neither an active membership nor a live support grant for the
+firm, the tenant middleware still refuses every route except the registered allauth logout view
+(matched by route name and callable), which it admits with no tenant context. Logout keeps its
+GET confirmation and POST execution, CSRF and Origin checks, safe local `next` handling and
+host-only session cookies; the next account must pass password and MFA again. Verified for real
+at desktop and mobile: owner approval and revocation through the actual forms, the revoked
+support session and a freshly authenticated revoked account both refused, refused logout POSTs
+without a token or with a foreign Origin, logout with an external `next` sent to `/`, a local
+`next` honoured, an owner account switch with a new code, and the same recovery after a staff
+membership is deactivated. Independent review **APPROVE** at `e681371`: no blockers; all five denial classes reproduced over HTTP, and the real revoked-support and lost-membership journeys at 1440 and 390 recovered through the normal logout and a fresh password plus TOTP sign-in while protected routes stayed 403; 1,145 adversarial probes passed.
+Evidence: `.evidence/AXR1-049-happy.txt`, `AXR1-049-failure.txt`, `AXR1-049-review.md`,
+`AXR1-049-final-gates-r1.txt`. This approves T49, not T50 or later follow-ups, launch, merge or
+deployment. Every OG/OD gate remains open.
+
+`AXR1-050` (support audit actor) is recorded on delivered `AXR1-049`. Every request served under a live
+support grant now records the support actor in both audit streams even when the request itself logs that
+actor out: the actor is resolved before the handler runs and written after it, including when the handler
+fails and rolls back. Requests without a grant still write nothing, and static and health paths never touch
+authentication. Verified in a real browser: the owner's support trail names the actor on the logout row at
+desktop and mobile, a second actor's rows stay separate, and nothing is recorded after revocation.
+Independent review **APPROVE** at `9430bbe`: no blocking findings; 97 regression, 23 attack and 2 desktop/mobile browser tests passed in the reviewer's own lane under the dispatched memory caps, and the exact-head gate artifacts were audited rather than rerun. Evidence: `.evidence/AXR1-050-happy.txt`,
+`AXR1-050-failure.txt`, `AXR1-050-review.md`, `AXR1-050-final-gates-r2.txt`, `AXR1-050-final-tail-r1.txt`. This approves T50, not later
+follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-044` (ignored late observations) is recorded on delivered `AXR1-050`. The delivery
+queue and client-period workspace history distinguish applied, ignored late and superseded
+observations. Refused outcomes retain their source time and observed state but have an explicit
+ignored qualifier and non-effect explanation; they do not replace current business state.
+Monotone state, append-only receipts and frozen bodies are unchanged, with no backfill.
+Independent review **APPROVE** at `5cf5957`: no blockers; 94 focused/neighbor tests passed,
+25 state/projection attacks passed, and the final browser matrix completed with 54 captures
+at 390, 1440 and 1920 pixels under both media preferences. All 48 non-legacy captures had
+zero serious/critical axe violations; legacy contrast remains a failure, not an approval.
+The reviewer audited the complete r2 gates and fresh JUnit rather than rerunning every suite.
+R1's two browser failures led to correcting the existing Journey I exact-text expectations;
+an aborted collect-only run overwrote r1's suite JUnit, which remains labeled invalid.
+The complete r2 rerun supplies the passing evidence. Evidence: `.evidence/AXR1-044-happy.txt`,
+`AXR1-044-failure.txt`, `AXR1-044-review.md`, `AXR1-044-final-gates-r2.txt`.
+This approves T44, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-047` (discoverable setup after a flagged CSV import) is recorded on delivered `AXR1-044`.
+The import result lists the clients that batch created (in file order, at most 200, disclosed when
+capped), each linking to its ordinary page. The client workspace's "Cadastro e autorizações" section
+links to the setup page (service, tax profile, contacts and responsible people) only for actors the
+setup route admits: the import flag plus the clients.manage capability. The old link that reloaded
+the same workspace at `#contatos` is gone. Read-only support, unassigned staff and other firms see no
+link and are still refused; flag-off and legacy pages are unchanged. Verified by an owner walking from
+the CSV import to the setup page through rendered links only, at desktop and mobile with a keyboard
+final step, then adding a contact and queuing its invitation. Independent review **APPROVE** at
+`2d3d607`: no blockers; 33 HTTP checks (five actors across four flag states, batch boundaries 0-201
+with one query) and 4 browser cases passed, and a restored self-loop failed at the loop assertion.
+Pre-existing and out of scope: the legacy client page draws its setup link on the import flag alone,
+so read-only support sees a link the route refuses with 403. Evidence:
+`.evidence/AXR1-047-happy.txt`, `AXR1-047-failure.txt`, `AXR1-047-review.md`,
+`AXR1-047-final-gates-r1.txt`. This approves T47, not later follow-ups, launch, merge or deployment.
+Every OG/OD gate remains open.
+
+`AXR1-043` (linked workspace sections) is recorded on delivered `AXR1-047`. In a flagged-on
+client-period workspace, Solicitações lists the period's requests with their state, client status and
+due date, each linked to its place in the cycle, and Comunicação lists the period's messages with their
+current state and receipt history and the publications with the client's receipts, linked to the queue
+and the approved effect. Ignored late observations read as history, outcomes stay distinct, empty
+periods are typed empty, scoping follows the client already resolved for the page, and support
+sessions see subjects masked. Each section costs a fixed number of queries; the whole workspace page
+measured 50 queries, which remains the open `AXR1-035` budget work. Independent review **APPROVE** at
+`92eaf3a`: no blockers; 175 acceptance/regression tests and 5 extra edge probes passed in the reviewer's
+own capped lane, and the gates, negative controls and screenshots were audited. Pre-existing and out
+of scope: the support-session queue prints a publication's title. Evidence: `.evidence/AXR1-043-happy.txt`,
+`AXR1-043-failure.txt`, `AXR1-043-review.md`, `AXR1-043-final-gates-r1.txt`. This approves T43, not later
+follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-040` (unsaved-changes guard) is recorded on delivered `AXR1-043`. The existing CSP-safe
+unsavedGuard now covers the product's real editing forms: the four client setup sections, the client and
+contact row editors, the new-playbook fields and a draft playbook's step form. Leaving an edited form asks
+first, cancelling keeps the fields, a refused save comes back still guarded, and a successful save leaves
+without a prompt; pristine, read-only and published forms never ask. Independent review **APPROVE** at
+`a81fd85`: no blockers; 10 HTTP, 8 browser and 4 extra desktop/mobile controls passed in the reviewer's own
+capped lane, and the gates, negative controls and screenshots were audited. Known limits: the guard clears
+on submit before the save succeeds (no product form saves through HTMX yet), and import-only firms stay
+unguarded. Evidence: `.evidence/AXR1-040-happy.txt`, `AXR1-040-failure.txt`, `AXR1-040-review.md`,
+`AXR1-040-final-gates-r1.txt`. This approves T40, not later follow-ups, launch, merge or deployment. Every
+OG/OD gate remains open.
+
+`AXR1-042` (portal next action) is recorded on delivered `AXR1-040`. The R1 portal now chooses the
+client's next action from the requests and cycles that client may see: an outstanding request leads the
+page and is never contradicted by an instruction to wait, a received request waits for review, an older
+period's overdue request is no longer hidden by a newer cycle, and known calendar entries stay a separate,
+scoped action. Coverage stays explicitly unknown; nothing turns green from missing data. Internal notes,
+reviews and official source assertions stay outside the portal role. Independent review **APPROVE** at
+`8f73d27`: no blockers; 22 focused, 272 portal/payment and 14 browser cases at both widths passed in the
+reviewer's own capped lane, and the gates, negative controls and screenshots were audited. Evidence:
+`.evidence/AXR1-042-happy.txt`, `AXR1-042-failure.txt`, `AXR1-042-review.md`, `AXR1-042-final-gates-r1.txt`.
+This approves T42, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-045` (portal documents and account contrast) is recorded on delivered `AXR1-042`. Under R1 the
+portal documents and account pages, and the upload form on the documents page, now draw the header email,
+footer, document metadata, size hint, empty state and account labels at AA contrast (7.43:1 on white, 7.09:1
+on the page background); flag-off and kill-switched pages are byte-identical to before. Independent review
+**APPROVE** at `93e0759`: no blockers; 82 focused, 10 axe and 18 live contrast-control cases passed in the
+reviewer's own capped lane. The first final-gate run had one browser failure, a Chromium screenshot protocol
+error in an unrelated firm-settings test; at the same code it passed alone and the full browser suite passed
+168/168. Open: the legacy flag-off contrast (4.46:1, footer 4.26:1) is an owner decision, and the R1 upload
+refusal screen (`upload_error.html`) keeps legacy ink as a follow-up. Evidence: `.evidence/AXR1-045-happy.txt`,
+`AXR1-045-failure.txt`, `AXR1-045-review.md`, `AXR1-045-final-gates-r1.txt`, `AXR1-045-browser-rerun-r1.txt`.
+This approves T45, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-046` (bulk reopening disclosure) is recorded on delivered `AXR1-045`. The bulk approval preview
+now shows a frozen reopening as a reopening: its heading and destination differ from a completion, and it
+names the preserved completion generation, the affected scope and the unexecuted proposals the reopening
+invalidates. Other frozen actions never show reopening effects. The display reads only the sealed payload;
+stored manifests, digests and execution are unchanged. Independent review **APPROVE** at `bb1398e`: no
+blockers; 133 control, 3 attack and 2 browser cases passed in the reviewer's own capped lane, and the six
+screenshots were inspected. The final gates were split by the 15:13 host crash; the reviewer accepted the
+completed commands of both runs on byte-identical code. Non-blocking: a stray space before the destination
+period ("Reabrir ciclo ."). Evidence: `.evidence/AXR1-046-happy.txt`, `AXR1-046-failure.txt`,
+`AXR1-046-review.md`, `AXR1-046-final-gates-r1.txt`, `AXR1-046-final-gates-r3-rest.txt`.
+This approves T46, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-036` (cycle detail query budget) is recorded on delivered `AXR1-046`. The populated cycle detail page
+now reads its display data in one request-local batch and runs 25 queries on the growth portfolio, down from 50,
+within the 25-query target; adding waivers, contacts or obligations no longer adds queries. The completion
+checker, permissions and commands still decide live; the batch only feeds the display, and tests prove the
+displayed checklist, blockers, waiver validity and evidence-index freshness equal the authoritative answers.
+Independent review **APPROVE** at `5cd9d1d`: no blockers; its own count was 25 queries with flat growth, and
+4 query, 54 projection/scope, 7 attack and 14 browser cases passed in its own capped lane. The first final-gate
+run failed one static guard (a stale exemption pin after the query moved into `display_reads.py`); the pins were
+moved test-only and the remaining gates passed on the amended code. The client workspace still measures 50
+queries; that is the open `AXR1-035` item. Evidence: `.evidence/AXR1-036-happy.txt`, `AXR1-036-failure.txt`,
+`AXR1-036-review.md`, `AXR1-036-final-gates-r1.txt`, `AXR1-036-final-gates-r2.txt`. This approves T36, not later
+follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-035` (client workspace query budget) is recorded on delivered `AXR1-036`. The populated client
+workspace now loads its sections through one request-local, read-only aggregate and runs 21 queries on the growth
+portfolio, down from 50, within the 25-query target; thirty extra requests add no queries. Permissions, the
+selected period and every section are unchanged: unassigned or foreign clients still return 404, and the
+aggregate never authorizes navigation, other pages or any write. Independent review **APPROVE** at `0b80947`:
+no blockers; 21 queries in its own lane, the lookup mutation failed at 52 as intended, and 134 tests, six attacks
+and two restored budget cases passed. The first final-gate run failed one static guard (exemption pins moved by
+this change and AXR1-036); the pins were updated test-only and the remaining gates passed on the amended code.
+Pre-existing and not changed here: the invalid-period 422 is bare text and the flag-off legacy workspace has a
+contrast gap. Evidence: `.evidence/AXR1-035-happy.txt`, `AXR1-035-failure.txt`, `AXR1-035-review.md`,
+`AXR1-035-final-gates-r1.txt`, `AXR1-035-final-gates-r2.txt`. This approves T35, not later follow-ups, launch,
+merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-037` (constrained Hoje latency) is recorded on delivered `AXR1-035`. Hoje no longer reverses a URL and
+recomputes the local date for every one of its ~13,350 queue items: each read reverses a route once, keeps the
+request's script prefix verbatim and substitutes only the item's UUID (falling back to `reverse()` otherwise), and
+computes the local date once. On the constrained class (1 CPU / 400 MiB web, PostgreSQL 320 MiB, Redis 96 MiB) and the
+populated growth dataset, an exclusive paired window measured Hoje p95 409.6 ms, then 537.4 ms with only the two
+changed files restored, then 426.8 ms (200 requests each, 25 queries every round). This meets the < 500 ms target on
+that class; it is not a production SLO. The opt-in, local-only investigation harness refuses non-local targets, never
+seeds or analyzes, and deletes every session it issued even when preparation fails partway. Independent review r1
+rejected two defects (script-prefix substitution, partial-preparation cleanup); both were fixed with regression tests,
+and review r2 **APPROVE** at `aeba3df`: both blockers fixed, independent probes 10/10, final gates confirmed at the
+reviewer's exact totals. Earlier windows that overlapped other runs (A3, A4, P3) and P1 (no measurement) are kept on
+record and not counted. Evidence: `.evidence/AXR1-037-happy.txt`, `AXR1-037-failure.txt`,
+`AXR1-037-paired-window-P4-summary.txt`, `AXR1-037-review.md`, `AXR1-037-review-r2.md`,
+`AXR1-037-final-gates-r2.txt`. This approves T37, not later follow-ups, launch, merge or deployment. Every OG/OD gate
+remains open.
+
+`AXR1-038` (every-model isolation) is recorded on delivered `AXR1-037`. The behavioral isolation sweep now covers the
+seven models it missed - user capability grants, billing accounts, usage records, notification preferences, firm
+outbound messages, account exports and their attempts - and an inventory test fails whenever a concrete model has
+neither sweep coverage nor an individually justified exemption. Every tenant-composite parent foreign key of the
+shipped schema (71 table/column/constraint triples) is now declared in the test suite and reconciled against the
+live catalog, so a dropped, renamed or added composite fails instead of turning a cross-tenant probe into a skip.
+ClientContact is declared portal NONE in both the roles script and the test registry, with no grant change.
+Review history: the first review attempt was lost (no verdict) and kept on record; review r2 rejected the
+catalog-only discovery of paired parents, fixed test-only with the declared manifest; review r3 **APPROVE** at
+`83e8370`: fresh isolation and scope reproduced (754 passed, 41 skipped), the catalog matched all 71 declared triples, three dropped-FK mutants failed and restored, and the incremental gate coverage was accepted. Full gates last ran at `3b56656` (suite 5103 passed / 41 skipped / 168 deselected,
+isolation 720 passed / 41 skipped, CNPJ 29, browser 168); after AXR1-037's fix the affected suites and the browser
+reran at `563a34a` (162 and 168 passed), and after the r2 fix isolation plus scope reran at `83e8370` (754 passed, 41
+skipped). The default-suite baseline above is not re-rolled by this item because no single full-suite run exists at
+its final head; the next full run (final verification) re-establishes it. Evidence: `.evidence/AXR1-038-happy.txt`,
+`AXR1-038-failure.txt`, `AXR1-038-review.md`, `AXR1-038-review-r3.md`, `AXR1-038-final-gates-r1.txt`,
+`AXR1-038-incremental-r1.txt`, `AXR1-038-isolation-fix.txt`. This approves T38, not later follow-ups, launch, merge or
+deployment. Every OG/OD gate remains open.
+
+`AXR1-054` (readable refusals) is recorded on delivered `AXR1-038`. Refusals that used to reach the reader as bare
+text or as a Python list - for example the F3 case of opening a cycle for a client still in onboarding - now read as
+plain sentences on the product's accessible error page, with unchanged statuses (409/410/422), wording, authorization
+order and portfolio-first 404s; in-page, form, flash and stored bulk-item errors read as sentences too, and markup in a
+message renders escaped. Real-browser QA passed 12/12 screens at 1440x900 and 390x844 (lang, title, one heading, a
+keyboard-reachable way back, no overflow, no serious axe violation). Independent review **APPROVE** at `4c4dace`: no
+blockers; its own browser probe passed the F3 path and escaping attacks at both widths. Review-reported residuals for
+F4 to classify: a tampered `?revisao_de=` still returns a bare 422, the read-only 403 is plain text, BuildError machine
+codes can reach two pages, a caught Http404 gives an empty flash in support views, and bulk-item rows stored before
+this change may still hold a repr. Evidence: `.evidence/AXR1-054-happy.txt`, `AXR1-054-failure.txt`,
+`AXR1-054-review.md`, `AXR1-054-final-gates-r3.txt`, `AXR1-054-incremental-r1.txt`, `AXR1-054-qa-r4.txt`. This
+approves T54, not later follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-034` (named-read and interactive performance evidence) is recorded on delivered `AXR1-054`. The T28/T25 harness
+now keeps raw per-request samples (server time, SQL count, gzip HTML bytes) with actor, scope, dataset, head and
+resource limits for the six S11.2 reads, Clientes included, and measures real click-to-swapped-content latency for the
+Hoje period filter under 9 Mbps / 170 ms RTT mid-tier Android emulation (390x844, 4x CPU). Exclusive capture at
+`f3a8afd` on the constrained class (web 1 CPU / 400 MiB, PostgreSQL 320 MiB, Redis 96 MiB, growth dataset seed 42,
+200 requests per read, 200 clicks): server p95 Hoje 466.6 ms, Clientes 15.2 ms, exact-name Clientes search 12.2 ms, client workspace 39.4 ms, cycle detail 66.5 ms and portal Inicio 12.8 ms, with at most 23 queries and 12.1 KB gzip HTML on any read. Interactive: click to populated swap p50 748.5 ms, p95 783.1 ms. p50 is the median and p95 nearest rank of the raw samples. The
+missing-swap control failed as required with the "missing exact populated HTMX swap" error and reports no percentiles. No read or interaction exceeded a target, so the capture adds no further numbered work. Capture r1 is kept as failed: the lane ran PostgreSQL defaults instead of production's tuning and the database was OOM-killed on Hoje; at production's flags (r3) it was not. Not a production SLO. Review **APPROVE** at
+`f3a8afd`: review r1 rejected only a contract misstatement in root's dispatch (median p50); after the correction, r2 confirmed every recomputed median, p95, count, budget and the control. Evidence: `.evidence/AXR1-034-happy.txt`, `AXR1-034-failure.txt`,
+`AXR1-034-review.md`, `AXR1-034-final-gates-r1.txt`, `t34-capture-r3/`. This approves T34, not later
+follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
+
+`AXR1-041` (stack-aware CI) is recorded on delivered `AXR1-034`. CI now also runs for pull requests into `axr1/**`
+branches, checks out each PR's exact head and fails when the checked-out commit differs; PRs into `main` keep merge-ref
+testing and `deploy-pilot` still needs a push to `main`. Both pytest steps run on every runner CPU with `pytest-xdist`
+(one test database per worker; local STD-GATES stay serial), because R1 roughly doubled the tables each transactional
+test flushes and the serial suite was cancelled at its 75-minute ceiling at 53% (run 38537217704). Remote CI at
+`f2f3961` (run 38556594907) passed every required job: tests in 60 min 51 s (5149 passed, 41 skipped on 4 workers, the
+serial total), container smoke and browser; deploy skipped. Serial STD-GATES at `f2f3961` passed (5149/41/168, isolation
+721/41, CNPJ 29, browser 168). Independent review **APPROVE** at `f2f3961`; its notes: the local paused-channel smoke and
+failing control ran at `f85313d` (the exact-head smoke is the remote job), the test job's margin under its ceiling is 14
+minutes, and the into-`main` path is verified by reading only. The plan's integrated-identity condition is met only by
+the top repair PR's CI run, so item 41 stays unticked until that run is green. Evidence: `.evidence/AXR1-041-happy.txt`,
+`AXR1-041-failure.txt`, `AXR1-041-review.md`, `AXR1-041-final-gates-r1.txt`, `AXR1-041-remote-ci-r2-test-job.log`.
+Every OG/OD gate remains open.
+
+`AXR1-055` (saved dates in date inputs) is recorded on delivered `AXR1-041`. Edit forms rendered a saved date in its
+localized display format inside `<input type="date">`, which browsers treat as empty, so re-saving an engagement silently
+cleared its dates (final F3 N1). A new `input_value` filter renders each field in the input's own wire format (ISO for
+dates) through the shared field partial; submitted strings and non-date values are unchanged. Real-browser QA passed 4/4
+(pt-BR and en at 1440x900 and 390x844): the editor shows both saved dates, changing only the service kind keeps them, and
+reopening shows them again. Final STD-GATES at `28b2eb0` passed (5156/41/168, isolation 721/41, CNPJ 29, browser 168).
+Independent review **APPROVE** at `28b2eb0`: patch identity, 24 focused tests and four browser attacks. Evidence:
+`.evidence/AXR1-055-happy.txt`, `AXR1-055-failure.txt`, `AXR1-055-review.md`, `AXR1-055-final-gates-r2.txt`. Every OG/OD
+gate remains open.
+
+`AXR1-056` (portal empty-state contrast) is recorded on delivered `AXR1-055`. The empty portal Pagamentos state now uses
+T45's `text-ink-600` treatment for R1 tenants (final F3 N2 measured 4.46:1); non-R1 bytes are unchanged and the portal axe
+sweep covers `/pagamentos/` at both widths. The item's acceptance was corrected after review r1: the portal Inicio
+no-company page renders only on a host that resolves no active tenant (an active R1 tenant without a client seat gets
+403), so it is recorded under deferred T77 (4.46:1 card and header e-mail, 4.27:1 footer), not claimed fixed. Final
+STD-GATES at `dd9c66a` passed (5159/41/168, isolation 721/41, CNPJ 29, browser 168). Independent review r2 **APPROVE** at
+`dd9c66a`. Evidence: `.evidence/AXR1-056-happy.txt`, `AXR1-056-failure.txt`, `AXR1-056-review.md`,
+`AXR1-056-review-r2.md`, `AXR1-056-final-gates-r3.txt`. Every OG/OD gate remains open.
+
+`AXR1-058` (completion execution refusal) is recorded on delivered `AXR1-056`. An approved completion whose cycle was not yet
+in "Em execução" was refused with the bare "Esta transição não é permitida."; the refusal now names the required state and
+the path there ("Próximo estado" through "Em revisão", "Aguardando aprovação" and "Em execução"), with the status code,
+authorization order and every transition rule unchanged, and the same approved completion then executes. Final
+STD-GATES at `dbd381d` passed (5160/41/168, isolation 721/41, CNPJ 29, browser 168). Independent review **APPROVE** at
+`dbd381d`: patch identity, 142 tests, desktop/mobile recovery and terminal-cycle 409 attacks. Evidence:
+`.evidence/AXR1-058-prep.md`, `AXR1-058-review.md`, `AXR1-058-final-gates-r3.txt`. Every OG/OD gate remains open.
+
+`AXR1-059` (refusal pages' way out and product 404) is recorded on delivered `AXR1-058`. Every user-reachable 403 and 404
+found now renders the product refusal layout in pt-BR with a title, one heading, a keyboard-reachable way back and, when
+signed in, a working Sair: the support-revoked, wrong-host and ended-portal 403s, a new product 404 (identical for foreign
+and nonexistent objects), Django's CSRF-failure page (now "Página expirada"), the read-only and scan-refused 403s, and every
+invite refusal page. Status codes, authorization order, CSRF refusal and portfolio-first 404s are unchanged (review
+measured 15 responses on parent and head). On firm-door invite refusal pages the legacy platform-host footer still fails
+contrast (4.27:1); a control proves it predates this item, so it is recorded under deferred T77, not claimed fixed. Final
+STD-GATES at `0055ad3` passed (5176/41/168, isolation 721/41, CNPJ 29, browser 168). Independent review **APPROVE** at `0055ad3` (r1 plus a delta review of the
+amendment). Evidence: `.evidence/AXR1-059-prep.md`, `AXR1-059-review.md`, `AXR1-059-final-gates-r1.txt`. Every OG/OD gate
+remains open.
+
+`AXR1-060` (portal next action for awaiting publications) is recorded on delivered `AXR1-059`. A publication awaiting the
+client's confirmation is now the portal's next action, its confirm link works and it clears afterwards; migration
+`0019_portal_receipt_lookup` grants the portal role read access to four receipt columns only, and existing row-level
+security still limits rows to the client's own. The first final gates found two defects the reviews missed: the column-only portal grant was not declared where the
+isolation guard reads portal decisions, and an annotation was named "pending"; the decision is now declared and asserted
+(SELECT * refused, only the declared columns readable, RLS confining rows) and the annotation renamed. Final STD-GATES at `da27d06` passed (5182/41/168, isolation 722/41, CNPJ 29, browser 168). Independent review
+**APPROVE** at `da27d06`: 32 tests, the live confirmation flow, and cross-client and cross-tenant attacks. Evidence:
+`.evidence/AXR1-060-prep.md`, `AXR1-060-review.md`, `AXR1-060-final-gates-r1.txt`. Every OG/OD gate remains open.
+
+`AXR1-061` (email metering states) is recorded on delivered `AXR1-060`. The account page now tells missing, partial and
+measured-zero email metering apart ("Sem medição · Apuração de e-mails pendente" instead of 0). The current month always
+reads as partial because usage is recorded for the prior day; review judged that consistent with the metering design.
+Final STD-GATES at `6521752` passed (5190/41/168, isolation 722/41, CNPJ 29, browser 168). Independent review **APPROVE** at `6521752`: 30 tests and 10 browser cases.
+Evidence: `.evidence/AXR1-061-prep.md`, `AXR1-061-review.md`, `AXR1-061-final-gates-r1.txt`. Every OG/OD gate remains
+open.
+
+`AXR1-062` (R1 client flows in pt-BR) is recorded on delivered `AXR1-061`. On active R1 portal hosts the client invitation,
+sign-in, re-authentication, recovery and request/upload flows render in pt-BR whatever the browser language, including
+the retry after a refused upload; other hosts keep English negotiation. After final F3 found the invitation's
+password-mismatch error still in English (F3R2-01), the message became "Os dois campos de senha não correspondem.", with
+a test under both headers. Final STD-GATES at `6e316f6` passed (5207/41/168, isolation 722/41, CNPJ 29, browser 168). Independent review **APPROVE** at `6e316f6` (r1
+plus delta reviews of both amendments). The first final gates showed the switch's per-request tenant lookup broke the
+`/readyz` and `/versionz` probe contracts on portal hosts; it now honours `@transaction.non_atomic_requests`, so probes
+never touch the database. Evidence: `.evidence/AXR1-062-prep.md`, `AXR1-062-review.md`,
+`AXR1-062-final-gates-r3.txt`. Every OG/OD gate remains open.
+
+`AXR1-063` (upload-refusal ink) is recorded on delivered `AXR1-062`. The R1 portal upload-refusal (400) and retry pages now
+carry the same AA ink as the successful vault form; the status stays 400, the retry keeps CSRF, multipart encoding and the
+size limit, and flag-off pages are byte-identical. Final STD-GATES at `fc53fd9` passed (5213/41/170, isolation 722/41, CNPJ 29, browser 170). Independent review
+**APPROVE** at `fc53fd9`: 76 HTTP and 6 browser tests including two attacks. Residual for F4: a file rejected for its type
+still shows "Nenhum arquivo foi escolhido". Evidence: `.evidence/AXR1-063-happy.txt`, `AXR1-063-failure.txt`,
+`AXR1-063-review.md`, `AXR1-063-final-gates-r2.txt`. Every OG/OD gate remains open.
+
+`AXR1-064` (playbook bound form) is recorded on delivered `AXR1-063`. A refused playbook creation (422 or 409) now re-renders
+the bound form with the submitted values, selected options and inline errors, and correcting only the key succeeds. The
+shared field partial carries both this change and item 55's date values (a one-line conflict resolved during placement and
+verified by review). Final STD-GATES at `0ebaeee` passed (5222/41/170, isolation 722/41, CNPJ 29, browser 170). Independent review **APPROVE** at `0ebaeee`: 70 tests,
+desktop and mobile retries, bound and unbound select and date probes. Evidence: `.evidence/AXR1-064-prep.md`,
+`AXR1-064-review.md`, `AXR1-064-final-gates-r2.txt`. Every OG/OD gate remains open.
+
+`AXR1-057` (evidence export with unscanned originals) is recorded on delivered `AXR1-064`. A cycle's evidence export now
+succeeds when some originals were never scanned: unsafe, unscanned or rejected originals are excluded and named with their
+reason on the page and in the archive, and an all-clean archive is byte-identical to before. Review r1 found a race (an
+original rejected after the claim reached a READY archive); eligibility is now rechecked under row locks in the
+publication transaction, historical exports included, and unsafe attempts never become READY. Migration
+`0020_evidenceexport_excluded_originals` follows item 60's `0019`. Final STD-GATES at `d1e803f` passed (5240/41/170, isolation 722/41, CNPJ 29, browser 170 on a same-head rerun).
+Independent review r2 **APPROVE**: the rebuilt race attack fails on the old head and passes here, plus two new attacks;
+the r3 delta review confirmed it at `d1e803f` (product code unchanged, test-file typing only). Residual for F4: an archive
+published before a later rejection stays downloadable. Evidence: `.evidence/AXR1-057-prep.md`, `AXR1-057-review.md`,
+`AXR1-057-review-r2.md`, `AXR1-057-review-r3.md`, `AXR1-057-final-gates-r3.txt`, `AXR1-057-browser-rerun-r1.txt`. Every
+OG/OD gate remains open.
 
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
@@ -524,14 +1211,10 @@ runbook that documents a restore is not a rehearsal.
 
 ## How changes reach `main`
 
-**Sequential pull requests, each based on current `main`.** Never stacked.
-
-The reason is mechanical rather than stylistic. Continuous integration is configured
-to run on pull requests whose base is `main`. A pull request stacked on another
-feature branch therefore receives no CI run at all, and with required checks in place
-it can never merge. Rebasing a stack onto `main` to unblock it re-runs everything
-anyway, so the stack buys nothing. The accepted consequence is that a wave's work
-waits for the previous wave's pull request to merge before it opens.
+**AXR1 uses a linear stack of open pull requests:** the first targets `main`, and
+each later PR targets the previous `axr1/*` branch. Merge only on the owner's
+instruction. CI evidence must identify the exact head tested; missing checks
+remain explicitly unverified.
 
 ## Deploy cutover state
 
@@ -580,7 +1263,185 @@ state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README
 ## Suite baseline
 
 The full test suite is the gate at every pull-request head and at the final
-implementation head. The current default-suite baseline is **3826 passing**
+implementation head. The current default-suite baseline is **5148 passing** (41 skipped, 168 deselected), measured at `AXR1-034` code `133793b`, the **5137** below plus **11** cases. The reviewed head `f3a8afd` adds only the driver CPU-limit repair with its one test (static clean, targeted 304 passed) and the docs-only placement on `AXR1-054`. Isolation (**721 passed, 41 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `133793b`. Evidence: `.evidence/AXR1-034-final-gates-r1.txt`, `AXR1-034-static-r3.txt`, `AXR1-034-targeted-r3.txt`.
+This status-only delivery changes no reviewed implementation.
+
+The previous default-suite baseline was **5137 passing** (41 skipped, 168 deselected), measured at `AXR1-054` code `a7830c7`; it includes AXR1-038's isolation sweep, whose skips raise the skipped count. The placed head `4c4dace` differs only in this file and AXR1-038's two review-fix isolation test files, which pass there (isolation + scope 754 passed, 41 skipped). Isolation (**720 passed, 41 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `a7830c7`. Evidence: `.evidence/AXR1-054-final-gates-r3.txt`, `AXR1-054-incremental-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **5032 passing** (30 skipped, 168 deselected) at `AXR1-037` code `aeba3df` (the reviewed head), the **5025** below plus **7** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `aeba3df`. Evidence: `.evidence/AXR1-037-final-gates-r2.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **5025 passing** (30 skipped, 168 deselected) at `AXR1-035`: the first run at `8e3ef88` passed 5024 with one static-guard failure, fixed test-only at `0b80947` (the reviewed code), where all 33 scope tests pass; that is the **5008** below plus **17** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `0b80947`. Evidence: `.evidence/AXR1-035-final-gates-r1.txt`, `AXR1-035-final-gates-r2.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **5008 passing** (30 skipped, 168 deselected) at `AXR1-036`: the first run at `1c3301a` passed 5007 with one static-guard failure, fixed test-only at `8ee7ce0` (code-identical to the reviewed `5cd9d1d`), where all 33 scope tests pass; that is the **4984** below plus **24** cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `8ee7ce0`. Evidence: `.evidence/AXR1-036-final-gates-r1.txt`, `AXR1-036-final-gates-r2.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4984 passing** (30 skipped, 168 deselected), verified at `AXR1-046` code `dcc8ce1` (code-identical to the reviewed `bb1398e`) on `AXR1-045`: the **4977** below plus **7** new cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed across two runs split by a host crash, all on code-identical heads. Evidence: `.evidence/AXR1-046-final-gates-r1.txt`, `AXR1-046-final-gates-r3-rest.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4977 passing** (30 skipped, 168 deselected), verified at `AXR1-045` code `978dbd8` (code-identical to the reviewed `93e0759`) on `AXR1-042`: the **4968** below plus **9** new cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy and migration drift passed; browser passed **168** on a same-code rerun after one Chromium screenshot protocol error. Evidence: `.evidence/AXR1-045-final-gates-r1.txt`, `AXR1-045-browser-rerun-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4968 passing** (30 skipped, 164 deselected), verified at `AXR1-042` code `8f73d27` on delivered `AXR1-040` head `bc11afc`: the **4946** below plus **22** new cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**164 passed**) passed serially. Evidence: `.evidence/AXR1-042-final-gates-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4946 passing** (30 skipped, 164 deselected), verified at `AXR1-040` code `a81fd85` on delivered `AXR1-043` head `aefb7ca`: the **4936** below plus **10** new cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**164 passed**) passed serially. Evidence: `.evidence/AXR1-040-final-gates-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4936 passing** (30 skipped, 156 deselected), verified at `AXR1-043` code `92eaf3a` on delivered `AXR1-047` head `33a4da0`: the **4928** below plus **8** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**156 passed**) passed serially. Evidence: `.evidence/AXR1-043-final-gates-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4928 passing** (30 skipped, 156 deselected), verified at `AXR1-047` code `2d3d607` on delivered `AXR1-044` head `b965b8b`: the **4921** below plus **7** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**156 passed**) passed serially. Evidence: `.evidence/AXR1-047-final-gates-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4921 passing** (30 skipped, 154 deselected), verified at `AXR1-044` code `5cf5957` on delivered `AXR1-050` head `5a42438`: the **4911** below plus **10** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-044-final-gates-r2.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4911 passing** (30 skipped, 154 deselected), verified at `AXR1-050` code `9430bbe` on delivered `AXR1-049` head `7464dd1`: the **4902** below plus **9** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-050-final-gates-r2.txt` and `AXR1-050-final-tail-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4902 passing** (30 skipped, 154 deselected), verified at `AXR1-049` code `e681371` on delivered `AXR1-039` head `778b5f1`: the **4893** below plus **9** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed (r2; r1 had 1 Chromium screenshot-capture error, see failure evidence)**) passed serially. Evidence: `.evidence/AXR1-049-final-gates-r1.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4893 passing** (30 skipped, 154 deselected), verified at `AXR1-039` code `fdb1bd0` on delivered `AXR1-048` head `0fccec1`: the **4855** below plus **38** new or reshaped cases. Isolation (**642 passed, 30 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**154 passed**) passed serially. Evidence: `.evidence/AXR1-039-final-gates-r4.txt`.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4855 passing** (30 skipped, 154 deselected),
+verified at `AXR1-048` code `b53ad6b` on delivered `AXR1-053` head `d87cf17`: the
+**4803** below plus **52** new or reshaped import-origin cases. Isolation (**640**, with
+**30** justified skips), CNPJ (**29**), build with a clean static diff, lint, format, Mypy
+and migration drift passed serially; browser (**154**) passed at `e400a96`, which changes
+only one template class. Evidence: `.evidence/AXR1-048-final-gates-r1.txt` and
+`AXR1-048-final-browser-r1.txt`. Earlier failed targeted runs (Mypy, migration syntax,
+one test artifact) remain separate failures with their repairs recorded.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4803 passing** (30 skipped, 154 deselected),
+verified at `AXR1-053` code `f0a2d9e` on delivered `AXR1-033` head `657ede8`:
+the **4722** below plus **81** new notice-authority and compatibility cases.
+Isolation (**640**, with **30** justified skips), CNPJ (**29**), build with a clean
+static diff, lint, format, Mypy and migration drift passed serially; browser (**154**)
+passed at `136a267`, which differs only in `tests/browser/test_onboarding.py`.
+Evidence: `.evidence/AXR1-053-final-gates-r3.txt` and `AXR1-053-final-browser-r1.txt`.
+Earlier failed full runs (63 failed with 11 errors, then 2, then 2 browser failures)
+remain separate failures with their repairs recorded, not passing evidence.
+This status-only delivery changes no reviewed implementation.
+
+Before that, the default-suite baseline was **4722 passing** (28 skipped, 146 deselected),
+verified at `AXR1-033` code `c6653b0` on delivered `AXR1-032` head `65392c6`:
+the **4693** below plus **29** new invitation regression cases.
+Isolation (**628**, with **28** justified skips), CNPJ (**29**), browser (**146**),
+lint, format, Mypy, migration drift and clean-tree checks passed serially.
+Build/static was not applicable under the plan's conditional rule: no assets changed.
+Evidence: `.evidence/AXR1-033-gates-root3.txt`, all applicable exits zero and
+`T33_ALL_STD_GATES_OK` at the same head. Interrupted overlapping runs and the
+earlier two-regression full run remain separate failures, not passing evidence.
+Independent review retained these gates and passed 71 focused checks.
+This status-only delivery changes no reviewed implementation.
+
+The previous default-suite baseline was **4693 passing** (28 skipped, 146 deselected),
+verified at `AXR1-032` code `f4e8c87` on delivered `AXR1-031` head `1bec8d6`:
+the **4683** below plus **10** new authority regression cases.
+Isolation (**628**, with **28** justified skips), CNPJ (**29**), browser (**146**),
+lint, format, Mypy, migration drift, rebuilt-static equality and clean-tree checks passed.
+Evidence: `.evidence/AXR1-032-gates.txt`, all ten exits zero and final `FAILED=0`.
+Independent review audited the integrated gates and passed its own 14 focused checks.
+This status-only delivery commit changes no reviewed implementation.
+
+The previous default-suite baseline was **4683 passing** (28 skipped, 146 deselected),
+verified at `AXR1-031` code `bc2c0cb` on delivered `AXR1-029` head `ff372a6`:
+the **4673** below plus **10** new default-suite cases.
+The serial run passed isolation (**628**, with **28** justified skips), CNPJ (**29**),
+browser (**146**), lint, format, mypy, migration drift, rebuilt-static equality and clean-tree checks.
+Evidence: `.evidence/AXR1-031-gates.txt`, all ten exits zero with matching begin/end head.
+Independent review audited the completed run and passed its own focused real-surface checks.
+
+The previous default-suite baseline was **4673 passing** (28 skipped, 138 deselected),
+verified at `AXR1-029` code `46e1eed` on delivered `AXR1-026` head `76bdd55`:
+the **4654** below plus **19** net-new default-suite cases.
+The same serial run passed isolation (**628**, with **28** justified skips), CNPJ (**29**),
+browser (**138**), lint, format, mypy, migration drift, rebuilt-static equality and the clean-tree check.
+Evidence: `.evidence/AXR1-029-final-gates2.txt`, with all ten exits zero and a matching final-head marker.
+Independent review audited those broad results and ran its own focused mechanism, browser and mutation
+checks. This status-only commit records the verified candidate without changing its implementation.
+
+The previous default-suite baseline was **4654 passing** (28 skipped, 134 deselected),
+verified at `AXR1-026` code `80fe953`: the **4336** below plus **318** net-new passing cases.
+Lint, format, mypy, migration drift and the clean-tree check passed at that head.
+Isolation (**628** passing, **28** skips), CNPJ (**29**), browser (**134**) and rebuilt-static equality
+passed at `58be395`; independent review also reran isolation at `80fe953`.
+The only intervening change placed an existing approval comment next to its query, with identical
+executable ASTs. The earlier full-suite source-guard failure remains recorded; the complete rerun passed.
+Evidence: `.evidence/AXR1-026-final-full.txt`, `AXR1-026-gates-r3.txt` and
+`AXR1-026-marker-reconciliation.md`. Delivery replayed the same code onto the `AXR1-025` status commit
+`6e8d511`.
+
+The previous default-suite baseline was **4336 passing** (134 deselected), verified at
+`AXR1-025` code `439fd67` on `AXR1-023` code `b02cf0e`: the **4330** below plus **6** net-new default-suite
+cases. The same serial run passed isolation (**312**), CNPJ (**29**), browser (**134**, 32 more than the
+**102** below), lint, format, mypy and migration drift. Its static and clean-tree checks failed only on a
+utility token in inherited status prose; after the one-line prose fix both passed on the corrected head.
+Evidence: `.evidence/AXR1-025-gates-final.txt`.
+
+The previous default-suite baseline was **4330 passing** (102 deselected), verified at
+`AXR1-023` code `b02cf0e`: the **4280** below plus **50** net-new default-suite cases.
+The same head passed isolation (**312**), CNPJ (**29**), browser (**102**), lint, format,
+mypy, migration drift, build/static equality and the clean-tree check. The first full-suite
+attempt lacked `SUPERUSER_DATABASE_URL`; only that gate was rerun with the corrected lane
+setting, without changing code or tests. Evidence: `.evidence/AXR1-023-fix-gates.txt` and
+`AXR1-023-fix3-full-rerun.txt`.
+
+The previous default-suite baseline was **4280 passing** (94 deselected), verified at placed
+`AXR1-028` code `6bdbd41` on `AXR1-027` code `c1451a2`: the **4253** below plus **27** net-new
+default-suite cases. The same serial run passed isolation (**309**), CNPJ (**29**), browser
+(**94**), lint, format, mypy, migration drift and a clean rebuilt-static check. Evidence:
+`.evidence/AXR1-028-gates-placed.txt`.
+
+The previous default-suite baseline was **4253 passing** (94 deselected), verified at placed
+`AXR1-027` code `c1451a2` (tree `40373cd`) on `AXR1-024` code `cd19380`: the **4204** below plus **49** net-new default-suite cases. The same serial run passed isolation
+(**309**), CNPJ (**29**), browser (**94**), lint, format, mypy, migration drift and a
+clean rebuilt-static check. Evidence: `.evidence/AXR1-027-gates-placed.txt`.
+
+The previous default-suite baseline was **4204 passing** (92 deselected), verified at
+`AXR1-024` code `cd19380` (tree `c75f2a5`) on `AXR1-022` repaired code `af8e053`: the
+**4072** below plus **132** net-new default-suite cases. The same serial
+run passed isolation (**309**), CNPJ (**29**), browser (**92**), lint, format,
+mypy, migration drift and a clean rebuilt-static check. Evidence:
+`.evidence/AXR1-024-gates-final.txt`.
+
+The previous default-suite baseline was **4072 passing** (92 deselected),
+verified at repaired `AXR1-022` code `af8e053` (tree `a5dbdfd`) on `AXR1-021`
+code `d8963b8`: the **3918** below plus **154** net-new
+default-suite cases. The same serial run passed isolation (**306**), CNPJ
+(**29**), browser (**92**), lint, format, mypy, migration drift and a clean
+rebuilt-static check. The placed head `6a78683` had passed the same gates (4072,
+isolation 306, CNPJ 29, browser 90). Evidence: `.evidence/AXR1-022-fix-gates.txt`,
+`.evidence/AXR1-022-gates-placed.txt` and the reviewers'
+`T22-RV-gates.txt` and `T22-RV2-confirm.md`.
+
+The previous default-suite baseline was **3918 passing**
+(86 deselected), verified at placed `AXR1-021` code `d8963b8` (tree `a294f13`) on
+`AXR1-020` repaired code `549d202`: the **3889** below plus **29** net-new
+default-suite cases. The same serial run passed isolation (**288**), CNPJ
+(**29**), browser (**86**), lint, format, mypy, migration drift and a
+clean rebuilt-static check. The confirmation reviewer audited the repair's
+identical run at `51afd08` and reran the search and palette tests. Evidence:
+`.evidence/AXR1-021-gates-place3.txt` and `.evidence/T21-RV2-confirm.md`.
+
+The previous default-suite baseline was **3889 passing**
+(78 deselected), verified at `AXR1-020` repaired code `549d202` (tree
+`f9ee6d4`), on `AXR1-019` repaired code `3c8e5e2`: the **3826** below plus
+**63** net-new default-suite cases. The same serial run passed isolation
+(**282**), CNPJ (**29**), browser (**78**), lint, format, mypy,
+migration-drift and a clean rebuilt-static check. The confirmation
+reviewer reran lint, format, mypy and migration drift, the bulk and delivery
+modules (118), isolation (282), the bulk browser tests (4) and the static
+rebuild, all green. Evidence: `.evidence/AXR1-020-fix2-gates.txt` and
+`.evidence/T20-RV3-gates.txt`.
+
+The previous default-suite baseline was **3826 passing**
 (74 deselected), verified at `AXR1-019` repaired code `3c8e5e2` (tree
 `e734580`), on final `AXR1-018` code `cae2ba6`: the **3721** below plus
 **105** net-new default-suite cases. The same serial run passed isolation
@@ -588,10 +1449,7 @@ implementation head. The current default-suite baseline is **3826 passing**
 migration-drift and a clean rebuilt-static check. The confirmation reviewer
 audited that run and reran 500 targeted tests, isolation (**276**), the six
 `AXR1-019` browser cases and the restored scale test. Evidence:
-`.evidence/AXR1-019-fix-gates.txt` and `.evidence/T19-RV2-gates.txt`. This
-status-only commit does
-not change the reviewed code; it sits on the `AXR1-018` status commit
-`637305e`.
+`.evidence/AXR1-019-fix-gates.txt` and `.evidence/T19-RV2-gates.txt`.
 
 The previous default-suite baseline was **3721 passing**
 (68 deselected), independently verified at `AXR1-018` code `cae2ba6` (tree
@@ -715,7 +1573,7 @@ repair lives in `.evidence/AXR1-004-fix-gates.txt`.
 Browser tests are a separate suite. `uv run pytest` deselects them (`addopts` carries
 `-m "not browser"`), so they are not part of the count above. They run with
 `uv run pytest -m browser` after `uv run playwright install chromium`, and in CI in the
-`browser` job. The suite now contains **74** cases: the **24** passing at the T3
+`browser` job. The suite now contains **94** cases: the **24** passing at the T3
 commit `bff2bb2`, plus the two-viewport reviewer-conflict regression, plus the
 four `AXR1-007` onboarding and import-wizard cases (two journeys at two
 viewports), plus the six `AXR1-008` playbook cases (editor keyboard reorder and
@@ -728,7 +1586,13 @@ plus the eight `AXR1-015` approval-card cases, plus the two `AXR1-016`
 publication-receipt cases, plus the eight `AXR1-017` coverage-panel cases
 (four journeys at two viewports), plus the six `AXR1-019` briefing cases
 (two briefing-state journeys and one long-client-name journey at two
-viewports). Every test in
+viewports), plus the four `AXR1-020` bulk-operation cases (the bulk journey
+and the remaining-quota preview at two viewports), plus the eight `AXR1-021`
+palette and search cases (the palette journeys at two viewports and the
+long-name reflow checks at 390 and 320 px), plus the six `AXR1-022`
+cases (the owner's profile, preference and account-export journey, staff not
+seeing owner billing or profile controls, and the two header-width checks), plus the two `AXR1-027`
+Automações cases (pause, resume and dead-letter retry/cancel at desktop and mobile). Every test in
 `tests/browser/` runs at 1440x900 and at 390x844.
 
 The rule is about the delta, not a fixed number. A documentation-only change must

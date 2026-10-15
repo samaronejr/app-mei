@@ -29,6 +29,7 @@ from django.db.models import QuerySet
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, record_event
+from apps.authz.support import has_active_support_grant
 from apps.tenants.models import Tenant
 
 ADMIN_TENANT_SESSION_KEY: Final = "admin_tenant_id"
@@ -44,6 +45,10 @@ class TenantNotSelectableError(AdminTenantError):
 
 class BreakGlassReasonRequiredError(AdminTenantError):
     """Raised when cross-tenant access is attempted with no reason stated."""
+
+
+class SupportGrantRequiredError(AdminTenantError):
+    """The platform account needs an owner-approved grant to enter this firm."""
 
 
 def selectable_tenants(user: User | AnonymousUser) -> QuerySet[Tenant]:
@@ -73,12 +78,22 @@ def authorize(*, user: User, tenant_id: UUID, reason: str = "") -> tuple[Tenant,
     if not is_break_glass(user, tenant):
         return tenant, False
 
-    if not user.is_superuser:
+    if not user.is_staff:
         msg = "This account has no active membership for that firm."
         raise TenantNotSelectableError(msg)
     if not reason.strip():
         msg = "Cross-tenant access requires a stated reason."
         raise BreakGlassReasonRequiredError(msg)
+    if not has_active_support_grant(user.pk, tenant.pk):
+        # Since AXR1-023 the superuser short-circuit ends here, not at the row:
+        # without an owner-approved grant for this person, the console refuses
+        # to name the firm — keeping "this firm exists" out of the answer the
+        # selector would otherwise leak.
+        msg = (
+            "O responsável pela conta não concedeu acesso de suporte para você "
+            "nesta firma."
+        )
+        raise SupportGrantRequiredError(msg)
     return tenant, True
 
 
@@ -88,9 +103,12 @@ def may_operate_as(user: User, tenant_id: UUID) -> bool:
     Called on every admin request rather than only at selection time, so that revoking
     a membership takes effect immediately instead of at the operator's next sign-in.
     """
-    if user.is_superuser:
+    if selectable_tenants(user).filter(pk=tenant_id).exists():
         return True
-    return selectable_tenants(user).filter(pk=tenant_id).exists()
+    # For a non-member the answer is the live grant row alone, re-read on every
+    # request: a revoked or expired grant takes effect on the very next page
+    # inside the console, exactly as it does on the firm host.
+    return user.is_staff and has_active_support_grant(user.pk, tenant_id)
 
 
 def record_selection(

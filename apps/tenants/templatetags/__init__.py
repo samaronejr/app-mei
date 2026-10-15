@@ -1,0 +1,1 @@
+"""Tenant settings template integration."""

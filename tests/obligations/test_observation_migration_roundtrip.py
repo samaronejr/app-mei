@@ -57,6 +57,10 @@ def test_observations_reverse_and_reapply_without_weakening_audit() -> None:
                 ("cycles_cycleevent_append_only",),
                 ("delivery_deliveryattempt_append_only",),
                 ("delivery_deliveryeffect_append_only",),
+                # T22's private usage ledger is supersede-only (correction_of),
+                # so it carries the same append-only trigger; reversing the
+                # observations table must leave it installed as well.
+                ("tenants_usagerecord_append_only",),
             ]
         # As table owner, grants cannot mask a missing mutation trigger.
         with (
