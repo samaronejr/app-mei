@@ -30,7 +30,7 @@ from django.http import Http404
 from django.utils import timezone
 from django.utils.translation import gettext as _
 
-from apps.accounts.invites import issue_client_invite
+from apps.accounts.invites import issue_contact_invite
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, Origin, record_event, record_platform_event
@@ -631,12 +631,11 @@ def invite_contact(  # noqa: PLR0913 - keyword-only issuance contract
         if pending:
             msg = f"contact {contact_id} already holds a live invitation"
             raise InvitePendingError(msg)
-        return issue_client_invite(
+        return issue_contact_invite(
             actor=actor,
             tenant=tenant,
-            client=client,
-            email=contact.email,
             role=role,
+            contact=contact,
         )
 
 

@@ -49,6 +49,7 @@ from apps.tenants.notification_models import (
     FirmOutboundMessage,
     NotificationPreference,
 )
+from apps.tenants.support_models import SupportGrant
 from apps.tenants.validators import validate_tenant_slug
 
 if TYPE_CHECKING:
@@ -363,6 +364,16 @@ class Invite(UUIDv7PrimaryKeyModel):
         blank=True,
     )
     email = models.EmailField(_("email address"))
+    # Fixed at issuance, not inferred from an address at redemption. Contacts may
+    # share an email, and request notices refresh this SAME invitation's token.
+    contact = models.ForeignKey(
+        "clients.ClientContact",
+        on_delete=models.RESTRICT,
+        related_name="portal_invitations",
+        verbose_name=_("originating contact"),
+        null=True,
+        blank=True,
+    )
     role = models.CharField(_("role"), max_length=32, choices=TenantRole.choices)
     token = models.CharField(_("token digest"), max_length=64, unique=True)
     expires_at = models.DateTimeField(_("expires at"))
@@ -403,6 +414,11 @@ class Invite(UUIDv7PrimaryKeyModel):
         constraints: ClassVar[list[models.BaseConstraint]] = [
             models.UniqueConstraint(
                 fields=["tenant", "id"], name="invite_tenant_id_uniq"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(contact__isnull=True)
+                | models.Q(client__isnull=False),
+                name="invite_contact_requires_client",
             ),
             # Accepting an invite writes Membership(client=invite.client), so this is
             # membership_role_matches_client_scope evaluated one step earlier, against
@@ -485,6 +501,7 @@ __all__ = [
     "Invite",
     "Membership",
     "NotificationPreference",
+    "SupportGrant",
     "Tenant",
     "TenantPlan",
     "TenantRole",

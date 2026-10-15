@@ -106,7 +106,8 @@ flagged firm is never offered a link that leads nowhere.
 `dialog` (native `<dialog>`, focus returned to the opener), `palette` (the
 `Ctrl/Cmd+K` search combobox, below), `uploadList`
 (preview, size and type refusals, removal), `unsavedGuard` (the browser's own
-leave-page prompt) and `dismissable` (toasts) live in `static/js/app.js` and register
+leave-page prompt; a form the server refused comes back with `data-unsaved` and
+stays guarded) and `dismissable` (toasts) live in `static/js/app.js` and register
 on `alpine:init`. That event fires once, when Alpine starts, so under the product
 shell `base.html` loads Alpine *after* `app.js`; flag-off pages keep the old order and
 carry no component. A control that needs script to act ships `hidden` and is revealed

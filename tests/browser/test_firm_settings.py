@@ -467,3 +467,57 @@ def test_staff_settings_do_not_render_owner_billing_or_profile_controls(
     ).to_be_visible()
     axe_check(opened.page)
     opened.assert_clean_console()
+
+
+def test_support_trail_renders_for_the_owner_at_both_viewports(
+    live_firm: Callable[..., LiveFirm],
+    open_page: Callable[[LiveFirm, User | None], BrowserPage],
+) -> None:
+    """The B5 audit page renders the grant's request rows for its owner."""
+    from apps.tenants.support import (  # noqa: PLC0415 — test-local imports
+        SupportApproval,
+        approve_support_grant,
+        request_support_grant,
+    )
+    from apps.tenants.support_models import SupportScope  # noqa: PLC0415
+    from tests.support import enrol_totp  # noqa: PLC0415
+
+    live = live_firm("browser-supt-trail", features=("cycles_r1", "firm_settings_r1"))
+    # A short tenant name keeps the header-row geometry check name-insensitive:
+    # the bar's spare margin was measured at 30.3px on both the parent and this
+    # head, and the helper needs >= 31px once it subtracts the simulated
+    # 15px scrollbar at 1280 (see .evidence/AXR1-023-fix.md parity numbers).
+    live.firm.tenant.name = "Trilha"
+    with tenant_context(live.firm.tenant.pk):
+        live.firm.tenant.save(update_fields=["name"])
+    staff = User.objects.create_user(
+        email="browser-staff@platform.example.com",
+        password="unused-password",  # noqa: S106
+        is_staff=True,
+    )
+    enrol_totp(staff)
+    with tenant_context(live.firm.tenant.pk):
+        grant = request_support_grant(
+            staff, live.firm.tenant.pk, purpose="Browser trail"
+        )
+        approve_support_grant(
+            live.firm.owner,
+            live.firm.tenant.pk,
+            grant.pk,
+            SupportApproval(scope=SupportScope.READ_ONLY, hours=4, client_ids=()),
+        )
+    # The staff visit under the grant is what the trail lists as a request row.
+    staff_page = open_page(live, staff)
+    staff_page.goto(live.url("/"))
+    opened = open_page(live, None)
+    page = opened.page
+    opened.goto(live.url("/configuracoes/suporte/"))
+    # Follow the trail link on the decided grant card.
+    page.locator('a[href*="/trilha/"]').first.click()
+    expect(page.locator("h2#trilha")).to_be_visible()
+    expect(page.locator("table tbody tr").first).to_be_visible()
+    expect(page.locator("td", has_text="Requisição").first).to_be_visible()
+    axe_check(page)
+    opened.screenshot("support-trail")
+    opened.assert_clean_console()
+    _assert_header_actions_keep_one_row(opened, live)

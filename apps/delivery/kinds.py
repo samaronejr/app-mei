@@ -28,7 +28,7 @@ from apps.cycles.evidence import CLIENT_OPEN_STATES, EvidenceRequest, counted_li
 from apps.cycles.models import CycleState, ServiceCycle
 from apps.cycles.services.exceptions import open_exception
 from apps.delivery.models import OutboundMessage
-from apps.delivery.policy import MessageKind, register_kind
+from apps.delivery.policy import KINDS, MessageKind, register_kind
 
 INVITE_REJECTED: Final = "convite_recusado"
 
@@ -72,11 +72,9 @@ def _withdraw_rejected_invite(message: OutboundMessage) -> None:
     """
     if message.invite_id is None:
         return
-    withdraw_undelivered_invite(
-        invite_id=message.invite_id,
-        requested_by=message.created_by,
-        reason=message.last_error_code or message.state,
-    )
+    from apps.clients.models import ClientCompany  # noqa: PLC0415
+
+    ClientCompany.objects.select_for_update(no_key=True).get(pk=message.client_id)
     cycle = (
         ServiceCycle.objects.select_for_update()
         .filter(client_id=message.client_id)
@@ -89,6 +87,11 @@ def _withdraw_rejected_invite(message: OutboundMessage) -> None:
         )
         .order_by("-period_start", "-created_at", "pk")
         .first()
+    )
+    withdraw_undelivered_invite(
+        invite_id=message.invite_id,
+        requested_by=message.created_by,
+        reason=message.last_error_code or message.state,
     )
     if cycle is None:
         return
@@ -135,7 +138,7 @@ def _request_waiting(message: OutboundMessage) -> tuple[bool, str]:
 
 
 def register() -> None:
-    """Register the three kinds; called once from `DeliveryConfig.ready`."""
+    """Register trusted kinds; called once from `DeliveryConfig.ready`."""
     register_kind(
         "portal_invite",
         MessageKind(
@@ -146,6 +149,7 @@ def register() -> None:
             _withdraw_rejected_invite,
         ),
     )
+    register_kind("contact_portal_invite", KINDS["portal_invite"])
     register_kind(
         "request_notice",
         MessageKind(

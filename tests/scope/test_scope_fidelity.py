@@ -56,6 +56,8 @@ NFSE_ALLOWED_FILES = frozenset(
         # audit action or capability: the forbidden files below stay at zero.
         "apps/cycles/extraction/__init__.py",
         "apps/cycles/extraction/nfse_xml.py",
+        # AXR1-024: synthetic XML generator only; no issuance or invoice workflow.
+        "apps/automation/dataset.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -93,6 +95,8 @@ NFE_READ_ONLY_FILES = frozenset(
     {
         "apps/cycles/extraction/__init__.py",
         "apps/cycles/extraction/nfe_xml.py",
+        # AXR1-024: synthetic XML generator only.
+        "apps/automation/dataset.py",
     },
 )
 
@@ -125,6 +129,21 @@ EXPORT_URL_NAMES = frozenset(
 
 # Row 4. The fiscal app is a municipal registry, full stop.
 FISCAL_MODEL_NAMES = frozenset({"Municipality", "MunicipalityCapability"})
+
+# Row 10, AXR1-023: the plan's own todo-23 block commissions the owner-facing
+# support-grant pages under `/configuracoes/suporte/` ("The owner approves in
+# /configuracoes/suporte/"). Those four routes are an owner approval surface,
+# not the excluded support *console* — a console is the staff-facing tenant
+# switcher, which still must not exist. The exemption names the exact routes
+# and nothing else: any other route whose name carries either spelling fails.
+SUPPORT_GRANT_OWNER_ROUTES = frozenset(
+    {
+        "firm-suporte",
+        "firm-suporte-approve",
+        "firm-suporte-revoke",
+        "firm-suporte-trilha",
+    }
+)
 
 
 def _sources(roots: Sequence[str], suffixes: Iterable[str] = (".py",)) -> list[Path]:
@@ -365,7 +384,9 @@ def test_row_10_no_esocial_nfe_whatsapp_or_support_console() -> None:
     console = sorted(
         name
         for name in get_resolver().reverse_dict
-        if isinstance(name, str) and "support" in name.lower()
+        if isinstance(name, str)
+        and re.search(r"support|suporte", name, re.IGNORECASE)
+        and name not in SUPPORT_GRANT_OWNER_ROUTES
     )
 
     # Then WhatsApp, NF-e/NFC-e and support-console routes are absent outright, and the

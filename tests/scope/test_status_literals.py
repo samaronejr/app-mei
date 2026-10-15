@@ -69,20 +69,71 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         'PENDING = "pending", "Na fila"',
     ): "T22 AccountExportState declaration, not an obligation or onboarding state.",
     LiteralPin(
+        "apps/automation/types.py",
+        "pending",
+        'PENDING = "pending"',
+    ): (
+        "AXR1-024: RunState declares the private AI reservation lifecycle, not "
+        "an onboarding or reader-facing review status."
+    ),
+    LiteralPin(
+        "apps/automation/types.py",
+        "unknown",
+        'UNKNOWN = "unknown"',
+    ): (
+        "AXR1-024: DocType declares the provider document-category vocabulary, "
+        "not verification confidence or a client's fiscal regime."
+    ),
+    LiteralPin(
         "apps/cycles/cycle_views.py",
         "owner",
         ').select_related("client", "engagement", "owner", "playbook", "tax_profile")',
     ): "ORM relation name, not the tenant owner role or a status comparison.",
     LiteralPin(
-        "apps/cycles/cycle_views.py",
+        "apps/cycles/display_reads.py",
         "owner",
-        'cycle.tasks.select_related("owner"),',
-    ): "ORM task owner relation; eagerly loaded to prevent per-row queries.",
+        'tasks=tuple(cycle.tasks.select_related("owner")),',
+    ): (
+        "AXR1-036: ORM task owner relation, loaded once for the cycle detail "
+        "display projection (moved here from cycle_views)."
+    ),
     LiteralPin(
-        "apps/cycles/workspace_views.py",
+        "apps/cycles/display_reads.py",
         "owner",
-        '.select_related("playbook", "owner", "engagement")',
-    ): "ORM cycle owner relation, not an authorization role literal.",
+        '.select_related("owner", "cycle__client", "cycle__engagement")',
+    ): "AXR1-036: ORM exception owner relation for the cycle detail display.",
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "owner",
+        '"owner",',
+    ): (
+        "AXR1-035: ServiceCycle field name in the workspace aggregate's "
+        "serialized field list."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "active",
+        '"active",',
+    ): (
+        "AXR1-035: ClientContact boolean field name in the aggregate's "
+        "serialized field list."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "owner",
+        'cycle.owner = _person(payload["owner"])',
+    ): (
+        "AXR1-035: aggregate payload key restoring the cycle owner relation, "
+        "not a role."
+    ),
+    LiteralPin(
+        "apps/cycles/workspace_queries.py",
+        "unknown",
+        'coverage=("unknown",),',
+    ): (
+        "AXR1-035: the same not-yet-evaluated coverage placeholder as "
+        "apps/cycles/workspace.py."
+    ),
     LiteralPin(
         "apps/cycles/exception_context.py",
         "owner",

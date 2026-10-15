@@ -1,0 +1,14 @@
+{% extends "admin/base.html" %}{% load i18n static %}
+{% block extrastyle %}
+  {{ block.super }}
+  {% if request.support_grant %}<link rel="stylesheet" href="{% static 'css/support-admin.css' %}">{% endif %}
+{% endblock %}
+{% block messages %}
+  {{ block.super }}
+  {% if request.support_grant %}
+    <div role="status" data-support-banner>
+      <strong>{% translate "Acesso de suporte ativo até" %}</strong>
+      <time datetime="{{ request.support_grant.expires_at|date:'c' }}">{{ request.support_grant.expires_at|date:"d/m/Y H:i" }}</time>.
+    </div>
+  {% endif %}
+{% endblock %}
