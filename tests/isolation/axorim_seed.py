@@ -22,7 +22,7 @@ import datetime as dt
 from dataclasses import dataclass
 from dataclasses import field as dc_field
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -41,7 +41,7 @@ from django.db import connection, models
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.clients.models import ClientCompany
+from apps.clients.models import ClientCompany, ClientContact
 from apps.core.models import TenantScopedModel
 from apps.core.tenancy import client_context, tenant_context
 from apps.cycles.effects.manifest import (
@@ -49,6 +49,10 @@ from apps.cycles.effects.manifest import (
     EffectManifestV1,
     canonicalize,
 )
+from apps.delivery.models import TenantNoticePolicy
+from apps.delivery.notice_authority import configure
+from apps.delivery.outbox import enqueue
+from apps.delivery.policy import BusinessIntent
 from apps.tenants.models import Membership, Tenant, TenantRole
 
 PERIOD = dt.date(2026, 9, 1)
@@ -67,7 +71,16 @@ NEW_CLIENT_MODELS = (
 )
 NEW_OBLIGATION_MODELS = ("SourceObservation",)
 # AXR1-023: the support-grant ledger, tenant-scoped without a client column.
-NEW_TENANT_MODELS = ("SupportGrant",)
+NEW_TENANT_MODELS = (
+    "SupportGrant",
+    "BillingAccount",
+    "UsageRecord",
+    "NotificationPreference",
+    "FirmOutboundMessage",
+    "AccountExport",
+    "AccountExportAttempt",
+)
+NEW_AUTHZ_MODELS = ("UserCapabilityGrant",)
 
 # Client-scoped rows whose ONLY client-bearing constraint is the (tenant, client)
 # pair itself: swapping their client_id is schema-legal, so the cross-client probe
@@ -109,6 +122,7 @@ def axorim_models() -> list[type[models.Model]]:
     selected.extend(
         django_apps.get_model("tenants", name) for name in NEW_TENANT_MODELS
     )
+    selected.extend(django_apps.get_model("authz", name) for name in NEW_AUTHZ_MODELS)
     return selected
 
 
@@ -172,12 +186,15 @@ _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
 
 # Rows whose insert fires a domain trigger the generic kwargs cannot satisfy.
 _SPECIAL_SEEDERS: dict[str, str] = {
+    "delivery.OutboundMessage": "_seed_notice",
+    "delivery.TenantNoticePolicy": "_seed_notice_policy",
     "cycles.ActionProposal": "_seed_action_proposal",
     "cycles.ContentPurgeClaim": "_seed_purge_claim",
     "cycles.ClientPublication": "_seed_client_publication",
     "cycles.BulkOperation": "_seed_bulk_operation",
     "cycles.EvidenceLink": "_seed_evidence_link",
     "tenants.BillingAccount": "_seed_billing_account",
+    "tenants.FirmOutboundMessage": "_seed_firm_notice",
 }
 
 _SCALAR_BY_KIND: dict[str, object] = {
@@ -260,6 +277,56 @@ def seed_model(
     if self_fk is not None:
         _link_self_parent(model, self_fk, instance, kwargs, ctx)
     return instance
+
+
+def _seed_notice_policy(
+    _model: type[models.Model], ctx: SeedContext
+) -> TenantNoticePolicy:
+    """A real current owner acknowledgement, local to the isolation seed only."""
+    with tenant_context(ctx.tenant.pk):
+        existing = TenantNoticePolicy.objects.filter().first()
+        if existing is not None:
+            return existing
+        return configure(
+            ctx.user, kinds=("notice",), acknowledged=True, expected_version=0
+        )
+
+
+def _seed_notice(_model: type[models.Model], ctx: SeedContext) -> models.Model:
+    """Use the real policy producer; generic kwargs cannot forge authority bytes."""
+    with tenant_context(ctx.tenant.pk):
+        policy = _seed_notice_policy(TenantNoticePolicy, ctx)
+        ctx.rows["delivery.tenantnoticepolicy"] = policy
+        contact_row = ctx.rows.get("clients.clientcontact")
+        if contact_row is None:
+            contact = ClientContact.objects.create(
+                tenant=ctx.tenant,
+                client=ctx.client,
+                name="Isolation recipient",
+                email=f"recipient@{ctx.tenant.slug}.test",
+            )
+            ctx.rows["clients.clientcontact"] = contact
+        else:
+            contact = cast("ClientContact", contact_row)
+        engagement = seed_model(django_apps.get_model("clients", "Engagement"), ctx)
+        playbook = seed_model(django_apps.get_model("cycles", "Playbook"), ctx)
+        ctx.client.refresh_from_db(fields=["version"])
+        return enqueue(
+            ctx.user,
+            ctx.client.pk,
+            contact.pk,
+            intent=BusinessIntent(
+                engagement.pk,
+                playbook.pk,
+                PERIOD,
+                PERIOD + dt.timedelta(days=29),
+                0,
+                f"isolation:{ctx.tag}",
+                "notice",
+                1,
+            ),
+            expected_version=ctx.client.version,
+        )
 
 
 def _collect_fields(
@@ -583,6 +650,19 @@ def _seed_billing_account(model: type[models.Model], ctx: SeedContext) -> models
         return _manager(model).create(**kwargs)
 
 
+def _seed_firm_notice(model: type[models.Model], ctx: SeedContext) -> models.Model:
+    """Seed the invite branch so its tenant-paired parent is non-null."""
+    invite = seed_model(django_apps.get_model("tenants", "Invite"), ctx)
+    with tenant_context(ctx.tenant.id):
+        return _manager(model).create(
+            tenant=ctx.tenant,
+            kind="owner_invite",
+            invite=invite,
+            created_by=ctx.user,
+            idempotency_key=f"firm-notice-{ctx.tag}",
+        )
+
+
 def _seed_purge_claim(model: type[models.Model], ctx: SeedContext) -> models.Model:
     """ContentPurgeClaim whose identity the purge trigger can verify.
 
@@ -765,6 +845,187 @@ def paired_parent_fks() -> dict[tuple[str, str], str]:
                 if column not in {"tenant_id", "client_id"}:
                     pairs[(str(table), column)] = str(name)
     return pairs
+
+
+def paired_parent_constraints() -> frozenset[tuple[str, str, str]]:
+    """(table, fk_column, constraint) for every tenant composite in the live catalog."""
+    found: set[tuple[str, str, str]] = set()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid)
+              FROM pg_constraint
+             WHERE contype = 'f'
+               AND connamespace = 'public'::regnamespace
+               AND pg_get_constraintdef(oid) LIKE 'FOREIGN KEY (tenant_id,%%'
+            """
+        )
+        for table, name, definition in cursor.fetchall():
+            inside = definition.split("(", 1)[1].split(")", 1)[0]
+            for column in (c.strip().strip('"') for c in inside.split(",")):
+                if column not in {"tenant_id", "client_id"}:
+                    found.add((str(table), column, str(name)))
+    return frozenset(found)
+
+
+# Declared independently of the live catalog so that a dropped, renamed or
+# added tenant composite fails reconciliation instead of turning a behavioral
+# probe into a schema-null skip.
+REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
+    {
+        ("automation_agentrun", "document_id", "agentrun_document_fk"),
+        ("clients_clientcompany", "import_batch_id", "clientcompany_tenant_batch_fk"),
+        ("clients_clienttag", "tag_id", "clienttag_tenant_tag_fk"),
+        ("clients_importrow", "batch_id", "importrow_tenant_batch_fk"),
+        ("clients_taxprofile", "correction_of_id", "taxprofile_correction_client_fk"),
+        ("cycles_actionexecution", "cycle_id", "execution_cycle_scope_fk"),
+        ("cycles_actionexecution", "digest", "execution_exact_proposal_fk"),
+        ("cycles_actionexecution", "proposal_id", "execution_exact_proposal_fk"),
+        ("cycles_actionexecution", "proposal_id", "execution_proposal_scope_fk"),
+        ("cycles_actionexecution", "proposal_revision", "execution_exact_proposal_fk"),
+        ("cycles_actionproposal", "cycle_id", "actionproposal_cycle_client_fk"),
+        ("cycles_actionproposal", "previous_id", "actionproposal_previous_client_fk"),
+        ("cycles_approval", "digest", "approval_exact_manifest_fk"),
+        ("cycles_approval", "proposal_id", "approval_exact_manifest_fk"),
+        ("cycles_approval", "proposal_id", "approval_proposal_client_fk"),
+        ("cycles_approval", "proposal_revision", "approval_exact_manifest_fk"),
+        ("cycles_bulkitem", "operation_id", "bulkitem_operation_pair_fk"),
+        (
+            "cycles_clientacknowledgement",
+            "publication_digest",
+            "acknowledgement_exact_publication_fk",
+        ),
+        (
+            "cycles_clientacknowledgement",
+            "publication_id",
+            "acknowledgement_exact_publication_fk",
+        ),
+        (
+            "cycles_clientacknowledgement",
+            "publication_id",
+            "acknowledgement_publication_scope_fk",
+        ),
+        ("cycles_clientpublication", "cycle_id", "publication_cycle_scope_fk"),
+        ("cycles_clientpublication", "proposal_id", "publication_exact_proposal_fk"),
+        ("cycles_clientpublication", "proposal_id", "publication_proposal_scope_fk"),
+        (
+            "cycles_clientpublication",
+            "proposal_revision",
+            "publication_exact_proposal_fk",
+        ),
+        (
+            "cycles_clientpublication",
+            "publication_digest",
+            "publication_exact_proposal_fk",
+        ),
+        (
+            "cycles_clientpublication",
+            "supersedes_id",
+            "publication_supersedes_scope_fk",
+        ),
+        (
+            "cycles_completiongeneration",
+            "cycle_id",
+            "completiongeneration_cycle_scope_fk",
+        ),
+        (
+            "cycles_completiongeneration",
+            "index_id",
+            "completiongeneration_index_scope_fk",
+        ),
+        (
+            "cycles_completiongeneration",
+            "proposal_id",
+            "completiongeneration_proposal_scope_fk",
+        ),
+        (
+            "cycles_completionjustification",
+            "generation_id",
+            "completionjustification_generation_scope_fk",
+        ),
+        ("cycles_cycleamendment", "cycle_id", "cycleamendment_cycle_pair_fk"),
+        (
+            "cycles_cycleamendment",
+            "pinned_playbook_version_id",
+            "cycleamendment_definition_pair_fk",
+        ),
+        ("cycles_cycleevent", "cycle_id", "cycleevent_cycle_pair_fk"),
+        ("cycles_cycletask", "cycle_id", "cycletask_cycle_pair_fk"),
+        ("cycles_documentintake", "document_id", "documentintake_document_pair_fk"),
+        ("cycles_evidenceexport", "cycle_id", "evidenceexport_cycle_scope_fk"),
+        ("cycles_evidenceexport", "index_id", "evidenceexport_index_scope_fk"),
+        ("cycles_evidenceindex", "cycle_id", "evidenceindex_cycle_scope_fk"),
+        ("cycles_evidencelink", "document_id", "evidencelink_document_pair_fk"),
+        ("cycles_evidencelink", "request_id", "evidencelink_request_pair_fk"),
+        ("cycles_evidencerequest", "cycle_id", "evidencerequest_cycle_pair_fk"),
+        (
+            "cycles_evidencerequest",
+            "obligation_id",
+            "evidencerequest_obligation_client_fk",
+        ),
+        ("cycles_exception", "cycle_id", "exception_cycle_pair_fk"),
+        (
+            "cycles_exceptioninternal",
+            "exception_id",
+            "exceptioninternal_exception_pair_fk",
+        ),
+        ("cycles_exportattempt", "export_id", "exportattempt_export_scope_fk"),
+        ("cycles_extractedfield", "document_id", "extractedfield_document_pair_fk"),
+        ("cycles_internalnote", "cycle_id", "internalnote_cycle_pair_fk"),
+        ("cycles_requestinternal", "request_id", "requestinternal_request_pair_fk"),
+        ("cycles_review", "link_id", "review_link_pair_fk"),
+        ("cycles_servicecycle", "engagement_id", "servicecycle_engagement_pair_fk"),
+        ("cycles_servicecycle", "playbook_id", "servicecycle_definition_pin_fk"),
+        ("cycles_servicecycle", "playbook_id", "servicecycle_playbook_pair_fk"),
+        (
+            "cycles_servicecycle",
+            "playbook_version_id",
+            "servicecycle_definition_pin_fk",
+        ),
+        ("cycles_servicecycle", "tax_profile_id", "servicecycle_profile_pair_fk"),
+        ("delivery_deliveryattempt", "message_id", "deliveryattempt_message_fk"),
+        ("delivery_deliveryeffect", "message_id", "deliveryeffect_message_fk"),
+        ("delivery_outboundmessage", "contact_id", "outbound_contact_fk"),
+        ("delivery_outboundmessage", "cycle_id", "outbound_cycle_fk"),
+        (
+            "delivery_outboundmessage",
+            "evidence_request_id",
+            "outboundmessage_request_pair_fk",
+        ),
+        ("delivery_outboundmessage", "proposal_id", "outbound_proposal_scope_fk"),
+        ("delivery_outboundmessage", "retry_of_id", "outbound_retry_client_fk"),
+        (
+            "obligations_document",
+            "obligation_id",
+            "document_obligation_tenant_client_fk",
+        ),
+        (
+            "obligations_sourceobservation",
+            "evidence_link_id",
+            "sourceobservation_evlink_client_fk",
+        ),
+        (
+            "obligations_sourceobservation",
+            "subject_ref_id",
+            "sourceobservation_subject_tenant_client_fk",
+        ),
+        (
+            "obligations_sourceobservation",
+            "supersedes_id",
+            "sourceobservation_supersedes_tenant_client_fk",
+        ),
+        (
+            "tenants_accountexportattempt",
+            "export_id",
+            "account_attempt_export_scope_fk",
+        ),
+        ("tenants_firmoutboundmessage", "invite_id", "firm_notice_invite_scope_fk"),
+        ("tenants_invite", "contact_id", "invite_tenant_client_contact_fk"),
+        ("tenants_usagerecord", "correction_of_id", "usage_correction_scope_fk"),
+        ("tenants_usagerecord", "metric", "usage_correction_scope_fk"),
+        ("tenants_usagerecord", "period", "usage_correction_scope_fk"),
+    }
+)
 
 
 def client_paired_tables() -> set[str]:

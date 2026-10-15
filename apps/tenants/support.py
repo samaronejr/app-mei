@@ -8,9 +8,11 @@ Three transactions, three authorities:
 * `approve_support_grant` — the firm owner turns a pending row live, choosing
   scope, clients and duration. The service re-reads the grant `FOR NO KEY
   UPDATE` inside the same authority chain every account command uses: fresh
-  actor, fresh tenant, owner seat.
+  actor, active owner seat and actual account capability. The user fence is
+  shared with roster writers and activity changes and stays held through commit.
 * `revoke_support_grant` — the owner ends a live or pending grant. The decision
-  is recorded on the row itself; a revoked grant cannot be re-activated.
+  is recorded under the same owner-authority fence; a revoked grant cannot be
+  re-activated.
 
 Every transition writes BOTH audit streams: a `PlatformEvent` (who on the
 platform side touched this grant) and a tenant `Event` (what the firm's own
@@ -32,8 +34,10 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import ObjectRef, Origin, record_event, record_platform_event
+from apps.authz.firm_account import require_account_owner
 from apps.core.tenancy import tenant_context
-from apps.tenants.models import Membership, Tenant, TenantRole
+from apps.tenants.authority import lock_users
+from apps.tenants.models import Tenant
 from apps.tenants.support_models import (
     MAX_SUPPORT_WINDOW,
     SupportGrant,
@@ -52,19 +56,15 @@ class SupportApproval:
     hours: int
 
 
-def _require_owner(actor: User, tenant_id: UUID) -> None:
-    """Support decisions belong to the owner seat and to nothing else."""
-    # PLATFORM_QUERY_OK: owner-seat existence on this exact tenant is the
-    # authorization being checked; the actor is a firm member by definition.
-    if not Membership.objects.filter(
-        tenant_id=tenant_id,
-        user=actor,
-        client__isnull=True,
-        is_active=True,
-        role=TenantRole.OWNER,
-    ).exists():
-        msg = "Somente o responsável pela conta decide sobre suporte."
-        raise PermissionDenied(msg)
+def _require_owner(actor: User, tenant_id: UUID) -> User:
+    """Hold fresh owner authority through the enclosing decision's commit."""
+    # Roster writers lock users before seats; activity updates conflict with this
+    # same fence. NO KEY UPDATE still admits the audit's foreign-key checks.
+    fresh = lock_users((actor.pk,)).get(actor.pk)
+    if fresh is None:
+        raise PermissionDenied
+    require_account_owner(fresh, tenant_id)
+    return fresh
 
 
 def _grant_ref(grant: SupportGrant) -> ObjectRef:
@@ -178,7 +178,7 @@ def approve_support_grant(
     if decision.scope not in {value for value, _ in SupportScope.choices}:
         msg = "Escopo de acesso inválido."
         raise ValidationError(msg)
-    _require_owner(owner, tenant_id)
+    owner = _require_owner(owner, tenant_id)
     grant = (
         SupportGrant.objects.select_for_update(no_key=True)
         .filter(pk=grant_id, tenant_id=tenant_id)
@@ -226,7 +226,7 @@ def revoke_support_grant(owner: User, tenant_id: UUID, grant_id: UUID) -> Suppor
 
     if current_tenant_id.get() != tenant_id:
         raise Http404
-    _require_owner(owner, tenant_id)
+    owner = _require_owner(owner, tenant_id)
     grant = (
         SupportGrant.objects.select_for_update(no_key=True)
         .filter(pk=grant_id, tenant_id=tenant_id)

@@ -56,6 +56,7 @@ EXPECTED_TENANT_TASKS = frozenset(
         "apps.cycles.tasks.run_bulk_operation",
         "apps.cycles.tasks.scan_tenant_quarantine",
         "apps.delivery.tasks.dispatch_tenant",
+        "apps.delivery.tasks.sweep_tenant_reminders",
         "apps.tenants.export_tasks.build_account_export",
         "clients.commit_import",
     }

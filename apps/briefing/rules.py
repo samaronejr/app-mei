@@ -44,10 +44,14 @@ class PriorityFacts:
 
 
 def priority_factors(
-    facts: PriorityFacts, *, now: datetime
+    facts: PriorityFacts, *, now: datetime, today: date | None = None
 ) -> tuple[tuple[str, int], ...]:
-    """Explain every contributing weight against one injected Brasilia clock."""
-    today = timezone.localtime(now).date()
+    """Explain every contributing weight against one injected Brasilia clock.
+
+    A read scoring many items may pass ``today``, the local date of ``now``.
+    """
+    if today is None:
+        today = timezone.localtime(now).date()
     applicable = (
         (
             "statutory_due_in_days<=3",

@@ -13,6 +13,11 @@
     `expected_version` rides every POST; the service refuses a write against a
     row that moved since the page was rendered, and the refusal is the 409 the
     banner renders.
+
+    Only a draft's step form carries `unsavedGuard` (AXR1-040): a version that is
+    not a draft cannot be saved, so it has nothing to lose. `unsaved` is set by the
+    view when it refused this form's own save or preview, and marks the re-render
+    `data-unsaved`; a refused move or publish posted none of these fields.
   {% endcomment %}
 
   {% if errors %}
@@ -56,7 +61,7 @@
     </section>
   {% endif %}
 
-  <form method="post" id="steps-form" novalidate>
+  <form method="post" id="steps-form" novalidate{% if is_draft %} x-data="unsavedGuard"{% if unsaved %} data-unsaved{% endif %}{% endif %}>
     {% csrf_token %}
     {{ formset.management_form }}
     <input type="hidden" name="expected_version" value="{{ version.version }}">

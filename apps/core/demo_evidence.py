@@ -20,6 +20,7 @@ from apps.cycles.models import (
     LinkOrigin,
 )
 from apps.delivery.models import DeliveryAttempt, MessageState, OutboundMessage
+from apps.delivery.notice_authority import NoticeOrigin, bind_notice, lock_notice_scope
 from apps.obligations.models import Document
 from apps.tenants.models import Tenant
 
@@ -95,6 +96,10 @@ def _divergent_upload(request: EvidenceRequest, actor: User, spec: ScaleSpec) ->
 
 
 def _failed_send(request: EvidenceRequest, actor: User, spec: ScaleSpec) -> None:
+    scope = lock_notice_scope(
+        actor,
+        NoticeOrigin("notice", request.client_id, request.cycle_id, request.pk),
+    )
     contact = ClientContact.objects.create(
         id=demo_id(spec.seed, f"contact:{request.pk}"),
         tenant=request.tenant,
@@ -104,7 +109,7 @@ def _failed_send(request: EvidenceRequest, actor: User, spec: ScaleSpec) -> None
         channel_email_allowed=False,
     )
     digest = sha256(str(request.pk).encode()).hexdigest()
-    message = OutboundMessage.objects.create(
+    message = OutboundMessage(
         id=demo_id(spec.seed, f"message:{request.pk}"),
         tenant=request.tenant,
         client=request.client,
@@ -126,6 +131,8 @@ def _failed_send(request: EvidenceRequest, actor: User, spec: ScaleSpec) -> None
         created_at=spec.now,
         updated_at=spec.now,
     )
+    bind_notice(scope, message)
+    message.save(force_insert=True)
     DeliveryAttempt.objects.create(
         id=demo_id(spec.seed, f"attempt:{request.pk}"),
         tenant=request.tenant,
