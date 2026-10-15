@@ -98,6 +98,6 @@ instead, which is the fact a client most often gets wrong.
 
     {% include 'partials/pure/pagination.html' with page=page filter_query='' only %}
   {% else %}
-    <p class="card empty-state">{% translate "Nenhuma obrigação registrada ainda. Sua contadora mantém esta lista." %}</p>
+    <p class="card empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Nenhuma obrigação registrada ainda. Sua contadora mantém esta lista." %}</p>
   {% endif %}
 {% endblock %}

@@ -3,6 +3,7 @@
 from datetime import date
 from http import HTTPStatus
 from pathlib import Path
+from typing import NoReturn
 from uuid import uuid4
 
 import pytest
@@ -18,7 +19,9 @@ from apps.accounts.models import User
 from apps.audit.models import Event, PlatformEvent
 from apps.authz.firm_account import can_manage_account
 from apps.core.tenancy import tenant_context
+from apps.cycles.retention import place_hold
 from apps.tenants.branding_updates import store_logo
+from apps.tenants.export_service import request_export
 from apps.tenants.models import (
     BillingAccount,
     BillingStatus,
@@ -47,8 +50,102 @@ from tests.support import enrol_totp
 from tests.tenants.test_branding import PNG
 from tests.tenants.test_cancellation_retention import enabled_firm
 from tests.ui.factories import add_member
+from tests.ui.refusal_contract import assert_readable_page, assert_readable_refusal
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "exportar",
+        "exportar-revisao-antiga",
+        "liberar",
+        "liberar-revisao-antiga",
+        "baixar",
+    ],
+)
+def test_an_account_refusal_is_a_readable_page_with_a_way_back(case: str) -> None:
+    """AXR1-054: a stale account form or unfinished archive reads as a page."""
+    firm = enabled_firm(f"account-refusal-{case}")
+    http = firm.as_owner()
+    if case == "exportar":
+        response = http.post(reverse("account-export-request"), {})
+        status, reason = HTTPStatus.CONFLICT, "Recarregue a página antes de exportar."
+    elif case == "exportar-revisao-antiga":
+        response = http.post(reverse("account-export-request"), {"version": "99"})
+        status, reason = (
+            HTTPStatus.CONFLICT,
+            (
+                "As configurações mudaram depois que você abriu a página. "
+                "Nada foi salvo. Recarregue antes de tentar novamente."
+            ),
+        )
+    elif case == "liberar-revisao-antiga":
+        client = firm.clients[0]
+        with tenant_context(firm.tenant.pk):
+            client.refresh_from_db()
+            hold = place_hold(
+                firm.owner,
+                client.pk,
+                reason="Preservar a cópia",
+                expected_version=client.version,
+            )
+        response = http.post(
+            reverse("firm-hold-release", args=[hold.pk]),
+            {"version": str(hold.version + 1)},
+        )
+        status, reason = (
+            HTTPStatus.CONFLICT,
+            "Este registro mudou. Recarregue antes de salvar.",
+        )
+    elif case == "liberar":
+        # The rendered revision is checked before any hold is looked up.
+        response = http.post(reverse("firm-hold-release", args=[uuid4()]), {})
+        status, reason = HTTPStatus.CONFLICT, "Recarregue a página antes de liberar."
+    else:
+        with tenant_context(firm.tenant.pk):
+            export = request_export(
+                firm.owner,
+                firm.tenant.pk,
+                expected_version=firm.tenant.settings_version,
+            )
+        response = http.get(reverse("account-export-download", args=[export.pk]))
+        status, reason = HTTPStatus.GONE, "Este arquivo não está disponível."
+    assert_readable_refusal(
+        response, status=status, reason=reason, back=reverse("firm-account")
+    )
+
+
+def test_a_refused_hold_reads_in_plain_sentences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AXR1-054: a ValidationError from place_hold is a form error in sentences.
+
+    HoldForm's own required and max_length stop a blank or overlong reason before
+    the service, so the service is replaced by one refusing with its own sentence;
+    what is pinned is the view's handling of it.
+    """
+    firm = enabled_firm("account-refusal-reter")
+    http = firm.as_owner()
+    client = firm.clients[0]
+    with tenant_context(firm.tenant.pk):
+        client.refresh_from_db()
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "Informe um motivo de até 2.000 caracteres."
+        raise ValidationError(msg)
+
+    monkeypatch.setattr("apps.tenants.account_views.place_hold", refuse)
+    response = http.post(
+        reverse("firm-retention", args=[client.pk]),
+        {"version": str(client.version), "reason": "Preservar a cópia"},
+    )
+    assert_readable_page(
+        response,
+        status=HTTPStatus.CONFLICT,
+        reason="Informe um motivo de até 2.000 caracteres.",
+    )
 
 
 def test_platform_onboarding_commits_invite_outbox_and_audit_together() -> None:

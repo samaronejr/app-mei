@@ -145,6 +145,29 @@ def import_upload_view(request: AuthenticatedRequest) -> HttpResponse:
     return HttpResponseRedirect(reverse("client-import-batch", args=[plan.batch_id]))
 
 
+def _created_clients(batch: ImportBatch) -> list[ClientCompany]:
+    """Return the clients this batch created and still owns, in file order.
+
+    AXR1-047: the way out of the import. Without it this screen ends at a count,
+    and the clients it just created are reachable only by searching the registry
+    for names the importer may not have read yet — or by typing a URL.
+
+    `client__isnull=False` is what keeps the list truthful after a rollback: the
+    row survives as history with its `client` nulled (`ImportRow.client` is
+    SET_NULL), so a rolled-back batch lists nothing rather than linking to
+    deleted ids. Capped like the problem rows, for the same reason.
+    """
+    rows = batch.rows.filter(
+        outcome=RowOutcome.CREATED,
+        client__isnull=False,
+    ).select_related("client")
+    # The second `row.client` is the type narrowing the nullable FK needs, not a
+    # second filter: the queryset above is what decides which rows are read.
+    return [
+        row.client for row in rows.order_by("row_number")[:ROWS_ON_PAGE] if row.client
+    ]
+
+
 def _batch_context(batch: ImportBatch, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
     allowance = client_allowance(batch.tenant, additional=pending_client_count(batch))
     problem_rows = list(
@@ -152,6 +175,7 @@ def _batch_context(batch: ImportBatch, **extra: Any) -> dict[str, Any]:  # noqa:
             "row_number",
         )[:ROWS_ON_PAGE],
     )
+    created = _created_clients(batch)
     return {
         "batch": batch,
         "allowance": allowance,
@@ -168,6 +192,8 @@ def _batch_context(batch: ImportBatch, **extra: Any) -> dict[str, Any]:  # noqa:
             for row in problem_rows
         ],
         "rows_truncated": len(problem_rows) >= ROWS_ON_PAGE,
+        "created_clients": created,
+        "created_truncated": len(created) >= ROWS_ON_PAGE,
         "may_commit": batch.status in (ImportStatus.PLANNED, ImportStatus.PARTIAL)
         and (batch.planned_created > batch.committed_count)
         and allowance.allowed,
