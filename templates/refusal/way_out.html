@@ -1,0 +1,25 @@
+{% load i18n %}{% comment %}
+The way out of a refusal (AXR1-059), drawn under the reason by 403.html and 404.html.
+
+A refused account is often still signed in, and when the firm or the portal no longer
+admits it -- support access the owner revoked, a client's seat used on the firm host,
+a client whose access ended -- the only exit that helps is to leave the account. So
+the page offers Sair: the same CSRF-protected POST the shell header sends, to the
+allauth logout route both host trees mount at the same path and name. TenantMiddleware
+admits exactly that route for an account it refuses (AXR1-049), and the portal runs
+/accounts/ unconfined.
+
+`request.user.is_authenticated` is the one thing read. MFAEnforcementMiddleware has
+already materialised the account on every request, before the host dispatcher, the
+tenant transaction or the portal role, so the read costs no query on either host. The
+route is reversed with `as`, which yields nothing rather than raising where a URLconf
+does not name it: a refusal that answers 500 is worse than one without Sair.
+
+The way back is the root of the host the reader is on, as on the export-window
+refusal: it names no route only one host serves, and says nothing about what the
+refused address held.
+{% endcomment %}{% url "account_logout" as logout_url %}
+    <div class="mt-6 flex flex-wrap items-center gap-3">
+      <a class="ui-btn ui-btn-quiet" href="/">{% translate "Voltar ao início" %}</a>{% if logout_url and request.user.is_authenticated %}
+      <form method="post" action="{{ logout_url }}">{% csrf_token %}<button type="submit" class="ui-btn ui-btn-quiet">{% translate "Sair" %}</button></form>{% endif %}
+    </div>

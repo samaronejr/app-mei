@@ -12,6 +12,9 @@ nor a component whose own rule paints it (the size hint, the empty state) withou
 R1 ink beside it. The browser sweep in tests/browser/test_a11y_axe.py measures the
 same pages; this module pins the classes that make it pass.
 
+AXR1-056 adds Pagamentos: final F3 found its empty state at 4.46:1 under the flag at
+both widths, the one R1 portal page T45 did not cover.
+
 Flag-off output stays byte for byte what the parent commit shipped, 4.46:1 included.
 That legacy conflict is deliberate and left to the owner; nothing here claims a
 flag-off page meets AA.
@@ -61,6 +64,7 @@ FOOTER: Final = 'class="mx-auto max-w-3xl px-5 pb-8 text-xs text-ink-600"'
 SIZE_HINT: Final = 'class="field-help text-ink-600"'
 ROW_META: Final = 'class="mt-1 text-xs tabular-nums text-ink-600"'
 EMPTY_VAULT: Final = 'class="card empty-state text-ink-600"'
+EMPTY_PAYMENTS: Final = EMPTY_VAULT
 SIGNED_IN_AS: Final = '<dt class="text-ink-600">'
 
 
@@ -78,6 +82,9 @@ CASES: Final = {
         "portal-documents", 0, (HEADER_EMAIL, SIZE_HINT, EMPTY_VAULT, FOOTER)
     ),
     "account": Case("portal-account", 0, (HEADER_EMAIL, SIGNED_IN_AS, FOOTER)),
+    "payments-empty": Case(
+        "portal-payments", 0, (HEADER_EMAIL, EMPTY_PAYMENTS, FOOTER)
+    ),
 }
 
 # The flag-off reference: the parent and the three children as they were before this
@@ -89,14 +96,17 @@ LEGACY_TEMPLATES: Final = {
     "portal/documents.html": "documents_pre_r1_ink.html",
     "portal/partials/upload_form.html": "upload_form_pre_r1_ink.html",
     "portal/account.html": "account_pre_r1_ink.html",
+    "portal/payments.html": "payments_pre_r1_ink.html",
 }
 PAGE_TEMPLATES: Final = {
     "portal-documents": "portal/documents.html",
     "portal-account": "portal/account.html",
+    "portal-payments": "portal/payments.html",
 }
 CONTEXT_KEYS: Final = {
     "portal-documents": ("page", "documents", "max_size_label", "messages"),
     "portal-account": ("messages",),
+    "portal-payments": ("page", "payments", "cycles_r1", "messages"),
 }
 
 

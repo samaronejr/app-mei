@@ -19,11 +19,13 @@ from uuid import UUID
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.signing import BadSignature, SignatureExpired, TimestampSigner
+from django.db import IntegrityError
 from django.forms.formsets import DELETION_FIELD_NAME, BaseFormSet
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 from django.utils.translation import gettext as _
 from django.views.decorators.http import require_http_methods
+from psycopg.errors import UniqueViolation
 
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.services import require_can
@@ -212,13 +214,23 @@ def playbook_list_view(request: AuthenticatedRequest) -> HttpResponse:
             return response
         return redirect("playbook-list")
     install_system_packs(tenant)
+    return _list_response(request, NewPlaybookForm())
+
+
+def _list_response(
+    request: AuthenticatedRequest,
+    form: NewPlaybookForm,
+    *,
+    status: int = HTTPStatus.OK,
+) -> HttpResponse:
+    """Render the list without installing packs on a refused creation POST."""
     rows = Playbook.objects.order_by("key").prefetch_related("versions")
     return render(
         request,
         "cycles/playbook_list.html",
         {
             "rows": rows,
-            "create_form": NewPlaybookForm(),
+            "create_form": form,
             "columns": [
                 {"label": _("Nome")},
                 {"label": _("Chave")},
@@ -227,7 +239,41 @@ def playbook_list_view(request: AuthenticatedRequest) -> HttpResponse:
                 {"label": _("Ações")},
             ],
         },
+        status=status,
     )
+
+
+def _create_response(request: AuthenticatedRequest, tenant: Tenant) -> HttpResponse:
+    """Keep submitted values and inline errors when the service refuses creation."""
+    form = NewPlaybookForm(request.POST)
+    if not form.is_valid():
+        return _list_response(request, form, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+    try:
+        playbook = playbooks.create_playbook(
+            actor=request.user,
+            tenant=tenant,
+            key=str(form.cleaned_data["key"]),
+            name=str(form.cleaned_data["name"]),
+            applies_to=form.applies_to(),
+        )
+    except IntegrityError as exc:
+        # The service's tenant_context has rolled back its savepoint.
+        # Only this named uniqueness refusal is a recoverable conflict.
+        if (
+            not isinstance(exc.__cause__, UniqueViolation)
+            or exc.__cause__.diag.constraint_name != "playbook_tenant_key_uniq"
+        ):
+            raise
+        form.add_error("key", _("Já existe um playbook com esta chave."))
+        return _list_response(request, form, status=HTTPStatus.CONFLICT)
+    except PlaybookValidationError as exc:
+        for error in exc.errors:
+            form.add_error(None, error)
+        return _list_response(request, form, status=HTTPStatus.UNPROCESSABLE_ENTITY)
+    except (VersionConflict, IllegalTransition, ImmutableVersion) as exc:
+        form.add_error(None, str(exc))
+        return _list_response(request, form, status=HTTPStatus.CONFLICT)
+    return redirect("playbook-detail", pk=playbook.pk)
 
 
 def _list_post(request: AuthenticatedRequest, tenant: Tenant) -> HttpResponse | None:
@@ -241,18 +287,7 @@ def _list_post(request: AuthenticatedRequest, tenant: Tenant) -> HttpResponse | 
                 playbook_pk=UUID(str(request.POST.get("playbook", ""))),
             )
         elif action == "create":
-            form = NewPlaybookForm(request.POST)
-            if not form.is_valid():
-                messages.error(request, _("Confira os campos do novo playbook."))
-                return None
-            playbook = playbooks.create_playbook(
-                actor=request.user,
-                tenant=tenant,
-                key=str(form.cleaned_data["key"]),
-                name=str(form.cleaned_data["name"]),
-                applies_to=form.applies_to(),
-            )
-            return redirect("playbook-detail", pk=playbook.pk)
+            return _create_response(request, tenant)
         elif action == "new_draft":
             draft = playbooks.create_draft_version(
                 actor=request.user,
