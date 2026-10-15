@@ -11,7 +11,13 @@ from apps.tenants.models import Tenant
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
-@pytest.mark.parametrize("tenant_id", ["", "invalid", str(uuid4())])
+# Explicit ids: the unknown tenant is a fresh UUID, and a random node id would differ
+# between pytest-xdist workers, which then refuse to run (AXR1-041).
+@pytest.mark.parametrize(
+    "tenant_id",
+    ["", "invalid", str(uuid4())],
+    ids=["empty", "invalid", "unknown-tenant"],
+)
 def test_invalid_context_fails_closed(tenant_id: str) -> None:
     with pytest.raises(MissingTenantContext):
         classify_document(tenant_id, str(uuid4()))
