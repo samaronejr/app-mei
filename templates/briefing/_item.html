@@ -1,0 +1,52 @@
+<li class="border-b border-ink-200 py-5" data-briefing-kind="{{ item.kind }}" data-briefing-item="{{ item.id }}">
+  <div class="flex flex-wrap items-start justify-between gap-4">
+    <div class="min-w-0 grow">
+      <p class="break-words text-sm text-ink-600">{{ item.client_name }}{% if item.period %} · {{ item.period|date:"m/Y" }}{% endif %}</p>
+      <h3 class="mt-1 max-w-3xl break-words text-base font-semibold">{{ item.title }}</h3>
+    </div>
+    <p class="shrink-0 text-sm text-ink-600"><span class="text-xl font-semibold tabular-nums text-ink-900">{{ item.priority }}</span> pontos</p>
+  </div>
+  {% if item.reasons %}
+    <ul class="mt-3 flex flex-wrap gap-2" aria-label="Fatores de prioridade">
+      {% for label, weight in item.reasons %}
+        <li class="inline-flex items-center gap-2 rounded-field bg-ink-100 px-2 py-1 text-xs text-ink-700">{{ label }} <span class="font-semibold tabular-nums">+{{ weight }}</span></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="mt-2 text-xs text-ink-600">Na fila por seu estado atual, sem fator adicional de prioridade.</p>
+  {% endif %}
+  <dl class="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+    <div class="min-w-0"><dt class="text-xs text-ink-600">Responsável</dt><dd class="break-words">{{ item.owner_name|default:"Sem responsável definido" }}</dd></div>
+    <div><dt class="text-xs text-ink-600">Prazo ou revisão</dt><dd>{% if item.due_on %}<time datetime="{{ item.due_on|date:'Y-m-d' }}">{{ item.due_on|date:"d/m/Y" }}</time>{% else %}Sem prazo registrado{% endif %}</dd></div>
+    <div><dt class="mb-1 text-xs text-ink-600">Fonte do fato</dt><dd>
+      {% if item.freshness == 'stale' %}
+        {% include "partials/ui/status_badge.html" with state='stale' label='Desatualizada' only %}
+      {% elif item.freshness == 'refresh_failed' %}
+        {% include "partials/ui/status_badge.html" with state='stale' label='Falha na verificação' only %}
+      {% else %}
+        {% include "partials/ui/status_badge.html" with state='unknown' label='Sem verificação externa' only %}
+      {% endif %}
+      {% if item.source_observed_at %}<span class="mt-1 block text-xs text-ink-600">Registro de <time datetime="{{ item.source_observed_at|date:'c' }}">{{ item.source_observed_at|date:"d/m/Y H:i" }}</time></span>{% endif %}
+    </dd></div>
+  </dl>
+  <div class="mt-4 flex flex-wrap items-start justify-between gap-4">
+    <a class="ui-link max-w-3xl break-words" href="{{ item.url }}">{{ item.next_action }}</a>
+    <details class="min-w-0">
+      <summary class="ui-link cursor-pointer">Não relevante</summary>
+      <form method="post" action="{% url 'briefing-dismiss' %}" class="mt-3 max-w-sm space-y-3">
+        {% csrf_token %}
+        {% for key, value in filter_values.items %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+        <input type="hidden" name="kind" value="{{ item.kind }}">
+        <input type="hidden" name="subject_ref" value="{{ item.subject_ref }}">
+        <input type="hidden" name="fact_version" value="{{ item.fact_version }}">
+        <input type="hidden" name="fact_period" value="{{ item.period|date:'Y-m' }}">
+        <div class="field">
+          <label class="field-label" for="reason-{{ item.kind }}-{{ item.subject_ref }}">Motivo</label>
+          <textarea class="field-input" id="reason-{{ item.kind }}-{{ item.subject_ref }}" name="reason" rows="3" maxlength="500" required aria-describedby="help-{{ item.kind }}-{{ item.subject_ref }}"></textarea>
+          <p class="field-help" id="help-{{ item.kind }}-{{ item.subject_ref }}">Oculta só da sua fila. Um fato novo faz o item reaparecer.</p>
+        </div>
+        <button class="ui-btn ui-btn-quiet" type="submit">Ocultar esta versão</button>
+      </form>
+    </details>
+  </div>
+</li>

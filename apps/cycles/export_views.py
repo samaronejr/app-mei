@@ -1,6 +1,7 @@
 """Firm-only evidence and export pages; all mutations carry rendered versions."""
 
 import json
+from http import HTTPStatus
 from uuid import UUID
 
 from django import forms
@@ -9,12 +10,14 @@ from django.core.exceptions import ValidationError
 from django.http import Http404, HttpResponse
 from django.http.response import HttpResponseBase
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.services import require_can
 from apps.clients.views import require_tenant
+from apps.core.refusal import WayBack, refusal_page, sentences
 from apps.cycles.archive_response import ArchiveDescriptor, EvidenceArchiveResponse
 from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.evidence_index import capture_index, evidence_index
@@ -107,7 +110,7 @@ def index_page(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             except VersionConflict as exc:
                 error, status = str(exc), 409
             except (ValidationError, IllegalTransition) as exc:
-                error, status = str(exc), 422
+                error, status = sentences(exc), 422
         else:
             error, status = "Revise a ação e a revisão informadas.", 422
     try:
@@ -172,10 +175,27 @@ def export_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
 def export_download(request: AuthenticatedRequest, pk: UUID) -> HttpResponseBase:
     """Authorize and materialize the descriptor before the byte-only iterator."""
     export = load_export(request.user, pk)
+    heading = "Não foi possível baixar o arquivo"
+    back = WayBack(
+        reverse("evidence-export-detail", args=[export.pk]),
+        "Voltar ao arquivo de evidências",
+    )
     if export.expires_at is not None and export.expires_at <= timezone.now():
-        return HttpResponse("O prazo deste download encerrou.", status=410)
+        return refusal_page(
+            request,
+            HTTPStatus.GONE,
+            heading=heading,
+            reason="O prazo deste download encerrou.",
+            back=back,
+        )
     if export.state != ExportState.READY:
-        return HttpResponse("O arquivo ainda não está disponível.", status=409)
+        return refusal_page(
+            request,
+            HTTPStatus.CONFLICT,
+            heading=heading,
+            reason="O arquivo ainda não está disponível.",
+            back=back,
+        )
     return EvidenceArchiveResponse(
         ArchiveDescriptor(
             export.storage_key,
@@ -192,8 +212,20 @@ def export_download(request: AuthenticatedRequest, pk: UUID) -> HttpResponseBase
 @require_can("cycles.reopen")
 def reopen_cycle(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     """Propose a whole-cycle amendment for a separate exact approval."""
+    heading = "Não foi possível propor a emenda do ciclo"
+    back = WayBack(reverse("cycle-detail", args=[pk]), "Voltar ao ciclo")
     try:
         version = int(request.POST.get("expected_version", ""))
+    except ValueError:
+        # The posted revision is not a number; Python's own text is not a reason.
+        return refusal_page(
+            request,
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+            heading=heading,
+            reason="Revise os dados informados.",
+            back=back,
+        )
+    try:
         proposal = propose_reopen(
             request.user,
             pk,
@@ -202,7 +234,15 @@ def reopen_cycle(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             expected_version=version,
         )
     except (ValueError, ValidationError, IllegalTransition) as exc:
-        return HttpResponse(str(exc), status=422)
+        return refusal_page(
+            request,
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+            heading=heading,
+            reason=sentences(exc),
+            back=back,
+        )
     except VersionConflict as exc:
-        return HttpResponse(str(exc), status=409)
+        return refusal_page(
+            request, HTTPStatus.CONFLICT, heading=heading, reason=str(exc), back=back
+        )
     return redirect("approval-card", pk=proposal.pk)

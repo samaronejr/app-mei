@@ -45,6 +45,13 @@ def apply_completion(actor: User, proposal: ActionProposal) -> None:
         return
     if not require_open_completion(cycle, spec.completion_state):
         msg = "Esta transição não é permitida."
+        if spec.completion_state == CycleState.COMPLETED:
+            msg = (
+                'Para concluir, o ciclo precisa estar em "Em execução". '
+                'Volte ao ciclo e use "Próximo estado" para avançar por '
+                '"Em revisão", "Aguardando aprovação" e "Em execução"; '
+                "depois, execute a conclusão aprovada."
+            )
         raise IllegalTransition(msg)
     items = completion_items(cycle)
     reasons = dict(spec.completion_reasons)

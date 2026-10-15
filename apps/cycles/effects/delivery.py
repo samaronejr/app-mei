@@ -16,6 +16,7 @@ from apps.cycles.models import (
 from apps.cycles.services.approvals import revalidate
 from apps.delivery.models import OutboundMessage
 from apps.delivery.policy import BusinessIntent, MessageKind, register_kind
+from apps.delivery.retries import root_intent
 
 APPROVED_KINDS = frozenset({"approved_email", "approved_publication_notice"})
 
@@ -74,7 +75,7 @@ def _valid(message: OutboundMessage) -> tuple[bool, str]:
         and message.subject == payload["subject"]
         and message.body_ref == proposal.digest
         and message.cycle_id == proposal.cycle_id
-        and message.business_intent_key == message_intent(proposal, message.contact_id)
+        and root_intent(message) == message_intent(proposal, message.contact_id)
     )
     return valid, "" if valid else "effect_content_changed"
 

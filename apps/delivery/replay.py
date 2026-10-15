@@ -11,7 +11,7 @@ from apps.core.tenancy import tenant_context
 from apps.delivery import journal
 from apps.delivery.errors import IntentConflict
 from apps.delivery.models import DeliveryEffect, MessageState, OutboundMessage
-from apps.delivery.services import effect, record, report_problem
+from apps.delivery.services import MAX_ATTEMPTS, effect, record, report_problem
 
 BARRIERS = {MessageState.ACCEPTED, MessageState.UNKNOWN, MessageState.REJECTED}
 
@@ -56,6 +56,8 @@ def _restore_intent(tid: UUID, records: list[journal.JournalRecord]) -> int:
     if message.content_digest != digest:
         msg = "The restored content conflicts with the journal."
         raise IntentConflict(msg)
+    if outcome == MessageState.TEMPORARY and message.attempts >= MAX_ATTEMPTS:
+        outcome = MessageState.REJECTED
     if (
         message.state
         in {
@@ -64,6 +66,11 @@ def _restore_intent(tid: UUID, records: list[journal.JournalRecord]) -> int:
             MessageState.MANUAL_NOT_SENT,
         }
         or message.state == outcome
+        or (
+            message.state == MessageState.CANCELLED
+            and message.last_error_code in {"staff_cancel", "staff_retry"}
+            and outcome in {MessageState.REJECTED, MessageState.TEMPORARY}
+        )
     ):
         return 0
     message.state = outcome

@@ -78,6 +78,23 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "evidence-index",
         "evidence-export-detail",
         "evidence-export-download",
+        # T19: a user- and tenant-owned saved selection, never a bearer credential.
+        "briefing-delete-view",
+        # T20: private operation IDs, scoped before preview/results/CSV access.
+        "bulk-detail",
+        "bulk-progress",
+        "bulk-report-csv",
+        # T22: owner-scoped account ids and explicitly authorized operator billing.
+        "account-export-detail",
+        "account-export-download",
+        "firm-retention",
+        "firm-hold-release",
+        "admin:tenants_tenant_billing",
+        # T23: support grant row ids resolved under a live owner seat inside the
+        # firm's settings page; object ids, never bearer credentials.
+        "firm-suporte-approve",
+        "firm-suporte-revoke",
+        "firm-suporte-trilha",
         "admin:*",
     },
 )
