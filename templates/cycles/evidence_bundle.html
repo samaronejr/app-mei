@@ -1,5 +1,8 @@
 {% extends "cycles/evidence/base.html" %}{% block content %}<p>Registro operacional do escritório. Os resumos SHA-256 permitem conferir os arquivos; não representam validação fiscal ou confirmação de uma autoridade.</p>
 <h2>Arquivos originais</h2>
-<ul>{% for original in originals %}<li><a href="{{ original.member }}">{{ original.filename }}</a></li>{% empty %}<li>Nenhum original vinculado a este índice.</li>{% endfor %}</ul>
-<h2>Identidades, decisões e proveniência</h2>
+<ul>{% for original in originals %}<li><a href="{{ original.member }}">{{ original.filename }}</a></li>{% empty %}<li>{% if excluded_originals %}Nenhum original elegível incluído neste ZIP.{% else %}Nenhum original vinculado a este índice.{% endif %}</li>{% endfor %}</ul>
+{% if excluded_originals %}<h2>Originais não incluídos</h2>
+<p>Estes arquivos constam nas referências do índice, mas seus bytes não estão neste ZIP.</p>
+<ul>{% for original in excluded_originals %}<li>{{ original.filename }} — {{ original.reason }}</li>{% endfor %}</ul>
+{% endif %}<h2>Identidades, decisões e proveniência</h2>
 <pre>{{ index_text }}</pre>{% endblock %}
