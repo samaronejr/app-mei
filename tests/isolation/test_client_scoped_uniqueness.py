@@ -49,7 +49,16 @@ EXEMPT_TABLES: Final[frozenset[str]] = frozenset({"clients_clientcompany"})
 # later `UNIQUE (tenant_id, email)` on the same table -- "one pending invite per
 # address", the obvious next constraint -- IS a cross-client oracle once portal
 # invitations exist, and it must fail here.
-EXEMPT_CONSTRAINTS: Final[frozenset[str]] = frozenset({"tenants_invite_token_key"})
+#
+# `invite_tenant_id_uniq` (tenant_id, id) entered with T22's firm notices: it is the
+# unique anchor `firm_notice_invite_scope_fk` references, so a firm message can only
+# point at an invitation of the same tenant. The oracle argument does not reach it --
+# the second column IS the primary key, so colliding on it presupposes already holding
+# the row's UUIDv7, which the `columns != ["id"]` exemption above already treats as
+# disclosing nothing the caller did not learn elsewhere.
+EXEMPT_CONSTRAINTS: Final[frozenset[str]] = frozenset(
+    {"tenants_invite_token_key", "invite_tenant_id_uniq"}
+)
 
 
 def _client_scoped_tables() -> list[str]:

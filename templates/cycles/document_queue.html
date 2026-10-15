@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% load ptbr %}{% comment %}
+The document queues (T13): waiting for review, divergent and in verification, one
+shown at a time. Rows come from `apps.cycles.review_views` already confined to the
+reviewer's portfolio. No status here borrows the confirmed style: a submission is at
+most "aguardando revisão" until a person decides.
+{% endcomment %}
+{% block title %}Documentos · {{ spec.label }}{% endblock %}
+{% block heading %}Documentos{% endblock %}
+{% block content %}
+<p class="mb-4 text-ink-600">Arquivos enviados pelos clientes. A leitura automática só sugere campos; a decisão é sempre da equipe.</p>
+<nav class="mb-4 flex flex-wrap gap-2" aria-label="Filas de documentos">
+  {% for tab in tabs %}<a class="ui-btn {% if tab.spec.slug == spec.slug %}ui-btn-primary{% else %}ui-btn-quiet{% endif %}" href="?{{ queue_param }}={{ tab.spec.slug }}"{% if tab.spec.slug == spec.slug %} aria-current="page"{% endif %} data-queue="{{ tab.spec.slug }}">{{ tab.spec.label }} <span class="badge badge-neutral" data-count="{{ tab.count }}">{{ tab.count }}</span></a>{% endfor %}
+</nav>
+{% include "partials/ui/table.html" with caption=spec.label columns=columns rows=page row_template=spec.row_template comfortable=True empty_title="Nenhum documento nesta fila" empty_message="Os arquivos enviados pelo portal aparecem aqui assim que passam pela verificação." only %}
+<nav class="mt-4 flex gap-4" aria-label="Páginas de documentos">{% if page.has_previous %}<a class="ui-link" href="?{{ queue_param }}={{ spec.slug }}&amp;pagina={{ page.previous_page_number }}">Anterior</a>{% endif %}{% if page.has_next %}<a class="ui-link" href="?{{ queue_param }}={{ spec.slug }}&amp;pagina={{ page.next_page_number }}">Próxima</a>{% endif %}</nav>
+{% endblock %}

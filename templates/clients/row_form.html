@@ -5,12 +5,14 @@
   {% comment %}
     The editor for one existing row of a client's setup (an engagement or a
     contact). The version it read is a hidden field; a stale save answers 409.
+    `unsavedGuard` (AXR1-040) as on the client form: product shell only, and a
+    bound form -- always a refused save -- comes back marked `data-unsaved`.
   {% endcomment %}
   {% url 'client-setup' client.pk as url_cadastro %}
   <p class="mb-4 text-sm"><a class="link" href="{{ url_cadastro }}">{% blocktranslate with name=client.legal_name %}Voltar ao cadastro de {{ name }}{% endblocktranslate %}</a></p>
   <section class="card max-w-3xl p-6" aria-labelledby="editar">
     <h2 id="editar" class="mb-4 text-sm font-semibold text-ink-700">{{ client.legal_name }}</h2>
-    <form method="post" class="space-y-4" novalidate>
+    <form method="post" class="space-y-4" novalidate{% if r1_shell %} x-data="unsavedGuard"{% if form.is_bound %} data-unsaved{% endif %}{% endif %}>
       {% csrf_token %}
       {% include "partials/pure/form_errors.html" %}
       {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}

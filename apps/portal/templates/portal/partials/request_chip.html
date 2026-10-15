@@ -1,0 +1,8 @@
+{% comment %}
+The status chip of one request, from the scalars the view derived (T11).
+
+"Recebido" is a client submission the team has not checked yet (S5.7): it takes the
+neutral style and never the ok one, and the word is always beside the colour. The
+three variants are written as literal branches because the stylesheet guard can only
+see class names spelled out in full.
+{% endcomment %}<span class="badge {% if req.status == 'atrasada' %}badge-late{% elif req.status == 'rejeitado' %}badge-warn{% else %}badge-neutral{% endif %}" data-status="{{ req.status }}">{{ req.status_label }}</span>

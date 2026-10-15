@@ -549,7 +549,7 @@ def test_the_dependents_registry_is_extensible_by_later_modules(
     # A copy, restored by monkeypatch: no test leaves a kind registered for the next.
     monkeypatch.setattr(importing, "_DEPENDENTS", dict(importing._DEPENDENTS))
     importing.register_rollback_dependent(
-        "cycles.servicecycle",
+        "tests.future_dependent",
         "ciclos de serviço",
         lambda tenant_id, ids: OnboardingItem.objects.filter(
             tenant_id=tenant_id,
@@ -558,7 +558,7 @@ def test_the_dependents_registry_is_extensible_by_later_modules(
     )
     with pytest.raises(ValueError, match="already registered"):
         importing.register_rollback_dependent(
-            "cycles.servicecycle",
+            "tests.future_dependent",
             "x",
             lambda tenant_id, ids: ClientCompany.objects.none(),
         )
@@ -568,7 +568,7 @@ def test_the_dependents_registry_is_extensible_by_later_modules(
             planned.batch_id,
             expected_version=_version(tenant, planned.batch_id),
         )
-    assert {dep.kind for dep in refusal.value.dependents} == {"cycles.servicecycle"}
+    assert {dep.kind for dep in refusal.value.dependents} == {"tests.future_dependent"}
 
 
 # --- concurrency and authorization -----------------------------------------------

@@ -12,10 +12,31 @@ from django.utils import timezone
 
 from apps.clients.models import ClientCompany, TaxRegime
 from apps.clients.services import claim_at, current_profiles
+from apps.core.flags import tenant_has
 from apps.core.tasks import PlatformTask
 from apps.obligations.generator import first_competence_for, generate_das_calendar
 from apps.obligations.heartbeat import record_heartbeat
 from apps.obligations.rules import DueRuleCache
+
+
+@shared_task(base=PlatformTask, bind=True, ignore_result=True)
+def materialize_receipt_observations(self: PlatformTask) -> int:
+    """Materialize receipt submissions that lack their observation (T17).
+
+    The per-commit enqueue in `intake_upload` is the fast path; this sweep is
+    the truth: every bound `comprovante` link gets its pending-review
+    observation exactly once, whatever ate the enqueue (broker hiccup, a race
+    the unique key arbitrated, a worker that died before the ack). It runs as
+    `app_runtime`, because the portal role may not insert observation rows.
+    """
+    # Imported lazily: the cycles chain re-enters obligations' own imports.
+    from apps.cycles.receipt_observations import settle_pending  # noqa: PLC0415
+
+    written = 0
+    for tenant in self.each_tenant():
+        if tenant_has(tenant.pk, "cycles_r1"):
+            written += settle_pending(tenant)
+    return written
 
 
 @shared_task

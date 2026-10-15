@@ -12,4 +12,17 @@ from typing import Final
 PLAYBOOK_CAPABILITY: Final = "playbooks.manage"
 PLAYBOOK_GATE: Final = PLAYBOOK_CAPABILITY
 
-__all__ = ["PLAYBOOK_CAPABILITY", "PLAYBOOK_GATE"]
+# Live S8.1 matrix rows seeded by AXR1-004; no legacy stand-ins.
+CYCLES_OPERATE: Final = "cycles.operate"
+CYCLES_REVIEW: Final = "cycles.review"
+CYCLES_COMPLETE: Final = "cycles.complete"
+CYCLES_REOPEN: Final = "cycles.reopen"
+
+__all__ = [
+    "CYCLES_COMPLETE",
+    "CYCLES_OPERATE",
+    "CYCLES_REOPEN",
+    "CYCLES_REVIEW",
+    "PLAYBOOK_CAPABILITY",
+    "PLAYBOOK_GATE",
+]
