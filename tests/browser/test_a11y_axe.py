@@ -12,7 +12,8 @@ cancelled reminder (test_journey_i), the divergent document (test_journey_b), th
 offline upload and its retry (test_upload_retry_slow_network), publication and
 acknowledgement (test_journey_a), the support banner (test_journey_j). Automações
 (T27) and Suporte (T23, with a request awaiting the owner) are swept here, and so
-are the portal vault, with a served document and empty, and the account page (T45).
+are the portal vault, with a served document and empty, and the account page (T45),
+and Pagamentos (AXR1-056).
 
 An axe pass is not a WCAG claim. The manual NVDA and VoiceOver passes in
 ops/AXORIM-A11Y-CHECKLIST.md are the operator's, and that gate stays open.
@@ -96,6 +97,7 @@ class World:
         return {
             "portal-inicio": "/",
             "portal-solicitacao": f"/solicitacoes/{self.setup.request.pk}/",
+            "portal-pagamentos": "/pagamentos/",
         }
 
 
