@@ -1,0 +1,12 @@
+Olá,
+
+Seu escritório de contabilidade convidou você para acompanhar sua empresa pelo portal do cliente.
+{% if accept_url %}
+Para aceitar o convite, acesse:
+{{ accept_url }}
+
+Este link vale por 7 dias e só pode ser usado uma vez. Se você recebeu outro convite depois deste, use sempre o mais recente.
+{% else %}
+O link do convite é gerado no momento do envio.
+{% endif %}
+Portal: {{ portal_url }}

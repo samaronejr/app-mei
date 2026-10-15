@@ -2,7 +2,7 @@
  * Firm-side interface behaviour. Loaded by templates/base.html and by nothing else:
  * the RLS-isolated client portal ships no JavaScript at all.
  *
- * Four jobs. The first two exist because an HTMX swap is not a navigation. The
+ * Four jobs, plus the review page's keyboard shortcuts. The first two exist because an HTMX swap is not a navigation. The
  * browser moves focus and announces a page on navigation; it does neither when a
  * fragment is replaced in place, so a keyboard user is left with focus on an element
  * that no longer exists and a screen reader user is told nothing happened.
@@ -12,8 +12,8 @@
  * It is presentation only — server-side Post/Redirect/Get is what makes the second
  * request harmless, and it holds with this file deleted.
  *
- * The fourth is the product shell's Alpine components (`dialog`, `uploadList`,
- * `unsavedGuard`, `dismissable`), registered on `alpine:init`. That event fires once,
+ * The fourth is the product shell's Alpine components (`dialog`, `palette`,
+ * `uploadList`, `unsavedGuard`, `dismissable`), registered on `alpine:init`. That event fires once,
  * when Alpine starts, so under the product shell `templates/base.html` loads Alpine
  * after this file; see the note there.
  *
@@ -140,8 +140,10 @@
    * A swap may name where focus belongs next: the first field of a form that came
    * back with errors, the row that was just updated, the control that continues the
    * task. The server marks it with data-focus-after-swap, because only the server
-   * knows which one it is. Unmarked, focus lands on the swapped region itself, as
-   * it always has.
+   * knows which one it is. Unmarked, focus lands on the first visible heading of the
+   * swapped region -- the words that name what changed, which a screen reader then
+   * reads and from which the next Tab continues -- and on the region itself only
+   * when it has no visible heading.
    *
    * The marker is consumed when it is honoured. Left in place it would pull focus
    * back to the same element on the next, unrelated swap anywhere on the page.
@@ -166,28 +168,99 @@
     return null;
   }
 
+  /*
+   * The first heading of a region that is actually rendered. A heading inside a
+   * closed disclosure or a hidden block has no box, and focusing it would silently
+   * leave focus where it was.
+   */
+  function headingOf(region) {
+    if (region.matches(HEADINGS)) {
+      return region;
+    }
+    var headings = region.querySelectorAll(HEADINGS);
+    for (var index = 0; index < headings.length; index += 1) {
+      if (headings[index].getClientRects().length > 0) {
+        return headings[index];
+      }
+    }
+    return null;
+  }
+
+  /*
+   * A region marked data-swap-keeps-focus is refreshed while the user is typing
+   * somewhere else -- the command palette's results, under its combobox. Moving
+   * focus there would pull the caret out of the field mid-word, so such a swap
+   * only clears the failure notice; the component that owns the region says what
+   * changed in its own polite status line.
+   */
+  var KEEPS_FOCUS = "[data-swap-keeps-focus]";
+
+  // Passive progress already has a polite live region. Its timer must not move
+  // keyboard focus or announce an unrelated page heading every two seconds.
+  function swapStaysQuiet(target) {
+    return target.hasAttribute("data-passive-poll") || target.closest(KEEPS_FOCUS);
+  }
+
   function onAfterSwap(event) {
     var target = event.target;
     if (!target || target.nodeType !== 1) {
       return;
     }
     hideFallback();
+    if (swapStaysQuiet(target)) {
+      return;
+    }
+    announce(nameOf(target));
+  }
+
+  /*
+   * Focus moves once the swap has settled, not when it lands. During the settle
+   * delay HTMX gives each new element that shares an id with an old one the OLD
+   * element's attributes, so a results block hidden while its request ran is still
+   * hidden at afterSwap, and its heading has no box to take focus.
+   */
+  function onAfterSettle(event) {
+    var target = event.target;
+    if (!target || target.nodeType !== 1 || !target.isConnected) {
+      return;
+    }
+    if (swapStaysQuiet(target)) {
+      return;
+    }
     var marked = focusDestination(target);
     if (marked) {
       marked.removeAttribute("data-focus-after-swap");
       focusSwapped(marked);
     } else {
-      focusSwapped(target);
+      focusSwapped(headingOf(target) || target);
     }
-    announce(nameOf(target));
   }
 
-  function onFailure() {
+  function onFailure(event) {
+    var source = event.target;
+    var briefing = source && source.nodeType === 1
+      ? source.closest("#briefing-content")
+      : null;
+    var xhr = event.detail && event.detail.xhr;
+    var stale = briefing && briefing.querySelector("#briefing-stale");
+    if (briefing) {
+      if (xhr && xhr.status === 403) {
+        briefing.textContent = "";
+        window.location.reload();
+        return;
+      }
+      if (stale) {
+        stale.removeAttribute("hidden");
+        stale.scrollIntoView({ block: "nearest" });
+        return;
+      }
+    }
     showFallback();
     announce(FAILURE);
   }
 
   document.body.addEventListener("htmx:afterSwap", onAfterSwap);
+  document.body.addEventListener("htmx:afterSettle", onAfterSettle);
 
   /*
    * Three events, one handler. HTMX reports a 5xx, a network failure and an expired
@@ -228,7 +301,7 @@
 
   function onSubmit(event) {
     var form = event.target;
-    if (!form || form.nodeType !== 1) {
+    if (!form || form.nodeType !== 1 || form.hasAttribute("hx-disabled-elt")) {
       return;
     }
     var controls = form.querySelectorAll(SUBMITTERS);
@@ -280,9 +353,46 @@
        */
       init: function () {
         var element = this.$refs.dialog;
+        this.opener = document.getElementById(element.dataset.openerId);
+        if (!element.open) return;
+        // Fragment navigation runs during loading; upgrade after it so it cannot
+        // move keyboard focus back out of the modal.
+        if (document.readyState === "complete") {
+          this.openFromUrl();
+        } else {
+          window.addEventListener("load", this.openFromUrl.bind(this), { once: true });
+        }
+      },
+
+      openFromUrl: function () {
+        var element = this.$refs.dialog;
+        var remembered;
+        var target;
         if (element.open) {
           element.close();
           element.showModal();
+          if (element.dataset.openUrl) {
+            window.history.replaceState(
+              window.history.state, "", element.dataset.openUrl,
+            );
+          }
+          remembered = document.getElementById(
+            window.history.state && window.history.state.exceptionEvidence,
+          );
+          target = element.querySelector("[data-dialog-focus]") ||
+            (remembered && element.contains(remembered) ? remembered :
+              element.querySelector(".overlay-head button"));
+          if (target) target.focus();
+        }
+      },
+
+      rememberLink: function (event) {
+        var link = event.target.closest("a[data-exception-evidence]");
+        if (link) {
+          window.history.replaceState(
+            Object.assign({}, window.history.state, { exceptionEvidence: link.id }),
+            "",
+          );
         }
       },
 
@@ -301,6 +411,15 @@
        * to the control that opened it, if that control still exists.
        */
       restoreFocus: function () {
+        var element = this.$refs.dialog;
+        var state;
+        // The server-open upgrade queues a close event before reopening modal.
+        if (element.open) return;
+        if (element.dataset.closeUrl) {
+          state = Object.assign({}, window.history.state);
+          delete state.exceptionEvidence;
+          window.history.replaceState(state, "", element.dataset.closeUrl);
+        }
         var opener = this.opener;
         this.opener = null;
         if (opener && opener.isConnected && typeof opener.focus === "function") {
@@ -325,6 +444,12 @@
    * x-data="unsavedGuard" on the form. Any input or change marks it dirty; its own
    * submit marks it clean, so saving never triggers the warning.
    *
+   * A form the server sent back unsaved -- refused, with the reader's values still
+   * in its fields -- carries data-unsaved and starts dirty. The submit that cleaned
+   * it saved nothing, so leaving now loses those values exactly as leaving before
+   * the submit would have. Only the server knows the save was refused, so only the
+   * server sets the marker.
+   *
    * beforeunload is the only warning a browser permits here, and it shows the
    * browser's own wording: a page may ask, it may not choose the sentence.
    */
@@ -335,6 +460,7 @@
 
       init: function () {
         var state = this;
+        this.dirty = this.$el.hasAttribute("data-unsaved");
         this.handler = function (event) {
           if (state.dirty) {
             event.preventDefault();
@@ -406,11 +532,105 @@
    * knows the server will refuse. Refused files stay in the list with the reason,
    * but are removed from the input, so they are never uploaded. The server checks
    * again and is the authority; this is the courtesy of saying so early.
+   *
+   * When the form around it posts through HTMX (the portal request page, T11), the
+   * same component also shows the upload itself: `htmx:xhr:progress` moves the bar,
+   * "Cancelar envio" raises `htmx:abort`, and a failed or cancelled send keeps the
+   * chosen file in the input so "Tentar de novo" resubmits it without choosing again.
+   * A refusal from the server (400) is shown as the text it answered, via x-text,
+   * never as HTML.
    */
+  var UPLOAD_SENDING = "Enviando…";
+  var UPLOAD_DONE = "Arquivo enviado.";
+  var UPLOAD_CANCELLED =
+    "Envio cancelado. O arquivo continua escolhido: toque em Tentar de novo.";
+  var UPLOAD_FAILED =
+    "Não foi possível enviar. Verifique sua conexão; o arquivo continua escolhido.";
+  var HTTP_BAD_REQUEST = 400;
+
   function uploadList() {
     return {
       items: [],
       counter: 0,
+      phase: "idle",
+      progress: 0,
+      message: "",
+
+      get isUploading() {
+        return this.phase === "uploading" || this.phase === "cancelling";
+      },
+
+      get canRetry() {
+        return this.phase === "failed" || this.phase === "cancelled";
+      },
+
+      /* Negations as getters: the CSP build evaluates names, not expressions. */
+      get isIdle() {
+        return !this.isUploading;
+      },
+
+      get notUploading() {
+        return !this.isUploading;
+      },
+
+      get cannotRetry() {
+        return !this.canRetry;
+      },
+
+      get progressLabel() {
+        return this.isUploading ? UPLOAD_SENDING + " " + this.progress + "%" : "";
+      },
+
+      onStart: function () {
+        this.phase = "uploading";
+        this.progress = 0;
+        this.message = UPLOAD_SENDING;
+      },
+
+      onProgress: function (event) {
+        var detail = event.detail || {};
+        if (detail.lengthComputable && detail.total > 0) {
+          this.progress = Math.min(
+            100,
+            Math.round((detail.loaded * 100) / detail.total)
+          );
+        }
+      },
+
+      onDone: function (event) {
+        if (this.phase === "cancelling") {
+          this.phase = "cancelled";
+          this.message = UPLOAD_CANCELLED;
+          return;
+        }
+        var detail = event.detail || {};
+        if (detail.successful) {
+          this.phase = "done";
+          this.progress = 100;
+          this.message = UPLOAD_DONE;
+          this.items = [];
+          this.$refs.input.value = "";
+          return;
+        }
+        var xhr = detail.xhr;
+        this.phase = "failed";
+        this.message =
+          xhr && xhr.status === HTTP_BAD_REQUEST && xhr.responseText
+            ? xhr.responseText
+            : UPLOAD_FAILED;
+      },
+
+      cancel: function () {
+        if (!this.isUploading) {
+          return;
+        }
+        this.phase = "cancelling";
+        window.htmx.trigger(this.$root, "htmx:abort");
+      },
+
+      retry: function () {
+        this.$root.requestSubmit();
+      },
 
       get isEmpty() {
         return this.items.length === 0;
@@ -480,8 +700,184 @@
     };
   }
 
+  /*
+   * Single-key shortcuts for a page that opts in with `data-shortcuts` (the document
+   * review, T13). A key names an element by `data-shortcut`: a field is focused, a
+   * button or link is activated exactly as a click would. Never while the user types
+   * in a field or holds a modifier, so typing an "a" in the reason is just a letter.
+   */
+  function typing(target) {
+    return (
+      target instanceof HTMLElement &&
+      (target.isContentEditable ||
+        target.matches("input, textarea, select, [role='textbox']"))
+    );
+  }
+
+  document.addEventListener("keydown", function (event) {
+    if (
+      event.defaultPrevented ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      typing(event.target) ||
+      !event.key ||
+      event.key.length !== 1
+    ) {
+      return;
+    }
+    var scope = document.querySelector("[data-shortcuts]");
+    if (!scope) {
+      return;
+    }
+    var key = event.key.toLowerCase();
+    var target = scope.querySelector('[data-shortcut="' + key + '"]');
+    if (!target) {
+      return;
+    }
+    event.preventDefault();
+    target.focus();
+    if (!target.matches("input, textarea, select")) {
+      target.click();
+    }
+  });
+
+  /*
+   * The command palette (templates/partials/ui/palette.html, AXR1-021). A combobox
+   * in a native modal <dialog>: Ctrl/Cmd+K opens it from anywhere on the page, HTMX
+   * fills #palette-results as the user types, and the arrow keys walk the options
+   * by aria-activedescendant -- focus never leaves the field, which is what lets
+   * the user keep typing to narrow the list. Enter or a click follows the active
+   * option's data-href, a path the server built with reverse().
+   */
+  var PALETTE_UPDATED = "Resultados atualizados.";
+  var PALETTE_EMPTY = "Nenhum resultado.";
+  var PALETTE_KEY = "k";
+
+  function palette() {
+    return {
+      expanded: false,
+      activeId: null,
+      opener: null,
+      shortcut: null,
+
+      init: function () {
+        var state = this;
+        this.shortcut = function (event) {
+          if (
+            (event.ctrlKey || event.metaKey) &&
+            !event.altKey &&
+            !event.shiftKey &&
+            event.key &&
+            event.key.toLowerCase() === PALETTE_KEY
+          ) {
+            event.preventDefault();
+            state.show();
+          }
+        };
+        document.addEventListener("keydown", this.shortcut);
+        this.$refs.results.addEventListener("htmx:afterSwap", function () {
+          state.onResults();
+        });
+        this.$refs.results.addEventListener("click", function (event) {
+          var option = event.target.closest('[role="option"]');
+          if (option) {
+            state.follow(option);
+          }
+        });
+      },
+
+      destroy: function () {
+        document.removeEventListener("keydown", this.shortcut);
+      },
+
+      show: function () {
+        var element = this.$refs.dialog;
+        if (!element.open) {
+          this.opener = document.activeElement;
+          element.showModal();
+        }
+        this.$refs.input.focus();
+        this.$refs.input.select();
+      },
+
+      close: function () {
+        this.$refs.dialog.close();
+      },
+
+      restoreFocus: function () {
+        var opener = this.opener;
+        this.opener = null;
+        if (opener && opener.isConnected && typeof opener.focus === "function") {
+          opener.focus();
+        }
+      },
+
+      options: function () {
+        return Array.prototype.slice.call(
+          this.$refs.results.querySelectorAll('[role="option"]')
+        );
+      },
+
+      onResults: function () {
+        var count = this.options().length;
+        this.activeId = null;
+        this.expanded = count > 0;
+        this.$refs.status.textContent = count > 0 ? PALETTE_UPDATED : PALETTE_EMPTY;
+      },
+
+      activate: function (options, index) {
+        options.forEach(function (option, position) {
+          option.setAttribute("aria-selected", position === index ? "true" : "false");
+        });
+        this.activeId = options[index].id;
+        options[index].scrollIntoView({ block: "nearest" });
+      },
+
+      move: function (step) {
+        var options = this.options();
+        if (options.length === 0) {
+          return;
+        }
+        var activeId = this.activeId;
+        var index = options.findIndex(function (option) {
+          return option.id === activeId;
+        });
+        if (index < 0) {
+          index = step > 0 ? 0 : options.length - 1;
+        } else {
+          index = (index + step + options.length) % options.length;
+        }
+        this.activate(options, index);
+      },
+
+      follow: function (option) {
+        var href = option.dataset.href || "";
+        // Only a same-origin path: the attribute is server-built, and this keeps a
+        // future template mistake from ever following a scheme or another host.
+        if (href.charAt(0) === "/" && href.charAt(1) !== "/") {
+          window.location.assign(href);
+        }
+      },
+
+      onKeydown: function (event) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          this.move(1);
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          this.move(-1);
+        } else if (event.key === "Enter" && this.activeId) {
+          event.preventDefault();
+          this.follow(document.getElementById(this.activeId));
+        }
+      },
+    };
+  }
+
   document.addEventListener("alpine:init", function () {
     window.Alpine.data("dialog", dialog);
+    window.Alpine.data("palette", palette);
     window.Alpine.data("dismissable", dismissable);
     window.Alpine.data("unsavedGuard", unsavedGuard);
     window.Alpine.data("uploadList", uploadList);

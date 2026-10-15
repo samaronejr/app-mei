@@ -1,4 +1,11 @@
-"""Report inconsistencies between all tenant document rows and object storage."""
+"""Report inconsistencies between all tenant document rows and object storage.
+
+Since T12 a document's bytes live at one of two keys: its final `storage_key`, or --
+while its intake is not `verificado` -- the intake's `quarantine/{tenant}/{client}/`
+key. Each row is checked (and sampled for its hash) at the key where its bytes must
+be, and the bucket listing descends into `quarantine/` so a leftover quarantine copy
+or an unclaimed quarantined object is reported as an orphan like any other.
+"""
 
 import hashlib
 from argparse import ArgumentParser
@@ -7,15 +14,18 @@ from typing import Any, Final
 
 from django.core.files.storage import Storage, default_storage
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import OuterRef, Subquery
 from django.utils import timezone
 
 from apps.core.tenancy import tenant_context
+from apps.cycles.evidence import CLEAN_STATES, DocumentIntake
 from apps.obligations.models import Document
 from apps.tenants.models import Tenant
 
 DEFAULT_HASH_SAMPLE_SIZE: Final = 20
 MAX_HASH_SAMPLE_SIZE: Final = 100
 PROBE_PREFIX: Final = "_probe/"
+QUARANTINE_ROOT: Final = "quarantine"
 
 
 @dataclass(slots=True)
@@ -39,11 +49,21 @@ def _collect_global_union(storage: Storage, hash_sample_size: int) -> PhaseOneRe
     for tenant in Tenant.objects.all().iterator():
         tenant_hashes_checked = 0
         with tenant_context(tenant.id):
-            rows = Document.objects.order_by("storage_key").values_list(
-                "storage_key",
-                "sha256",
+            intake = DocumentIntake.objects.filter(document=OuterRef("pk"))
+            rows = (
+                Document.objects.annotate(
+                    intake_state=Subquery(intake.values("state")[:1]),
+                    held_key=Subquery(intake.values("quarantine_key")[:1]),
+                )
+                .order_by("storage_key")
+                .values_list("storage_key", "sha256", "intake_state", "held_key")
             )
-            for storage_key, expected_sha256 in rows:
+            for final_key, expected_sha256, intake_state, held_key in rows:
+                storage_key = (
+                    held_key
+                    if held_key and intake_state not in CLEAN_STATES
+                    else final_key
+                )
                 result.storage_keys.add(storage_key)
                 result.documents += 1
                 if not storage.exists(storage_key):
@@ -70,10 +90,29 @@ def _collect_global_union(storage: Storage, hash_sample_size: int) -> PhaseOneRe
     return result
 
 
+def _quarantine_keys(storage: Storage) -> set[str]:
+    """Every object under `quarantine/{tenant}/{client}/`, as full keys."""
+    keys: set[str] = set()
+    tenants, _files = storage.listdir(QUARANTINE_ROOT)
+    for tenant in tenants:
+        clients, _files = storage.listdir(f"{QUARANTINE_ROOT}/{tenant}")
+        for client in clients:
+            prefix = f"{QUARANTINE_ROOT}/{tenant}/{client}"
+            _nested, files = storage.listdir(prefix)
+            keys.update(f"{prefix}/{name}" for name in files)
+    return keys
+
+
 def _bucket_keys(storage: Storage) -> set[str]:
-    """List the bucket once and exclude the probe namespace from comparison."""
-    _directories, files = storage.listdir("")
-    return {name for name in files if not name.startswith(PROBE_PREFIX)}
+    """List the bucket and exclude the probe namespace from comparison.
+
+    One listing of the root; the quarantine tree is descended only when it exists.
+    """
+    directories, files = storage.listdir("")
+    keys = {name for name in files if not name.startswith(PROBE_PREFIX)}
+    if QUARANTINE_ROOT in directories:
+        keys |= _quarantine_keys(storage)
+    return keys
 
 
 def _orphan_reports(storage: Storage, orphan_keys: set[str]) -> list[str]:

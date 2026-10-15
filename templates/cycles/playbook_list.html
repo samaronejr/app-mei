@@ -1,0 +1,40 @@
+{% extends "base.html" %}{% load i18n ptbr %}
+{% block title %}{% translate "Playbooks" %}{% endblock %}
+{% block heading %}{% translate "Playbooks" %}{% endblock %}
+{% block content %}
+  {% comment %}
+    The list is a table, not cards: a playbook row is scanned for state and key,
+    which is what dense tabular markup is for. `is_system` marks the platform's
+    packs beside the firm's own rows — the distinction is the whole model.
+  {% endcomment %}
+  {% translate "Playbooks do escritório" as list_caption %}
+  {% translate "Nenhum playbook ainda" as empty_title %}
+  {% translate "Os pacotes do sistema aparecem aqui quando o recurso de ciclos está habilitado; crie um playbook próprio para personalizar." as empty_message %}
+  {% include "partials/ui/table.html" with caption=list_caption columns=columns rows=rows row_template="cycles/_playbook_row.html" empty_title=empty_title empty_message=empty_message only %}
+
+  {% comment %}
+    Creating a playbook is a small typed form, not a wizard: name, key and the
+    targeting scope. The fields render through the same pure partial every other
+    form uses, so the accessibility chain (label, help, error) is identical.
+    `unsavedGuard` (AXR1-040) asks before typed fields are left behind; a refused
+    create retains the bound form and starts the guard armed.
+  {% endcomment %}
+  <section class="ui-panel mt-6" aria-labelledby="novo-playbook">
+    <h2 id="novo-playbook" class="ui-panel-heading">{% translate "Novo playbook" %}</h2>
+    <form method="post" class="grid gap-4 px-4 py-4" novalidate x-data="unsavedGuard"{% if create_form.is_bound %} data-unsaved{% endif %}>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="create">
+      {% if create_form.non_field_errors %}
+        <div role="alert" class="field-error">
+          {% for error in create_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+        </div>
+      {% endif %}
+      {% for field in create_form %}
+        {% include "partials/pure/field.html" with field=field only %}
+      {% endfor %}
+      <div>
+        <button type="submit" class="ui-btn ui-btn-primary">{% translate "Criar rascunho" %}</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

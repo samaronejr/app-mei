@@ -16,6 +16,13 @@ Background research lives in [`deep-research-report.md`](deep-research-report.md
 cp .env.example .env && docker compose up -d --wait
 ```
 
+The database's init scripts (`ops/sql/`) create the roles, the portal grants and
+the `btree_gist`/`unaccent`/`pg_trgm` extensions — in the app database and in
+`template1`, which is what test databases are cloned from. They run only against
+an empty data directory, so changing them needs `docker compose down -v`. For a
+database that predates the extension lines there is a one-time runbook step in
+[`ops/README.md`](ops/README.md).
+
 ## Standing commands
 
 | Purpose | Command |

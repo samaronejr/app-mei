@@ -16,6 +16,10 @@ x-app-environment: &app-environment
   DATABASE_MIGRATION_URL: postgres://app_migrator:${APP_MIGRATOR_PASSWORD:-app_migrator_password}@db:5432/${POSTGRES_DB:-app_mei}
   CONN_MAX_AGE: ${CONN_MAX_AGE:-60}
   REDIS_URL: redis://redis:6379/0
+  DELIVERY_PAUSED: "${DELIVERY_PAUSED:-True}"
+  DELIVERY_DAILY_CAP: "${DELIVERY_DAILY_CAP:-100}"
+  OUTBOX_MAX_QUEUED_AGE_SECONDS: "${OUTBOX_MAX_QUEUED_AGE_SECONDS:-900}"
+  OUTBOX_MAX_DEAD_LETTERS: "${OUTBOX_MAX_DEAD_LETTERS:-0}"
 
 x-app-service: &app-service
   build:

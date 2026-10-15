@@ -1,0 +1,51 @@
+{% extends "base.html" %}{% load ptbr %}
+{% block title %}{{ operation.get_kind_display }} · Operação em lote{% endblock %}
+{% block heading %}Conferir lote{% endblock %}
+{% block content %}
+<div class="mx-auto grid min-w-0 max-w-5xl gap-6">
+  <header class="min-w-0">
+    <a class="ui-link" href="{% url 'bulk-start' %}">Nova operação em lote</a>
+    <h2 class="mt-4 text-xl font-semibold">{{ operation.get_kind_display }}</h2>
+    <p class="mt-2 text-sm text-ink-600">Prévia calculada em {{ operation.created_at|data_hora }}. Válida até {{ operation.valid_until|data_hora }}.</p>
+    <p class="mt-1 text-sm text-ink-600">Registros alterados ou sem autorização serão ignorados. Cancelar preserva os efeitos já concluídos.</p>
+  </header>
+  {% if error %}<div class="ui-panel p-4" role="alert">{{ error }}</div>{% endif %}
+  {% if preview %}
+  <form method="post" class="grid min-w-0 gap-6" data-bulk-preview>
+    {% csrf_token %}
+    <input type="hidden" name="expected_version" value="{{ operation.version }}">
+    <input type="hidden" name="snapshot_digest" value="{{ operation.snapshot_digest }}">
+    <section class="ui-panel p-4" aria-labelledby="preview-summary">
+      <h2 id="preview-summary" class="ui-panel-heading">{{ eligible_count }} elegíveis de {{ total_count }} registros</h2>
+      <p class="mt-2 text-sm text-ink-600">A execução usa somente esta seleção congelada. Marque os itens que deseja excluir e digite a quantidade restante de elegíveis.</p>
+      {% if operation.kind == 'send_request_notices' %}<p class="mt-2 text-sm">{{ operation.snapshot_json.estimated_messages }} aviso(s) previsto(s) antes das exclusões. Custo não estimado; nenhum e-mail foi enviado.</p>
+      <p class="mt-2 text-sm">Reservas de envio disponíveis hoje, neste momento: <strong class="tabular-nums" data-bulk-quota>{{ remaining_quota }}</strong>.{% if operation.snapshot_json.estimated_messages > remaining_quota %} <span class="font-semibold" data-bulk-quota-short>Há mais avisos previstos do que reservas: os excedentes aguardam na fila e só são enviados quando houver novas reservas, que se renovam a cada dia.</span>{% endif %} É o limite diário configurado neste sistema, não a cota do provedor de e-mail; cada tentativa de envio consome uma reserva.</p>{% endif %}
+      {% if operation.kind == 'migrate_open_cycles_to_version' %}<p class="mt-2 text-sm">Ciclos encerrados não mudam. Etapas removidas ou alterações em trabalho já iniciado são recusadas por item, preservando o histórico.</p>{% endif %}
+      {% if operation.kind == 'approve_items' %}<p class="mt-2 text-sm">Cada cartão abaixo é uma decisão independente, vinculada ao seu próprio resumo criptográfico. Aprovar não executa nem envia estes efeitos.</p>{% endif %}
+    </section>
+    {% for row in rows %}
+    <section class="ui-panel min-w-0 p-4" aria-labelledby="item-{{ forloop.counter }}" data-snapshot-item>
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0"><h3 id="item-{{ forloop.counter }}" class="font-semibold break-words">{{ row.snapshot.label }}</h3><p class="mt-1 text-sm text-ink-600">Competência {{ row.snapshot.effect.period|slice:"5:7" }}/{{ row.snapshot.effect.period|slice:":4" }} · revisão {{ row.snapshot.expected_version }}</p></div>
+        {% if row.snapshot.eligible %}<span class="status-badge status-pending">Elegível</span>{% else %}<span class="status-badge status-blocked">Não elegível</span>{% endif %}
+      </div>
+      {% if row.reason %}<p class="mt-3 text-sm">{{ row.reason }}</p>{% endif %}
+      {% include "cycles/_bulk_effect.html" with item=row.snapshot kind=operation.kind only %}
+      {% if row.snapshot.eligible %}<label class="mt-4 flex min-h-11 items-center gap-3 border-t border-ink-200 pt-3"><input type="checkbox" name="exclusions" value="{{ row.snapshot.subject_ref }}"{% if row.snapshot.subject_ref|stringformat:'s' in excluded %} checked{% endif %}><span>Excluir este item da execução</span></label>{% endif %}
+    </section>
+    {% empty %}<section class="ui-panel p-4"><h3 class="font-semibold">Nenhum registro selecionado</h3><p class="mt-2">Volte à seleção e escolha os registros que deseja conferir.</p></section>{% endfor %}
+    <section class="ui-panel grid gap-4 p-4" aria-labelledby="confirm-title">
+      <h2 id="confirm-title" class="ui-panel-heading">Confirmar a seleção conferida</h2>
+      {% if expired %}<p role="alert">Esta prévia expirou. Gere uma nova antes de executar.</p>{% elif not may_confirm %}<p>Somente quem gerou esta prévia pode confirmar. Gere sua própria prévia para conferir os efeitos.</p>{% elif eligible_count %}
+      <div class="ui-field"><label class="ui-field-label" for="confirm-count">Quantidade exata de elegíveis, descontando as exclusões</label><input class="ui-field-input" id="confirm-count" name="confirm_count" inputmode="numeric" autocomplete="off" value="{{ typed_count }}" required aria-describedby="count-help"><p id="count-help" class="text-sm text-ink-600">Digite o número inteiro, sem espaços. Sem exclusões: {{ eligible_count }}.</p></div>
+      <div><button type="submit" name="action" value="confirm" class="ui-btn ui-btn-primary">Confirmar estes itens</button></div>
+      {% else %}<p>Nenhum item está elegível. Confira os impedimentos e gere outra prévia.</p>{% endif %}
+      <a class="ui-link" href="{% url 'bulk-start' %}">Voltar à seleção</a>
+      <details class="min-w-0 text-sm"><summary class="ui-link">Identidade da prévia</summary><code class="mt-2 block break-all text-xs">{{ operation.snapshot_digest }}</code></details>
+    </section>
+  </form>
+  {% else %}
+    {% include "cycles/_bulk_progress.html" %}
+  {% endif %}
+</div>
+{% endblock %}
