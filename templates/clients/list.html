@@ -26,6 +26,15 @@
     The glyph is decorative: it is aria-hidden inside the partial, and the label
     beside it is what is announced and what is read.
   {% endcomment %}
+  {% comment %}
+    AXR1-007: under the import_r1 flag the registry also offers "Novo cliente" and,
+    to the firm-wide roles that may import, "Importar clientes". Flag off, nothing
+    here is drawn and the page is byte-identical to the MEI-era one.
+  {% endcomment %}
+  {% if onboarding_r1 %}
+    <a class="btn btn-primary" href="{% url 'client-create' %}">{% translate "Novo cliente" %}</a>
+    {% if may_import %}<a class="btn btn-quiet" href="{% url 'client-import' %}">{% translate "Importar clientes" %}</a>{% endif %}
+  {% endif %}
   {% can user "clients.view_all" as pode_exportar %}
   {% if pode_exportar %}
     <a class="btn btn-quiet" href="{% url 'clients-export-csv' %}">

@@ -1,4 +1,4 @@
-{% load i18n navigation static %}<!DOCTYPE html>
+{% load i18n navigation static firm_settings %}{% product_shell request as r1_shell %}{% firm_settings_context request as firm_account %}{% if not r1_shell %}{% notice_policy_href request as notice_policy_url %}{% endif %}<!DOCTYPE html>
 <html lang="pt-br">
 <head>
   <meta charset="utf-8">
@@ -19,20 +19,30 @@
     and so the policy can name no external script origin at all.
   {% endcomment %}
   <script src="{% static 'js/htmx.min.js' %}" defer></script>
-  <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>
+  {% if not r1_shell %}<script src="{% static 'js/alpine-csp.min.js' %}" defer></script>{% endif %}
   {% comment %}
-    First-party, and last of the three: deferred scripts run in document order, so
-    this one is guaranteed both bundles above it have already been evaluated.
+    First-party, and -- for a flag-off firm -- last of the three: deferred scripts
+    run in document order, so this one is guaranteed both bundles above it have
+    already been evaluated.
 
     Loaded here and nowhere else. The MEI client portal renders from its own
     standalone layout under a database role holding SELECT on seven tables, and it
     ships no JavaScript at all — a shared script is a shared attack surface across
     the one boundary in this product that RLS is enforcing.
+
+    Under the product shell (`cycles_r1`) Alpine loads AFTER this file instead.
+    `app.js` registers the `Alpine.data` components on `alpine:init`, and the CSP
+    build starts itself in the microtask after its own script runs — so a
+    component registered by a later script is registered too late, and every
+    `x-data` naming it fails. The MEI-era order is kept for flag-off firms, whose
+    pages carry no Alpine component, so their document is unchanged byte for
+    byte; the branch goes when the flag is retired.
   {% endcomment %}
-  <script src="{% static 'js/app.js' %}" defer></script>
+  <script src="{% static 'js/app.js' %}" defer></script>{% if r1_shell %}
+  <script src="{% static 'js/alpine-csp.min.js' %}" defer></script>{% endif %}
   {% block head %}{% endblock %}
 </head>
-<body class="min-h-screen">
+<body class="min-h-screen{% if r1_shell %} shell-r1{% endif %}">
   {% comment %}
     The first focusable element on every page. It jumps past the header and the nav to
     the start of the content, which is the difference between one keystroke and thirty
@@ -40,7 +50,7 @@
   {% endcomment %}
   <a class="skip-link" href="#conteudo">{% translate "Pular para o conteúdo" %}</a>
 
-  <header class="border-b border-ink-200 bg-surface">
+  {% if r1_shell %}{% include "partials/ui/shell_header.html" %}{% else %}<header class="border-b border-ink-200 bg-surface">
     <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-4 px-6 py-3">
       <span class="text-sm font-semibold tracking-tight text-ink-900">
         {% if request.tenant %}{{ request.tenant.name }}{% else %}{% translate "app-mei" %}{% endif %}
@@ -76,11 +86,12 @@
             <nav aria-label="{% translate 'Navegação principal' %}" class="nav-bar">
               {% for item in items %}
                 <a class="nav-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
-              {% endfor %}
+              {% endfor %}{% if notice_policy_url %}<a class="nav-link" href="{{ notice_policy_url }}"{% if notice_policy_url == request.path %} aria-current="page"{% endif %}>Política de avisos</a>{% endif %}
             </nav>
           </details>
         {% endif %}
-        <div class="ml-auto flex items-center gap-3 text-sm text-ink-500">
+        <div class="ml-auto flex items-center gap-3 text-sm {% if notice_policy_url %}text-ink-600{% else %}text-ink-500{% endif %}">
+          {% if firm_account.enabled %}<a class="link" href="{% url 'firm-settings' %}">{% translate "Configurações" %}</a>{% endif %}
           <span>{{ request.user.email }}</span>
           <form method="post" action="{% url 'account_logout' %}">
             {% csrf_token %}
@@ -89,7 +100,7 @@
         </div>
       {% endif %}
     </div>
-  </header>
+  </header>{% endif %}
 
   {% comment %}
     The one place static/js/app.js writes swap announcements. Deliberately outside
@@ -185,15 +196,34 @@
         </div>
       {% endif %}
     </div>
-
+{% if request.support_grant %}
+    {% comment %}
+      The support banner sits inside <main>, above every partial HTMX swaps:
+      the swapped regions live inside block content, so a banner here survives
+      every fragment update and stays visible for the whole session — which is
+      the point: a support visit must never look like an ordinary sign-in.
+    {% endcomment %}
+    <div class="notice notice-warn mb-6" role="status" data-support-banner>
+      <p class="font-semibold">{% translate "Acesso de suporte ativo" %}</p>
+      <p class="mt-1 text-sm">
+        {% if request.support_grant.scope == 'read_write_settings' %}
+          {% translate "A plataforma está acessando esta firma com aprovação do responsável, com permissão para ajustar configurações." %}
+        {% else %}
+          {% translate "A plataforma está acessando esta firma em modo somente leitura, com aprovação do responsável." %}
+        {% endif %}
+        {% if request.support_grant.expires_at %}{% translate "Encerra automaticamente às" %} {{ request.support_grant.expires_at|date:"d/m/Y H:i" }}.{% endif %}
+      </p>
+    </div>
+{% endif %}
+    {% if firm_account.past_due %}<p class="notice notice-warn mb-6" data-billing-past-due>{% translate "Há uma cobrança em atraso. Fale com a operação da plataforma para regularizar. A consulta e a exportação permanecem disponíveis." %}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="mx-auto max-w-7xl px-6 py-8 text-xs text-ink-500">
+  {% block footer %}<footer class="mx-auto max-w-7xl px-6 py-8 text-xs {% if notice_policy_url %}text-ink-600{% else %}text-ink-500{% endif %}">
     <p>
       {% translate "Horários em BRT (America/Sao_Paulo)." %}
       <a class="underline" href="{% url 'dsr-submit' %}">{% translate "Direitos do titular de dados (LGPD)" %}</a>
     </p>
-  </footer>
+  </footer>{% endblock %}
 </body>
 </html>

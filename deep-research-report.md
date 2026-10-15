@@ -65,6 +65,20 @@ The following matrix is the recommended starting authorization model.
 | Access audit logs | ✅ | ✅ | Limited | Limited | Own actions only | Own actions only |
 | Access support / incident console | ✅ | ✅ | Limited | ✅ | Ticket only | Ticket only |
 | View revenue threshold queue | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Import client portfolio | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Maintain clients, engagements, contacts | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Edit and publish playbooks | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Operate service cycles | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Review client documents | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Approve client-facing effects | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Complete service cycles | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Reopen completed cycles | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Run bulk operations | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Manage automations | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Export evidence bundles | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Grant support access | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Acknowledge publications | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Export and cancel firm account, view estimated costs | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 A robust implementation should enforce this matrix **both at the application layer and at the data layer**, using tenant scoping and row-level policies. PostgreSQL’s row security is particularly relevant because it can restrict which rows a role may read or write, which is highly aligned with a multi-tenant accounting product. citeturn19search2turn19search11
 

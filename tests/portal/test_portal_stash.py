@@ -152,7 +152,12 @@ def test_rule_6_the_stash_holds_every_matrix_slug(firm: Firm) -> None:
 
     # Then it carries the whole matrix, so no gated view can fall outside it
     assert body["slugs"] == sorted(CAPABILITY_SLUGS)
-    assert len(CAPABILITY_SLUGS) == 17
+    # 31 = the 17 pre-R1 rows plus the 13 slugs T4 seeded for R1 (S8.1) plus the
+    # owner-only `tenants.account` capability T22 seeded for firm account export,
+    # cancellation and estimated cost. It is FULL for OWNER and NONE for every
+    # other role including both client roles, so it is required in the stash for
+    # completeness yet can never gate or be granted to a portal user.
+    assert len(CAPABILITY_SLUGS) == 31
 
 
 def test_rule_4_the_stash_does_not_survive_the_response(firm: Firm) -> None:

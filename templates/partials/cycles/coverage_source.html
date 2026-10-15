@@ -1,0 +1,12 @@
+{% load ptbr %}
+{% if observation %}
+<dl class="mt-2 grid min-w-0 gap-2 text-sm text-ink-600" data-observation-id="{{ observation.pk }}" data-source-kind="{{ observation.source_kind }}">
+  <div><dt class="font-medium">Origem</dt><dd>{% if observation.source_kind == 'staff_recorded' %}Registro da equipe{% elif observation.source_kind == 'client_submitted' %}Informação do cliente{% elif observation.source_kind == 'legacy_status' %}Registro anterior à cobertura{% elif observation.source_kind == 'deterministic_rule' %}Regra do calendário{% elif observation.source_kind == 'official_api' %}Consulta à fonte oficial{% elif observation.source_kind == 'official_file_import' %}Arquivo de fonte oficial{% elif observation.source_kind == 'ai_inference' %}Sugestão automática, não verificada{% else %}Origem não identificada{% endif %}</dd></div>
+  {% if observation.source_ref %}<div><dt class="font-medium">Referência</dt><dd class="break-all">{{ observation.source_ref }}</dd></div>{% endif %}
+  {% if observation.evidence_link_id %}<div><dt class="font-medium">Evidência</dt><dd><a class="ui-link" href="{% url 'document-review' observation.evidence_link_id %}">Abrir documento vinculado</a></dd></div>{% endif %}
+  <div><dt class="font-medium">Observado em</dt><dd><time datetime="{{ observation.observed_at|date:'c' }}">{{ observation.observed_at|data_hora }}</time></dd></div>
+  <div><dt class="font-medium">Registrado em</dt><dd><time datetime="{{ observation.recorded_at|date:'c' }}">{{ observation.recorded_at|data_hora }}</time></dd></div>
+</dl>
+{% else %}
+<p class="mt-2 text-sm text-ink-600">Nenhum registro para esta competência.</p>
+{% endif %}

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% comment %}
+The planted defect for the axe helper's positive control: a button with a glyph
+and nothing else, so it has no accessible name. Served only to
+tests/browser/test_components.py, which asserts that `axe_check` refuses it.
+{% endcomment %}
+{% block heading %}Controle sem nome{% endblock %}
+{% block content %}<button type="button" class="ui-icon-btn" data-kit="unnamed">{% include "partials/pure/icons/x.html" %}</button>{% endblock %}

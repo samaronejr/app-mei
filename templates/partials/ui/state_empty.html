@@ -1,0 +1,17 @@
+{% load i18n %}{% comment %}
+An empty state that still says what to do next (S5.1 principle 6).
+
+Context:
+  title        -- what is empty, in pt-BR. Defaults to a neutral sentence.
+  message      -- optional: why, and what would fill it.
+  action_url   -- optional next step, a plain link.
+  action_label -- its pt-BR label; required when `action_url` is given.
+
+Empty is not failure. The matching failure is `state_error.html`, and a screen
+that can be both must render the right one -- a list that failed to load and
+reads "Nada por aqui" is the most expensive lie an interface can tell.
+{% endcomment %}<div class="ui-state ui-state-empty" data-ui-state="empty">
+  <p class="ui-state-title">{% include "partials/pure/icons/info.html" %}<span>{% if title %}{{ title }}{% else %}{% translate "Nenhum item por aqui." %}{% endif %}</span></p>
+  {% if message %}<p>{{ message }}</p>{% endif %}
+  {% if action_url %}<a class="ui-btn ui-btn-quiet" href="{{ action_url }}">{{ action_label }}</a>{% endif %}
+</div>

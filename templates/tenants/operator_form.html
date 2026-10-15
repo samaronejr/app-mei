@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{{ page_title }}{% endblock %}
+{% block heading %}{{ page_title }}{% endblock %}
+{% block content %}
+  <p class="mb-5 text-sm"><a class="link" href="{% url 'admin:tenants_tenant_changelist' %}">{% translate "Voltar às firmas" %}</a></p>
+  <section class="card max-w-2xl p-6" aria-labelledby="operacao-assistida">
+    <h2 id="operacao-assistida" class="mb-3 text-lg font-semibold">{% translate "Operação assistida" %}</h2>
+    <p class="mb-5 text-sm text-ink-600">{% translate "Cobrança manual, feita fora do produto. Este registro não processa pagamentos. Alterações ficam na auditoria da plataforma; o convite é enviado pela fila, conforme a pausa operacional." %}</p>
+    <form method="post" class="space-y-4">
+      {% csrf_token %}{% include "partials/pure/form_errors.html" %}
+      {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+      <button type="submit" class="btn btn-primary">{{ submit_label }}</button>
+    </form>
+  </section>
+{% endblock %}
