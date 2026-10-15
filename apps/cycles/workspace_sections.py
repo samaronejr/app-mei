@@ -43,7 +43,9 @@ class PeriodRequest:
     obligation_month: date | None
 
 
-def _project(row: EvidenceRequest, *, today: date) -> PeriodRequest:
+def project_request(
+    row: EvidenceRequest, *, today: date, submitted: bool
+) -> PeriodRequest:
     """Project one already-joined request row without another query."""
     obligation = row.obligation
     return PeriodRequest(
@@ -55,9 +57,7 @@ def _project(row: EvidenceRequest, *, today: date) -> PeriodRequest:
         kind_label=row.get_kind_display(),
         state=row.state,
         state_label=row.get_state_display(),
-        client_status=client_status(
-            row, submitted=bool(row.__dict__.get("submitted")), today=today
-        ),
+        client_status=client_status(row, submitted=submitted, today=today),
         due_on=row.due_on,
         requested_at=row.requested_at,
         obligation_name=obligation.obligation_type.name if obligation else "",
@@ -76,4 +76,7 @@ def period_requests(client: ClientCompany, period: date) -> list[PeriodRequest]:
         .annotate(submitted=Exists(counted_links().filter(request_id=OuterRef("pk"))))
         .order_by("created_at", "pk")
     )
-    return [_project(row, today=today) for row in rows]
+    return [
+        project_request(row, today=today, submitted=bool(row.__dict__.get("submitted")))
+        for row in rows
+    ]
