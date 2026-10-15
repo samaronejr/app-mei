@@ -30,6 +30,11 @@ def test_populated_roundtrip_preserves_retry_lineage_and_receipts(
             delivery.graph.actor, parent.pk, expected_version=parent.version
         )
         messages = list(OutboundMessage.objects.order_by("pk").values())
+        # A reverse migration removes this later authority column. Reapplication
+        # must not invent consent, while every original receipt and retry stays.
+        for message in messages:
+            message["notice_authorization_bytes"] = None
+            message["notice_authorization_digest"] = None
         attempts = list(DeliveryAttempt.objects.order_by("pk").values())
         effects = list(DeliveryEffect.objects.order_by("pk").values())
         events = list(Event.objects.order_by("pk").values())
@@ -65,4 +70,8 @@ def test_populated_roundtrip_preserves_retry_lineage_and_receipts(
     finally:
         MigrationExecutor(connection).migrate(leaves)
         with connection.cursor() as cursor:
+            cursor.execute(
+                "GRANT SELECT, INSERT, UPDATE, DELETE "
+                "ON delivery_tenantnoticepolicy TO app_runtime"
+            )
             cursor.execute("SET ROLE app_runtime")

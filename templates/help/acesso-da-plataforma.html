@@ -1,0 +1,55 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    Support grants as T23 shipped them after its review repair: the grant read in
+    apps/authz/support.py, the decisions in apps/tenants/support.py and
+    apps/tenants/support_views.py, the owner page templates/tenants/support.html, the
+    banner in templates/base.html, the per-request audit in apps/audit/middleware.py,
+    and the refusals proved in tests/authz/test_support_grant.py. The per-grant trail
+    (T23 B5, c2cf417) is support_trail_view in apps/tenants/support_views.py, rendered by
+    templates/tenants/support_trail.html and linked from each decided grant on the owner
+    page: newest first, at most 100 rows, method and path only (no query string or
+    body), no status column.
+  {% endcomment %}
+  {% translate "Este recurso está em implantação. Se o responsável pela conta não vê o link Acesso de suporte em Configurações, ele ainda não está ativo na sua conta." as aviso %}
+  {% include 'partials/pure/notice.html' with message=aviso variant='info' only %}
+  <section class="card p-6 space-y-3" aria-labelledby="regra">
+    <h2 id="regra" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}A regra{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}A equipe da plataforma só entra nos dados do seu escritório com um pedido aprovado pelo responsável pela conta. Isso vale também para os administradores da plataforma. Sem aprovação, ou depois que o acesso termina, a entrada é negada.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="pedido">
+    <h2 id="pedido" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O pedido{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Quem precisa de acesso abre um pedido e escreve a finalidade. O pedido aparece em Configurações, na página Acesso de suporte, com o e-mail de quem pediu, a finalidade e a data. Enquanto você não decide, o pedido não libera nada. Para negar, use Recusar.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="decisao">
+    <h2 id="decisao" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que você escolhe ao autorizar{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Tipo de acesso: Somente leitura, ou Leitura e configurações da firma. O segundo também permite alterar as configurações do escritório.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Clientes visíveis: marque na lista os clientes que o suporte pode ver. Se nenhum for marcado, o suporte vê só dados gerais do escritório e nenhum dado de cliente.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Duração: de 1 a 72 horas. A página sugere 4 horas.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="durante">
+    <h2 id="durante" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Durante o acesso{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Em todas as páginas do escritório, quem está no suporte vê o aviso Acesso de suporte ativo, com o tipo de acesso e o horário em que ele encerra automaticamente.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Documentos não podem ser abertos nem baixados pelo suporte.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Nas mensagens, o assunto e as anotações da equipe aparecem como •••. Nos cartões de aprovação, o texto, o remetente e os destinatários ficam ocultos.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}O suporte não aprova, não decide envios, não revisa documentos e não baixa arquivos. Essas ações são recusadas pelo sistema, não apenas escondidas da tela.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="registro">
+    <h2 id="registro" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que fica registrado{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Cada página que o suporte abre durante o acesso, inclusive as recusadas, fica registrada no histórico de auditoria do escritório, com o endereço, a data e o resultado.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Na página Acesso de suporte, o Histórico de acessos mostra cada autorização: quem pediu, a finalidade, quando foi aprovada, até quando vale, o tipo de acesso e quando foi encerrada.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Em cada autorização do Histórico de acessos, o link Ver trilha de auditoria abre a trilha daquele acesso. Ela lista as páginas que o suporte abriu, com o método e o endereço, sem os dados enviados, e as etapas do acesso: o pedido, a autorização e o encerramento. Cada linha mostra quando aconteceu e qual conta agiu.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}A trilha mostra os 100 registros mais recentes, do mais novo para o mais antigo, e indica quando o acesso já expirou. Só o responsável pela conta abre essa página; quem está no suporte não consegue abri-la.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="revogar">
+    <h2 id="revogar" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Encerrar{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O responsável pela conta pode encerrar o acesso a qualquer momento, no Histórico de acessos, com o botão Encerrar acesso. A partir da próxima página que o suporte abrir, a entrada é negada. No fim do prazo, o acesso também termina sozinho, já na página seguinte.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Um acesso nunca é prorrogado. Para continuar, o suporte precisa abrir um novo pedido, e o responsável pela conta precisa aprová-lo de novo.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

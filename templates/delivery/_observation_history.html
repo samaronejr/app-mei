@@ -1,0 +1,12 @@
+{% comment %}
+One message's receipts in recorded order, shared by the queue and the client workspace.
+
+Context:
+  observations -- the message's DeliveryObservation list (apps/delivery/timeline.py).
+
+An ignored receipt keeps its own outcome, code and time here, is drawn quieter and
+says why it had no effect (AXR1-044). It is history: the caller states the message's
+current state separately, from the message itself, never from the last item.
+{% endcomment %}<ol class="mt-4 space-y-2 text-sm" aria-label="Histórico do envio">
+    {% for entry in observations %}<li data-observation-effect="{{ entry.effect }}" data-observed-state="{{ entry.observed_state }}"{% if entry.ignored %} class="text-ink-600"{% endif %}><time>{{ entry.when|date:'d/m/Y H:i' }}</time> · {{ entry.summary }}{% if entry.code %}<span class="text-ink-600"> · {{ entry.code }}</span>{% endif %}{% if entry.ignored %}<span class="block text-xs">{{ entry.detail }}</span>{% endif %}</li>{% endfor %}
+  </ol>

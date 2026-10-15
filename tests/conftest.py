@@ -32,6 +32,7 @@ PORTAL_DENIED_TABLES = (
     "automation_agentrun",
     "automation_evalrun",
     "authz_usercapabilitygrant",
+    "clients_clientcontact",
     "clients_importbatch",
     "clients_importrow",
     # Playbook definitions are firm-internal editor content (todo 8): no portal
@@ -66,6 +67,7 @@ PORTAL_DENIED_TABLES = (
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
     "delivery_automationpause",
+    "delivery_tenantnoticepolicy",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -125,6 +127,17 @@ PORTAL_TABLES = (
     "obligations_document",
     "obligations_sourceobservation",
 )
+
+# T60: exact receipt lookup only, not table-wide SELECT. Keep this decision separate
+# from PORTAL_TABLES so SELECT * and every other receipt column remain refused.
+PORTAL_COLUMN_SELECT: dict[str, tuple[str, ...]] = {
+    "cycles_clientacknowledgement": (
+        "tenant_id",
+        "publication_id",
+        "publication_digest",
+        "user_id",
+    ),
+}
 
 # app_portal's WRITE allow-list, mirroring the second DO block in ops/sql/roles.sql. A
 # separate tuple from the read list because the two are different sets and always will
@@ -223,6 +236,11 @@ def django_db_setup(
                 $$
                 """,
             )
+        # T60: mirror roles.sql's column-only lookup; SELECT * stays denied.
+        cursor.execute(
+            "GRANT SELECT (tenant_id, publication_id, publication_digest, user_id) "
+            "ON cycles_clientacknowledgement TO app_portal"
+        )
 
 
 def _wants_database(request: pytest.FixtureRequest) -> bool:

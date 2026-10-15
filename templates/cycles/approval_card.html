@@ -111,7 +111,7 @@ Empty collections share one compact line, and the technical identity of this ver
           <div class="sm:col-span-2"><dt class="font-semibold">Separação de funções</dt><dd>{% if frozen.approval_rule.separation_of_duties %}Quem propôs não pode aprovar esta versão.{% else %}Exceção de autoaprovação habilitada para uma única pessoa ativa. Exige confirmação explícita e registro de auditoria.{% endif %}</dd></div>
           {% if dates.not_before %}<div><dt class="font-semibold">Não executar antes de</dt><dd>{{ dates.not_before|data_hora }}</dd></div>{% endif %}
           <div><dt class="font-semibold">Política</dt><dd>Revisão {{ frozen.policy.version }}</dd></div>
-          <div><dt class="font-semibold">Destino</dt><dd>{{ action_label }} · {{ frozen.destination.provider }} · {{ frozen.destination.operation }}</dd></div>
+          <div><dt class="font-semibold">Destino</dt><dd>{{ action_label }} · {% include "cycles/_effect_destination.html" with action_kind=frozen.action_kind only %}</dd></div>
         </dl>
       </section>
       <details class="ui-panel min-w-0" data-identity-block>
