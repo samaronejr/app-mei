@@ -128,6 +128,17 @@ PORTAL_TABLES = (
     "obligations_sourceobservation",
 )
 
+# T60: exact receipt lookup only, not table-wide SELECT. Keep this decision separate
+# from PORTAL_TABLES so SELECT * and every other receipt column remain refused.
+PORTAL_COLUMN_SELECT: dict[str, tuple[str, ...]] = {
+    "cycles_clientacknowledgement": (
+        "tenant_id",
+        "publication_id",
+        "publication_digest",
+        "user_id",
+    ),
+}
+
 # app_portal's WRITE allow-list, mirroring the second DO block in ops/sql/roles.sql. A
 # separate tuple from the read list because the two are different sets and always will
 # be: the portal reads its client's obligations and revenue, and writes only the vault.
@@ -225,6 +236,11 @@ def django_db_setup(
                 $$
                 """,
             )
+        # T60: mirror roles.sql's column-only lookup; SELECT * stays denied.
+        cursor.execute(
+            "GRANT SELECT (tenant_id, publication_id, publication_digest, user_id) "
+            "ON cycles_clientacknowledgement TO app_portal"
+        )
 
 
 def _wants_database(request: pytest.FixtureRequest) -> bool:

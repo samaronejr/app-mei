@@ -6,6 +6,7 @@ from django.http import HttpRequest, HttpResponse
 from django.template.loader import render_to_string
 from django.urls import Resolver404, resolve
 
+from apps.core.refusal import forbidden_page
 from apps.tenants.account_state import (
     READ_ONLY_MESSAGE,
     export_available,
@@ -69,9 +70,10 @@ def account_admission(
     ):
         return None
     if read_only_reason(tenant):
-        response = HttpResponse(
-            READ_ONLY_MESSAGE, status=403, content_type="text/plain; charset=utf-8"
-        )
+        # AXR1-059: the refusal page rather than bare text, drawn with the request so
+        # a signed-in reader is offered Sair. An HTMX request gets it too: app.js reads
+        # no 403 body, it answers every failed swap with its own fallback.
+        response = forbidden_page(request, READ_ONLY_MESSAGE)
         response["X-Tenant-Read-Only"] = "1"
         return response
     return None
