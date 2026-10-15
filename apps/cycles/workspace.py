@@ -69,12 +69,17 @@ def available_actions(
     callers still resolve each capability here; navigation never uses this cut.
     """
     gates = {CYCLES_OPERATE, CYCLES_REVIEW, CYCLES_COMPLETE}
-    permitted = {
-        gate: can(actor, gate, tenant_id=cycle.tenant_id)
-        if allowed is None
-        else gate in allowed
-        for gate in gates
-    }
+    if allowed is None:
+        allowed = frozenset(
+            gate for gate in gates if can(actor, gate, tenant_id=cycle.tenant_id)
+        )
+    return actions_for(cycle, allowed, unmet=unmet)
+
+
+def actions_for(
+    cycle: ServiceCycle, allowed: frozenset[str], *, unmet: list[str] | None = None
+) -> tuple[str, ...]:
+    """Project transitions from this reader's live capability decision."""
     result = []
     for target in sorted(TRANSITIONS[cycle.state]):
         gate = (
@@ -84,7 +89,7 @@ def available_actions(
             if target in {CycleState.REVIEW, CycleState.APPROVAL}
             else CYCLES_OPERATE
         )
-        if permitted[gate] and (
+        if gate in allowed and (
             target != CycleState.COMPLETED
             or not (completion_unmet(cycle) if unmet is None else unmet)
         ):
