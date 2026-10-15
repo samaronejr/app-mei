@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from http import HTTPStatus
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -31,6 +31,7 @@ from apps.tenants.services import TenantConflictError
 from tests.cycles.cycle_fixtures import CycleSetup, cycle_setup
 from tests.cycles.test_retention_dry_run import old_original
 from tests.ui.factories import Firm, client_base, make_cnpj, make_firm
+from tests.ui.refusal_contract import assert_readable_page
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -192,6 +193,35 @@ def test_export_runs_after_cancellation_and_stops_at_the_ninety_day_boundary(
     )
     assert http.get(url).status_code == HTTPStatus.GONE
     assert http.get(reverse("clients-export-csv")).status_code == HTTPStatus.GONE
+
+
+def test_an_ended_export_window_is_refused_as_a_readable_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AXR1-054: the admission policy's 410 is a host-neutral page, not bare text."""
+    firm = enabled_firm("cancellation-window-refusal")
+    http = firm.as_owner()
+    with tenant_context(firm.tenant.pk):
+        schedule_cancellation(
+            firm.owner,
+            firm.tenant.pk,
+            ends_on=date(2026, 9, 30),
+            expected_version=firm.tenant.settings_version,
+            on=date(2026, 9, 30),
+        )
+    monkeypatch.setattr(
+        "apps.tenants.account_state.localdate", lambda: date(2026, 12, 30)
+    )
+    for url in (
+        reverse("account-export-download", args=[uuid4()]),
+        reverse("clients-export-csv"),
+    ):
+        body = assert_readable_page(
+            http.get(url),
+            status=HTTPStatus.GONE,
+            reason="O prazo de exportação desta conta encerrou.",
+        )
+        assert 'href="/"' in body, f"{url}: the refusal offers no way back"
 
 
 def test_even_the_shared_purge_cannot_erase_the_cancellation_export_window(

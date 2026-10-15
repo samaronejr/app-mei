@@ -1,0 +1,17 @@
+{% extends "refusal/base.html" %}{% load i18n %}{% comment %}
+Every 404 the product answers, on the firm and portal hosts alike (AXR1-059). Without
+this file Django answered its bare English "Not Found" page.
+
+Django hands this template the requested path and the exception text; neither is
+shown. The portfolio-first checks answer 404 for a client outside the reader's book,
+another client's request and an id naming nothing alike, and this page keeps them
+alike: it reads nothing from the request but whether someone is signed in, so the
+answer is the same page whatever the address named.
+{% endcomment %}
+{% block title %}{% translate "Página não encontrada" %}{% endblock %}
+{% block heading %}{% translate "Página não encontrada" %}{% endblock %}
+{% block content %}
+    <p class="mt-4 text-ink-800" data-refusal-reason>{% translate "Este endereço não existe ou não está disponível." %}</p>
+    <p class="mt-2 text-ink-700">{% translate "Confira o endereço ou volte ao início." %}</p>
+    {% include "refusal/way_out.html" %}
+{% endblock %}

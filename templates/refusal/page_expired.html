@@ -1,0 +1,20 @@
+{% extends "refusal/base.html" %}{% load i18n %}{% comment %}
+The 403 a refused CSRF check answers on every host (CSRF_FAILURE_VIEW,
+apps.core.refusal.csrf_failure; AXR1-059). Before it, Django answered its own English
+"403 Forbidden" with no way back.
+
+The usual way here is a stale tab. Signing in rotates the CSRF secret, so a form drawn
+before a sign-in in another tab no longer matches the browser's cookie. The check
+refuses the submission before any view runs, so nothing it asked for was done, and the
+page says so. Django's reason is written for a developer and stays in the security log.
+
+The way out is drawn with this response's own token, which matches the secret the
+browser holds now (or the one this response sets), so Sair works from here.
+{% endcomment %}
+{% block title %}{% translate "Página expirada" %}{% endblock %}
+{% block heading %}{% translate "Página expirada" %}{% endblock %}
+{% block content %}
+    <p class="mt-4 text-ink-800" data-refusal-reason>{% translate "Esta página expirou e o envio não foi aceito. Nada foi alterado." %}</p>
+    <p class="mt-2 text-ink-700">{% translate "Abra a página de novo e repita a ação." %}</p>
+    {% include "refusal/way_out.html" %}
+{% endblock %}

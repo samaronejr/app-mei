@@ -1,0 +1,11 @@
+{% if frozen.payload.reopen %}
+<span data-bulk-action="reopen">Reabrir ciclo</span>
+{% elif frozen.action_kind == 'cycle_completion' %}
+<span data-bulk-action="cycle_completion">{% if frozen.payload.completion_state == 'encerrado_com_pendencias' %}Encerrar ciclo com pendências{% else %}Concluir ciclo{% endif %}</span>
+{% elif frozen.action_kind == 'client_publication' %}
+<span data-bulk-action="client_publication">Publicar documentos</span>
+{% elif frozen.action_kind == 'email_notice' %}
+<span data-bulk-action="email_notice">Enviar e-mail</span>
+{% elif frozen.action_kind == 'request_waiver' %}
+<span data-bulk-action="request_waiver">Dispensar solicitação</span>
+{% endif %}
