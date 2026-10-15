@@ -126,6 +126,16 @@ def contact_journey(settings: SettingsWrapper) -> Journey:
     assert created.status_code == HTTPStatus.FOUND
     with tenant_context(firm.tenant.pk):
         contact = ClientContact.objects.get(client=client)
+    authorized = staff.post(
+        reverse("notice-policy"),
+        {
+            "action": "save",
+            "expected_version": 0,
+            "kinds": ["contact_portal_invite"],
+            "acknowledged": "on",
+        },
+    )
+    assert authorized.status_code == HTTPStatus.FOUND
     invited = staff.post(
         reverse("client-contact-invite", args=[client.pk, contact.pk]),
         {"convite-role": TenantRole.CLIENT_OWNER, "convite-version": contact.version},
@@ -154,7 +164,7 @@ def contact_journey(settings: SettingsWrapper) -> Journey:
         cycle = ServiceCycle.objects.get(pk=ref.id)
         send_requests(firm.owner, cycle.pk, expected_version=cycle.version)
         cycle.refresh_from_db()
-        invitation = OutboundMessage.objects.get(kind="portal_invite")
+        invitation = OutboundMessage.objects.get(kind="contact_portal_invite")
         request_mail = OutboundMessage.objects.get(kind="request_notice")
         assert request_mail.invite_id == invitation.invite_id
         assert request_mail.contact_id == invitation.contact_id == contact.pk

@@ -19,6 +19,7 @@ from apps.accounts.models import User
 from apps.clients.maintenance import invite_contact
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
+from apps.delivery.notice_authority import configure
 from apps.tenants.models import Invite, Membership, TenantRole
 from tests.clients.contact_invite_fixtures import (
     EMAIL,
@@ -87,6 +88,13 @@ def test_address_only_web_invite_does_not_choose_a_person_by_email(
     offer.firm.tenant.features = ["cycles_r1"]
     offer.firm.tenant.save(update_fields=["features"])
     settings.DELIVERY_PAUSED = False
+    with tenant_context(offer.firm.tenant.pk):
+        configure(
+            offer.firm.owner,
+            kinds=("portal_invite",),
+            acknowledged=True,
+            expected_version=0,
+        )
     issued = offer.firm.as_owner().post(
         reverse("portal-invite-issue", args=[offer.contact.client_id]),
         {"email": EMAIL, "role": TenantRole.CLIENT_OWNER},

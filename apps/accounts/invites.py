@@ -473,6 +473,33 @@ def _firm_seat(invite: Invite, user: User) -> Membership:
     return membership
 
 
+def _client_acceptance_sources(invite: Invite, user: User | None) -> None:
+    """Prelock existing seats and origins before an existing CLIENT Invite."""
+    if invite.client_id is None:
+        return
+    if user is not None:
+        # PLATFORM_QUERY_OK: exact target seat, after the accepting User fence.
+        Membership.objects.select_for_update(no_key=True).filter(
+            user=user, tenant_id=invite.tenant_id, client_id=invite.client_id
+        ).first()
+    with tenant_context(invite.tenant_id):
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=invite.client_id)
+        if invite.contact_id is not None:
+            ClientContact.objects.select_for_update().filter(
+                pk=invite.contact_id, client_id=invite.client_id
+            ).first()
+
+
+def _assert_same_origin(presented: Invite, locked: Invite) -> None:
+    if (locked.tenant_id, locked.client_id, locked.contact_id) != (
+        presented.tenant_id,
+        presented.client_id,
+        presented.contact_id,
+    ):
+        msg = "No invitation matches that link."
+        raise InviteNotFoundError(msg)
+
+
 def _client_seat(invite: Invite, user: User) -> Membership:
     """Attach the seat inside ONE client that a portal invitation promises.
 
@@ -561,11 +588,14 @@ def accept_invite(
 ) -> Membership:
     """Redeem at the expected door for an account that owns the invited address."""
     user = User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    if invite.client_id is not None:
+        _client_acceptance_sources(invite, user)
     # Re-read under a row lock: two clicks on the same link land in two requests, and
     # a check made outside the lock would let both create a membership.
     # PLATFORM_QUERY_OK: re-reads by primary key the invite already resolved from
     # its token, purely to take a row lock against a double redemption.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
+    _assert_same_origin(invite, locked)
     _assert_redeemable(locked)
     _assert_expected_scope(locked, expected_scope)
     _assert_current_token(invite, locked)
@@ -612,8 +642,11 @@ def register_and_accept(
     full_name: str = "",
 ) -> tuple[User, Membership]:
     """Create the account and redeem at the expected door in one transaction."""
+    if invite.client_id is not None:
+        _client_acceptance_sources(invite, None)
     # PLATFORM_QUERY_OK: same primary-key re-read under a row lock as above.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
+    _assert_same_origin(invite, locked)
     _assert_redeemable(locked)
     _assert_expected_scope(locked, expected_scope)
     _assert_current_token(invite, locked)
