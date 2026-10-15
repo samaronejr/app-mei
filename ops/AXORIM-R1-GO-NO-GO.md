@@ -22,10 +22,10 @@ person or decision reads `open (needs …)` until its evidence exists. It's neve
 | --- | --- | --- | --- | --- |
 | OG-01 | Encarregado (DPO) named in `docs/lgpd.md` §3 (decision OD-10) | Real-data cohorts | Commit naming the encarregado in `docs/lgpd.md` | open (needs owner to name the encarregado) |
 | OG-02 | Pilot-readiness-v2 F1-F4 completed and pilot start authorized by the owner (policy in OD-02) | Cohort 2 | `docs/project-status.md` pilot authorization line | open (needs F1-F4 verdicts and owner authorization) |
-| OG-03 | Real email from the production host via Resend SMTP reaches an owner mailbox, with SPF, DKIM and DMARC verified | Live email claims | `.evidence/AXR1-010-operator.txt` | open (needs production host send and mailbox receipt) |
-| OG-04 | OCI bucket prefixes `quarantine/`, `exports/`, `effects-journal/` created with versioning and lifecycle rules (journal retained 5 years) | Production use of the effects journal, quarantine and exports | `.evidence/AXR1-010-operator-bucket.txt` | open (needs bucket configuration by the operator) |
-| OG-05 | ClamAV sidecar fits host memory and freshclam is updating | Malware scanning on | `.evidence/AXR1-012-operator.txt` | open (needs host sizing, OD-11, and a live freshclam check) |
-| OG-06 | Restore-replay drill on an isolated host | Restore claims | `.evidence/AXR1-027-operator.txt` | open (needs isolated host and drill window) |
+| OG-03 | Real email from the production host via Resend SMTP reaches an owner mailbox, with SPF, DKIM and DMARC verified | Live email claims | `.evidence/AXR1-010-operator.txt` | GO (production receipt and authentication verified; owner read-back 2026-10-15) |
+| OG-04 | OCI bucket prefixes `quarantine/`, `exports/`, `effects-journal/` created with versioning and lifecycle rules (journal retained 5 years) | Production use of the effects journal, quarantine and exports | `.evidence/AXR1-010-operator-bucket.txt` | GO (prefixes, versioning and journal lifecycle verified; owner read-back 2026-10-15) |
+| OG-05 | ClamAV sidecar fits host memory and freshclam is updating | Malware scanning on | `.evidence/AXR1-012-operator.txt` | GO (host fit, freshclam and scan probes verified on 1.4.6; owner authorization 2026-10-15) |
+| OG-06 | Restore-replay drill on an isolated host | Restore claims | `.evidence/AXR1-027-operator.txt` | GO (isolated restore and supplemental replay witness verified; owner read-back 2026-10-15) |
 | OG-07 | Design-partner sessions run per protocol, with the pass bar met | Cohort 3 and general availability | `.evidence/AXR1-029-OG07-sessions.txt` (anonymized session notes) | open (needs recruited partner firms and moderated sessions) |
 | OG-08 | Professional legal, LGPD and accounting review of terms, DPA, retention periods and lawful bases, including employee and counterparty personal data and platform support access (owner-approved grants of at most 72 hours, AXR1-023) | Purge activation, paid launch | `.evidence/AXR1-029-OG08-review.txt` (signed review note) | open (needs professional reviewer) |
 | OG-09 | Owner go/no-go per cohort | Each cohort | The cohort lines below | open (needs owner decision per cohort) |
@@ -52,7 +52,7 @@ contract, so they're listed here rather than dropped.
 
 | id | item | evidence | status |
 | --- | --- | --- | --- |
-| OG-10 | `btree_gist`, `unaccent`, `pg_trgm` created on the live pilot database | `.evidence/AXR1-005-operator.txt` | open (needs operator read-back of the evidence) |
+| OG-10 | `btree_gist`, `unaccent`, `pg_trgm` created on the live pilot database | `.evidence/AXR1-005-operator.txt` | GO (live pilot extensions verified; owner read-back 2026-10-15) |
 | A11Y | Manual screen-reader run of `ops/AXORIM-A11Y-CHECKLIST.md` (NVDA + Firefox, VoiceOver + iOS Safari) on the synthetic-data tenant (AXR1-025) | `.evidence/AXR1-025-operator.txt` | open (needs an operator run on real assistive technology) |
 | OD-11 | Pilot host upsize for the ClamAV sidecar | Lightsail bundle price recorded with OG-05 | open (needs owner approval and cost record) |
 | OD-12 | Split the cohort gate (cohort 2 before the full launch set) | Partner feedback | open (needs owner decision) |
