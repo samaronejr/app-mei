@@ -29,6 +29,7 @@ from django.urls import include, path
 from apps.core.views import healthz, readyz, versionz
 from apps.cycles.cycle_views import portal_cycle_detail
 from apps.portal.invite_views import portal_invite_accept
+from apps.portal.publication_views import publication_detail, publication_download
 from apps.portal.request_views import (
     brand_logo,
     brand_stylesheet,
@@ -56,6 +57,14 @@ from apps.portal.views import (
 # duplicate `path()` does not error, it shadows, and `reverse()` then answers with
 # whichever pattern happens to come first.
 urlpatterns = [
+    path(
+        "publicacoes/<uuid:pk>/", publication_detail, name="portal-publication-detail"
+    ),
+    path(
+        "publicacoes/<uuid:pk>/documentos/<uuid:link_id>/",
+        publication_download,
+        name="portal-publication-download",
+    ),
     path("ciclos/<uuid:pk>/", portal_cycle_detail, name="portal-cycle-detail"),
     path("healthz", healthz, name="healthz"),
     path("readyz", readyz, name="readyz"),

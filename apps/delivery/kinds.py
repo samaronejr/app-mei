@@ -7,7 +7,9 @@ returns a reason code; the message is cancelled with it and nothing is sent.
 
 * `portal_invite` -- cancelled when the invitation was revoked, accepted or expired,
   or (through the shared `still_valid`) when the contact became inactive or lost its
-  e-mail permission. `prepare` mints the one-time token for this send only.
+  e-mail permission. `prepare` mints the one-time token for this send only. When
+  the provider refuses it (T14), `on_rejected` withdraws the invitation nobody
+  received and opens an exception on the client's newest open cycle.
 * `request_notice` -- cancelled when the cycle no longer has any request waiting on
   the client. A notice to a contact without a seat embeds that contact's live
   invitation, re-minted at dispatch; if the invitation meanwhile became unusable the
@@ -17,11 +19,18 @@ returns a reason code; the message is cancelled with it and nothing is sent.
   (`request_closed`: waived, accepted, replaced).
 """
 
+from typing import Final
+
 from django.utils import timezone
 
+from apps.clients.maintenance import withdraw_undelivered_invite
 from apps.cycles.evidence import CLIENT_OPEN_STATES, EvidenceRequest, counted_links
+from apps.cycles.models import CycleState, ServiceCycle
+from apps.cycles.services.exceptions import open_exception
 from apps.delivery.models import OutboundMessage
-from apps.delivery.policy import MessageKind, register_kind
+from apps.delivery.policy import KINDS, MessageKind, register_kind
+
+INVITE_REJECTED: Final = "convite_recusado"
 
 
 def _invite_problem(message: OutboundMessage) -> str:
@@ -55,6 +64,49 @@ def _accept_url(message: OutboundMessage) -> dict[str, str]:
     return {"accept_url": portal_accept_link(message.invite.tenant.slug, raw_token)}
 
 
+def _withdraw_rejected_invite(message: OutboundMessage) -> None:
+    """Stand down the refused invitation, then give the problem an owner.
+
+    The message has no cycle of its own, so the exception lands on the client's
+    newest open cycle; a client with none keeps the withdrawal and its audit event.
+    """
+    if message.invite_id is None:
+        return
+    from apps.clients.models import ClientCompany  # noqa: PLC0415
+
+    ClientCompany.objects.select_for_update(no_key=True).get(pk=message.client_id)
+    cycle = (
+        ServiceCycle.objects.select_for_update()
+        .filter(client_id=message.client_id)
+        .exclude(
+            state__in=[
+                CycleState.COMPLETED,
+                CycleState.WITH_PENDING,
+                CycleState.CANCELLED,
+            ]
+        )
+        .order_by("-period_start", "-created_at", "pk")
+        .first()
+    )
+    withdraw_undelivered_invite(
+        invite_id=message.invite_id,
+        requested_by=message.created_by,
+        reason=message.last_error_code or message.state,
+    )
+    if cycle is None:
+        return
+    open_exception(
+        INVITE_REJECTED,
+        message.invite_id,
+        actor=None,
+        cycle_id=cycle.pk,
+        expected_version=cycle.version,
+        owner=cycle.owner or message.created_by,
+        review_on=timezone.localdate(),
+        evidence_refs=(message.pk,),
+    )
+
+
 def _embedded_invite(message: OutboundMessage) -> dict[str, str]:
     """Embed a fresh invitation link when the recipient still has no seat."""
     if message.invite is None or _invite_problem(message):
@@ -86,7 +138,7 @@ def _request_waiting(message: OutboundMessage) -> tuple[bool, str]:
 
 
 def register() -> None:
-    """Register the three kinds; called once from `DeliveryConfig.ready`."""
+    """Register trusted kinds; called once from `DeliveryConfig.ready`."""
     register_kind(
         "portal_invite",
         MessageKind(
@@ -94,8 +146,10 @@ def register() -> None:
             "delivery/email/portal_invite.txt",
             _invite_valid,
             _accept_url,
+            _withdraw_rejected_invite,
         ),
     )
+    register_kind("contact_portal_invite", KINDS["portal_invite"])
     register_kind(
         "request_notice",
         MessageKind(

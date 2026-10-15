@@ -1,0 +1,15 @@
+{% if state == 'verified' %}
+  {% include "partials/ui/status_badge.html" with state='confirmed' label='Verificado' only %}
+{% elif state == 'manual' %}
+  {% include "partials/ui/status_badge.html" with state='manual' label=manual_label|default:'Informado' only %}
+{% elif state == 'pending_review' %}
+  {% include "partials/ui/status_badge.html" with state='pending' label='Aguardando conferência' only %}
+{% elif state == 'stale' %}
+  {% include "partials/ui/status_badge.html" with state='stale' label='Desatualizado' only %}
+{% elif state == 'refresh_failed' %}
+  {% include "partials/ui/status_badge.html" with state='stale' label='Falha na verificação' only %}
+{% elif state == 'not_applicable' %}
+  {% include "partials/ui/status_badge.html" with state='unknown' label='Não se aplica' only %}
+{% else %}
+  {% include "partials/ui/status_badge.html" with state='unknown' label='Sem informação' only %}
+{% endif %}

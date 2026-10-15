@@ -120,6 +120,15 @@ class ProductShell:
     product_name: str
     tenant_name: str
     items: tuple[ResolvedNavItem, ...]
+    # The header search field and the Ctrl/Cmd+K palette (AXR1-021) are drawn
+    # only for an account the search endpoint will answer.
+    searchable: bool = False
+
+
+# The search endpoint requires the capability that earns "Clientes" in NAV_R1, so
+# the resolved bar already holds the answer: reading it costs no query and cannot
+# drift from the registry's own gate.
+SEARCH_DESTINATION: Final = "clients-list"
 
 
 def product_shell(request: HttpRequest | None) -> ProductShell | None:
@@ -142,10 +151,13 @@ def product_shell(request: HttpRequest | None) -> ProductShell | None:
         return None
     if not tenant_has(tenant.pk, PRODUCT_SHELL_FLAG):
         return None
+    items = visible_nav_items(user, NAV_R1)
+    search_gate = reverse(SEARCH_DESTINATION)
     return ProductShell(
         product_name=settings.PRODUCT_NAME,
         tenant_name=tenant.name,
-        items=visible_nav_items(user, NAV_R1),
+        items=items,
+        searchable=any(item.url == search_gate for item in items),
     )
 
 

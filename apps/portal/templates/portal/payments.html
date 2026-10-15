@@ -54,16 +54,16 @@ instead, which is the fact a client most often gets wrong.
           <p class="text-lg font-semibold text-ink-900">{% if row.type_code == 'DAS' %}{% translate "Guia mensal (DAS)" %}{% elif row.type_code == 'DASN' %}{% translate "Declaração anual (DASN)" %}{% else %}{{ row.type_code }}{% endif %}</p>
 
           <dl class="grid grid-cols-2 gap-y-3 text-sm tabular-nums">
-            <dt class="text-ink-500">{% translate "Competência" %}</dt>
+            <dt class="{% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "Competência" %}</dt>
             <dd>{{ row.competence_month|competencia }}</dd>
-            <dt class="text-ink-500">{% translate "Vencimento" %}</dt>
+            <dt class="{% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "Vencimento" %}</dt>
             <dd><time datetime="{{ row.due_date.isoformat }}">{{ row.due_date|data }}</time></dd>
           </dl>
 
           {% if row.type_code == 'DASN' %}
-            <p class="text-xs text-ink-500">{% translate "A declaração anual vence em 31 de maio e essa data não muda: ela não é adiada nem quando cai em fim de semana ou feriado." %}</p>
+            <p class="text-xs {% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "A declaração anual vence em 31 de maio e essa data não muda: ela não é adiada nem quando cai em fim de semana ou feriado." %}</p>
           {% elif row.rolled %}
-            <p class="text-xs text-ink-500">{% blocktranslate with origem=row.nominal_due_date|data %}A data original caiu em fim de semana ou feriado: adiada de {{ origem }} para o vencimento acima, que é a data que vale.{% endblocktranslate %}</p>
+            <p class="text-xs {% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% blocktranslate with origem=row.nominal_due_date|data %}A data original caiu em fim de semana ou feriado: adiada de {{ origem }} para o vencimento acima, que é a data que vale.{% endblocktranslate %}</p>
           {% endif %}
 
           {% if cycles_r1 %}{% include 'portal/partials/payment_observation.html' with row=row only %}{% elif row.status == 'paid' %}
@@ -98,6 +98,6 @@ instead, which is the fact a client most often gets wrong.
 
     {% include 'partials/pure/pagination.html' with page=page filter_query='' only %}
   {% else %}
-    <p class="card empty-state">{% translate "Nenhuma obrigação registrada ainda. Sua contadora mantém esta lista." %}</p>
+    <p class="card empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Nenhuma obrigação registrada ainda. Sua contadora mantém esta lista." %}</p>
   {% endif %}
 {% endblock %}

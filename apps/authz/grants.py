@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Final, TypedDict
 from uuid import UUID
 
 from django.db import transaction
-from django.db.models import Exists, OuterRef, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -31,6 +31,7 @@ from apps.audit.services import ObjectRef, record_event
 from apps.authz.models import GrantLevel, UserCapabilityGrant
 from apps.authz.services import can
 from apps.core.tenancy import tenant_context
+from apps.tenants.authority import lock_users
 from apps.tenants.models import Membership, TenantRole
 
 if TYPE_CHECKING:
@@ -98,6 +99,7 @@ def with_reviewer_state(
     return memberships.annotate(
         reviewer_active=Exists(
             UserCapabilityGrant.objects.filter(
+                Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()),
                 user_id=OuterRef("user_id"),
                 capability__slug=REVIEWER_CAPABILITY,
                 revoked_at__isnull=True,
@@ -120,20 +122,28 @@ def set_review_capability(
     request for the current state is a no-op; real transitions advance the seat's
     revision atomically with the grant and audit event.
     """
+    users = lock_users((actor.pk, membership.user_id))
+    actor = users[actor.pk]
     # Re-read under a row lock. `revoke_invite` takes the same lock for the same
     # reason: two requests racing the same seat must serialise on something, and
     # the membership row is the seat being decided about.
     # PLATFORM_QUERY_OK: re-reads by primary key the membership the caller was
     # already scoped to with for_user in the view, purely to take that lock.
     locked = Membership.objects.select_for_update().get(pk=membership.pk)
-    if not reviewer_eligible(locked):
+    if (
+        locked.user_id != membership.user_id
+        or not users[locked.user_id].is_active
+        or not reviewer_eligible(locked)
+    ):
         msg = "A reviewer grant can only sit on an active staff_accountant membership."
         raise GrantSeatError(msg)
     # Re-checked against the ROW's tenant, inside its context, so a call arriving
     # without one — a management command — still answers the question about the
     # right firm rather than whatever tenant happens to be ambient.
     with tenant_context(locked.tenant_id):
-        if not can(actor, ROSTER_CAPABILITY, tenant_id=locked.tenant_id):
+        if not actor.is_active or not can(
+            actor, ROSTER_CAPABILITY, tenant_id=locked.tenant_id
+        ):
             msg = "This role may not administer the firm's roster."
             raise GrantNotPermittedError(msg)
         if locked.review_grant_version != expected_version:
@@ -147,7 +157,11 @@ def set_review_capability(
 
         if enabled:
             if existing is not None:
-                return existing
+                if existing.expires_at is None or existing.expires_at > timezone.now():
+                    return existing
+                existing.revoked_at = timezone.now()
+                existing.save(update_fields=["revoked_at"])
+                _record(AuditAction.CAPABILITY_REVOKED, actor=actor, grant=existing)
             locked.review_grant_version += 1
             locked.save(update_fields=["review_grant_version"])
             grant = UserCapabilityGrant.objects.create(

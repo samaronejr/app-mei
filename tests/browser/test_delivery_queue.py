@@ -13,6 +13,7 @@ from apps.accounts.models import User
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
 from apps.delivery.models import MessageState, OutboundMessage
+from apps.delivery.notice_authority import configure
 from apps.delivery.outbox import enqueue
 from apps.delivery.policy import BusinessIntent
 from apps.delivery.tasks import dispatch_outbox
@@ -50,6 +51,12 @@ def test_queue_decision_and_cancel(
         "email_notice",
     )
     with tenant_context(live.firm.tenant.pk):
+        configure(
+            live.firm.owner,
+            kinds=("notice",),
+            acknowledged=True,
+            expected_version=0,
+        )
         contact = ClientContact.objects.create(
             tenant=live.firm.tenant,
             client=company,

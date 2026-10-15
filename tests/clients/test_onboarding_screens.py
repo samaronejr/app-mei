@@ -7,6 +7,7 @@ written), a stale version from a second caller conflicts with nothing written, a
 every change leaves an audit event.
 """
 
+import re
 from datetime import date, timedelta
 from http import HTTPStatus
 from typing import Final
@@ -43,6 +44,8 @@ from apps.clients.models import (
     TaxRegime,
 )
 from apps.core.tenancy import tenant_context
+from apps.delivery.models import OutboundMessage
+from apps.delivery.notice_authority import configure
 from apps.tenants.models import Invite, TenantRole
 from tests.isolation.rolecheck import assert_isolated_role
 from tests.ui.factories import Firm, assign, client_base, make_cnpj, make_firm
@@ -394,8 +397,15 @@ def test_create_edit_and_set_up_a_client_through_the_screens() -> None:
         assert Event.objects.filter(action=AuditAction.ASSIGNMENT_CHANGED).count() == 2
 
 
-def test_inviting_a_contact_mails_the_contacts_own_address() -> None:
+def test_inviting_a_contact_queues_the_contacts_own_address() -> None:
     firm = _firm("kapa")
+    with tenant_context(firm.tenant.pk):
+        configure(
+            firm.owner,
+            kinds=("contact_portal_invite",),
+            acknowledged=True,
+            expected_version=0,
+        )
     client = firm.clients[0]
     browser = firm.as_owner()
     response = browser.post(
@@ -422,22 +432,36 @@ def test_inviting_a_contact_mails_the_contacts_own_address() -> None:
     )
 
     assert response.status_code == HTTPStatus.FOUND
-    assert [message.to for message in mail.outbox] == [["maria@padaria.test"]]
+    assert mail.outbox == []
+    with tenant_context(firm.tenant.pk):
+        message = OutboundMessage.objects.get()
+        assert message.kind == "contact_portal_invite"
+        assert message.recipients_json == ["maria@padaria.test"]
     replay = browser.post(
         reverse("client-contact-invite", args=[client.pk, contact.pk]),
         {"convite-role": TenantRole.CLIENT_OWNER, "convite-version": 1},
     )
     # A replayed POST mints no second live credential and sends no second mail.
     assert replay.status_code == HTTPStatus.CONFLICT
-    assert len(mail.outbox) == 1
+    assert mail.outbox == []
+    with tenant_context(firm.tenant.pk):
+        assert OutboundMessage.objects.count() == 1
     invite = Invite.objects.for_user(firm.owner).get(tenant=firm.tenant)
     assert (invite.email, invite.client_id) == ("maria@padaria.test", client.pk)
 
 
 def test_a_contact_who_refused_email_cannot_be_invited() -> None:
     firm = _firm("lambda")
+    firm.tenant.features = ["import_r1", "cycles_r1"]
+    firm.tenant.save(update_fields=["features"])
     client = firm.clients[0]
     with tenant_context(firm.tenant.id):
+        configure(
+            firm.owner,
+            kinds=("contact_portal_invite",),
+            acknowledged=True,
+            expected_version=0,
+        )
         contact = ClientContact.objects.create(
             tenant=firm.tenant,
             client=client,
@@ -505,3 +529,57 @@ def test_a_regime_derived_from_the_legacy_flag_is_labelled_unverified() -> None:
     content = page.content.decode()
     assert "Deduzido do cadastro antigo (não verificado)" in content
     assert "Registrado pela equipe" not in content
+
+
+def _submitted_date(page: str, name: str) -> str:
+    """What a browser submits for a date input: its value if the control accepts it."""
+    pattern = rf'<input type="date" value="([^"]*)" name="{re.escape(name)}"'
+    match = re.search(pattern, page)
+    assert match is not None, name
+    value = match.group(1)
+    return value if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) else ""
+
+
+@pytest.mark.parametrize("language", ["pt-br", "en"])
+def test_the_engagement_editor_shows_saved_dates_and_a_resave_keeps_the_end(
+    language: str,
+) -> None:
+    # AXR1-055: a localized value ("1 de Março de 2026") is rejected by the date
+    # control, so the form came back blank and a re-save cleared the end date.
+    firm = _firm(f"datas-{language[:2]}")
+    client = firm.clients[0]
+    with tenant_context(firm.tenant.id):
+        engagement = save_engagement(
+            actor=firm.owner,
+            tenant_id=firm.tenant.id,
+            client_id=client.pk,
+            data=EngagementData(
+                ServiceKind.MEI_MENSAL, date(2026, 3, 1), date(2026, 4, 30)
+            ),
+        )
+    browser = firm.as_owner()
+    url = reverse("client-engagement-edit", args=[client.pk, engagement.pk])
+    page = browser.get(url, headers={"accept-language": language}).content.decode()
+    starts = _submitted_date(page, "eng-starts_on")
+    ends = _submitted_date(page, "eng-ends_on")
+    assert (starts, ends) == ("2026-03-01", "2026-04-30")
+    version = re.search(r'name="eng-version" id="[^"]*" value="([^"]*)"', page)
+    assert version is not None
+
+    response = browser.post(
+        url,
+        {
+            "eng-service_kind": ServiceKind.OUTRO,
+            "eng-starts_on": starts,
+            "eng-ends_on": ends,
+            "eng-responsible": "",
+            "eng-version": version.group(1),
+        },
+        headers={"accept-language": language},
+    )
+    assert response.status_code == HTTPStatus.FOUND
+    with tenant_context(firm.tenant.id):
+        engagement.refresh_from_db()
+    assert engagement.service_kind == ServiceKind.OUTRO
+    saved = (engagement.starts_on, engagement.ends_on)
+    assert saved == (date(2026, 3, 1), date(2026, 4, 30))

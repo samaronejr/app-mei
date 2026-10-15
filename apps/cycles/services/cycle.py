@@ -41,6 +41,7 @@ from apps.cycles.models import (
     TaskState,
     VersionState,
 )
+from apps.cycles.models import Exception as CycleException
 from apps.cycles.targeting import AppliesTo
 from apps.obligations.models import Obligation
 
@@ -121,6 +122,7 @@ def load_cycle(actor: User, cycle_id: UUID, *, lock: bool = False) -> ServiceCyc
     load_client(actor, tenant_id(), cycle.client_id)
     if lock:
         cycle = ServiceCycle.objects.select_for_update().get(pk=cycle.pk)
+        load_client(actor, tenant_id(), cycle.client_id)
     return cycle
 
 
@@ -129,7 +131,7 @@ def emit(
     actor: User | None,
     event_type: str,
     *,
-    aggregate: CycleTask | InternalNote | None = None,
+    aggregate: CycleTask | InternalNote | CycleException | None = None,
     payload: dict[str, str | int] | None = None,
 ) -> CycleEvent:
     """Produce an internal event from known ids/codes, never user text."""
@@ -176,7 +178,12 @@ def _due(step: PlaybookStep, cycle: ServiceCycle) -> tuple[date | None, date | N
     return statutory, statutory
 
 
-def _instantiate(cycle: ServiceCycle) -> None:
+def _instantiate(
+    cycle: ServiceCycle,
+    *,
+    only_keys: frozenset[str] | None = None,
+    resolved_keys: frozenset[str] = frozenset(),
+) -> None:
     steps = list(cycle.playbook_version.steps.filter(is_enabled=True))
     enabled = {step.key for step in steps}
     primary = (
@@ -187,6 +194,8 @@ def _instantiate(cycle: ServiceCycle) -> None:
         .first()
     )
     for step in steps:
+        if only_keys is not None and step.key not in only_keys:
+            continue
         due, statutory = _due(step, cycle)
         owner_id = (
             cycle.owner_id
@@ -201,7 +210,7 @@ def _instantiate(cycle: ServiceCycle) -> None:
             cycle=cycle,
             step_key=step.key,
             state=TaskState.BLOCKED
-            if enabled.intersection(step.depends_on)
+            if enabled.intersection(step.depends_on) - resolved_keys
             else TaskState.READY,
             owner_id=owner_id,
             due_on=due,
@@ -318,19 +327,129 @@ def open_cycle(
         return CycleRef(candidate.pk, candidate.version, candidate.state, created=True)
 
 
+def migrate_open_cycle(
+    actor: User,
+    cycle_id: UUID,
+    target_id: UUID,
+    *,
+    expected_version: int,
+) -> CycleRef:
+    """Move an open pin without deleting tasks or rewriting already-started work."""
+    if not tenant_has(tenant_id(), "bulk_r1"):
+        raise Http404
+    with transaction.atomic():
+        cycle = load_cycle(actor, cycle_id, lock=True)
+        check_version(cycle.version, expected_version)
+        target = (
+            PlaybookVersion.objects.select_for_update().filter(pk=target_id).first()
+        )
+        require_actor(actor, "bulk.run")
+        require_actor(actor, CYCLES_OPERATE)
+        if (
+            cycle.state not in OPEN_STATES
+            or target is None
+            or target.state != VersionState.PUBLISHED
+            or target.playbook_id != cycle.playbook_id
+            or target.number <= cycle.playbook_version.number
+        ):
+            msg = (
+                "O ciclo precisa estar aberto e a versão publicada deve ser posterior."
+            )
+            raise IllegalTransition(msg)
+        tasks = list(cycle.tasks.select_for_update().order_by("pk"))
+        previous = {
+            step.key: step
+            for step in cycle.playbook_version.steps.filter(is_enabled=True)
+        }
+        future = {step.key: step for step in target.steps.filter(is_enabled=True)}
+        changed_fields = (
+            "kind",
+            "label_ptbr",
+            "client_label_ptbr",
+            "depends_on",
+            "owner_rule",
+            "due_rule_json",
+            "evidence_required",
+            "client_visible",
+        )
+        for task in tasks:
+            if task.step_key not in future or task.step_key not in previous:
+                msg = (
+                    "A migração não pode apagar uma etapa existente. Revise o playbook."
+                )
+                raise IllegalTransition(msg)
+            if task.state not in {TaskState.READY, TaskState.BLOCKED} and any(
+                getattr(previous[task.step_key], field)
+                != getattr(future[task.step_key], field)
+                for field in changed_fields
+            ):
+                msg = (
+                    "Uma etapa já iniciada mudou de significado. "
+                    "Migre esse ciclo à parte."
+                )
+                raise IllegalTransition(msg)
+        old_id = cycle.playbook_version_id
+        cycle.playbook_version = target
+        cycle.version += 1
+        cycle.save(update_fields=["playbook_version", "version"])
+        completed = frozenset(
+            task.step_key
+            for task in tasks
+            if task.state in {TaskState.ACCEPTED, TaskState.WAIVED}
+        )
+        _instantiate(
+            cycle,
+            only_keys=frozenset(future) - {task.step_key for task in tasks},
+            resolved_keys=completed,
+        )
+        primary = (
+            ClientAssignment.objects.filter(
+                client_id=cycle.client_id, role=AssignmentRole.PRIMARY
+            )
+            .values_list("user_id", flat=True)
+            .first()
+        )
+        for task in tasks:
+            if task.state not in {TaskState.READY, TaskState.BLOCKED}:
+                continue
+            step = future[task.step_key]
+            task.due_on, task.statutory_due_on = _due(step, cycle)
+            task.state = (
+                TaskState.BLOCKED
+                if set(step.depends_on).intersection(future) - completed
+                else TaskState.READY
+            )
+            task.owner_id = (
+                cycle.owner_id
+                if step.owner_rule == OwnerRule.ENGAGEMENT_RESPONSIBLE
+                else primary
+                if step.owner_rule == OwnerRule.PRIMARY_ASSIGNEE
+                else None
+            )
+            task.version += 1
+            task.save(
+                update_fields=[
+                    "due_on",
+                    "statutory_due_on",
+                    "state",
+                    "owner",
+                    "version",
+                ]
+            )
+        emit(
+            cycle,
+            actor,
+            "cycle.playbook_migrated",
+            payload={"from": str(old_id), "to": str(target.pk)},
+        )
+        return CycleRef(cycle.pk, cycle.version, cycle.state)
+
+
 def completion_unmet(cycle: ServiceCycle) -> list[str]:
     """Completion is a conjunction, including integrations not installed yet."""
-    unmet = []
-    if cycle.tasks.exclude(state__in=[TaskState.ACCEPTED, TaskState.WAIVED]).exists():
-        unmet.append("tasks")
-    if cycle.exceptions.filter(
-        blocks_completion=True, state__in=["aberta", "em_tratamento"]
-    ).exists():
-        unmet.append("exceptions")
-    if "evidence_index" not in COMPLETION_GUARDS:
-        unmet.append("evidence_index")
-    unmet.extend(key for key, check in COMPLETION_GUARDS.items() if not check(cycle))
-    return unmet
+    from apps.cycles.completion_checks import completion_items  # noqa: PLC0415
+
+    return list(dict.fromkeys(item.code for item in completion_items(cycle)))
 
 
 def transition_cycle(
@@ -353,6 +472,9 @@ def transition_cycle(
             else CYCLES_OPERATE
         )
         require_actor(actor, capability)
+        if to_state in {CycleState.COMPLETED, CycleState.WITH_PENDING}:
+            msg = "Execute a proposta aprovada para encerrar este ciclo."
+            raise IllegalTransition(msg)
         if to_state not in TRANSITIONS[cycle.state]:
             msg = "Esta transição não é permitida."
             raise IllegalTransition(msg)

@@ -1,5 +1,6 @@
 """Monthly generation, the quarantine scan sweep (T12) and extraction (T13)."""
 
+from collections.abc import Callable
 from datetime import date
 from typing import Final
 from uuid import UUID
@@ -9,6 +10,7 @@ from celery import shared_task
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.automation.tasks import enqueue_shadow
 from apps.clients.models import Engagement
 from apps.core.flags import tenant_has
 from apps.core.tasks import (
@@ -17,13 +19,22 @@ from apps.core.tasks import (
     TenantTask,
     assert_no_transaction,
 )
+from apps.cycles.bulk_runner import (
+    BulkClaim,
+    StaleBulkClaimError,
+    claim_next,
+    due_operations,
+    execute_claim,
+)
 from apps.cycles.extraction.service import (
+    ExtractionOutcome,
     due_divergent_links,
     due_extractions,
     extract_intake,
     propagate_divergent_link,
 )
 from apps.cycles.models import PlaybookVersion, VersionState
+from apps.cycles.openers import evaluate_tenant_exceptions
 from apps.cycles.scanning import due_intakes, scan_intake, scanner_from_settings
 from apps.cycles.services.cycle import open_cycle
 from apps.cycles.targeting import AppliesTo, matching_clients
@@ -35,6 +46,43 @@ from apps.tenants.models import Tenant
 # a single page that never finishes. The hard limit is the backstop.
 EXTRACTION_SOFT_LIMIT_SECONDS: Final = 15
 EXTRACTION_HARD_LIMIT_SECONDS: Final = 30
+
+
+@shared_task(base=PhasedTenantTask)
+def run_bulk_operation(
+    tenant_id: UUID | str,
+    operation_id: UUID | str,
+    *,
+    after_item: Callable[[int], None] | None = None,
+    after_claim: Callable[[BulkClaim], None] | None = None,
+) -> int:
+    """Process stored subjects; injected crash hooks run outside item transactions."""
+    tid, operation = UUID(str(tenant_id)), UUID(str(operation_id))
+    count = 0
+    while (claim := claim_next(tid, operation)) is not None:
+        if after_claim is not None:
+            after_claim(claim)
+        try:
+            execute_claim(claim)
+        except StaleBulkClaimError:
+            # Another valid fence or cancellation won. Never replay this claim.
+            continue
+        count += 1
+        if after_item is not None:
+            after_item(count)
+    return count
+
+
+@shared_task(base=PlatformTask, bind=True)
+def resume_bulk_operations(self: PlatformTask) -> int:
+    """Recover interrupted database-only work, without stealing unexpired claims."""
+    assert_no_transaction()
+    count = 0
+    for tid in self.tenant_ids():
+        if tenant_has(tid, "cycles_r1") and tenant_has(tid, "bulk_r1"):
+            for operation_id in due_operations(tid):
+                count += run_bulk_operation(str(tid), str(operation_id))
+    return count
 
 
 @shared_task(base=TenantTask)
@@ -119,6 +167,28 @@ def scan_tenant_quarantine(
     return counts
 
 
+@shared_task(base=TenantTask)
+def open_exceptions_for_tenant(tenant_id: UUID | str) -> dict[str, int]:
+    """Run T14's deterministic openers for one firm; unflagged firms are untouched."""
+    tenant_pk = UUID(str(tenant_id))
+    if not tenant_has(tenant_pk, "cycles_r1"):
+        return {"evaluated": 0, "skipped_no_owner": 0}
+    # PLATFORM_QUERY_OK: the TenantTask context names this exact firm.
+    counts = evaluate_tenant_exceptions(Tenant.objects.get(pk=tenant_pk))
+    return {"evaluated": counts.evaluated, "skipped_no_owner": counts.skipped_no_owner}
+
+
+@shared_task(base=PlatformTask, bind=True)
+def open_deterministic_exceptions(self: PlatformTask) -> dict[str, int]:
+    """Beat: once a day, only for firms with `cycles_r1`."""
+    totals = {"evaluated": 0, "skipped_no_owner": 0}
+    for tid in self.tenant_ids():
+        if tenant_has(tid, "cycles_r1"):
+            for key, value in open_exceptions_for_tenant(str(tid)).items():
+                totals[key] += value
+    return totals
+
+
 @shared_task(base=PlatformTask, bind=True)
 def scan_quarantine(self: PlatformTask) -> int:
     """Beat: every minute, scan due intakes; request uploads only under `cycles_r1`.
@@ -144,9 +214,11 @@ def scan_quarantine(self: PlatformTask) -> int:
 )
 def extract_document(tenant_id: UUID | str, intake_id: UUID | str) -> str:
     """Extract one verified intake; a soft-limit hit is recorded as interrupted."""
-    return extract_intake(
-        UUID(str(tenant_id)), UUID(str(intake_id)), now=timezone.now()
-    ).value
+    tenant_pk, intake_pk = UUID(str(tenant_id)), UUID(str(intake_id))
+    outcome = extract_intake(tenant_pk, intake_pk, now=timezone.now())
+    if outcome is ExtractionOutcome.CLASSIFIED:
+        enqueue_shadow(tenant_pk, intake_pk)
+    return outcome.value
 
 
 @shared_task(base=PlatformTask, bind=True)

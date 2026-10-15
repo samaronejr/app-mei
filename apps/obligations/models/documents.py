@@ -30,6 +30,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from apps.core.models import TenantScopedModel
+from apps.core.retention import RetentionClass
 
 STORAGE_KEY_BYTES = 32
 SHA256_HEX_LENGTH = 64
@@ -86,6 +87,13 @@ class Document(TenantScopedModel):
     client_upload = models.BooleanField(
         _("uploaded by the client"), default=True, db_default=True
     )
+    retention_class = models.CharField(
+        max_length=24,
+        choices=RetentionClass.choices,
+        default=RetentionClass.FISCAL_EVIDENCE,
+        db_default=RetentionClass.FISCAL_EVIDENCE,
+    )
+    purged_at = models.DateTimeField(null=True, editable=False)
 
     class Meta(TenantScopedModel.Meta):
         """Model metadata."""
