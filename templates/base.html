@@ -1,4 +1,4 @@
-{% load i18n navigation static firm_settings %}{% product_shell request as r1_shell %}{% firm_settings_context request as firm_account %}<!DOCTYPE html>
+{% load i18n navigation static firm_settings %}{% product_shell request as r1_shell %}{% firm_settings_context request as firm_account %}{% if not r1_shell %}{% notice_policy_href request as notice_policy_url %}{% endif %}<!DOCTYPE html>
 <html lang="pt-br">
 <head>
   <meta charset="utf-8">
@@ -86,11 +86,11 @@
             <nav aria-label="{% translate 'Navegação principal' %}" class="nav-bar">
               {% for item in items %}
                 <a class="nav-link" href="{{ item.url }}"{% if item.url == request.path %} aria-current="page"{% endif %}>{{ item.label }}</a>
-              {% endfor %}
+              {% endfor %}{% if notice_policy_url %}<a class="nav-link" href="{{ notice_policy_url }}"{% if notice_policy_url == request.path %} aria-current="page"{% endif %}>Política de avisos</a>{% endif %}
             </nav>
           </details>
         {% endif %}
-        <div class="ml-auto flex items-center gap-3 text-sm text-ink-500">
+        <div class="ml-auto flex items-center gap-3 text-sm {% if notice_policy_url %}text-ink-600{% else %}text-ink-500{% endif %}">
           {% if firm_account.enabled %}<a class="link" href="{% url 'firm-settings' %}">{% translate "Configurações" %}</a>{% endif %}
           <span>{{ request.user.email }}</span>
           <form method="post" action="{% url 'account_logout' %}">
@@ -196,16 +196,34 @@
         </div>
       {% endif %}
     </div>
-
+{% if request.support_grant %}
+    {% comment %}
+      The support banner sits inside <main>, above every partial HTMX swaps:
+      the swapped regions live inside block content, so a banner here survives
+      every fragment update and stays visible for the whole session — which is
+      the point: a support visit must never look like an ordinary sign-in.
+    {% endcomment %}
+    <div class="notice notice-warn mb-6" role="status" data-support-banner>
+      <p class="font-semibold">{% translate "Acesso de suporte ativo" %}</p>
+      <p class="mt-1 text-sm">
+        {% if request.support_grant.scope == 'read_write_settings' %}
+          {% translate "A plataforma está acessando esta firma com aprovação do responsável, com permissão para ajustar configurações." %}
+        {% else %}
+          {% translate "A plataforma está acessando esta firma em modo somente leitura, com aprovação do responsável." %}
+        {% endif %}
+        {% if request.support_grant.expires_at %}{% translate "Encerra automaticamente às" %} {{ request.support_grant.expires_at|date:"d/m/Y H:i" }}.{% endif %}
+      </p>
+    </div>
+{% endif %}
     {% if firm_account.past_due %}<p class="notice notice-warn mb-6" data-billing-past-due>{% translate "Há uma cobrança em atraso. Fale com a operação da plataforma para regularizar. A consulta e a exportação permanecem disponíveis." %}</p>{% endif %}
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="mx-auto max-w-7xl px-6 py-8 text-xs text-ink-500">
+  {% block footer %}<footer class="mx-auto max-w-7xl px-6 py-8 text-xs {% if notice_policy_url %}text-ink-600{% else %}text-ink-500{% endif %}">
     <p>
       {% translate "Horários em BRT (America/Sao_Paulo)." %}
       <a class="underline" href="{% url 'dsr-submit' %}">{% translate "Direitos do titular de dados (LGPD)" %}</a>
     </p>
-  </footer>
+  </footer>{% endblock %}
 </body>
 </html>

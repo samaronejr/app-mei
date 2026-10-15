@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.core.flags import tenant_has
+from apps.core.refusal import sentences
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.cycles.bulk import (
@@ -200,7 +201,7 @@ def execute_claim(claim: BulkClaim) -> None:
                 BulkItemState.FAILED,
                 {
                     "code": "execution_refused",
-                    "detail": str(error),
+                    "detail": sentences(error),
                 },
             )
         except (IntegrityError, IntentConflict, ValueError):

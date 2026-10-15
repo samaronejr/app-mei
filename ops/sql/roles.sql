@@ -120,6 +120,8 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- Firm-only reviewer authority: no portal grant. DenyPortalAccess supplies the
 -- restrictive false policy as well. Mirrored by PORTAL_DENIED_TABLES in tests/conftest.py.
 
+-- PORTAL_NONE: clients_clientcontact
+-- Contacts remain ungranted; the existing client predicate is unchanged.
 -- PORTAL_NONE: clients_importbatch
 -- PORTAL_NONE: clients_importrow
 -- PORTAL_NONE: cycles_playbook
@@ -182,6 +184,7 @@ $$;
 -- PORTAL_NONE: delivery_deliveryattempt
 -- PORTAL_NONE: delivery_deliveryeffect
 -- PORTAL_NONE: delivery_automationpause
+-- PORTAL_NONE: delivery_tenantnoticepolicy
 -- PORTAL_NONE: automation_agentrun
 -- PORTAL_NONE: automation_evalrun
 -- T24: hidden AI observations and synthetic evaluation metrics have no portal grant.
@@ -192,6 +195,18 @@ $$;
 -- PORTAL_NONE: tenants_firmoutboundmessage
 -- PORTAL_NONE: tenants_accountexport
 -- PORTAL_NONE: tenants_accountexportattempt
+-- PORTAL_NONE: tenants_supportgrant
+-- AXR1-023: no DELETE for the runtime role. Revocation writes revoked_at, so
+-- the row IS the audit trail; the blanket GRANT above is narrowed here just
+-- like the append-only tables below.
+DO $$
+BEGIN
+    IF to_regclass('public.tenants_supportgrant') IS NOT NULL THEN
+        REVOKE ALL ON tenants_supportgrant FROM app_runtime;
+        GRANT SELECT, INSERT, UPDATE ON tenants_supportgrant TO app_runtime;
+    END IF;
+END
+$$;
 -- Firm account data is private even when a client belongs to the firm.
 DO $$
 DECLARE
@@ -208,6 +223,17 @@ BEGIN
             EXECUTE format('GRANT SELECT, INSERT ON %I TO app_runtime', receipt_table);
         END IF;
     END LOOP;
+END
+$$;
+
+-- The identifier-free readiness aggregate is runtime-only, including after an
+-- ownership-pinned logical restore that deliberately omits dump ACLs.
+DO $$
+BEGIN
+    IF to_regprocedure('public.delivery_outbox_health()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.delivery_outbox_health() FROM PUBLIC, app_portal;
+        GRANT EXECUTE ON FUNCTION public.delivery_outbox_health() TO app_runtime;
+    END IF;
 END
 $$;
 
@@ -296,5 +322,16 @@ BEGIN
             );
         END IF;
     END LOOP;
+END
+$$;
+
+-- T60: exact-version receipt matching only. No table-wide SELECT, receipt timestamps
+-- or receipt row IDs; existing tenant/client RLS also governs these column reads.
+DO $$
+BEGIN
+    IF to_regclass('public.cycles_clientacknowledgement') IS NOT NULL THEN
+        GRANT SELECT (tenant_id, publication_id, publication_digest, user_id)
+        ON cycles_clientacknowledgement TO app_portal;
+    END IF;
 END
 $$;

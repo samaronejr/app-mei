@@ -22,7 +22,6 @@ from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.clients.maintenance import load_client
 from apps.clients.models import ClientCompany, ClientContact
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.errors import IllegalTransition
@@ -42,6 +41,7 @@ from apps.cycles.services.cycle import (
     require_actor,
     tenant_id,
 )
+from apps.delivery.notice_authority import NoticeOrigin, NoticeScope, lock_notice_scope
 from apps.obligations.coverage import SERVICE_OBLIGATIONS
 from apps.obligations.models import Obligation
 from apps.tenants.models import Invite, Membership
@@ -397,6 +397,7 @@ def _enqueue_for(  # noqa: PLR0913 - one message per recipient needs every key p
     *,
     kind: str,
     occurrence: int,
+    notice_scope: NoticeScope,
     evidence_request: EvidenceRequest | None = None,
 ) -> None:
     # Delivery depends on cycles, so the reverse import waits until call time.
@@ -427,6 +428,7 @@ def _enqueue_for(  # noqa: PLR0913 - one message per recipient needs every key p
         cycle_id=cycle.pk,
         invite=recipient.invite,
         evidence_request=evidence_request,
+        notice_scope=notice_scope,
     )
 
 
@@ -444,7 +446,11 @@ def send_requests(
     """
     with transaction.atomic():
         candidate = load_cycle(actor, cycle_id)
-        load_client(actor, tenant_id(), candidate.client_id, lock=True)
+        scope = lock_notice_scope(
+            actor,
+            NoticeOrigin("request_notice", candidate.client_id, candidate.pk),
+        )
+        actor = scope.actor
         cycle = _open_cycle(actor, cycle_id)
         check_version(cycle.version, expected_version)
         require_actor(actor, CYCLES_OPERATE)
@@ -486,6 +492,7 @@ def send_requests(
                 recipient,
                 kind="request_notice",
                 occurrence=cycle.version,
+                notice_scope=scope,
             )
         return eligible
 
@@ -501,7 +508,16 @@ def remind_request(
         candidate = EvidenceRequest.objects.filter(pk=request_id).first()
         if candidate is None:
             raise Http404
-        load_client(actor, tenant_id(), candidate.client_id, lock=True)
+        scope = lock_notice_scope(
+            actor,
+            NoticeOrigin(
+                "request_reminder",
+                candidate.client_id,
+                candidate.cycle_id,
+                candidate.pk,
+            ),
+        )
+        actor = scope.actor
         cycle, request = _locked_request(actor, request_id)
         check_version(request.version, expected_version)
         require_actor(actor, CYCLES_OPERATE)
@@ -526,6 +542,7 @@ def remind_request(
                 recipient,
                 kind="request_reminder",
                 occurrence=request.version,
+                notice_scope=scope,
                 evidence_request=request,
             )
         return eligible

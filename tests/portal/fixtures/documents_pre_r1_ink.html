@@ -1,0 +1,68 @@
+{% extends "portal/base.html" %}
+{% load i18n ptbr %}{% comment %}
+The vault: the form that adds to it first, then what is already in it.
+
+The form leads on purpose. A MEI owner arrives here holding a photo of a nota fiscal she
+wants out of her camera roll and into her accountant's hands; the list is what she checks
+afterwards, and putting it first would push the one action she came to take below a
+screenful of rows she has already seen.
+
+Every value on a row is a column of the row itself. Nothing here reaches through a
+foreign key, and the reason is not performance: rendering happens inside the portal
+transaction and under `app_portal`, a role holding SELECT on seven tables, and the
+account table is not one of them. Reaching for the person who sent the file is therefore
+not a slower page -- it is `permission denied` on a screen a client already had open, and
+it lands on the table where the password hashes live. The two other keys on this row
+point at tables the role CAN read, which makes reaching through those quieter and no
+better: a query per row, issued during rendering, inside the transaction. A guard test
+refuses all three by name.
+
+The date is written twice and only once for a human. The `datetime` attribute carries the
+stored instant with its offset, which is what a machine reads; the text beside it is the
+same instant in Brasília time, which is what the footer promises and what a person here
+actually works to.
+
+The size is stated because a name alone cannot tell a real document apart from a
+truncated upload -- the case where a phone lost signal halfway through and the client has
+no way to know.
+
+String literals inside a tag that sits within an HTML attribute are single-quoted
+throughout this project, and each destination is written into its anchor with the direct
+form of the tag. `{% templatetag openblock %} url 'x' as var {% templatetag closeblock %}`
+swallows a missing route and emits an empty destination on a page that still answers 200;
+the direct form raises instead, so a route deleted from the portal tree is loud on the
+next request rather than a dead link nobody notices.
+{% endcomment %}
+
+{% block heading %}{% translate "Documentos" %}{% endblock %}
+
+{% block content %}
+  {% include "portal/partials/upload_form.html" %}
+
+  <h2 class="mb-3 mt-8 text-sm font-semibold text-ink-700">{% translate "Arquivos enviados" %}</h2>
+
+  {% if documents %}
+    <ul class="space-y-3">
+      {% for document, tamanho in documents %}
+        <li class="card flex flex-wrap items-center gap-3 px-5 py-4">
+          <div class="min-w-0 grow">
+            <p class="truncate text-sm font-medium text-ink-900">{{ document.original_filename }}</p>
+            <p class="mt-1 text-xs tabular-nums text-ink-500">
+              <time datetime="{{ document.created_at.isoformat }}">{{ document.created_at|data_hora }}</time>
+              <span aria-hidden="true">·</span>
+              {{ tamanho }}
+            </p>
+          </div>
+          <a class="btn btn-quiet shrink-0" href="{% url 'portal-document-download' document.storage_key %}">
+            {% include "partials/pure/icons/download.html" %}
+            {% translate "Baixar" %}
+          </a>
+        </li>
+      {% endfor %}
+    </ul>
+
+    {% include 'partials/pure/pagination.html' with page=page filter_query='' only %}
+  {% else %}
+    <p class="card empty-state">{% translate "Nenhum documento enviado ainda. Envie o primeiro arquivo no formulário acima." %}</p>
+  {% endif %}
+{% endblock %}

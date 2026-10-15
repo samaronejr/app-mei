@@ -1,13 +1,15 @@
 """Frozen request audiences and independent exact-effect approval decisions."""
 
 from datetime import timedelta
+from typing import NoReturn
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
-from apps.cycles.bulk import BulkItemState, BulkKind
+from apps.cycles.bulk import BulkItem, BulkItemState, BulkKind
 from apps.cycles.bulk_contracts import Selection
 from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
 from apps.cycles.effects.manifest import ActionKind
@@ -72,6 +74,49 @@ def test_request_notice_uses_only_frozen_recipients_and_never_sends_smtp() -> No
         assert DeliveryAttempt.objects.exclude(pk__in=attempt_ids).count() == 1
         assert not DeliveryEffect.objects.exists()
         assert set(item_states(operation).values()) == {BulkItemState.DONE}
+
+
+def test_a_refused_bulk_item_stores_plain_sentences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AXR1-054: a new failed item's detail is the ValidationError's sentences.
+
+    The effect is replaced by one that refuses, as no fixture here makes the real
+    executor raise a ValidationError; what is pinned is what the runner stores and
+    `_bulk_progress.html` later shows.
+    """
+    setup = portal_setup("bulk-refusal-detail")
+    setup.graph.tenant.features = ["cycles_r1", "bulk_r1"]
+    setup.graph.tenant.save(update_fields=["features"])
+    with tenant_context(setup.graph.tenant.pk):
+        create_request(
+            setup.graph.actor,
+            setup.cycle.pk,
+            RequestFields(title="Extrato adicional"),
+            expected_version=setup.cycle.version,
+        )
+        preview = preview_bulk(
+            setup.graph.actor,
+            BulkKind.SEND_REQUEST_NOTICES,
+            Selection((setup.cycle.pk,)),
+        )
+    operation = confirm(setup.graph.actor, preview)
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        messages = ["A solicitação mudou.", "Confira o ciclo."]
+        raise ValidationError(messages)
+
+    monkeypatch.setattr("apps.cycles.bulk_runner.execute_effect", refuse)
+    run_bulk_operation(str(operation.tenant_id), str(operation.pk))
+
+    with tenant_context(setup.graph.tenant.pk):
+        failed = list(
+            BulkItem.objects.filter(operation=operation, state=BulkItemState.FAILED)
+        )
+    assert failed, "no item reached the refusing effect"
+    assert {item.result_json["detail"] for item in failed} == {
+        "A solicitação mudou. Confira o ciclo."
+    }
 
 
 def test_request_edit_without_parent_revision_change_is_not_silently_sent() -> None:

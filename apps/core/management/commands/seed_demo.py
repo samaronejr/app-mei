@@ -129,7 +129,7 @@ def _tenant_for(slug: str) -> Tenant:
     return tenant
 
 
-def _seed_owner(tenant: Tenant, email: str) -> list[Credential]:
+def seed_owner(tenant: Tenant, email: str) -> list[Credential]:
     """Give one operator an account, a second factor, and the whole firm to look at."""
     issued: list[Credential] = []
 
@@ -249,7 +249,7 @@ class Command(BaseCommand):
             credentials = [
                 credential
                 for email in emails
-                for credential in _seed_owner(tenant, email)
+                for credential in seed_owner(tenant, email)
             ]
             clients, obligations = _seed_portfolio(tenant)
             # Counted from the rows rather than from `len(emails)`: a summary derived

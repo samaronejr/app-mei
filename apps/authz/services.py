@@ -34,6 +34,7 @@ from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
 from apps.authz.models import Capability, GrantLevel, RoleGrant
 from apps.authz.stash import portal_stash, stashed_level
+from apps.authz.support import in_support_mode, support_level
 from apps.core.tenancy import current_client_id, current_tenant_id
 
 if TYPE_CHECKING:
@@ -207,6 +208,17 @@ def _resolve_levels_and_role(
                 or GrantLevel.NONE
                 for slug in slugs
             },
+        )
+    # A support session answers from the owner's grant decision, never from the
+    # platform account's role or the superuser short-circuit — which is precisely
+    # why this check precedes it. The stash is set only inside a request whose
+    # middleware re-read the live grant for THIS request. Placed in this shared
+    # helper so resolve_level, resolve_levels and granted_levels_with_role all
+    # answer identically (test_bulk_resolution_agrees_with_resolve_level).
+    if in_support_mode():
+        return (
+            None,
+            {slug: support_level(slug) or GrantLevel.NONE for slug in slugs},
         )
     rows = _role_grant_rows(user, slugs, tenant_id)
     known = {slug for slug, _, _ in rows}
