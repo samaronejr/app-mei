@@ -60,7 +60,9 @@ class FakeSMTP:
         asyncio.set_event_loop(self.loop)
         try:
             server = self.loop.run_until_complete(
-                self.loop.create_server(lambda: SMTP(self), "127.0.0.1", 0)
+                self.loop.create_server(
+                    lambda: SMTP(self, hostname="localhost"), "127.0.0.1", 0
+                )
             )
             self.port = server.sockets[0].getsockname()[1]
             self.ready.set()

@@ -101,7 +101,16 @@ def test_the_flag_registry_holds_exactly_the_r1_surfaces() -> None:
     # Pinned so a new surface cannot slip in uncommented and every later todo knows
     # the slugs its decorator accepts.
     assert (
-        frozenset({"cycles_r1", "briefing_r1", "ai_shadow", "bulk_r1", "import_r1"})
+        frozenset(
+            {
+                "cycles_r1",
+                "briefing_r1",
+                "ai_shadow",
+                "bulk_r1",
+                "import_r1",
+                "firm_settings_r1",
+            }
+        )
         == FEATURES
     )
 

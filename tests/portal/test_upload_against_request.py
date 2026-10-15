@@ -61,13 +61,13 @@ def test_upload_creates_document_intake_link_and_event(setup: PortalSetup) -> No
     assert document.uploaded_by_id == setup.portal_user.pk
     assert document.byte_size == len(PDF)
     assert intake.document_id == document.pk
-    assert intake.state == IntakeState.RECEIVED
+    assert intake.state == IntakeState.QUARANTINED
     assert event.client_id == setup.graph.client.pk
     assert event.actor_id == setup.portal_user.pk
     assert event.payload["link_id"] == str(link.pk)
     # Ids and hashes only; never the filename or bytes.
     assert "nota.pdf" not in str(event.payload)
-    with default_storage.open(document.storage_key) as handle:
+    with default_storage.open(intake.quarantine_key) as handle:
         assert handle.read() == PDF
     page = setup.portal().get(f"/solicitacoes/{setup.request.pk}/")
     body = page.content.decode()
@@ -123,7 +123,7 @@ def test_exactly_at_the_cap_is_accepted(
     settings.PORTAL_UPLOAD_MAX_BYTES = 2048
     response = setup.portal().post(
         f"/solicitacoes/{setup.request.pk}/enviar",
-        {"file": upload("limite.pdf", b"y" * 2048)},
+        {"file": upload("limite.pdf", b"%PDF-" + b"y" * 2043)},
     )
     assert response.status_code == HTTPStatus.FOUND
 
@@ -178,9 +178,12 @@ def test_missing_file_is_400_and_a_waived_request_is_404(setup: PortalSetup) -> 
     assert closed.status_code == HTTPStatus.NOT_FOUND
 
 
-def test_interim_new_upload_is_served_only_to_its_uploader(
+def test_quarantined_upload_is_served_to_no_portal_user_until_verified(
     setup: PortalSetup,
 ) -> None:
+    from django.utils import timezone  # noqa: PLC0415
+
+    from apps.cycles.scanning import FakeScanner, scan_intake  # noqa: PLC0415
     from apps.tenants.models import TenantRole  # noqa: PLC0415
     from tests.ui.factories import add_member  # noqa: PLC0415
 
@@ -189,16 +192,20 @@ def test_interim_new_upload_is_served_only_to_its_uploader(
         {"file": upload("nota.pdf", PDF)},
     )
     with tenant_context(setup.graph.tenant.pk):
-        key = EvidenceLink.objects.get().document.storage_key
+        intake = DocumentIntake.objects.select_related("document").get()
+    key = intake.document.storage_key
     colleague = add_member(
         setup.graph.tenant,
         "colega@upload-req.test",
         TenantRole.CLIENT_COLLABORATOR,
         client=setup.graph.client,
     )
-    own = setup.portal()
-    assert own.get(f"/documentos/{key}").status_code == HTTPStatus.OK
-    assert "nota.pdf" in own.get("/documentos/").content.decode()
-    other = setup.portal(colleague)
-    assert other.get(f"/documentos/{key}").status_code == HTTPStatus.NOT_FOUND
-    assert "nota.pdf" not in other.get("/documentos/").content.decode()
+    for account in (setup.portal(), setup.portal(colleague)):
+        assert account.get(f"/documentos/{key}").status_code == HTTPStatus.NOT_FOUND
+        assert "nota.pdf" not in account.get("/documentos/").content.decode()
+    scan_intake(
+        setup.graph.tenant.pk, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    for account in (setup.portal(), setup.portal(colleague)):
+        assert account.get(f"/documentos/{key}").status_code == HTTPStatus.OK
+        assert "nota.pdf" in account.get("/documentos/").content.decode()

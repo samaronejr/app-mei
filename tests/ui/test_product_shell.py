@@ -88,6 +88,7 @@ def test_a_flagged_firm_gets_the_product_shell_named_by_the_setting(
         "Hoje",
         "Clientes",
         "Ciclos",
+        "Documentos",
         "Comunicação",
         "Playbooks",
         "Gestão",
@@ -106,7 +107,13 @@ def test_the_wordmark_defaults_to_app_mei() -> None:
 
 def test_a_staff_accountant_under_the_flag_is_not_offered_gestao() -> None:
     body = _dashboard(_flag(make_firm("shell-staff")), accountant=True)
-    assert _nav_labels(body) == ["Hoje", "Clientes", "Ciclos", "Comunicação"]
+    assert _nav_labels(body) == [
+        "Hoje",
+        "Clientes",
+        "Ciclos",
+        "Documentos",
+        "Comunicação",
+    ]
 
 
 def test_the_kill_switch_returns_a_flagged_firm_to_the_mei_era_shell(

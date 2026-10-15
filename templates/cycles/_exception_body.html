@@ -1,0 +1,45 @@
+<div class="grid gap-3">
+    <p id="exception-state-{{ row.exception.pk }}" data-state="{{ row.exception.state }}">{{ row.exception.get_state_display }}</p>
+    {% if row.error %}<div id="exception-error-{{ row.exception.pk }}" role="alert" tabindex="-1" data-dialog-focus class="ui-panel p-3">{{ row.error }}</div>{% endif %}
+    <p class="text-sm">Próxima ação: {{ row.internal.next_action }}</p>
+    {% if row.evidence %}
+    <ul class="grid gap-2 text-sm" aria-label="Evidências da pendência">
+      {% for evidence in row.evidence %}<li><a id="exception-evidence-{{ row.exception.pk }}-{{ forloop.counter }}" data-exception-evidence class="ui-link break-words" href="{{ evidence.url }}">{{ evidence.label }}</a></li>{% endfor %}
+    </ul>
+    {% else %}<p class="text-sm text-ink-700">Referência não disponível neste contexto.</p>{% endif %}
+    {% if row.exception.client_visible %}<p class="text-sm text-ink-700">No portal, o cliente vê: “{{ row.exception.client_message }}”</p>{% else %}<p class="text-sm text-ink-700">Interna · não aparece no portal.</p>{% endif %}
+    {% if may_operate and row.is_active %}
+      {% if row.roster %}
+      <form method="post" action="{% url 'cycle-exception-action' row.exception.pk %}?origem={{ origin }}" class="flex flex-wrap items-end gap-3">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="assign">
+        <input type="hidden" name="expected_version" value="{{ row.exception.version }}">
+        <input type="hidden" name="origin" value="{{ origin }}">
+        <div>
+          <label class="ui-field-label" for="owner-{{ row.exception.pk }}">Responsável</label>
+          <select class="ui-field-input" id="owner-{{ row.exception.pk }}" name="owner_id" required>
+            {% for member in row.roster %}<option value="{{ member.user_id }}"{% if member.user_id == row.exception.owner_id %} selected{% endif %}>{{ member.user.get_full_name|default:member.user.email }}</option>{% endfor %}
+          </select>
+        </div>
+        <button class="ui-btn ui-btn-quiet" type="submit">Atribuir</button>
+      </form>
+      {% endif %}
+      {% if row.actions %}
+      <form method="post" action="{% url 'cycle-exception-action' row.exception.pk %}?origem={{ origin }}" class="grid gap-3">
+        {% csrf_token %}
+        <input type="hidden" name="expected_version" value="{{ row.exception.version }}">
+        <input type="hidden" name="origin" value="{{ origin }}">
+        {% if row.exception.state == 'em_tratamento' %}
+        <div>
+          <label class="ui-field-label" for="exception-note-{{ row.exception.pk }}">O que foi feito ou motivo (interno, obrigatório para encerrar)</label>
+          <textarea class="ui-field-input" id="exception-note-{{ row.exception.pk }}" name="note" maxlength="2000"></textarea>
+        </div>
+        {% endif %}
+        <div class="flex flex-wrap gap-2">
+          {% for action, label in row.actions %}<button class="ui-btn {% if forloop.first %}ui-btn-primary{% else %}ui-btn-quiet{% endif %}" type="submit" name="action" value="{{ action }}">{{ label }}</button>{% endfor %}
+        </div>
+        {% if row.exception.state == 'em_tratamento' and not row.waivable %}<p class="text-xs text-ink-700">Esta pendência não pode ser aceita como risco: ela precisa ser resolvida.</p>{% endif %}
+      </form>
+      {% endif %}
+    {% endif %}
+  </div>

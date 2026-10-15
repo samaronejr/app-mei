@@ -20,6 +20,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.core.mail import send_mail
 from django.db import transaction
+from django.db.models import Q
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import render
 from django.template.response import TemplateResponse
@@ -66,10 +67,17 @@ from apps.authz.grants import (
     with_reviewer_state,
 )
 from apps.authz.portfolio import visible_clients
-from apps.authz.services import require_can
+from apps.authz.services import can, require_can
 from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
+from apps.delivery.notice_authority import (
+    NoticeOrigin,
+    NoticeRefusalError,
+    NoticeScope,
+    lock_notice_scope,
+)
 from apps.portal.middleware import PORTAL_URLCONF
+from apps.tenants.authority import lock_users
 from apps.tenants.models import Invite, Membership, Tenant, TenantRole
 from apps.tenants.validators import PORTAL_HOST_SUFFIX
 
@@ -299,9 +307,14 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
             {"reason": _("Dados inválidos.")},
             status=HTTPStatus.BAD_REQUEST,
         )
+    scope = None
     try:
+        if tenant_has(tenant.pk, "cycles_r1"):
+            scope = lock_notice_scope(
+                request.user, NoticeOrigin("portal_invite", client.pk)
+            )
         _invite, raw_token = issue_client_invite(
-            actor=request.user,
+            actor=scope.actor if scope else request.user,
             tenant=tenant,
             client=client,
             email=form.cleaned_data["email"],
@@ -309,12 +322,21 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
         )
     except InviteNotPermittedError as error:
         raise PermissionDenied(str(error)) from error
+    except NoticeRefusalError as error:
+        return render(
+            request,
+            REFUSAL_TEMPLATE,
+            {"reason": error.messages[0]},
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        )
     if tenant_has(tenant.pk, "cycles_r1"):
         # T11: onto the outbox, inside this request's transaction. The send used to
         # happen here, inside the tenant transaction, and could 500 when it raced an
         # import rollback; now nothing leaves until the dispatcher claims the row
         # after commit, and a rollback takes the message with the invitation.
-        _queue_portal_invitation(request.user, client, _invite)
+        if scope is None:
+            raise PermissionDenied
+        _queue_portal_invitation(scope.actor, client, _invite, scope)
         return HttpResponseRedirect(reverse("invite-issued"))
     try:
         _mail_portal_invitation(
@@ -338,7 +360,7 @@ def portal_invite_issue_view(request: AuthenticatedRequest, pk: UUID) -> HttpRes
 
 
 def _queue_portal_invitation(
-    actor: User, client: ClientCompany, invite: Invite
+    actor: User, client: ClientCompany, invite: Invite, scope: NoticeScope
 ) -> None:
     """Queue the invitation for the contact at its address, creating the contact.
 
@@ -370,7 +392,7 @@ def _queue_portal_invitation(
             email=invite.email,
             role_label=_("Convidado para o portal"),
         )
-    enqueue_portal_invite(actor, invite, contact)
+    enqueue_portal_invite(actor, invite, contact, notice_scope=scope)
 
 
 def assert_firm_invite(*, invite: Invite) -> None:
@@ -664,9 +686,30 @@ def _deactivate(*, actor: User, membership: Membership) -> None:
         )
         raise MemberLifecycleError(msg)
 
+    candidates = Membership.objects.for_user(actor).filter(
+        Q(pk=membership.pk)
+        | Q(client__isnull=True, role=TenantRole.OWNER, is_active=True),
+        tenant_id=membership.tenant_id,
+    )
+    discovered = list(candidates.values_list("pk", "user_id"))
+    users = lock_users([actor.pk, *(user_id for _pk, user_id in discovered)])
+    actor = users[actor.pk]
+    locked = list(
+        candidates.filter(pk__in=[pk for pk, _user_id in discovered])
+        .select_for_update(no_key=True)
+        .order_by("pk")
+    )
+    target = next((row for row in locked if row.pk == membership.pk), None)
+    if (
+        target is None
+        or target.user_id not in users
+        or not actor.is_active
+        or not can(actor, INVITE_CAPABILITY, tenant_id=membership.tenant_id)
+    ):
+        raise PermissionDenied
+    membership = target
     owners = list(
         Membership.objects.for_user(actor)
-        .select_for_update()
         .filter(
             tenant_id=membership.tenant_id,
             client__isnull=True,
@@ -697,6 +740,19 @@ def _deactivate(*, actor: User, membership: Membership) -> None:
 @transaction.atomic
 def _reactivate(*, actor: User, membership: Membership) -> None:
     """Give a previously revoked colleague their access back."""
+    users = lock_users((actor.pk, membership.user_id))
+    actor = users[actor.pk]
+    # PLATFORM_QUERY_OK: lock the explicitly scoped target from the roster view.
+    locked = Membership.objects.select_for_update(no_key=True).get(
+        pk=membership.pk, tenant_id=membership.tenant_id, client__isnull=True
+    )
+    if (
+        locked.user_id != membership.user_id
+        or not actor.is_active
+        or not can(actor, INVITE_CAPABILITY, tenant_id=locked.tenant_id)
+    ):
+        raise PermissionDenied
+    membership = locked
     membership.is_active = True
     membership.save(update_fields=["is_active"])
     record_event(

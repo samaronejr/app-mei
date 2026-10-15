@@ -25,6 +25,7 @@ Without scripts the form is an ordinary multipart POST and the page still works.
     <h2 id="pedido" class="text-sm font-semibold text-ink-700">{% translate "O que o escritório pediu" %}</h2>
     {% if req.client_note %}<p class="whitespace-pre-wrap break-words text-ink-900">{{ req.client_note }}</p>{% endif %}
     {% if req.due_on %}<p class="text-sm text-ink-700">{% translate "Enviar até" %} <time datetime="{{ req.due_on.isoformat }}">{{ req.due_on|data }}</time></p>{% endif %}
+    {% if req.kind == 'comprovante' %}<p class="text-sm text-ink-700" data-request-kind="comprovante">{% translate "Comprovante de pagamento: envie o documento que comprova o pagamento desta obrigação." %}</p>{% endif %}
   </section>
   {% include "portal/partials/request_status.html" %}
   {% if req.open %}{% include "portal/partials/request_upload.html" %}{% endif %}

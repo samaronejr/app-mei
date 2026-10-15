@@ -1,11 +1,14 @@
-"""The tenancy root: an accounting firm, who belongs to it, and who may join it.
+"""The tenancy root and the private account records it owns.
 
-None of these three tables is row-level-security scoped, and that is deliberate. The
+The three root tables are not row-level-security scoped, deliberately. The
 tenant-resolving middleware reads `Membership` to *discover* which tenant a request
 belongs to, and that read necessarily happens before `app.tenant_id` can be set. Under
 the fail-closed policy an RLS-scoped `Membership` would return zero rows there, so no
 user could ever sign in. All three therefore live in `NON_TENANT_TABLES` and are
 protected at the application layer by filtering on `request.user`.
+
+Billing, usage, preferences, firm outbox and account exports are separate private
+tenant-scoped tables, re-exported here for Django discovery and the public model API.
 """
 
 import hashlib
@@ -21,12 +24,32 @@ from django.utils.translation import gettext_lazy as _
 
 from apps.core.access import PlatformScopedManager, TenantRootManager
 from apps.core.models import UUIDv7PrimaryKeyModel
+from apps.tenants.billing_models import (
+    BillingAccount,
+    BillingProvider,
+    BillingStatus,
+    UsageKind,
+    UsageMetric,
+    UsageRecord,
+)
 from apps.tenants.branding import (
     BRAND_NAME_MAX_LENGTH,
     logo_upload_to,
     validate_brand_color,
     validate_logo,
 )
+from apps.tenants.export_models import (
+    AccountExport,
+    AccountExportAttempt,
+    AccountExportState,
+)
+from apps.tenants.notification_models import (
+    FirmMessageKind,
+    FirmMessageState,
+    FirmOutboundMessage,
+    NotificationPreference,
+)
+from apps.tenants.support_models import SupportGrant
 from apps.tenants.validators import validate_tenant_slug
 
 if TYPE_CHECKING:
@@ -164,6 +187,31 @@ class Tenant(UUIDv7PrimaryKeyModel):
         blank=True,
     )
     is_active = models.BooleanField(_("active"), default=True)
+    settings_version = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
+    cancellation_ends_on = models.DateField(null=True, blank=True, editable=False)
+    logo_request_id = models.UUIDField(null=True, editable=False)
+    logo_upload_pending = models.BooleanField(
+        default=False, db_default=False, editable=False
+    )
+    logo_error_code = models.CharField(
+        max_length=32, blank=True, default="", db_default="", editable=False
+    )
+    # T15: only the audited, versioned owner action changes this approval policy.
+    allow_self_approval = models.BooleanField(
+        default=False, db_default=False, editable=False
+    )
+    approval_quorum = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
+    approval_policy_version = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
+    # Admission/activity revision, not a cached count of active staff.
+    approval_roster_version = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
     # Portal branding (T11). Read by PortalMiddleware as app_runtime and handed to the
     # portal shell as scalars (apps/tenants/branding.py): app_portal cannot read this
     # table, so no portal template ever receives the row.
@@ -200,6 +248,20 @@ class Tenant(UUIDv7PrimaryKeyModel):
         verbose_name = _("tenant")
         verbose_name_plural = _("tenants")
         ordering: ClassVar[list[str]] = ["name"]
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.CheckConstraint(
+                condition=models.Q(settings_version__gt=0),
+                name="tenant_positive_settings_version",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    approval_quorum__gt=0,
+                    approval_policy_version__gt=0,
+                    approval_roster_version__gt=0,
+                ),
+                name="tenant_positive_approval_policy",
+            ),
+        ]
 
     def __str__(self) -> str:
         """Identify the firm by the subdomain it is reached at."""
@@ -233,6 +295,7 @@ class Membership(UUIDv7PrimaryKeyModel):
     is_active = models.BooleanField(_("active"), default=True)
     # The seat survives revocation and re-granting; an individual grant row does not.
     review_grant_version = models.PositiveBigIntegerField(default=0, editable=False)
+    version = models.PositiveIntegerField(default=1, db_default=1, editable=False)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
 
     objects = PlatformScopedManager["Membership"]()
@@ -243,6 +306,10 @@ class Membership(UUIDv7PrimaryKeyModel):
         verbose_name = _("membership")
         verbose_name_plural = _("memberships")
         constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0),
+                name="membership_positive_version",
+            ),
             # NULLS NOT DISTINCT is what preserves the Phase-1 guarantee. With the
             # PostgreSQL default, two firm-side rows both carrying client = NULL would
             # be considered distinct and a user could hold two roles in one firm.
@@ -297,6 +364,16 @@ class Invite(UUIDv7PrimaryKeyModel):
         blank=True,
     )
     email = models.EmailField(_("email address"))
+    # Fixed at issuance, not inferred from an address at redemption. Contacts may
+    # share an email, and request notices refresh this SAME invitation's token.
+    contact = models.ForeignKey(
+        "clients.ClientContact",
+        on_delete=models.RESTRICT,
+        related_name="portal_invitations",
+        verbose_name=_("originating contact"),
+        null=True,
+        blank=True,
+    )
     role = models.CharField(_("role"), max_length=32, choices=TenantRole.choices)
     token = models.CharField(_("token digest"), max_length=64, unique=True)
     expires_at = models.DateTimeField(_("expires at"))
@@ -335,6 +412,14 @@ class Invite(UUIDv7PrimaryKeyModel):
         verbose_name_plural = _("invites")
         ordering: ClassVar[list[str]] = ["-created_at"]
         constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["tenant", "id"], name="invite_tenant_id_uniq"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(contact__isnull=True)
+                | models.Q(client__isnull=False),
+                name="invite_contact_requires_client",
+            ),
             # Accepting an invite writes Membership(client=invite.client), so this is
             # membership_role_matches_client_scope evaluated one step earlier, against
             # the same two arms. An invitation the membership constraint would reject
@@ -396,3 +481,33 @@ class Invite(UUIDv7PrimaryKeyModel):
             expires_at=expires_at or timezone.now() + INVITE_VALIDITY,
         )
         return invite, raw_token
+
+
+__all__ = [
+    "CLIENT_ROLES",
+    "FIRM_ROLES",
+    "INVITE_TOKEN_BYTES",
+    "INVITE_VALIDITY",
+    "PORTAL_INVITE_ROLES",
+    "AccountExport",
+    "AccountExportAttempt",
+    "AccountExportState",
+    "BillingAccount",
+    "BillingProvider",
+    "BillingStatus",
+    "FirmMessageKind",
+    "FirmMessageState",
+    "FirmOutboundMessage",
+    "Invite",
+    "Membership",
+    "NotificationPreference",
+    "SupportGrant",
+    "Tenant",
+    "TenantPlan",
+    "TenantRole",
+    "UsageKind",
+    "UsageMetric",
+    "UsageRecord",
+    "client_role_choices",
+    "firm_role_choices",
+]

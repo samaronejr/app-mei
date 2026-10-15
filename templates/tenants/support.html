@@ -1,0 +1,70 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Acesso de suporte" %}{% endblock %}
+{% block heading %}{% translate "Acesso de suporte" %}{% endblock %}
+{% block content %}
+  <p class="mb-5 text-sm"><a class="link" href="{% url 'firm-settings' %}">{% translate "Voltar às configurações" %}</a></p>
+
+  <section class="card p-6" aria-labelledby="pendentes">
+    <h2 id="pendentes" class="mb-3 text-lg font-semibold">{% translate "Solicitações pendentes" %}</h2>
+    <p class="mb-5 text-sm text-ink-600">{% translate "A equipe da plataforma só acessa a sua firma quando você autoriza aqui, dentro do prazo e do escopo escolhidos." %}</p>
+    {% for grant, client_field in pending_requests %}
+      <article class="border-t border-ink-200 py-4" data-grant="{{ grant.pk }}">
+        <p class="font-semibold">{{ grant.requested_by.email }}</p>
+        <p class="mt-1 text-sm">{{ grant.purpose }}</p>
+        <p class="mt-1 text-xs text-ink-600">{{ grant.created_at|date:"d/m/Y H:i" }}</p>
+        <form method="post" action="{% url 'firm-suporte-approve' grant.pk %}" class="mt-3 space-y-3">
+          {% csrf_token %}
+          <div class="field">
+            <label class="field-label" for="scope-{{ grant.pk }}">{% translate "Tipo de acesso" %}</label>
+            <select id="scope-{{ grant.pk }}" name="scope" class="field-input">
+              <option value="read_only">{% translate "Somente leitura" %}</option>
+              <option value="read_write_settings">{% translate "Leitura e configurações da firma" %}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="hours-{{ grant.pk }}">{% translate "Duração (horas, até 72)" %}</label>
+            <input id="hours-{{ grant.pk }}" name="hours" type="number" min="1" max="{{ max_hours }}" value="4" class="field-input">
+          </div>
+          <fieldset class="field">
+            <legend class="field-label">{% translate "Clientes visíveis (nenhum = somente dados do escritório)" %}</legend>
+            {{ client_field }}
+          </fieldset>
+          <button type="submit" class="btn btn-primary">{% translate "Autorizar acesso" %}</button>
+        </form>
+        <form method="post" action="{% url 'firm-suporte-revoke' grant.pk %}" class="mt-2">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-quiet">{% translate "Recusar" %}</button>
+        </form>
+      </article>
+    {% empty %}
+      <p class="text-sm text-ink-600">{% translate "Nenhuma solicitação pendente." %}</p>
+    {% endfor %}
+  </section>
+
+  <section class="card mt-6 p-6" aria-labelledby="historico">
+    <h2 id="historico" class="mb-3 text-lg font-semibold">{% translate "Histórico de acessos" %}</h2>
+    {% for grant in decided %}
+      <article class="border-t border-ink-200 py-4" data-grant="{{ grant.pk }}">
+        <p class="font-semibold">{{ grant.requested_by.email }}</p>
+        <p class="mt-1 text-sm">{{ grant.purpose }}</p>
+        <p class="mt-1 text-xs text-ink-600">
+          {% if grant.approved_at %}
+            {% translate "Aprovado" %} {{ grant.approved_at|date:"d/m/Y H:i" }}
+            {% if grant.expires_at %}· {% translate "até" %} {{ grant.expires_at|date:"d/m/Y H:i" }}{% endif %}
+            · {{ grant.get_scope_display }}
+          {% endif %}
+          {% if grant.revoked_at %}· {% translate "Encerrado" %} {{ grant.revoked_at|date:"d/m/Y H:i" }}{% endif %}
+        </p>
+        <p class="mt-2"><a class="link" href="{% url 'firm-suporte-trilha' grant.pk %}">{% translate "Ver trilha de auditoria" %}</a></p>
+        {% if grant.approved_at and not grant.revoked_at %}
+        <form method="post" action="{% url 'firm-suporte-revoke' grant.pk %}" class="mt-2">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-quiet">{% translate "Encerrar acesso" %}</button>
+        </form>
+        {% endif %}
+      </article>
+    {% empty %}
+      <p class="text-sm text-ink-600">{% translate "Nenhum acesso concedido até agora." %}</p>
+    {% endfor %}
+  </section>
+{% endblock %}

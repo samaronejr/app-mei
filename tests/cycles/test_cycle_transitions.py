@@ -41,7 +41,9 @@ NORMAL = {
     "aguardando_cliente": {"em_andamento"},
     "em_revisao": {"em_andamento", "aguardando_aprovacao"},
     "aguardando_aprovacao": {"em_revisao", "em_execucao"},
-    "em_execucao": {"concluido"},
+    # Consequential terminal targets use the approved executor since T18.
+    # This table covers direct work transitions; completion has its real-flow tests.
+    "em_execucao": set(),
     "bloqueado": {"em_andamento"},
 }
 TERMINAL = {"concluido", "encerrado_com_pendencias", "cancelado"}
@@ -77,9 +79,7 @@ def test_cycle_transitions(
         CycleTask.objects.filter(cycle=cycle).update(state=TaskState.ACCEPTED)
         monkeypatch.setitem(COMPLETION_GUARDS, "evidence_index", lambda _: True)
         allowed = NORMAL.get(state, set()) | (
-            {"bloqueado", "encerrado_com_pendencias", "cancelado"} - {state}
-            if state not in TERMINAL
-            else set()
+            {"bloqueado", "cancelado"} - {state} if state not in TERMINAL else set()
         )
         before = CycleEvent.objects.count()
         if target in allowed:

@@ -42,19 +42,22 @@ Four things here are easy to get wrong and silent when wrong:
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from http import HTTPStatus
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from django.core.exceptions import PermissionDenied
 from django.db import DEFAULT_DB_ALIAS, connection, transaction
 from django.http import Http404, HttpRequest, StreamingHttpResponse
 from django.http.response import HttpResponseBase
+from django.shortcuts import render
 from django.urls import Resolver404, resolve
 
 from apps.authz.matrix import CAPABILITY_SLUGS
 from apps.authz.services import Actor, granted_levels
 from apps.authz.stash import PortalStash, portal_stash
 from apps.clients.models import ClientCompany
+from apps.clients.offboarding import portal_engagement_current
 from apps.core.flags import tenant_row_has
 from apps.core.tenancy import (
     CLIENT_GUC,
@@ -67,6 +70,7 @@ from apps.core.tenancy import (
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.branding import Brand, brand_for
 from apps.tenants.models import Membership, Tenant
+from apps.tenants.read_only import account_admission
 
 if TYPE_CHECKING:
     from contextvars import Token
@@ -74,6 +78,7 @@ if TYPE_CHECKING:
 PORTAL_ROLE = "app_portal"
 ADMIN_PREFIX = "/admin/"
 PORTAL_URLCONF = "apps.portal.urls"
+ACCESS_ENDED: Final = "O prazo de acesso deste cliente encerrou."
 
 # Account management runs WITHOUT the portal role, in the same shape as an anonymous
 # request: both GUCs empty, still app_runtime.
@@ -375,6 +380,23 @@ class PortalMiddleware:
                 # because that same fetch is denied outright to `app_portal`, which
                 # holds no SELECT on the row until `app.client_id` is what confines it.
                 self._apply_gucs(tenant, client_id)
+                refusal = account_admission(request, tenant)
+                if refusal is not None:
+                    return refusal
+                if (
+                    tenant is not None
+                    and client_id is not None
+                    and tenant_row_has(tenant, "firm_settings_r1")
+                    and not portal_engagement_current(client_id)
+                ):
+                    # A reason the client is owed, so it is rendered rather than
+                    # raised: the shared refusal page never shows exception text.
+                    return render(
+                        request,
+                        "403.html",
+                        {"reason": ACCESS_ENDED},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
                 request.client = (
                     self._attach_companies(request, membership, client_ids)
                     if membership

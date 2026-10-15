@@ -73,6 +73,9 @@ def _store(
         byte_size=len(marker),
         uploaded_by=user,
         storage_key=new_storage_key(),
+        # T13: a firm-published document (a DAS guide). A client upload is served
+        # only through a verified intake (tests/portal/test_vault_quarantine.py).
+        client_upload=False,
     )
     default_storage.save(document.storage_key, __import__("io").BytesIO(marker))
     with tenant_context(tenant.id):
@@ -237,7 +240,7 @@ def test_t079_an_upload_is_attributed_to_the_uploaders_own_client(
     # filtered count to an unfiltered one.
     with tenant_context(vault.tenant.id):
         before = Document.objects.count()
-    response = _upload(_as_alpha(vault), b"novo documento")
+    response = _upload(_as_alpha(vault), b"%PDF-1.4 novo documento")
 
     # Then it is stored against THEIR client and no other. The row is attributed from
     # request.client rather than the request body, so there is nothing to forge -- and
