@@ -11,7 +11,9 @@ the invalidated and stale-409 approval card (test_journey_d_q), SMTP down and th
 cancelled reminder (test_journey_i), the divergent document (test_journey_b), the
 offline upload and its retry (test_upload_retry_slow_network), publication and
 acknowledgement (test_journey_a), the support banner (test_journey_j). Automações
-(T27) and Suporte (T23, with a request awaiting the owner) are swept here.
+(T27) and Suporte (T23, with a request awaiting the owner) are swept here, and so
+are the portal vault, with a served document and empty, and the account page (T45),
+and Pagamentos (AXR1-056).
 
 An axe pass is not a WCAG claim. The manual NVDA and VoiceOver passes in
 ops/AXORIM-A11Y-CHECKLIST.md are the operator's, and that gate stays open.
@@ -95,6 +97,7 @@ class World:
         return {
             "portal-inicio": "/",
             "portal-solicitacao": f"/solicitacoes/{self.setup.request.pk}/",
+            "portal-pagamentos": "/pagamentos/",
         }
 
 
@@ -157,6 +160,13 @@ def _sweep(
     return failures
 
 
+def _axe_into(failures: dict[str, str], page: BrowserPage, name: str) -> None:
+    try:
+        record(page, f"axe-{name}")
+    except AxeViolationsError as violation:
+        failures[name] = str(violation)
+
+
 def test_axe_on_every_firm_screen(world: World, open_page: OpenPage) -> None:
     owner = open_page(world.live, world.setup.graph.actor)
     failures = _sweep(owner, world.live, world.firm_screens(), portal=False)
@@ -169,6 +179,39 @@ def test_axe_on_every_portal_screen(world: World, open_page: OpenPage) -> None:
     portal = open_portal(open_page, world.live, world.setup.portal_user)
     failures = _sweep(portal, world.live, world.portal_screens(), portal=True)
     assert failures == {}, "\n\n".join(f"{k}: {v}" for k, v in failures.items())
+    portal.assert_clean_console()
+    assert_policed_roles()
+
+
+def test_axe_on_the_portal_vault_and_account(world: World, open_page: OpenPage) -> None:
+    portal = open_portal(open_page, world.live, world.setup.portal_user)
+    failures: dict[str, str] = {}
+
+    portal.goto(world.live.url("/documentos/", portal=True))
+    expect(portal.page.get_by_text("nfe_emitente_cliente.xml")).to_be_visible()
+    _axe_into(failures, portal, "portal-documentos")
+
+    portal.goto(world.live.url("/conta/", portal=True))
+    expect(portal.page.locator("main dd")).to_have_text(world.setup.portal_user.email)
+    _axe_into(failures, portal, "portal-conta")
+
+    assert failures == {}, "\n\n".join(f"{k}: {v}" for k, v in failures.items())
+    portal.assert_clean_console()
+    assert_policed_roles()
+
+
+def test_axe_on_the_empty_portal_vault(
+    browser_server: LiveServer, open_page: OpenPage
+) -> None:
+    setup = portal_setup("axe-cofre-vazio")
+    live = live_graph(setup.graph, browser_server.thread.port, *R1_FLAGS)
+    portal = open_portal(open_page, live, setup.portal_user)
+
+    portal.goto(live.url("/documentos/", portal=True))
+    expect(portal.page.locator("main li.card")).to_have_count(0)
+    expect(portal.page.locator("main .empty-state")).to_be_visible()
+    record(portal, "axe-portal-documentos-vazio")
+
     portal.assert_clean_console()
     assert_policed_roles()
 

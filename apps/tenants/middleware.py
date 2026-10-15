@@ -78,13 +78,13 @@ class TenantMiddleware:
 
     def __call__(self, request: TenantHttpRequest) -> HttpResponseBase:
         """Establish tenant context, run the request inside it, and tear it down."""
-        if self._is_non_atomic(request):
+        if self.is_non_atomic(request):
             return self._run_without_database_context(request)
         if portal_slug_from_host(request.get_host()) is not None:
             # PortalMiddleware owns this request entirely. Touch neither the ContextVar
             # nor the database.
             #
-            # Placed AFTER the _is_non_atomic guard, never before it: get_host() raises
+            # Placed AFTER the is_non_atomic guard, never before it: get_host() raises
             # DisallowedHost, and /healthz is @non_atomic_requests and must keep serving
             # on hosts outside ALLOWED_HOSTS without opening a connection.
             #
@@ -108,7 +108,7 @@ class TenantMiddleware:
         return self._run_in_tenant_context(request, granted)
 
     @staticmethod
-    def _is_non_atomic(request: HttpRequest) -> bool:
+    def is_non_atomic(request: HttpRequest) -> bool:
         """Report whether the target view opted out of request transactions.
 
         `@transaction.non_atomic_requests` is how a view declares it must not touch

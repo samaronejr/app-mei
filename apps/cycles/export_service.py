@@ -5,9 +5,10 @@ from datetime import timedelta
 from uuid import UUID
 
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.http import Http404
 from django.utils import timezone
+from psycopg.errors import LockNotAvailable
 
 from apps.accounts.models import User
 from apps.core.flags import tenant_has
@@ -16,12 +17,13 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.completion_records import CompletionGeneration
 from apps.cycles.completion_sources import lock_index_subjects
 from apps.cycles.effects.manifest import JSONValue
-from apps.cycles.evidence import CLEAN_STATES
+from apps.cycles.errors import VersionConflict
+from apps.cycles.evidence import CLEAN_STATES, IntakeState, ReviewDecision, ScanVerdict
 from apps.cycles.evidence_index import EVIDENCE_EXPORT, freeze_index
-from apps.cycles.evidence_zip import Original, ZipError, ZipErrorCode
+from apps.cycles.evidence_zip import ExcludedOriginal, Original, ZipError, ZipErrorCode
 from apps.cycles.export_records import EvidenceExport, ExportAttempt, ExportState
 from apps.cycles.index_projection import collect_index, digest_data
-from apps.cycles.models import DocumentIntake, ServiceCycle
+from apps.cycles.models import DocumentIntake, EvidenceLink, ServiceCycle
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.services.approvals import _lock_scope
 from apps.cycles.services.cycle import check_version, emit, load_cycle, require_actor
@@ -46,6 +48,34 @@ class ExportClaim:
     full_digest: str
     historical: bool
     originals: tuple[Original, ...]
+    excluded_originals: tuple[ExcludedOriginal, ...]
+
+
+def _excluded_original(
+    document: Document, intake: DocumentIntake | None, *, rejected: bool
+) -> ExcludedOriginal | None:
+    """Explain unsafe bytes once, without changing the immutable evidence index."""
+    code, reason = "", ""
+    if rejected:
+        code, reason = ReviewDecision.REJECTED, ReviewDecision.REJECTED.label
+    elif intake is not None and intake.state not in CLEAN_STATES:
+        code, reason = intake.state, IntakeState(intake.state).label
+    elif intake is not None and intake.verdict == ScanVerdict.INFECTED:
+        code, reason = ScanVerdict.INFECTED, ScanVerdict.INFECTED.label
+    elif (
+        intake is None
+        or intake.verdict != ScanVerdict.CLEAN
+        or intake.scanned_at is None
+    ):
+        code, reason = "sem_verificacao", "Sem verificação concluída"
+    if not code:
+        return None
+    return {
+        "id": str(document.pk),
+        "filename": document.original_filename,
+        "code": code,
+        "reason": reason,
+    }
 
 
 @transaction.atomic
@@ -116,6 +146,7 @@ def claim_export(tid: UUID, export_id: UUID) -> ExportClaim | None:
             export.index = freeze_index(scope.actor, scope.cycle)
         index = export.index
         originals = []
+        excluded_originals: list[ExcludedOriginal] = []
         for descriptor in index.data["documents"]:
             document = Document.objects.filter(
                 pk=descriptor["id"], client_id=scope.client.pk
@@ -135,10 +166,18 @@ def claim_export(tid: UUID, export_id: UUID) -> ExportClaim | None:
             ):
                 raise ZipError(ZipErrorCode.SOURCE_CHANGED)
             intake = DocumentIntake.objects.filter(document=document).first()
-            if (intake is None and document.client_upload) or (
-                intake is not None and intake.state not in CLEAN_STATES
-            ):
-                raise ZipError(ZipErrorCode.ORIGINAL_INELIGIBLE)
+            excluded = _excluded_original(
+                document,
+                intake,
+                rejected=EvidenceLink.objects.filter(
+                    document=document,
+                    request__cycle=scope.cycle,
+                    review_decision=ReviewDecision.REJECTED,
+                ).exists(),
+            )
+            if excluded is not None:
+                excluded_originals.append(excluded)
+                continue
             originals.append(
                 Original(
                     document.pk,
@@ -153,6 +192,7 @@ def claim_export(tid: UUID, export_id: UUID) -> ExportClaim | None:
         export.version += 1
         export.state = ExportState.BUILDING
         export.error_code = ""
+        export.excluded_originals = excluded_originals
         export.lease_until = now + EXPORT_LEASE
         export.save(
             update_fields=[
@@ -162,6 +202,7 @@ def claim_export(tid: UUID, export_id: UUID) -> ExportClaim | None:
                 "error_code",
                 "lease_until",
                 "index",
+                "excluded_originals",
             ]
         )
         attempt = ExportAttempt(
@@ -188,7 +229,48 @@ def claim_export(tid: UUID, export_id: UUID) -> ExportClaim | None:
             digest_data(index.data),
             historical,
             tuple(originals),
+            tuple(excluded_originals),
         )
+
+
+def _recheck_originals(claim: ExportClaim) -> None:
+    """Fence live byte eligibility until publication, including historical exports.
+
+    Scope locks serialize record_review. NOWAIT avoids waiting cycle -> intake
+    against scanner/extraction finalizers which take intake -> cycle locks.
+    """
+    try:
+        for original in sorted(claim.originals, key=lambda row: row.id):
+            document = (
+                Document.objects.select_for_update(nowait=True, of=("self",))
+                .filter(pk=original.id, client_id=claim.client_id, purged_at=None)
+                .first()
+            )
+            if document is None:
+                raise ZipError(ZipErrorCode.ORIGINAL_UNAVAILABLE)
+            intake = (
+                DocumentIntake.objects.select_for_update(nowait=True, of=("self",))
+                .filter(document=document)
+                .first()
+            )
+            decisions = (
+                EvidenceLink.objects.select_for_update(nowait=True, of=("self",))
+                .filter(document=document, request__cycle_id=claim.cycle_id)
+                .order_by("pk")
+                .values_list("review_decision", flat=True)
+            )
+            if (
+                _excluded_original(
+                    document, intake, rejected=ReviewDecision.REJECTED in decisions
+                )
+                is not None
+            ):
+                raise ZipError(ZipErrorCode.ORIGINAL_INELIGIBLE)
+    except OperationalError as error:
+        if not isinstance(error.__cause__, LockNotAvailable):
+            raise
+        message = "Um original está sendo alterado. Solicite outro arquivo depois."
+        raise VersionConflict(message) from error
 
 
 def finalize_export(claim: ExportClaim, *, size: int, sha256: str) -> bool:
@@ -210,6 +292,7 @@ def finalize_export(claim: ExportClaim, *, size: int, sha256: str) -> bool:
             or export.lease_until <= timezone.now()
         ):
             return False
+        _recheck_originals(claim)
         lock_index_subjects(scope.cycle)
         current = None
         if not claim.historical:
