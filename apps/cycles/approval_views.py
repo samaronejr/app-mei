@@ -21,6 +21,7 @@ from apps.authz.support import in_support_mode
 from apps.clients.maintenance import load_client
 from apps.clients.models import ClientContact
 from apps.clients.views import require_tenant
+from apps.core.refusal import sentences
 from apps.cycles.approval_forms import (
     OBSERVATION_SOURCE_LABELS,
     ApprovalPolicyForm,
@@ -149,7 +150,9 @@ def _decision(
         proposal.refresh_from_db()
         return _card(request, proposal, str(error), HTTPStatus.CONFLICT)
     except (ValidationError, IllegalTransition, IntentConflict) as error:
-        return _card(request, proposal, str(error), HTTPStatus.UNPROCESSABLE_CONTENT)
+        return _card(
+            request, proposal, sentences(error), HTTPStatus.UNPROCESSABLE_CONTENT
+        )
     if result.proposal.state == ProposalState.INVALIDATED:
         proposal.refresh_from_db()
         return _card(
@@ -401,8 +404,11 @@ def proposal_create(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             form.add_error(None, str(error))
             status = HTTPStatus.CONFLICT
         except (ValidationError, IllegalTransition, BuildError) as error:
-            message = REASON_LABELS.get(str(error), str(error))
-            form.add_error(None, message)
+            # REASON_LABELS is keyed by machine code, which is what a BuildError's
+            # text is; a ValidationError is looked up by its joined messages and
+            # otherwise shown as those sentences, never as its list repr.
+            said = sentences(error)
+            form.add_error(None, REASON_LABELS.get(said, said))
             status = HTTPStatus.UNPROCESSABLE_CONTENT
     elif request.method == "POST":
         status = HTTPStatus.UNPROCESSABLE_CONTENT

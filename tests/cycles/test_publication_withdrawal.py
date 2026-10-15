@@ -1,9 +1,12 @@
 """Withdrawal is another exact approved publication effect, never an edit bypass."""
 
 import json
+from http import HTTPStatus
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
+from django.core.exceptions import ValidationError
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.clients.maintenance import ContactData, save_contact
@@ -17,6 +20,7 @@ from apps.delivery.models import MessageState, OutboundMessage
 from apps.delivery.tasks import dispatch_tenant
 from tests.cycles.publication_fixtures import publication_graph
 from tests.delivery.smtp import FakeSMTP
+from tests.ui.refusal_contract import assert_readable_page
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -42,6 +46,39 @@ def test_withdrawal_form_announces_invalid_reason_without_creating_proposal(
         publication.refresh_from_db()
         assert publication.state == "publicada"
         assert ActionProposal.objects.count() == before
+
+
+def test_a_refused_withdrawal_reads_in_plain_sentences(
+    settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AXR1-054: a ValidationError from the withdrawal is a form error in sentences.
+
+    The form's required reason stops the input-level refusal first, so the service
+    is replaced by one that refuses; what is pinned is the view's handling of it.
+    """
+    settings.ALLOWED_HOSTS = [".localhost", "localhost"]
+    setup = publication_graph()
+    with tenant_context(setup.graph.tenant.pk):
+        execute(setup.graph.actor, setup.proposal.pk, expected_version=2)
+        publication = ClientPublication.objects.get(proposal=setup.proposal)
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        messages = [
+            "A publicação não pode ser retirada agora.",
+            "Confira o ciclo.",
+        ]
+        raise ValidationError(messages)
+
+    monkeypatch.setattr("apps.cycles.publication_views.propose_withdrawal", refuse)
+    response = setup.session(portal=False).post(
+        f"/publicacoes/{publication.pk}/retirar/",
+        {"expected_version": publication.version, "reason": "Publicada por engano"},
+    )
+    assert_readable_page(
+        response,
+        status=HTTPStatus.UNPROCESSABLE_CONTENT,
+        reason="A publicação não pode ser retirada agora. Confira o ciclo.",
+    )
 
 
 def test_withdrawal_needs_new_approval_and_preserves_exact_receipt_history(
