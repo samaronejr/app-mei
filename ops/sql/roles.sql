@@ -324,3 +324,14 @@ BEGIN
     END LOOP;
 END
 $$;
+
+-- T60: exact-version receipt matching only. No table-wide SELECT, receipt timestamps
+-- or receipt row IDs; existing tenant/client RLS also governs these column reads.
+DO $$
+BEGIN
+    IF to_regclass('public.cycles_clientacknowledgement') IS NOT NULL THEN
+        GRANT SELECT (tenant_id, publication_id, publication_digest, user_id)
+        ON cycles_clientacknowledgement TO app_portal;
+    END IF;
+END
+$$;

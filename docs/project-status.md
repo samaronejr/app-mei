@@ -67,8 +67,9 @@ until the name is cleared.
   `AXR1-053` tenant notice authorization, `AXR1-048` import-only invitation
   routing, `AXR1-039` automatic reminder sweep, `AXR1-049` logout recovery after denial, `AXR1-050`
   support audit actor, `AXR1-044` ignored late observations shown as history, `AXR1-047`
-  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, and a final verification wave.
-  Required follow-up `AXR1-041` remains open; optional proposals 051/052 are not
+  discoverable setup after import, `AXR1-043` linked workspace sections, `AXR1-040` unsaved-changes guard, `AXR1-042` portal next action, `AXR1-045` portal contrast, `AXR1-046` reopening disclosure, `AXR1-036` cycle-detail query budget, `AXR1-035` workspace query budget, `AXR1-037` constrained Hoje latency, `AXR1-038` every-model isolation, `AXR1-054` readable refusals, `AXR1-034` named-read and interactive performance evidence, `AXR1-055` saved dates in date inputs, `AXR1-056` portal empty-state contrast, `AXR1-058` completion execution refusal, `AXR1-059` refusal pages way out and product 404, `AXR1-060` portal next action for awaiting publications, `AXR1-061` email metering states, `AXR1-062` R1 client flows in pt-BR, `AXR1-063` upload-refusal ink, `AXR1-064` refused playbook creation form, `AXR1-057` evidence export with unscanned originals, and a final verification wave.
+  Required follow-up `AXR1-041` is delivered and waits only for its integrated top-of-stack CI run; repair items
+  `AXR1-055` to `AXR1-064` follow it in the stack; optional proposals 051/052 are not
   accepted implementation scope. Todo N is cited
   as `AXR1-NNN` (todo 1 is `AXR1-001`) in commit bodies and in
   evidence filenames of the form `.evidence/AXR1-NNN-<kind>.txt`.
@@ -1063,6 +1064,110 @@ missing-swap control failed as required with the "missing exact populated HTMX s
 `AXR1-034-review.md`, `AXR1-034-final-gates-r1.txt`, `t34-capture-r3/`. This approves T34, not later
 follow-ups, launch, merge or deployment. Every OG/OD gate remains open.
 
+`AXR1-041` (stack-aware CI) is recorded on delivered `AXR1-034`. CI now also runs for pull requests into `axr1/**`
+branches, checks out each PR's exact head and fails when the checked-out commit differs; PRs into `main` keep merge-ref
+testing and `deploy-pilot` still needs a push to `main`. Both pytest steps run on every runner CPU with `pytest-xdist`
+(one test database per worker; local STD-GATES stay serial), because R1 roughly doubled the tables each transactional
+test flushes and the serial suite was cancelled at its 75-minute ceiling at 53% (run 38537217704). Remote CI at
+`f2f3961` (run 38556594907) passed every required job: tests in 60 min 51 s (5149 passed, 41 skipped on 4 workers, the
+serial total), container smoke and browser; deploy skipped. Serial STD-GATES at `f2f3961` passed (5149/41/168, isolation
+721/41, CNPJ 29, browser 168). Independent review **APPROVE** at `f2f3961`; its notes: the local paused-channel smoke and
+failing control ran at `f85313d` (the exact-head smoke is the remote job), the test job's margin under its ceiling is 14
+minutes, and the into-`main` path is verified by reading only. The plan's integrated-identity condition is met only by
+the top repair PR's CI run, so item 41 stays unticked until that run is green. Evidence: `.evidence/AXR1-041-happy.txt`,
+`AXR1-041-failure.txt`, `AXR1-041-review.md`, `AXR1-041-final-gates-r1.txt`, `AXR1-041-remote-ci-r2-test-job.log`.
+Every OG/OD gate remains open.
+
+`AXR1-055` (saved dates in date inputs) is recorded on delivered `AXR1-041`. Edit forms rendered a saved date in its
+localized display format inside `<input type="date">`, which browsers treat as empty, so re-saving an engagement silently
+cleared its dates (final F3 N1). A new `input_value` filter renders each field in the input's own wire format (ISO for
+dates) through the shared field partial; submitted strings and non-date values are unchanged. Real-browser QA passed 4/4
+(pt-BR and en at 1440x900 and 390x844): the editor shows both saved dates, changing only the service kind keeps them, and
+reopening shows them again. Final STD-GATES at `28b2eb0` passed (5156/41/168, isolation 721/41, CNPJ 29, browser 168).
+Independent review **APPROVE** at `28b2eb0`: patch identity, 24 focused tests and four browser attacks. Evidence:
+`.evidence/AXR1-055-happy.txt`, `AXR1-055-failure.txt`, `AXR1-055-review.md`, `AXR1-055-final-gates-r2.txt`. Every OG/OD
+gate remains open.
+
+`AXR1-056` (portal empty-state contrast) is recorded on delivered `AXR1-055`. The empty portal Pagamentos state now uses
+T45's `text-ink-600` treatment for R1 tenants (final F3 N2 measured 4.46:1); non-R1 bytes are unchanged and the portal axe
+sweep covers `/pagamentos/` at both widths. The item's acceptance was corrected after review r1: the portal Inicio
+no-company page renders only on a host that resolves no active tenant (an active R1 tenant without a client seat gets
+403), so it is recorded under deferred T77 (4.46:1 card and header e-mail, 4.27:1 footer), not claimed fixed. Final
+STD-GATES at `dd9c66a` passed (5159/41/168, isolation 721/41, CNPJ 29, browser 168). Independent review r2 **APPROVE** at
+`dd9c66a`. Evidence: `.evidence/AXR1-056-happy.txt`, `AXR1-056-failure.txt`, `AXR1-056-review.md`,
+`AXR1-056-review-r2.md`, `AXR1-056-final-gates-r3.txt`. Every OG/OD gate remains open.
+
+`AXR1-058` (completion execution refusal) is recorded on delivered `AXR1-056`. An approved completion whose cycle was not yet
+in "Em execução" was refused with the bare "Esta transição não é permitida."; the refusal now names the required state and
+the path there ("Próximo estado" through "Em revisão", "Aguardando aprovação" and "Em execução"), with the status code,
+authorization order and every transition rule unchanged, and the same approved completion then executes. Final
+STD-GATES at `dbd381d` passed (5160/41/168, isolation 721/41, CNPJ 29, browser 168). Independent review **APPROVE** at
+`dbd381d`: patch identity, 142 tests, desktop/mobile recovery and terminal-cycle 409 attacks. Evidence:
+`.evidence/AXR1-058-prep.md`, `AXR1-058-review.md`, `AXR1-058-final-gates-r3.txt`. Every OG/OD gate remains open.
+
+`AXR1-059` (refusal pages' way out and product 404) is recorded on delivered `AXR1-058`. Every user-reachable 403 and 404
+found now renders the product refusal layout in pt-BR with a title, one heading, a keyboard-reachable way back and, when
+signed in, a working Sair: the support-revoked, wrong-host and ended-portal 403s, a new product 404 (identical for foreign
+and nonexistent objects), Django's CSRF-failure page (now "Página expirada"), the read-only and scan-refused 403s, and every
+invite refusal page. Status codes, authorization order, CSRF refusal and portfolio-first 404s are unchanged (review
+measured 15 responses on parent and head). On firm-door invite refusal pages the legacy platform-host footer still fails
+contrast (4.27:1); a control proves it predates this item, so it is recorded under deferred T77, not claimed fixed. Final
+STD-GATES at `0055ad3` passed (5176/41/168, isolation 721/41, CNPJ 29, browser 168). Independent review **APPROVE** at `0055ad3` (r1 plus a delta review of the
+amendment). Evidence: `.evidence/AXR1-059-prep.md`, `AXR1-059-review.md`, `AXR1-059-final-gates-r1.txt`. Every OG/OD gate
+remains open.
+
+`AXR1-060` (portal next action for awaiting publications) is recorded on delivered `AXR1-059`. A publication awaiting the
+client's confirmation is now the portal's next action, its confirm link works and it clears afterwards; migration
+`0019_portal_receipt_lookup` grants the portal role read access to four receipt columns only, and existing row-level
+security still limits rows to the client's own. The first final gates found two defects the reviews missed: the column-only portal grant was not declared where the
+isolation guard reads portal decisions, and an annotation was named "pending"; the decision is now declared and asserted
+(SELECT * refused, only the declared columns readable, RLS confining rows) and the annotation renamed. Final STD-GATES at `da27d06` passed (5182/41/168, isolation 722/41, CNPJ 29, browser 168). Independent review
+**APPROVE** at `da27d06`: 32 tests, the live confirmation flow, and cross-client and cross-tenant attacks. Evidence:
+`.evidence/AXR1-060-prep.md`, `AXR1-060-review.md`, `AXR1-060-final-gates-r1.txt`. Every OG/OD gate remains open.
+
+`AXR1-061` (email metering states) is recorded on delivered `AXR1-060`. The account page now tells missing, partial and
+measured-zero email metering apart ("Sem medição · Apuração de e-mails pendente" instead of 0). The current month always
+reads as partial because usage is recorded for the prior day; review judged that consistent with the metering design.
+Final STD-GATES at `6521752` passed (5190/41/168, isolation 722/41, CNPJ 29, browser 168). Independent review **APPROVE** at `6521752`: 30 tests and 10 browser cases.
+Evidence: `.evidence/AXR1-061-prep.md`, `AXR1-061-review.md`, `AXR1-061-final-gates-r1.txt`. Every OG/OD gate remains
+open.
+
+`AXR1-062` (R1 client flows in pt-BR) is recorded on delivered `AXR1-061`. On active R1 portal hosts the client invitation,
+sign-in, re-authentication, recovery and request/upload flows render in pt-BR whatever the browser language, including
+the retry after a refused upload; other hosts keep English negotiation. After final F3 found the invitation's
+password-mismatch error still in English (F3R2-01), the message became "Os dois campos de senha não correspondem.", with
+a test under both headers. Final STD-GATES at `6e316f6` passed (5207/41/168, isolation 722/41, CNPJ 29, browser 168). Independent review **APPROVE** at `6e316f6` (r1
+plus delta reviews of both amendments). The first final gates showed the switch's per-request tenant lookup broke the
+`/readyz` and `/versionz` probe contracts on portal hosts; it now honours `@transaction.non_atomic_requests`, so probes
+never touch the database. Evidence: `.evidence/AXR1-062-prep.md`, `AXR1-062-review.md`,
+`AXR1-062-final-gates-r3.txt`. Every OG/OD gate remains open.
+
+`AXR1-063` (upload-refusal ink) is recorded on delivered `AXR1-062`. The R1 portal upload-refusal (400) and retry pages now
+carry the same AA ink as the successful vault form; the status stays 400, the retry keeps CSRF, multipart encoding and the
+size limit, and flag-off pages are byte-identical. Final STD-GATES at `fc53fd9` passed (5213/41/170, isolation 722/41, CNPJ 29, browser 170). Independent review
+**APPROVE** at `fc53fd9`: 76 HTTP and 6 browser tests including two attacks. Residual for F4: a file rejected for its type
+still shows "Nenhum arquivo foi escolhido". Evidence: `.evidence/AXR1-063-happy.txt`, `AXR1-063-failure.txt`,
+`AXR1-063-review.md`, `AXR1-063-final-gates-r2.txt`. Every OG/OD gate remains open.
+
+`AXR1-064` (playbook bound form) is recorded on delivered `AXR1-063`. A refused playbook creation (422 or 409) now re-renders
+the bound form with the submitted values, selected options and inline errors, and correcting only the key succeeds. The
+shared field partial carries both this change and item 55's date values (a one-line conflict resolved during placement and
+verified by review). Final STD-GATES at `0ebaeee` passed (5222/41/170, isolation 722/41, CNPJ 29, browser 170). Independent review **APPROVE** at `0ebaeee`: 70 tests,
+desktop and mobile retries, bound and unbound select and date probes. Evidence: `.evidence/AXR1-064-prep.md`,
+`AXR1-064-review.md`, `AXR1-064-final-gates-r2.txt`. Every OG/OD gate remains open.
+
+`AXR1-057` (evidence export with unscanned originals) is recorded on delivered `AXR1-064`. A cycle's evidence export now
+succeeds when some originals were never scanned: unsafe, unscanned or rejected originals are excluded and named with their
+reason on the page and in the archive, and an all-clean archive is byte-identical to before. Review r1 found a race (an
+original rejected after the claim reached a READY archive); eligibility is now rechecked under row locks in the
+publication transaction, historical exports included, and unsafe attempts never become READY. Migration
+`0020_evidenceexport_excluded_originals` follows item 60's `0019`. Final STD-GATES at `d1e803f` passed (5240/41/170, isolation 722/41, CNPJ 29, browser 170 on a same-head rerun).
+Independent review r2 **APPROVE**: the rebuilt race attack fails on the old head and passes here, plus two new attacks;
+the r3 delta review confirmed it at `d1e803f` (product code unchanged, test-file typing only). Residual for F4: an archive
+published before a later rejection stays downloadable. Evidence: `.evidence/AXR1-057-prep.md`, `AXR1-057-review.md`,
+`AXR1-057-review-r2.md`, `AXR1-057-review-r3.md`, `AXR1-057-final-gates-r3.txt`, `AXR1-057-browser-rerun-r1.txt`. Every
+OG/OD gate remains open.
+
 `AXR1-004` gate repairs (`2f4cf92`) add a locked membership grant revision and
 409 conflict feedback, restore the original owner query budgets, and mirror the
 portal NONE decision. Reversing the R1 seed removes only R1 grants (active and
@@ -1106,14 +1211,10 @@ runbook that documents a restore is not a rehearsal.
 
 ## How changes reach `main`
 
-**Sequential pull requests, each based on current `main`.** Never stacked.
-
-The reason is mechanical rather than stylistic. Continuous integration is configured
-to run on pull requests whose base is `main`. A pull request stacked on another
-feature branch therefore receives no CI run at all, and with required checks in place
-it can never merge. Rebasing a stack onto `main` to unblock it re-runs everything
-anyway, so the stack buys nothing. The accepted consequence is that a wave's work
-waits for the previous wave's pull request to merge before it opens.
+**AXR1 uses a linear stack of open pull requests:** the first targets `main`, and
+each later PR targets the previous `axr1/*` branch. Merge only on the owner's
+instruction. CI evidence must identify the exact head tested; missing checks
+remain explicitly unverified.
 
 ## Deploy cutover state
 
