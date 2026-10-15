@@ -17,6 +17,7 @@ from django.http import HttpRequest
 
 from apps.accounts.models import User
 from apps.audit.admin import TenantScopedAdminMixin
+from apps.authz.services import can
 from apps.clients.models import ClientCompany
 from apps.clients.services import (
     TaxProfileConflictError,
@@ -26,6 +27,12 @@ from apps.clients.services import (
 from apps.core.tenancy import current_tenant_id
 from apps.fiscal.formatting import format_cnpj
 from apps.fiscal.validators import CNPJ_ALPHABET, normalize_document
+from apps.tenants.entitlements import (
+    ACTIVE_CLIENT_STATES,
+    EntitlementExceededError,
+    lock_entitlement,
+    require_client_capacity,
+)
 
 # A masked CNPJ is eighteen characters and a masked CPF is fourteen, while the columns
 # hold fourteen and eleven. The form fields are widened to the masked length and
@@ -88,18 +95,48 @@ class ClientCompanyForm(forms.ModelForm[ClientCompany]):
     def clean(self) -> dict[str, Any] | None:
         """Hold the row lock through both writes in the admin's POST transaction."""
         data = super().clean()
-        if self.actor is not None and self.instance.created_at is not None:
-            revision = self.cleaned_data.get("tax_profile_revision")
-            if revision is not None:
+        tenant_id = current_tenant_id.get()
+        tenant = (
+            lock_entitlement(tenant_id)
+            if self.actor is not None and tenant_id is not None
+            else None
+        )
+        previous_status: str | None = None
+        revision = self.cleaned_data.get("tax_profile_revision")
+        if (
+            self.actor is not None
+            and self.instance.created_at is not None
+            and revision is not None
+        ):
+            try:
+                locked = lock_tax_profile_client(
+                    actor=self.actor,
+                    client=self.instance,
+                    expected_revision=revision,
+                )
+                previous_status = locked.status
+            except TaxProfileConflictError as exc:
+                msg = "O perfil fiscal mudou. Reabra o cadastro antes de salvar."
+                raise forms.ValidationError(msg, code="stale_tax_profile") from exc
+        if (
+            tenant is not None
+            and self.actor is not None
+            and (self.instance.created_at is None or revision is not None)
+        ):
+            if self.instance.created_at is None and not can(
+                self.actor, "clients.edit_tax_profile", self.instance
+            ):
+                raise PermissionDenied
+            if (
+                self.cleaned_data.get("status") in ACTIVE_CLIENT_STATES
+                and previous_status not in ACTIVE_CLIENT_STATES
+            ):
                 try:
-                    lock_tax_profile_client(
-                        actor=self.actor,
-                        client=self.instance,
-                        expected_revision=revision,
-                    )
-                except TaxProfileConflictError as exc:
-                    msg = "O perfil fiscal mudou. Reabra o cadastro antes de salvar."
-                    raise forms.ValidationError(msg, code="stale_tax_profile") from exc
+                    require_client_capacity(tenant)
+                except EntitlementExceededError as exc:
+                    raise forms.ValidationError(
+                        exc.messages, code="active_client_limit"
+                    ) from exc
         return data
 
     def clean_cnpj(self) -> str:
@@ -120,6 +157,25 @@ class ClientCompanyAdmin(TenantScopedAdminMixin, admin.ModelAdmin[ClientCompany]
     list_filter = ("status", "is_mei", "state")
     search_fields = ("legal_name", "trade_name", "cnpj", "cpf")
     readonly_fields: ClassVar[tuple[str, ...]] = ("created_at", "updated_at")
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[ClientCompany]:
+        """Scope the changelist the way the firm's own support screens do.
+
+        Under a support grant the firm's screens answer through
+        ``support_clients()`` — empty ``client_ids`` is firm-metadata only and
+        resolves ``.none()``. The admin queryset must answer the same: the
+        default manager would otherwise hand the console the firm's whole book.
+        """
+        from apps.authz.support import support_clients  # noqa: PLC0415
+
+        granted = support_clients()
+        if granted is not None:
+            return (
+                super()
+                .get_queryset(request)
+                .filter(pk__in=granted.values_list("pk", flat=True))
+            )
+        return super().get_queryset(request)
 
     def get_form(
         self,

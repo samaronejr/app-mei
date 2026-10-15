@@ -1,0 +1,5 @@
+{% extends "admin/change_list.html" %}{% load i18n %}
+{% block object-tools-items %}
+  <li><a href="{% url 'admin:tenants_tenant_new_firm' %}">{% translate "Nova firma" %}</a></li>
+  {{ block.super }}
+{% endblock %}

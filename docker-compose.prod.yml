@@ -68,6 +68,8 @@ x-app-environment: &app-environment
   CLAMD_HOST: clamav
   CLAMD_PORT: "3310"
   DELIVERY_DAILY_CAP: "${DELIVERY_DAILY_CAP:-100}"
+  OUTBOX_MAX_QUEUED_AGE_SECONDS: "${OUTBOX_MAX_QUEUED_AGE_SECONDS:-900}"
+  OUTBOX_MAX_DEAD_LETTERS: "${OUTBOX_MAX_DEAD_LETTERS:-0}"
   SENTRY_DSN: ${SENTRY_DSN:-}
   SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
   SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0.0}
@@ -417,14 +419,16 @@ services:
   clamav:
     # Opt-in: without `--profile clamav` (or COMPOSE_PROFILES=clamav) Compose never
     # creates this service, so the pilot box keeps its current memory budget. Pinned
-    # by digest (the multi-arch index of clamav/clamav:1.4.3), so a re-tag upstream
+    # by digest (the registry index of clamav/clamav:1.4.6), so a re-tag upstream
     # cannot change what runs. The image runs freshclam and clamd together; signature
     # freshness and the real footprint on the host are operator gate OG-05, the host
     # upsize is owner decision OD-11. See ops/README.md "Malware scanning".
-    image: clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+    image: clamav/clamav:1.4.6@sha256:b5b910ce43d595bf8a2fe401e34db56434602b2c755b7c2b07f00c917d04d469
     profiles: ["clamav"]
     environment:
       CLAMAV_NO_MILTERD: "true"
+      # Load one signature database at a time within the sidecar's memory limit.
+      CLAMD_CONF_ConcurrentDatabaseReload: "no"
     volumes:
       - clamav_db:/var/lib/clamav
     # No published port: only worker reaches clamd, over the compose network (3310).

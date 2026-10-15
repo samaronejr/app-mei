@@ -22,6 +22,7 @@ from apps.tenants.models import TenantRole
 from tests.cycles.document_fixtures import reviewed, submit
 from tests.cycles.test_exception_navigation import _surface
 from tests.cycles.test_exceptions import _open
+from tests.delivery.notice_fixtures import acknowledge
 from tests.portal.request_fixtures import portal_setup
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -167,6 +168,7 @@ def test_rejected_invite_matches_its_message_and_ignores_other_references() -> N
     world = portal_setup("invite-destination")
     world.graph.tenant.features = ["cycles_r1", "import_r1"]
     world.graph.tenant.save(update_fields=["features"])
+    acknowledge(world.graph, ("contact_portal_invite",))
     with tenant_context(world.graph.tenant.pk):
         contact = ClientContact.objects.create(
             tenant=world.graph.tenant,
@@ -181,7 +183,9 @@ def test_rejected_invite_matches_its_message_and_ignores_other_references() -> N
     )
     assert queued.status_code == 302
     with tenant_context(world.graph.tenant.pk):
-        message = OutboundMessage.objects.get(kind="portal_invite", contact=contact)
+        message = OutboundMessage.objects.get(
+            kind="contact_portal_invite", contact=contact
+        )
         message.state = MessageState.REJECTED
         message.save(update_fields=["state"])
         report_problem(message)

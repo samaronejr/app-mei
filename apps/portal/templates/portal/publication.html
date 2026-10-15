@@ -9,6 +9,11 @@
   <section class="card min-w-0 space-y-4 px-5 py-4" aria-labelledby="publication-content">
     <h2 id="publication-content" class="font-semibold">Publicação do escritório</h2>
     <p class="text-sm text-ink-600">Publicada em {{ publication.published_at|data_hora }}</p>
+    {% if publication.revision_id %}
+      <p class="font-semibold">Publicação revisada</p>
+      <p>Esta versão foi preservada com seus registros de recebimento.</p>
+      <a class="ui-link" href="{% url 'portal-publication-detail' publication.revision_id %}">Abrir a publicação revisada</a>
+    {% endif %}
     {% if publication.published %}
       <p class="whitespace-pre-wrap break-words" data-publication-body>{{ publication.body }}</p>
       {% if documents %}<h3 class="font-semibold">Documentos desta versão</h3>

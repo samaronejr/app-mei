@@ -37,6 +37,7 @@ from apps.clients.importing import (
     RollbackRefusedError,
     build_error_csv,
     may_import,
+    pending_client_count,
     plan_import,
     queue_commit,
     rollback_import,
@@ -51,6 +52,7 @@ from apps.clients.tasks import commit_import_task
 from apps.clients.views import require_tenant
 from apps.clients.views_onboarding import FLAG
 from apps.core.flags import require_feature
+from apps.tenants.entitlements import EntitlementExceededError, client_allowance
 
 # The rows the batch page lists inline; the full set is in the error report.
 ROWS_ON_PAGE: Final = 200
@@ -143,14 +145,40 @@ def import_upload_view(request: AuthenticatedRequest) -> HttpResponse:
     return HttpResponseRedirect(reverse("client-import-batch", args=[plan.batch_id]))
 
 
+def _created_clients(batch: ImportBatch) -> list[ClientCompany]:
+    """Return the clients this batch created and still owns, in file order.
+
+    AXR1-047: the way out of the import. Without it this screen ends at a count,
+    and the clients it just created are reachable only by searching the registry
+    for names the importer may not have read yet — or by typing a URL.
+
+    `client__isnull=False` is what keeps the list truthful after a rollback: the
+    row survives as history with its `client` nulled (`ImportRow.client` is
+    SET_NULL), so a rolled-back batch lists nothing rather than linking to
+    deleted ids. Capped like the problem rows, for the same reason.
+    """
+    rows = batch.rows.filter(
+        outcome=RowOutcome.CREATED,
+        client__isnull=False,
+    ).select_related("client")
+    # The second `row.client` is the type narrowing the nullable FK needs, not a
+    # second filter: the queryset above is what decides which rows are read.
+    return [
+        row.client for row in rows.order_by("row_number")[:ROWS_ON_PAGE] if row.client
+    ]
+
+
 def _batch_context(batch: ImportBatch, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
+    allowance = client_allowance(batch.tenant, additional=pending_client_count(batch))
     problem_rows = list(
         batch.rows.exclude(outcome=RowOutcome.CREATED, commit_error="").order_by(
             "row_number",
         )[:ROWS_ON_PAGE],
     )
+    created = _created_clients(batch)
     return {
         "batch": batch,
+        "allowance": allowance,
         "status_label": STATUS_LABELS.get(batch.status, batch.status),
         "problem_rows": [
             {
@@ -164,8 +192,11 @@ def _batch_context(batch: ImportBatch, **extra: Any) -> dict[str, Any]:  # noqa:
             for row in problem_rows
         ],
         "rows_truncated": len(problem_rows) >= ROWS_ON_PAGE,
+        "created_clients": created,
+        "created_truncated": len(created) >= ROWS_ON_PAGE,
         "may_commit": batch.status in (ImportStatus.PLANNED, ImportStatus.PARTIAL)
-        and (batch.planned_created > batch.committed_count),
+        and (batch.planned_created > batch.committed_count)
+        and allowance.allowed,
         "may_rollback": batch.status in (ImportStatus.COMMITTED, ImportStatus.PARTIAL),
         "in_progress": batch.status == ImportStatus.QUEUED,
         "is_planned": batch.status == ImportStatus.PLANNED,
@@ -222,6 +253,13 @@ def import_commit_view(request: AuthenticatedRequest, batch_pk: UUID) -> HttpRes
         )
     except ImportConflictError:
         return _conflict(request, batch_pk)
+    except EntitlementExceededError as error:
+        return render(
+            request,
+            "clients/import_batch.html",
+            _batch_context(_batch(batch_pk), error=" ".join(error.messages)),
+            status=HTTPStatus.UNPROCESSABLE_ENTITY,
+        )
     args = (str(tenant_id), str(batch.pk), str(request.user.pk), batch.version)
     # After commit, never inside the transaction: a worker that picked the task up
     # first would read the batch before it was queued and refuse it as stale.

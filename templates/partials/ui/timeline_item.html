@@ -11,13 +11,20 @@ Context:
   state_label -- optional pt-BR word for that state.
   href        -- optional link to the evidence behind the entry.
   href_label  -- its pt-BR label; required when `href` is given.
+  ignored     -- optional: true for a recorded observation that did not change
+                 business state (AXR1-044). It keeps its time and its place in
+                 the order, is drawn quieter, and carries a data-observation
+                 attribute whose value is the word ignored, for machines.
+  detail      -- optional pt-BR sentence under the summary, e.g. why an ignored
+                 observation had no effect.
 
 The rail and the dot are neutral on purpose: the state of an entry is carried by
 its badge, which has a glyph and a word, never by the colour of a dot.
-{% endcomment %}<li class="timeline-item">
+{% endcomment %}<li class="timeline-item"{% if ignored %} data-observation="ignored"{% endif %}>
   <span class="timeline-dot" aria-hidden="true"></span>
   <div class="flex min-w-0 flex-col gap-1">
-    <p class="flex flex-wrap items-center gap-x-2 gap-y-1"><span class="font-medium text-ink-900">{{ summary }}</span>{% if state %}{% include "partials/ui/status_badge.html" with state=state label=state_label only %}{% endif %}</p>
+    <p class="flex flex-wrap items-center gap-x-2 gap-y-1"><span class="{% if ignored %}text-ink-700{% else %}font-medium text-ink-900{% endif %}">{{ summary }}</span>{% if state %}{% include "partials/ui/status_badge.html" with state=state label=state_label only %}{% endif %}</p>
+    {% if detail %}<p class="text-xs text-ink-600">{{ detail }}</p>{% endif %}
     <p class="text-xs text-ink-600"><time datetime="{{ when|date:'c' }}">{{ when|data_hora }}</time>{% if actor %} · {{ actor }}{% endif %}</p>
     {% if href %}<a class="ui-link self-start text-xs" href="{{ href }}">{{ href_label }}</a>{% endif %}
   </div>

@@ -198,6 +198,8 @@ def _document_for(  # noqa: PLR0913 - keyword-only: every value is verified cont
                 # its intake are the record. No link, no submission event.
                 raise UploadRejected
             return document, False
+    if document.purged_at is not None:
+        raise UploadRejected
     if DocumentIntake.objects.filter(
         document=document, state__in=REJECTED_STATES
     ).exists():
@@ -245,6 +247,8 @@ def intake_upload(
                 submitted_by=actor,
             )
     except IntegrityError as error:
+        if _constraint(error) == "evidencelink_retained_original":
+            raise UploadRejected from error
         if _constraint(error) != LINK_CONSTRAINT:
             raise
         # A concurrent submission of the same bytes won the unique key; that is the

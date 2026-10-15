@@ -19,7 +19,7 @@ from uuid import UUID
 
 import sentry_sdk
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.files.storage import default_storage
 from django.core.paginator import Paginator
 from django.db.models import OuterRef, Q, QuerySet, Subquery
@@ -34,6 +34,7 @@ from apps.accounts.views import AuthenticatedRequest
 from apps.authz.objects import load_visible_client
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
+from apps.authz.support import in_support_mode
 from apps.clients.views import require_tenant
 from apps.cycles.capabilities import CYCLES_REVIEW
 from apps.cycles.errors import IllegalTransition, VersionConflict
@@ -326,6 +327,11 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     rows = _field_rows(link, kind)
     error, status = "", HTTPStatus.OK
     if request.method == "POST":
+        # The grant buys the read, never the decision: support sessions may open
+        # the review card (cycles.review resolves FULL for the page) but the
+        # write half of this endpoint answers 403 like every other write.
+        if in_support_mode():
+            raise PermissionDenied
         try:
             expected = int(request.POST.get("expected_version", ""))
         except ValueError:
@@ -392,6 +398,8 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
 @require_can(CYCLES_REVIEW)
 def document_preview(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     """Serve a clean document inline, sandboxed (T12 headers); anything else is 404."""
+    if in_support_mode():
+        raise PermissionDenied
     require_enabled()
     link = _visible_link(request.user, pk)
     intake = DocumentIntake.objects.filter(document_id=link.document_id).first()

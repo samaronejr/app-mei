@@ -1,12 +1,13 @@
 """Decide on exact frozen effects; no executor, provider call or external write."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.http import Http404
 from django.utils import timezone
 
@@ -61,6 +62,7 @@ from apps.cycles.services.cycle import (
 from apps.cycles.services.exceptions import open_exception
 from apps.delivery.models import OutboundMessage
 from apps.delivery.policy import BusinessIntent
+from apps.obligations.models import SourceObservation
 from apps.tenants.models import Tenant
 
 EXCEPTION_REASON = "approval_invalidated"
@@ -283,6 +285,10 @@ def _invalidate(
 def _manifest(
     scope: LockedScope, proposal: ActionProposal, spec: ProposalInput
 ) -> tuple[EffectManifestV1, datetime]:
+    if spec.action_kind is ActionKind.CYCLE_COMPLETION:
+        from apps.cycles.completion_sources import lock_index_subjects  # noqa: PLC0415
+
+        lock_index_subjects(scope.cycle, spec.observation_ids)
     sources = lock_sources(scope.cycle, spec)
     now = timezone.now()
     initiator = scope.authorities[proposal.initiator_id]
@@ -291,8 +297,16 @@ def _manifest(
     ):
         code = "initiator_authority_revoked"
         raise BuildError(code)
+    if spec.reopen and not initiator.permits(
+        "cycles.reopen", scope.client.pk, scope.tenant.pk
+    ):
+        code = "initiator_authority_revoked"
+        raise BuildError(code)
     if (
-        scope.cycle.state not in OPEN_STATES
+        scope.cycle.state
+        not in (
+            {"concluido", "encerrado_com_pendencias"} if spec.reopen else OPEN_STATES
+        )
         or scope.client.status != ClientStatus.ACTIVE
     ):
         code = "effect_context_closed"
@@ -371,6 +385,77 @@ def _unstarted(proposal: ActionProposal) -> None:
         raise IllegalTransition(msg)
 
 
+def _completion_inputs(
+    scope: LockedScope, spec: ProposalInput, previous: ActionProposal | None
+) -> ProposalInput:
+    """Freeze completion subjects and each current missing revision once."""
+    if spec.action_kind is ActionKind.CYCLE_COMPLETION and not spec.reopen:
+        from apps.cycles.completion_sources import (  # noqa: PLC0415
+            lock_index_subjects,
+            scoped_observations,
+        )
+        from apps.cycles.models import EvidenceRequest  # noqa: PLC0415
+
+        lock_index_subjects(scope.cycle, spec.observation_ids)
+        spec = replace(
+            spec,
+            evidence_request_ids=tuple(
+                sorted(
+                    set(spec.evidence_request_ids)
+                    | set(
+                        EvidenceRequest.objects.filter(cycle=scope.cycle).values_list(
+                            "pk", flat=True
+                        )
+                    )
+                )
+            ),
+            observation_ids=tuple(
+                sorted(
+                    set(spec.observation_ids)
+                    | set(
+                        scoped_observations(scope.cycle)
+                        .exclude(
+                            Exists(
+                                SourceObservation.objects.filter(
+                                    supersedes_id=OuterRef("pk"),
+                                    subject_ref_id=OuterRef("subject_ref_id"),
+                                    kind=OuterRef("kind"),
+                                    period=OuterRef("period"),
+                                )
+                            )
+                        )
+                        .values_list("pk", flat=True)
+                    )
+                )
+            ),
+        )
+    if (
+        spec.action_kind is ActionKind.CYCLE_COMPLETION
+        and not spec.reopen
+        and spec.completion_state == "encerrado_com_pendencias"
+    ):
+        from apps.cycles.completion_checks import completion_items  # noqa: PLC0415
+
+        pending_keys = {
+            item.key
+            for item in completion_items(scope.cycle)
+            if previous is None or not item.key.startswith(f"actions:{previous.pk}:")
+        }
+        if not spec.completion_reasons and spec.reason.strip():
+            # Freeze a shared justification against EACH current item.
+            # Execution never expands it to a newly discovered revision.
+            spec = replace(
+                spec,
+                completion_reasons=tuple(
+                    (key, spec.reason) for key in sorted(pending_keys)
+                ),
+            )
+        if set(dict(spec.completion_reasons)) != pending_keys:
+            msg = "Justifique cada pendência da revisão atual antes de encerrar."
+            raise ValidationError(msg)
+    return spec
+
+
 @transaction.atomic
 def propose(
     actor: User,
@@ -386,8 +471,13 @@ def propose(
     scope = _lock_scope(actor, _cycle(cycle_id), {actor.pk} | _recipient_users(spec))
     check_version(scope.cycle.version, expected_version)
     scope.require(initiation_capability(spec.action_kind))
+    if spec.reopen:
+        scope.require("cycles.reopen")
     if (
-        scope.cycle.state not in OPEN_STATES
+        scope.cycle.state
+        not in (
+            {"concluido", "encerrado_com_pendencias"} if spec.reopen else OPEN_STATES
+        )
         or scope.client.status != ClientStatus.ACTIVE
     ):
         msg = "Este contexto está encerrado."
@@ -411,6 +501,7 @@ def propose(
             raise PermissionDenied
     elif draft.previous_id is not None:
         raise Http404
+    spec = _completion_inputs(scope, spec, previous)
     proposal = ActionProposal(
         tenant=scope.tenant,
         client=scope.client,
@@ -474,10 +565,13 @@ def approve(
     if proposal.state == ProposalState.INVALIDATED:
         return result
     self_approval = proposal.initiator_id == scope.actor_id
-    if self_approval and not (
-        scope.tenant.allow_self_approval
-        and active_staff_count(scope.tenant.pk) == 1
-        and self_approval_acknowledged
+    if self_approval and (
+        spec.reopen
+        or not (
+            scope.tenant.allow_self_approval
+            and active_staff_count(scope.tenant.pk) == 1
+            and self_approval_acknowledged
+        )
     ):
         raise PermissionDenied
     if any(row.approver_id == scope.actor_id for row in decisions):
@@ -615,7 +709,7 @@ def revalidate(
         approved = [
             row for row in decisions if row.decision == ApprovalDecision.APPROVE
         ]
-        separated = not (
+        separated = spec.reopen or not (
             scope.tenant.allow_self_approval
             and active_staff_count(scope.tenant.pk) == 1
         )

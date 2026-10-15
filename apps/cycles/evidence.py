@@ -18,6 +18,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from apps.core.retention import RetentionClass
 from apps.cycles.records import ClientRecord, ServiceCycle
 
 TITLE_MAX_LENGTH: Final = 160
@@ -118,6 +119,10 @@ class EvidenceRequest(ClientRecord):
             models.Index(
                 fields=["tenant", "cycle", "state"], name="evidencerequest_cycle_idx"
             ),
+            models.Index(
+                fields=["tenant", "state", "due_on", "id"],
+                name="evidencerequest_reminder_idx",
+            ),
         ]
         constraints: ClassVar[list[models.BaseConstraint]] = [
             *ClientRecord.Meta.constraints,
@@ -213,6 +218,12 @@ class EvidenceLink(ClientRecord):
     client_reason = models.TextField(blank=True, default="", db_default="")
     reviewed_at = models.DateTimeField(null=True, blank=True)
     version = models.PositiveIntegerField(default=1, db_default=1, editable=False)
+    retention_class = models.CharField(
+        max_length=24,
+        choices=RetentionClass.choices,
+        default=RetentionClass.OPERATIONAL,
+        db_default=RetentionClass.OPERATIONAL,
+    )
 
     class Meta(ClientRecord.Meta):
         """One link per request and document (S7.5)."""
@@ -413,6 +424,13 @@ class ExtractedField(ClientRecord):
         related_name="+",
     )
     created_at = models.DateTimeField(default=timezone.now)
+    retention_class = models.CharField(
+        max_length=24,
+        choices=RetentionClass.choices,
+        default=RetentionClass.FISCAL_EVIDENCE,
+        db_default=RetentionClass.FISCAL_EVIDENCE,
+    )
+    redacted_at = models.DateTimeField(null=True)
 
     class Meta(ClientRecord.Meta):
         """Tenant-led lookup of one document's fields."""

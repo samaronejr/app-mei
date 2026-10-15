@@ -1,0 +1,14 @@
+/* Loaded only while a support grant is selected. Native admin theme tokens keep
+ * the status legible in either theme without importing the product-shell reset. */
+[data-support-banner] {
+  padding: 12px 20px;
+  background: var(--message-warning-bg);
+  color: var(--body-fg);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* The admin's breadcrumbs otherwise distinguish links by color alone. */
+.breadcrumbs a {
+  text-decoration: underline;
+}

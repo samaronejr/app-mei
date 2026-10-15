@@ -1,0 +1,47 @@
+{% load i18n %}{% comment %}
+The whole upload control, drawn on the vault page and again on the refusal page so that
+a client who was just refused can retry without navigating anywhere.
+
+Included WITHOUT `only`, exactly as `portal/partials/nav.html` is. That is not laziness
+about the convention: `{% csrf_token %}` reads the token straight off the context, so an
+isolated context would render the tag to nothing and produce a form that answers 403 on
+submit -- silently, because a missing hidden input looks like no input at all. The `only`
+discipline belongs to the pure partials under `templates/partials/pure/`, which take a
+declared set of values and read nothing else; this one is portal-local and shares its
+page's context deliberately.
+
+A plain multipart POST and a native file input, with no script of any kind. There is
+deliberately no progress bar: the browser already draws one for a form submission, and
+the alternative is an upload path that stops working the moment scripting does -- on the
+one boundary in this product that row-level security is enforcing, and for the one
+action a client most needs to succeed.
+
+The accepted types are a recommendation and the control says so, because the SERVER does
+not restrict them. Writing "aceitamos apenas PDF" would be a promise nothing keeps. The
+size limit is the opposite: it IS enforced, the figure comes from the same setting the
+endpoint checks, and a test moves that setting to prove the sentence follows it.
+
+String literals inside a tag that sits within an HTML attribute are single-quoted
+throughout this project. The class-token scanner reads attributes with a regex, so a
+double quote inside one ends the attribute early and feeds the tag's own words to the
+stale-stylesheet guard as though they were class names.
+{% endcomment %}
+<form class="card space-y-4 px-5 py-5" method="post" action="{% url 'portal-document-upload' %}" enctype="multipart/form-data">
+  {% csrf_token %}
+
+  <div class="space-y-1">
+    <p class="text-base font-semibold text-ink-900">{% translate "Enviar documento" %}</p>
+    <p class="text-sm text-ink-600">{% translate "Guarde aqui suas notas, recibos e comprovantes. Tudo o que você enviar fica disponível para a sua contadora." %}</p>
+  </div>
+
+  <div class="field">
+    <label class="field-label" for="arquivo">{% translate "Escolha o arquivo" %}</label>
+    <input class="upload-field w-full" type="file" name="file" id="arquivo" required accept=".pdf,.jpg,.jpeg,.png">
+    <p class="field-help">{% translate "Envie PDF, JPG ou PNG." %} {% blocktranslate with limite=max_size_label %}Até {{ limite }} por arquivo.{% endblocktranslate %}</p>
+  </div>
+
+  <button class="btn btn-primary" type="submit">
+    {% include "partials/pure/icons/upload.html" %}
+    {% translate "Enviar arquivo" %}
+  </button>
+</form>

@@ -1,0 +1,27 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    The provider_accepted wording of docs/product/vocabulary.md. This page explains the
+    label without ever using a delivery word, which the claims test refuses.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="significa">
+    <h2 id="significa" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que significa{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}"Aceita pelo servidor de e-mail" quer dizer que o nosso provedor de envio respondeu que recebeu a mensagem para enviar. Guardamos essa resposta e o horário.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="nao-significa">
+    <h2 id="nao-significa" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que não significa{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Não confirma que a mensagem chegou à caixa de entrada. Ela pode ir para o spam ou ser recusada depois pelo servidor de quem recebe.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Não confirma que alguém leu. O produto não rastreia abertura de e-mail.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Por isso a tela nunca diz que a mensagem chegou ao destino só porque o servidor aceitou.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="incerto">
+    <h2 id="incerto" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Resultado incerto{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Às vezes a conexão cai no meio do envio. Nesse caso a tela mostra Resultado incerto: o envio pode ter ocorrido. O sistema confirma antes de tentar de novo, para o cliente não receber a mesma mensagem duas vezes.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="confirmacao">
+    <h2 id="confirmacao" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que conta como confirmação{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Quando o cliente, logado no portal, abre ou baixa uma publicação, isso é registrado pelo próprio sistema. Quando ele marca que está ciente de algo no portal, isso também fica registrado.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

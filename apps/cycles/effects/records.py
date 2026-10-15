@@ -75,6 +75,7 @@ class ActionProposal(ClientRecord):
     decision_reason = models.TextField(blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
+    redacted_at = models.DateTimeField(null=True)
 
     class Meta(ClientRecord.Meta):
         """Scoped intent lineage and an exact referent for approval decisions."""

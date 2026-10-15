@@ -41,6 +41,12 @@ class SchedulerHeartbeat(models.Model):
         null=True,
         blank=True,
     )
+    # Job outcomes do not replace the beat/backup liveness contract. Jobs that
+    # write these fields use last_success_at, not auto_now, as their completion.
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_error_code = models.CharField(max_length=64, blank=True)
+    outcomes_json = models.JSONField(default=dict, blank=True)
 
     class Meta:
         """Model metadata."""

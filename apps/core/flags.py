@@ -57,6 +57,8 @@ FEATURES: Final[frozenset[str]] = frozenset(
         "bulk_r1",
         # T7: import of an existing client base into the product.
         "import_r1",
+        # T22: firm settings, account lifecycle and private usage reporting.
+        "firm_settings_r1",
     }
 )
 

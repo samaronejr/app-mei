@@ -2,6 +2,7 @@
 {% block title %}Ciclos{% endblock %}
 {% block heading %}Ciclos{% endblock %}
 {% block content %}
+{% if may_bulk %}<p class="mb-4"><a class="ui-btn ui-btn-primary" href="{% url 'bulk-start' %}?periodo={{ period|date:'Y-m' }}&amp;kind=open_cycles">Operações em lote</a></p>{% endif %}
 <form method="get" class="ui-panel grid gap-4 p-4 sm:grid-cols-3" aria-label="Filtrar ciclos">
   <div class="ui-field">
     <label for="periodo" class="ui-field-label">Competência</label>
