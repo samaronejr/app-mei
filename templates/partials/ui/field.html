@@ -1,0 +1,30 @@
+{% load i18n %}{% comment %}
+One form field -- label, control, help, error -- from plain data.
+
+`partials/pure/field.html` renders a Django BoundField and stays the partial for
+every Form. This one exists for the controls that have no Form behind them: a
+filter bar's query parameters, a search box, a select the view resolves itself.
+The accessibility contract is the same one, written the same way:
+
+  * the label is always rendered, always visible, and bound by `for`;
+  * `aria-describedby` names the help id, the error id, both, or is omitted --
+    never emitted empty;
+  * `aria-invalid="true"` appears only while there are errors.
+
+Context:
+  name      -- the submitted parameter name.
+  field_id  -- the control's id. Required: the label, help and error ids all
+               derive from it.
+  label     -- visible pt-BR label.
+  type      -- text (default) | search | email | number | date | select | textarea.
+  value     -- current value; for a select, the value of the selected option.
+  options   -- for a select: a list of {value, label}.
+  required  -- truthy marks the control required.
+  help_text -- optional guidance under the control.
+  errors    -- optional list of pt-BR messages; any entry marks the field invalid.
+{% endcomment %}<div class="ui-field">
+  <label class="ui-field-label" for="{{ field_id }}">{{ label }}{% if required %} <span class="text-state-danger" aria-hidden="true">*</span>{% endif %}</label>
+  {% if type == 'select' %}<select{% elif type == 'textarea' %}<textarea rows="3"{% else %}<input type="{{ type|default:'text' }}" value="{{ value|default_if_none:'' }}"{% endif %} name="{{ name }}" id="{{ field_id }}" class="ui-field-input"{% if required %} required{% endif %}{% if errors %} aria-invalid="true"{% endif %}{% if help_text and errors %} aria-describedby="{{ field_id }}_help {{ field_id }}_error"{% elif help_text %} aria-describedby="{{ field_id }}_help"{% elif errors %} aria-describedby="{{ field_id }}_error"{% endif %}>{% if type == 'select' %}{% for option in options %}<option value="{{ option.value }}"{% if option.value|stringformat:'s' == value|default_if_none:''|stringformat:'s' %} selected{% endif %}>{{ option.label }}</option>{% endfor %}</select>{% elif type == 'textarea' %}{{ value|default_if_none:'' }}</textarea>{% endif %}
+  {% if help_text %}<p id="{{ field_id }}_help" class="text-xs text-ink-600">{{ help_text }}</p>{% endif %}
+  {% if errors %}<p id="{{ field_id }}_error" class="text-xs font-medium text-state-danger">{% for error in errors %}{{ error }}{% if not forloop.last %} {% endif %}{% endfor %}</p>{% endif %}
+</div>

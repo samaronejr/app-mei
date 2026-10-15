@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.00">
+  <infNFSe Id="NFS00000000000000000000000000000000000000000000000000">
+    <nNFSe>42</nNFSe>
+    <emit><CNPJ>11222333000181</CNPJ><xNome>Prestador sintético</xNome></emit>
+    <valores><vLiq>800.00</vLiq></valores>
+    <DPS versao="1.00">
+      <infDPS Id="DPS000000000000000000000000000000000000000000">
+        <dhEmi>2026-09-20T09:30:00-03:00</dhEmi>
+        <dCompet>2026-09-01</dCompet>
+        <prest><CNPJ>11222333000181</CNPJ></prest>
+        <toma><CNPJ>12ABC34501DE35</CNPJ><xNome>Tomador sintético</xNome></toma>
+        <valores><vServPrest><vServ>800.00</vServ></vServPrest></valores>
+      </infDPS>
+    </DPS>
+  </infNFSe>
+</NFSe>

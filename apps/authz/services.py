@@ -17,21 +17,30 @@ guess this module exists to avoid.
 
 from collections.abc import Callable, Iterable
 from functools import wraps
-from typing import Any, Concatenate, Final, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Final, ParamSpec, TypeVar
 from uuid import UUID
 
 from django.apps import apps as django_apps
 from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import PermissionDenied
+from django.db.models import OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.http import HttpRequest
 from django.http.response import HttpResponseBase
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
 from apps.authz.models import Capability, GrantLevel, RoleGrant
 from apps.authz.stash import portal_stash, stashed_level
+from apps.authz.support import in_support_mode, support_level
 from apps.core.tenancy import current_client_id, current_tenant_id
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
+    from apps.tenants.models import Membership
 
 _P = ParamSpec("_P")
 _ResponseT = TypeVar("_ResponseT", bound=HttpResponseBase)
@@ -57,6 +66,27 @@ class UnknownCapability(LookupError):  # noqa: N818
     """
 
 
+# A total order over the enum, used only for `max()` when a user grant competes
+# with the role grant. `UserCapabilityGrant.level` is CHECK-constrained to
+# full/none, so in R1 the comparison this produces is trivially a grant of FULL —
+# the ranks below exist so that if the constraint is ever relaxed, "the max" stays
+# a defined answer rather than whichever string happened to sort later.
+_LEVEL_RANK: Final[dict[str, int]] = {
+    GrantLevel.NONE: 0,
+    GrantLevel.TICKET_ONLY: 1,
+    GrantLevel.VIEW_CONFIRM: 2,
+    GrantLevel.INITIATE_APPROVE: 3,
+    GrantLevel.OWN: 4,
+    GrantLevel.LIMITED: 5,
+    GrantLevel.FULL: 6,
+}
+
+
+def _max_level(first: str, second: str) -> str:
+    """Return the more permissive of two matrix levels."""
+    return first if _LEVEL_RANK[first] >= _LEVEL_RANK[second] else second
+
+
 def resolve_level(
     user: Actor,
     action: str,
@@ -65,27 +95,23 @@ def resolve_level(
 ) -> str:
     """Return the raw matrix level for this account, before object refinement.
 
-    Resolution order, and the order matters: superuser short-circuit, then the active
-    membership's role, then the grant. The short-circuit comes first because the
+    Resolution order, and the order matters: superuser short-circuit, then the
+    active membership's role, then the role grant, then a live
+    `UserCapabilityGrant` raising it. The short-circuit comes first because the
     report's *platform admin* column has no membership to look up — `Membership.role`
-    offers only the three firm-side roles — so a membership-first order would deny the
-    platform administrator every capability the matrix grants them.
+    offers only the three firm-side roles — so a membership-first order would deny
+    the platform administrator every capability the matrix grants them.
+
+    The user grant is consulted ONLY for firm-side roles. A client role's answer
+    comes from its role grant and the stash alone, by construction: R1 has no
+    legitimate path that mints a grant onto a portal membership, and a row written
+    there anyway — the ORM does not know the caller's intent — must resolve to
+    exactly what it would have resolved to absent the row.
     """
-    # Before _capability, which reads authz_capability — denied to app_portal, and a
-    # denied read aborts the transaction rather than refusing.
-    stashed = stashed_level(user, action, tenant_id, current_tenant_id.get())
-    if stashed is not None:
-        return stashed
-    capability = _capability(action)
-    if not user.is_authenticated:
-        return GrantLevel.NONE
-    if user.is_superuser:
-        return GrantLevel.FULL
-    role = role_of(user, tenant_id)
-    if role is None:
-        return GrantLevel.NONE
-    grant = RoleGrant.objects.filter(role=role, capability=capability).first()
-    return grant.level if grant is not None else GrantLevel.NONE
+    _, levels = _resolve_levels_and_role(
+        user, (action,), tenant_id=tenant_id, include_superuser_role=False
+    )
+    return levels[action]
 
 
 def can(
@@ -126,9 +152,9 @@ def granted_levels(
 ) -> dict[str, str]:
     """Resolve several capabilities in one round trip, with `resolve_level`'s answers.
 
-    A navigation bar asks about every item it might draw, and `resolve_level` costs
-    two queries per question — so a six-item nav is twelve queries on every page.
-    This is the same two reads for the whole set.
+    Registered capabilities, active membership and role grants share one live SQL
+    statement. Non-FULL firm-role answers may add one batched user-grant read.
+    No result is retained or passed to another authorization answerer.
 
     It is not a second policy source: the resolution order, the superuser
     short-circuit and the missing-grant default are the same, and
@@ -183,9 +209,19 @@ def _resolve_levels_and_role(
                 for slug in slugs
             },
         )
-    known = set(
-        Capability.objects.filter(slug__in=slugs).values_list("slug", flat=True),
-    )
+    # A support session answers from the owner's grant decision, never from the
+    # platform account's role or the superuser short-circuit — which is precisely
+    # why this check precedes it. The stash is set only inside a request whose
+    # middleware re-read the live grant for THIS request. Placed in this shared
+    # helper so resolve_level, resolve_levels and granted_levels_with_role all
+    # answer identically (test_bulk_resolution_agrees_with_resolve_level).
+    if in_support_mode():
+        return (
+            None,
+            {slug: support_level(slug) or GrantLevel.NONE for slug in slugs},
+        )
+    rows = _role_grant_rows(user, slugs, tenant_id)
+    known = {slug for slug, _, _ in rows}
     unknown = [slug for slug in slugs if slug not in known]
     if unknown:
         msg = (
@@ -198,16 +234,93 @@ def _resolve_levels_and_role(
     if user.is_superuser:
         role = role_of(user, tenant_id) if include_superuser_role else None
         return role, dict.fromkeys(slugs, GrantLevel.FULL)
-    role = role_of(user, tenant_id)
+    role = rows[0][1] if rows else role_of(user, tenant_id)
     if role is None:
         return None, dict.fromkeys(slugs, GrantLevel.NONE)
-    resolved = dict(
-        RoleGrant.objects.filter(
-            role=role,
-            capability__slug__in=slugs,
-        ).values_list("capability__slug", "level"),
+    resolved = {slug: level for slug, _, level in rows}
+    non_full = tuple(slug for slug in slugs if resolved.get(slug) != GrantLevel.FULL)
+    user_levels = (
+        _user_grant_levels(user, non_full, role, tenant_id) if non_full else {}
     )
-    return role, {slug: resolved.get(slug, GrantLevel.NONE) for slug in slugs}
+    return role, {
+        slug: _max_level(
+            resolved.get(slug, GrantLevel.NONE),
+            user_levels.get(slug, GrantLevel.NONE),
+        )
+        for slug in slugs
+    }
+
+
+def _role_grant_rows(
+    user: Actor,
+    slugs: tuple[str, ...],
+    tenant_id: UUID | None,
+) -> list[tuple[str, str | None, str]]:
+    """Read registered capabilities and this answerer's live role grants together."""
+    if not user.is_authenticated or user.is_superuser:
+        return [
+            (slug, None, GrantLevel.NONE)
+            for slug in Capability.objects.filter(slug__in=slugs).values_list(
+                "slug", flat=True
+            )
+        ]
+    memberships = _membership_rows(user, tenant_id)
+    grants = RoleGrant.objects.filter(
+        capability_id=OuterRef("pk"), role=OuterRef("_actor_role")
+    )
+    return list(
+        Capability.objects.filter(slug__in=slugs)
+        .annotate(_actor_role=Subquery(memberships.values("role")[:1]))
+        .annotate(
+            _role_level=Coalesce(
+                Subquery(grants.values("level")[:1]), Value(GrantLevel.NONE)
+            )
+        )
+        .values_list("slug", "_actor_role", "_role_level")
+    )
+
+
+def _user_grant_levels(
+    user: Actor,
+    slugs: tuple[str, ...],
+    role: str,
+    tenant_id: UUID | None,
+) -> dict[str, str]:
+    """Read this account's live user grants for `slugs`, or none for client roles.
+
+    Skipped wholesale for the two client roles: a portal answer must come from the
+    role grant and the stash alone. With no client context a portal membership is
+    invisible to `role_of` and this is never reached for it; inside one it is, and
+    the skip is the difference between a grant row on a client seat being inert
+    and it smuggling a firm capability into a portal answer.
+
+    `all_objects` with an explicit tenant filter, deliberately: the scoped
+    manager reads the AMBIENT context var, while `resolve_level` may have been
+    handed a different explicit tenant — `role_of` above resolves `tenant_id or
+    current_tenant_id` and this read must ask about the same firm. Row-level
+    security still applies underneath, so a context-var ambient pointing at a
+    different tenant sees nothing either way — the policy is the boundary, this
+    filter is just the question being asked of the right tenant.
+    """
+    from apps.tenants.models import CLIENT_ROLES  # noqa: PLC0415
+
+    if role in CLIENT_ROLES:
+        return {}
+    resolved = tenant_id or current_tenant_id.get()
+    if resolved is None:
+        return {}
+    grant_model = django_apps.get_model("authz", "UserCapabilityGrant")
+    # ALL_OBJECTS_OK: `tenant_id=` names the tenant explicitly, matching what
+    # `role_of` resolved against; the scoped manager would instead ask the ambient
+    # context var, which a command handing an explicit tenant may never have set.
+    rows = grant_model.all_objects.filter(
+        Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now()),
+        tenant_id=resolved,
+        user=user,
+        capability__slug__in=slugs,
+        revoked_at__isnull=True,
+    )
+    return dict(rows.values_list("capability__slug", "level"))
 
 
 def require_can(
@@ -260,17 +373,6 @@ def _record_refusal(request: HttpRequest, action: str) -> None:
     )
 
 
-def _capability(action: str) -> Capability:
-    capability = Capability.objects.filter(slug=action).first()
-    if capability is None:
-        msg = (
-            f"{action!r} is not a capability in the permission matrix. Returning "
-            f"False here would hide a permanently broken gate behind a plausible 403."
-        )
-        raise UnknownCapability(msg)
-    return capability
-
-
 def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
     """Return this account's active role in the named firm, or None if it has none.
 
@@ -279,10 +381,16 @@ def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
     the read that feeds one belongs here too rather than being re-implemented next to
     the comparison.
     """
+    role = _membership_rows(user, tenant_id).values_list("role", flat=True).first()
+    return str(role) if role is not None else None
+
+
+def _membership_rows(user: User, tenant_id: UUID | None) -> "QuerySet[Membership]":
+    """Keep the identity, tenant and client membership boundary in one place."""
+    membership_model: type[Membership] = django_apps.get_model("tenants", "Membership")
     resolved = tenant_id or current_tenant_id.get()
     if resolved is None:
-        return None
-    membership_model = django_apps.get_model("tenants", "Membership")
+        return membership_model.objects.none()
     # PLATFORM_QUERY_OK: keyed on the actor and one explicit tenant. This query IS
     # the authorization check, so routing it through for_user would be circular.
     # The client filter is what keeps this ONE path rather than two. Outside a portal
@@ -292,13 +400,12 @@ def role_of(user: User, tenant_id: UUID | None = None) -> str | None:
     # selects that user's membership over that one client. It also makes `.first()`
     # deterministic: a user holding both a firm and a client role in one firm has two
     # rows, and without this filter the ordering between them is arbitrary.
-    membership = membership_model.objects.filter(
+    return membership_model.objects.filter(
         user=user,
         tenant_id=resolved,
         is_active=True,
         client=current_client_id.get(),
-    ).first()
-    return str(membership.role) if membership is not None else None
+    ).order_by("pk")
 
 
 def _is_attached_to(user: User, obj: object | None) -> bool:

@@ -1,0 +1,24 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    The four separate states of invariant 8 (plan S6.4) and their labels from
+    docs/product/vocabulary.md.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="o-que-mostra">
+    <h2 id="o-que-mostra" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que a cobertura mostra{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}A cobertura mostra o que sabemos sobre cada obrigação e de onde veio essa informação. Ela não mostra a situação oficial da obrigação no órgão.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="estados">
+    <h2 id="estados" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quatro estados diferentes{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Sem informação: nenhuma fonte cobre este item. Nunca aparece como se estivesse tudo bem.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Desatualizado: a última verificação é antiga, e a tela diz há quanto tempo.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Pagamento informado (não confirmado na Receita): o comprovante foi registrado pela equipe ou enviado pelo cliente. Enquanto não for conferido, continua marcado como aguardando conferência.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Verificado: só aparece quando uma fonte verificada sustenta a informação.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="hoje">
+    <h2 id="hoje" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Como está hoje{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Hoje o produto não consulta a Receita nem outros órgãos. Por isso nenhuma obrigação aparece como confirmada pela autoridade. Cada estado usa cor, ícone e texto juntos, nunca só a cor.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

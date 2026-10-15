@@ -24,7 +24,12 @@ from django.db import ProgrammingError, connection, transaction
 from apps.accounts.models import User
 from apps.clients.models import ClientAssignment, ClientCompany, ClientTag, Tag
 from apps.core.tenancy import tenant_context
-from apps.obligations.models import MonthlyRevenue, Obligation, ObligationType
+from apps.obligations.models import (
+    MonthlyRevenue,
+    Obligation,
+    ObligationType,
+    SourceObservation,
+)
 from apps.tenants.models import Membership, Tenant, TenantRole
 from tests.isolation.rolecheck import assert_isolated_role
 
@@ -33,6 +38,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 ONBOARDING_ITEMS_PER_CLIENT = 6
 REVENUES_PER_CLIENT = 1
 OBLIGATIONS_PER_CLIENT = 1
+OBSERVATIONS_PER_CLIENT = 1
 ASSIGNMENTS_PER_CLIENT = 1
 TAG_LINKS_PER_CLIENT = 1
 
@@ -95,13 +101,23 @@ def clients() -> Clients:
                 competence_month=dt.date(2026, 1, 1),
                 gross_amount=Decimal("1000.00"),
             )
-            Obligation.objects.create(
+            obligation = Obligation.objects.create(
                 tenant=tenant,
                 client=client,
                 obligation_type=obligation_type,
                 competence_month=dt.date(2026, 1, 1),
                 nominal_due_date=dt.date(2026, 2, 20),
                 resolved_due_date=dt.date(2026, 2, 20),
+            )
+            SourceObservation.objects.create(
+                tenant=tenant,
+                client=client,
+                subject_ref=obligation,
+                kind="payment",
+                period=dt.date(2026, 1, 1),
+                source_kind="legacy_status",
+                observed_at=dt.datetime(2026, 2, 20, 12, tzinfo=dt.UTC),
+                verification_status="unknown",
             )
             ClientAssignment.objects.create(
                 tenant=tenant,
@@ -179,6 +195,7 @@ COUNTS = [
     ("clients_onboardingitem", ONBOARDING_ITEMS_PER_CLIENT),
     ("obligations_monthlyrevenue", REVENUES_PER_CLIENT),
     ("obligations_obligation", OBLIGATIONS_PER_CLIENT),
+    ("obligations_sourceobservation", OBSERVATIONS_PER_CLIENT),
     ("clients_clientassignment", ASSIGNMENTS_PER_CLIENT),
     ("clients_clienttag", TAG_LINKS_PER_CLIENT),
 ]

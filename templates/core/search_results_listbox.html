@@ -1,0 +1,22 @@
+{% load i18n %}{% comment %}
+The palette's results, swapped into #palette-results by HTMX (`hx-get` on the
+palette field). A listbox of options the combobox points at with
+aria-activedescendant: focus never leaves the field, so the options are not
+focusable and are not links -- an interactive element inside an option is one a
+screen reader cannot reach. The destination rides in data-href, which the
+`palette` component (static/js/app.js) follows on Enter or click; it is a path
+from `reverse()`, never tenant text.
+
+Option ids are positional, not row ids: an id is an attribute every assistive
+technology reads, and a row's primary key has no business being announced.
+
+Context: the same as core/search.html. No total, only what is shown.
+{% endcomment %}{% if too_short %}<p class="palette-hint">{% blocktranslate %}Digite ao menos {{ min_length }} caracteres.{% endblocktranslate %}</p>{% elif groups %}<div role="listbox" id="palette-listbox" class="palette-listbox" aria-label="{% translate 'Resultados da busca' %}">
+  {% for kind, label, hits in groups %}<div role="group" class="palette-group" aria-label="{{ label }}">
+    <div class="palette-group-title" aria-hidden="true">{{ label }}</div>
+    {% for hit in hits %}<div role="option" id="palette-{{ kind }}-{{ forloop.counter }}" class="palette-option" aria-selected="false" data-kind="{{ hit.kind }}" data-href="{{ hit.url }}">
+      <span class="palette-option-label break-words">{{ hit.label }}</span>
+      {% if hit.detail %}<span class="palette-option-detail break-words">{{ hit.detail }}</span>{% endif %}
+    </div>{% endfor %}
+  </div>{% endfor %}
+</div>{% else %}<p class="palette-hint">{% translate "Nenhum resultado na sua carteira." %}</p>{% endif %}

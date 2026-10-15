@@ -1,0 +1,25 @@
+{% load i18n %}{% comment %}
+A filter bar: a plain GET form whose state lives in the URL.
+
+Context:
+  label        -- accessible name of the search landmark ("Filtrar clientes").
+  action       -- where the form submits; empty submits to the current address.
+  filters      -- a list of field dicts, each rendered by `partials/ui/field.html`
+                  (name, field_id, label, type, value, options, help_text).
+  clear_url    -- optional; where "Limpar filtros" leads, normally the bare list.
+  submit_label -- optional; defaults to "Filtrar".
+
+Filters are query parameters, so Back restores them and a filtered view can be
+bookmarked or sent to a colleague (S5.6). The form carries no hx-* attribute:
+HTMX reads such an attribute after the browser has decoded it, which is why the
+project interpolates nothing into one. A caller wanting a swap wraps this include
+in its own boosted element carrying `hx-sync`, the way
+`partials/pure/pagination.html` describes -- and without script the button still
+submits an ordinary GET.
+{% endcomment %}<form method="get" action="{{ action }}" class="filter-bar" role="search" aria-label="{{ label }}">
+  {% for filter in filters %}{% include "partials/ui/field.html" with name=filter.name field_id=filter.field_id label=filter.label type=filter.type value=filter.value options=filter.options help_text=filter.help_text errors=filter.errors only %}{% endfor %}
+  <div class="filter-actions">
+    <button type="submit" class="ui-btn ui-btn-primary">{% if submit_label %}{{ submit_label }}{% else %}{% translate "Filtrar" %}{% endif %}</button>
+    {% if clear_url %}<a class="ui-btn ui-btn-quiet" href="{{ clear_url }}">{% translate "Limpar filtros" %}</a>{% endif %}
+  </div>
+</form>

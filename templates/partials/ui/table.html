@@ -1,0 +1,38 @@
+{% load i18n %}{% comment %}
+A data table: caption, sortable headers, dense or comfortable rows.
+
+Context:
+  caption        -- required. What the table lists; a screen reader announces it
+                    on entry. `caption_hidden` keeps it in the accessibility tree
+                    only, for a table already titled by the heading above it.
+  columns        -- a list of {label, numeric, sort, sort_url}. `sort` is the
+                    current `aria-sort` value (ascending | descending) or empty;
+                    `sort_url` makes the header a link that re-sorts server-side.
+  rows           -- the rows to render.
+  row_template   -- the template that renders ONE `<tr>` for `row`. Cells stay
+                    the caller's, because a cell may hold a link, a badge or a
+                    figure, and only the screen knows which.
+  comfortable    -- truthy for the roomier row height; dense is the default.
+  empty_title    -- the empty state's title when `rows` is empty.
+  empty_message  -- its next step.
+
+Sorting, filtering and paging are server-side (S5.6): a header link is a GET, so
+the order lives in the URL and Back restores it. The header row is sticky inside
+the scroll container, which is the table's own `.table-wrap` -- never the page.
+
+The container is a focusable region named by the caption: on a phone a wide table
+scrolls inside it, and a scroller with no focusable content is otherwise out of
+reach of a keyboard (axe: scrollable-region-focusable).
+{% endcomment %}<div class="table-wrap" tabindex="0" role="region" aria-label="{{ caption }}">
+  <table class="ui-table{% if comfortable %} ui-table-comfortable{% endif %}">
+    <caption{% if caption_hidden %} class="visually-hidden"{% endif %}>{{ caption }}</caption>
+    <thead>
+      <tr>
+        {% for column in columns %}<th scope="col"{% if column.sort == 'ascending' or column.sort == 'descending' %} aria-sort="{{ column.sort }}"{% endif %}{% if column.numeric %} class="numeric"{% endif %}>{% if column.sort_url %}<a class="ui-sort" href="{{ column.sort_url }}">{{ column.label }}{% if column.sort == 'ascending' %}<span aria-hidden="true">↑</span>{% elif column.sort == 'descending' %}<span aria-hidden="true">↓</span>{% endif %}</a>{% else %}{{ column.label }}{% endif %}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}{% include row_template %}{% empty %}<tr><td colspan="{{ columns|length }}" class="whitespace-normal">{% include "partials/ui/state_empty.html" with title=empty_title message=empty_message only %}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>

@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Alteração em conflito" %}{% endblock %}
+{% block heading %}{% translate "Alteração em conflito" %}{% endblock %}
+{% block content %}
+  {% comment %}
+    The 409 page (S5.5 global "conflict" state). Nothing was written; the reader
+    goes back to the current version and decides again.
+  {% endcomment %}
+  {% include "partials/pure/notice.html" with message=message variant="warn" only %}
+  <p class="mt-4"><a class="btn btn-primary" href="{{ back_url }}">{% translate "Ver a versão atual" %}</a></p>
+{% endblock %}
