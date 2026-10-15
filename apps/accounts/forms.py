@@ -161,7 +161,7 @@ class InviteAcceptForm(forms.Form):
         password1 = self.cleaned_data.get("password1", "")
         password2 = self.cleaned_data["password2"]
         if password1 != password2:
-            msg = _("The two password fields did not match.")
+            msg = _("Os dois campos de senha não correspondem.")
             raise ValidationError(msg)
         validate_password(password2)
         return str(password2)

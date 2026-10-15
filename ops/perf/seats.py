@@ -2,8 +2,9 @@
 
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
+from urllib.parse import urlencode
 
 from allauth.account.internal.flows.login import AUTHENTICATION_METHODS_SESSION_KEY
 from allauth.account.models import EmailAddress
@@ -22,6 +23,7 @@ from apps.tenants.models import Membership, Tenant, TenantRole
 
 ACTORS_PER_ROLE: Final = 10
 GROWTH_CLIENTS: Final = 1_000
+GROWTH_CYCLES: Final = 12_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,14 @@ class ReadTarget:
     path: str
     cookies: tuple[str, ...]
     witness: bytes
+    actor_role: str = "owner"
+    scope: str = "firm-visible portfolio"
+    actor_namespace: str = "perf"
+
+    def actor_name(self, index: int) -> str:
+        """Name the synthetic seat without exposing its MFA session."""
+        slug = self.host.removesuffix(".localhost").removesuffix("-portal")
+        return f"{self.actor_namespace}-{self.actor_role}-{index}@{slug}.example.com"
 
 
 def session_cookie(user: User) -> str:
@@ -51,12 +61,15 @@ def session_cookie(user: User) -> str:
 
 
 def _actors(
-    tenant: Tenant, company: ClientCompany | None, issued: list[str] | None = None
+    tenant: Tenant,
+    company: ClientCompany | None,
+    issued: list[str] | None = None,
+    namespace: str = "perf",
 ) -> tuple[str, ...]:
     role = TenantRole.CLIENT_OWNER if company else TenantRole.OWNER
     cookies = []
     for index in range(ACTORS_PER_ROLE):
-        email = f"perf-{role}-{index}@{tenant.slug}.example.com"
+        email = f"{namespace}-{role}-{index}@{tenant.slug}.example.com"
         user, created = User.objects.get_or_create(email=email)
         if created:
             user.set_unusable_password()
@@ -74,7 +87,9 @@ def _actors(
     return tuple(cookies)
 
 
-def read_targets(slug: str, issued: list[str] | None = None) -> tuple[ReadTarget, ...]:
+def read_targets(
+    slug: str, issued: list[str] | None = None, *, actor_namespace: str = "perf"
+) -> tuple[ReadTarget, ...]:
     """Resolve only the seeded growth firm and its own portal client's cycle.
 
     Each session cookie is appended to `issued` as soon as it exists, so a caller
@@ -93,13 +108,23 @@ def read_targets(slug: str, issued: list[str] | None = None) -> tuple[ReadTarget
         if ClientCompany.objects.count() != GROWTH_CLIENTS:
             message = "The measurement requires the seeded 1,000-client growth firm."
             raise ValueError(message)
+        if ServiceCycle.objects.count() != GROWTH_CYCLES:
+            message = "The measurement requires twelve months of populated cycles."
+            raise ValueError(message)
         cycle = ServiceCycle.objects.filter(client=company).latest("period_start")
-        owner_cookies = _actors(tenant, None, issued)
-        portal_cookies = _actors(tenant, company, issued)
+        owner_cookies = _actors(tenant, None, issued, actor_namespace)
+        portal_cookies = _actors(tenant, company, issued, actor_namespace)
     host = f"{slug}.localhost"
-    return (
+    targets = (
         ReadTarget("hoje", host, "/", owner_cookies, b"Hoje"),
         ReadTarget("clientes", host, "/clientes/", owner_cookies, b"Empresa sint"),
+        ReadTarget(
+            "clientes_search",
+            host,
+            "/clientes/?" + urlencode({"q": company.legal_name}),
+            owner_cookies,
+            company.legal_name.encode(),
+        ),
         ReadTarget(
             "workspace",
             host,
@@ -108,7 +133,7 @@ def read_targets(slug: str, issued: list[str] | None = None) -> tuple[ReadTarget
                 + f"?periodo={cycle.period_start:%Y-%m}"
             ),
             owner_cookies,
-            company.legal_name.encode(),
+            str(cycle.pk).encode(),
         ),
         ReadTarget(
             "cycle_detail",
@@ -123,8 +148,11 @@ def read_targets(slug: str, issued: list[str] | None = None) -> tuple[ReadTarget
             "/",
             portal_cookies,
             b"Documentos sint",
+            actor_role="client_owner",
+            scope=f"client:{company.pk}",
         ),
     )
+    return tuple(replace(target, actor_namespace=actor_namespace) for target in targets)
 
 
 def remove_cookie_sessions(cookies: Iterable[str]) -> int:

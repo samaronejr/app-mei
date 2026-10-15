@@ -38,7 +38,7 @@ from django.db import (
 from apps.clients.models import ClientCompany
 from apps.core.models import TenantScopedModel
 from apps.core.tenancy import client_context, tenant_context
-from tests.conftest import PORTAL_TABLES
+from tests.conftest import PORTAL_COLUMN_SELECT, PORTAL_TABLES
 from tests.isolation.axorim_seed import (
     CLIENT_PAIR_ONLY_MODELS,
     REQUIRED_TENANT_PAIRED_PARENTS,
@@ -208,6 +208,68 @@ def test_rls_hides_tenant_b_rows_under_tenant_a(
     assert visible == 0, f"{model._meta.db_table} leaked a row across tenants"
 
 
+def _assert_column_scoped_portal_reads(
+    model: type[models.Model],
+    tenants: dict[str, SeedContext],
+) -> None:
+    """Read only declared columns, confined independently by tenant and client."""
+    table = model._meta.db_table
+    columns = PORTAL_COLUMN_SELECT[table]
+    alpha, beta = tenants["alpha"], tenants["beta"]
+    sibling = SeedContext(
+        tenant=beta.tenant,
+        client=_sibling_client(beta),
+        user=beta.user,
+        tag="portal-sibling-b",
+    )
+    expected = {
+        ctx.tag: tuple(getattr(seed_model(model, ctx), column) for column in columns)
+        for ctx in (alpha, beta, sibling)
+    }
+
+    # Each owning-positive control sees exactly its own row, not the two other
+    # seeded rows. Mismatched tenant/client pairs isolate each RLS predicate.
+    for ctx, client_id, rows in (
+        (alpha, alpha.client.id, [expected[alpha.tag]]),
+        (beta, beta.client.id, [expected[beta.tag]]),
+        (sibling, sibling.client.id, [expected[sibling.tag]]),
+        (alpha, beta.client.id, []),
+        (beta, alpha.client.id, []),
+    ):
+        with transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute(f"SET LOCAL ROLE {PORTAL_ROLE}")
+            cursor.execute(
+                "SELECT set_config('app.tenant_id', %s, true)", [str(ctx.tenant.id)]
+            )
+            cursor.execute(
+                "SELECT set_config('app.client_id', %s, true)", [str(client_id)]
+            )
+            cursor.execute(f"SELECT {', '.join(columns)} FROM {table}")  # noqa: S608
+            assert cursor.fetchall() == rows, f"{table} leaked or hid a receipt"
+
+    # A readable projection must not become a readable receipt row. Check every
+    # undeclared column, not only a timestamp or a table-level privilege probe.
+    forbidden = ["*"] + [
+        field.column
+        for field in model._meta.concrete_fields
+        if field.column not in columns
+    ]
+    with transaction.atomic(), connection.cursor() as cursor:
+        cursor.execute(f"SET LOCAL ROLE {PORTAL_ROLE}")
+        cursor.execute(
+            "SELECT set_config('app.tenant_id', %s, true)", [str(beta.tenant.id)]
+        )
+        cursor.execute(
+            "SELECT set_config('app.client_id', %s, true)", [str(beta.client.id)]
+        )
+        for projection in forbidden:
+            with pytest.raises(ProgrammingError) as refusal, transaction.atomic():
+                cursor.execute(f"SELECT {projection} FROM {table}")  # noqa: S608
+            assert (
+                getattr(refusal.value.__cause__, "sqlstate", None) == PRIVILEGE_DENIED
+            )
+
+
 @pytest.mark.parametrize("model", SCOPED_MODELS, ids=lambda m: m._meta.label)
 def test_portal_role_access_matches_the_declared_decision(
     model: type[models.Model],
@@ -218,6 +280,10 @@ def test_portal_role_access_matches_the_declared_decision(
     beta = tenants["beta"]
     seed_model(model, beta)
     table = model._meta.db_table
+
+    if table in PORTAL_COLUMN_SELECT:
+        _assert_column_scoped_portal_reads(model, tenants)
+        return
 
     # When app_portal reads the table under beta's GUCs — reached through
     # SET LOCAL ROLE from app_runtime, exactly as the middleware does it

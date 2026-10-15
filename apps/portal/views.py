@@ -28,7 +28,16 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.files.storage import default_storage
 from django.core.paginator import EmptyPage, Page, Paginator
-from django.db.models import Count, Exists, OuterRef, Q, QuerySet
+from django.db.models import (
+    BooleanField,
+    Case,
+    Count,
+    Exists,
+    OuterRef,
+    Q,
+    QuerySet,
+    When,
+)
 from django.http import (
     Http404,
     HttpRequest,
@@ -228,7 +237,7 @@ def _next_action(today: date, *, include_overdue: bool = False) -> NextAction | 
 
 
 @login_required
-def portal_home(request: HttpRequest) -> HttpResponse:
+def portal_home(request: PortalVaultRequest) -> HttpResponse:
     """Render the client's own company, where they stand, and what to do next."""
     client = getattr(request, "client", None)
     # No client filter is applied on purpose, here or in either helper below. The
@@ -245,6 +254,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     help_rows = []
     publications = []
     next_request = None
+    next_publication = None
     if cycles_r1:
         # T11: the client's open requests, confined by RLS like every figure here.
         from apps.portal.request_views import (  # noqa: PLC0415
@@ -275,16 +285,50 @@ def portal_home(request: HttpRequest) -> HttpResponse:
                 }
             )
         help_rows = client_help()
-        from apps.cycles.models import ClientPublication  # noqa: PLC0415
+        from apps.cycles.models import (  # noqa: PLC0415
+            ClientAcknowledgement,
+            ClientPublication,
+            PublicationState,
+        )
 
         publications = list(
             ClientPublication.objects.annotate(
                 revised=Exists(
                     ClientPublication.objects.filter(supersedes_id=OuterRef("pk"))
-                )
+                ),
+                acknowledged=Exists(
+                    ClientAcknowledgement.objects.filter(
+                        publication_id=OuterRef("pk"),
+                        publication_digest=OuterRef("publication_digest"),
+                        user_id=request.user.id,
+                    )
+                ),
             )
-            .order_by("-published_at", "pk")
-            .values("id", "title", "state", "published_at", "revised")[:12]
+            .annotate(
+                awaiting_confirmation=Case(
+                    When(
+                        state=PublicationState.PUBLISHED,
+                        revised=False,
+                        acknowledged=False,
+                        then=True,
+                    ),
+                    default=False,
+                    output_field=BooleanField(),
+                ),
+            )
+            # Keep outstanding confirmations ahead of history before applying the cap.
+            .order_by("-awaiting_confirmation", "-published_at", "pk")
+            .values(
+                "id",
+                "title",
+                "state",
+                "published_at",
+                "revised",
+                "awaiting_confirmation",
+            )[:12]
+        )
+        next_publication = next(
+            (row for row in publications if row["awaiting_confirmation"]), None
         )
     return render(
         request,
@@ -295,6 +339,7 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "overdue_count": overdue_count,
             "next_action": _next_action(today, include_overdue=cycles_r1),
             "next_request": next_request,
+            "next_publication": next_publication,
             "cycles": cycles,
             "cycles_r1": cycles_r1,
             "requests": requests,
@@ -648,13 +693,20 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
     The page carries the upload form again rather than a link back to it. A refusal that
     dead-ends is a client who gives up, and a file input cannot be pre-filled anyway, so
     the retry costs exactly one form and saves a navigation.
+
+    T63: `cycles_r1` rides along exactly as on `portal_documents`, answered from the
+    portal stash without a query, so the layout and the retry form keep the vault's R1
+    ink on the 400 as on the 200. Unflagged tenants keep their bytes.
     """
+    tenant = request.tenant
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
     return render(
         request,
         "portal/upload_error.html",
         {
             "reason": reason,
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+            "cycles_r1": cycles_r1,
         },
         status=HTTPStatus.BAD_REQUEST,
     )

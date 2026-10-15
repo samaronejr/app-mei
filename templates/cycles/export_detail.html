@@ -11,6 +11,13 @@
 <p class="mt-3">Tamanho: {{ export.byte_size|filesizeformat }} · disponível até {{ export.expires_at|data_hora }}</p>
 <p class="mt-2 text-sm break-all">SHA-256: {{ export.sha256 }}</p>
 <a class="ui-btn ui-btn-primary mt-4" href="{% url 'evidence-export-download' export.pk %}">Baixar ZIP de evidências</a>
+{% if export.excluded_originals %}
+<section class="mt-4" aria-labelledby="excluded-originals">
+<h3 id="excluded-originals" class="font-semibold">Originais não incluídos</h3>
+<p class="mt-2 text-sm text-ink-600">Estes arquivos constam nas referências do índice, mas seus bytes não estão neste ZIP.</p>
+<ul class="mt-3 grid gap-2">{% for original in export.excluded_originals %}<li class="break-all">{{ original.filename }} — {{ original.reason }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
 {% elif expired or export.state == 'expired' %}
 <p class="mt-3">Os originais e o índice permanecem sujeitos à política de retenção. Solicite um novo arquivo no índice.</p>
 {% elif export.state == 'failed' %}

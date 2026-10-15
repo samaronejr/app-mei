@@ -5,7 +5,7 @@ import os
 import sys
 from io import StringIO
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 import psycopg
 import pytest
@@ -139,6 +139,11 @@ def test_named_reads_on_seeded_growth_portfolio(
     reads: tuple[tuple[str, str, str], ...] = (
         ("hoje", "firm", reverse("dashboard")),
         ("clientes", "firm", reverse("clients-list")),
+        (
+            "clientes_search",
+            "firm",
+            reverse("clients-list") + "?" + urlencode({"q": company.legal_name}),
+        ),
         (
             "workspace",
             "firm",
