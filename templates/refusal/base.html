@@ -1,0 +1,21 @@
+{% load i18n static %}<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% translate "Acesso não permitido" %}{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'css/app.css' %}">
+</head>
+<body class="min-h-screen">
+  {% comment %}
+    The layout of a refusal, on the firm host and on the portal host alike. It reads
+    nothing: no navigation, no tenant, no account, no query. Under the portal role
+    most tables are not readable at all, and a refusal must never be the page that
+    reveals what the account could not see (S5.5 "forbidden (no counts)").
+  {% endcomment %}
+  <main id="conteudo" class="mx-auto max-w-3xl px-5 py-10">
+    <h1 class="text-2xl font-semibold tracking-tight text-ink-900">{% block heading %}{% translate "Acesso não permitido" %}{% endblock %}</h1>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

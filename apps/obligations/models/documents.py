@@ -30,6 +30,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from apps.core.models import TenantScopedModel
+from apps.core.retention import RetentionClass
 
 STORAGE_KEY_BYTES = 32
 SHA256_HEX_LENGTH = 64
@@ -79,6 +80,20 @@ class Document(TenantScopedModel):
         verbose_name=_("uploaded by"),
     )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+    # T13 (vault quarantine, fail closed): TRUE unless the firm wrote the row. The
+    # portal serves a client upload only through a verified intake; a row that says
+    # nothing is a client upload, and the portal role cannot INSERT a FALSE
+    # (trigger `document_portal_client_upload`, obligations 0019).
+    client_upload = models.BooleanField(
+        _("uploaded by the client"), default=True, db_default=True
+    )
+    retention_class = models.CharField(
+        max_length=24,
+        choices=RetentionClass.choices,
+        default=RetentionClass.FISCAL_EVIDENCE,
+        db_default=RetentionClass.FISCAL_EVIDENCE,
+    )
+    purged_at = models.DateTimeField(null=True, editable=False)
 
     class Meta(TenantScopedModel.Meta):
         """Model metadata."""

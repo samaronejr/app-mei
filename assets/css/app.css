@@ -25,6 +25,8 @@
  * root, so v4's automatic content detection has to be told about them. */
 @source "../../templates";
 @source "../../apps";
+/* The frozen R1 assertion fixture must not control production stylesheet output. */
+@source not "../../tests/fixtures/briefing/legacy-r1.html";
 
 @theme {
   --font-sans:
@@ -582,6 +584,22 @@
    * Nothing here reaches for a safe-area inset — this is a browser page, not an
    * installed app shell. The page below reserves its own bottom padding instead, so
    * the last line of content is never left underneath the bar. */
+  /* T11 firm branding. The neutral defaults below are what an unbranded firm sees;
+   * a firm colour arrives from the same-origin route `/marca/tema.css`, linked after
+   * this sheet, which overrides both properties with a pair validated to 4.5:1. */
+  .portal-brand {
+    @apply bg-surface text-ink-900;
+  }
+
+  .portal-brand-logo {
+    @apply h-8 w-auto;
+  }
+
+  /* The upload progress bar on the request page (T11). */
+  .upload-progress {
+    @apply h-2 w-full overflow-hidden rounded-full bg-ink-100 accent-accent-500;
+  }
+
   .bottom-nav {
     @apply fixed inset-x-0 bottom-0 z-40 flex border-t border-ink-200 bg-surface
       shadow-raised md:static md:justify-center md:border-b md:border-t-0
@@ -781,6 +799,27 @@
     @apply border-b border-ink-200 px-4 py-2.5 text-sm font-semibold text-ink-800;
   }
 
+  /* Processing is not verified delivery: never use the native green fill. */
+  [data-passive-poll] progress {
+    appearance: none;
+    border: 0;
+    height: 0.5rem;
+    background-color: var(--color-ink-100);
+    color: var(--color-brand-700);
+  }
+
+  [data-passive-poll] progress::-webkit-progress-bar {
+    background-color: var(--color-ink-100);
+  }
+
+  [data-passive-poll] progress::-webkit-progress-value {
+    background-color: var(--color-brand-700);
+  }
+
+  [data-passive-poll] progress::-moz-progress-bar {
+    background-color: var(--color-brand-700);
+  }
+
   /* `.link` in the brand ink: underlined at rest for the same WCAG 1.4.1 reason. */
   .ui-link {
     @apply rounded-field font-medium text-brand-700 underline decoration-ink-300
@@ -939,6 +978,163 @@
 
   .overlay-actions {
     @apply flex flex-wrap justify-end gap-2 border-t border-ink-200 px-4 py-3;
+  }
+
+  /* ---- Search: the header field and the command palette (AXR1-021). Below `md`
+   * the field takes the row under the brand, ahead of the menu; from `md` it sits
+   * beside the account controls. */
+  .shell-search {
+    @apply order-1 flex w-full items-center gap-2 pb-1 md:order-none md:ml-auto
+      md:w-auto md:pb-0;
+  }
+
+  @media (width >= theme(--breakpoint-md)) {
+    .shell-search + .shell-account {
+      margin-left: 0;
+    }
+  }
+
+  /* The signed-in address yields to the search field below `2xl`, so Sair keeps
+   * the first row at desktop widths. A class here rather than `2xl:inline` in
+   * the template: a leading-digit utility compiles to an escaped selector the
+   * stylesheet-coverage scan does not model. */
+  .shell-account-email {
+    @apply hidden truncate 2xl:inline;
+  }
+
+  /* With the firm settings entry in the bar (AXR1-022), Configurações and the search
+   * submit yield to icon buttons from `md`, where the field shares the bar, so the
+   * account actions keep the first row at desktop widths. Each keeps its name as
+   * visually hidden text and a title; below `md` both show the text, as before. The
+   * bar never grows past `max-w-7xl`, so no window is wide enough for both texts,
+   * the signed-in address and the menu on one row: the icons stay. */
+  .shell-compact-btn {
+    @apply md:px-2;
+  }
+
+  .shell-compact-btn > .icon {
+    @apply hidden md:block;
+  }
+
+  .shell-compact-label {
+    @apply md:sr-only;
+  }
+
+  /* Under the same flag the firm's name is what gives way (AXR1-022). From `xl`
+   * upward every action shares the first row, so there the bar does not wrap: the
+   * menu, the search field and the account actions keep their own width and never
+   * wrap, and the name shrinks to the ellipsis `.shell-tenant` already carries,
+   * whatever the firm is called (Tenant.name holds 255 characters). Its full text
+   * stays in the title and the accessibility tree. The bar never grows past
+   * `max-w-7xl`, so every wider window holds what `xl` holds: the field keeps its
+   * `xl` width and the signed-in address stays hidden, as it is below `2xl`. The
+   * menu keeps 1rem clear before the search field, so the row's spare room holds by
+   * construction rather than by the length of a name. */
+  @media (width >= theme(--breakpoint-xl)) {
+    .shell-bar-fit {
+      @apply flex-nowrap;
+    }
+
+    .shell-bar-fit > :not(.shell-brand),
+    .shell-bar-fit .shell-wordmark {
+      @apply shrink-0 whitespace-nowrap;
+    }
+
+    .shell-bar-fit > .shell-disclosure {
+      @apply mr-4;
+    }
+
+    .shell-bar-fit .shell-search-input {
+      @apply w-44;
+    }
+
+    .shell-bar-fit .shell-account-email {
+      @apply hidden;
+    }
+  }
+
+  .shell-search-input {
+    @apply min-h-9 w-full min-w-0 rounded-field border border-ink-300 bg-surface
+      px-2.5 text-sm text-ink-900 md:w-44 2xl:w-56;
+  }
+
+  .palette {
+    @apply mt-[12vh] mb-auto;
+  }
+
+  .palette-body {
+    @apply flex flex-col gap-2;
+  }
+
+  .palette-hint {
+    @apply text-dense text-ink-600;
+  }
+
+  .palette-results {
+    @apply max-h-[50vh] overflow-y-auto;
+  }
+
+  .palette-listbox {
+    @apply flex flex-col gap-2;
+  }
+
+  .palette-group-title {
+    @apply px-2 pt-1 text-xs font-semibold uppercase tracking-wide text-ink-600;
+  }
+
+  .palette-option {
+    @apply flex min-h-10 cursor-pointer flex-col justify-center rounded-field px-2
+      py-1.5 text-sm text-ink-800;
+  }
+
+  .palette-option:hover {
+    @apply bg-ink-50;
+  }
+
+  .palette-option[aria-selected="true"] {
+    @apply bg-brand-50 text-brand-700 outline-2 outline-offset-[-2px] outline-brand-700;
+  }
+
+  .palette-option-label {
+    @apply font-medium;
+  }
+
+  .palette-option-detail {
+    @apply text-dense text-ink-600 tabular-nums;
+  }
+
+  /* ---- The results page the header form lands on. */
+  .search-page-form {
+    @apply mb-6 flex flex-wrap items-end gap-3;
+  }
+
+  .search-page-form > .ui-field {
+    @apply min-w-0 flex-1 basis-64;
+  }
+
+  .search-group {
+    @apply mb-6;
+  }
+
+  .search-group-title {
+    @apply mb-2 text-sm font-semibold text-ink-700;
+  }
+
+  .search-list {
+    @apply flex flex-col divide-y divide-ink-100 rounded-panel border border-ink-200
+      bg-surface;
+  }
+
+  .search-item {
+    @apply flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 text-sm;
+  }
+
+  .search-detail {
+    @apply text-dense text-ink-600 tabular-nums;
+  }
+
+  .search-hint {
+    @apply text-sm text-ink-600;
   }
 
   /* ---- Upload list. */

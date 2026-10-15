@@ -1,0 +1,31 @@
+{% extends "base.html" %}{% load ptbr %}
+{% block title %}Arquivo de evidências{% endblock %}
+{% block heading %}Arquivo de evidências{% endblock %}
+{% block content %}
+<a class="ui-link" href="{% url 'evidence-index' export.cycle_id %}">Voltar ao índice de evidências</a>
+<section class="ui-panel p-4 mt-4" aria-labelledby="export-state">
+<h2 id="export-state" class="ui-panel-heading">{% if expired %}Prazo de download encerrado{% else %}{{ export.get_state_display }}{% endif %}</h2>
+<p class="mt-2 text-sm text-ink-600">Solicitado em {{ export.created_at|data_hora }}. A disponibilidade do arquivo não representa validação fiscal.</p>
+<p class="mt-3"><a class="ui-link" href="{% url 'evidence-index' export.cycle_id %}?geracao={{ export.index_id }}">Consultar a geração deste arquivo</a></p>
+{% if ready %}
+<p class="mt-3">Tamanho: {{ export.byte_size|filesizeformat }} · disponível até {{ export.expires_at|data_hora }}</p>
+<p class="mt-2 text-sm break-all">SHA-256: {{ export.sha256 }}</p>
+<a class="ui-btn ui-btn-primary mt-4" href="{% url 'evidence-export-download' export.pk %}">Baixar ZIP de evidências</a>
+{% if export.excluded_originals %}
+<section class="mt-4" aria-labelledby="excluded-originals">
+<h3 id="excluded-originals" class="font-semibold">Originais não incluídos</h3>
+<p class="mt-2 text-sm text-ink-600">Estes arquivos constam nas referências do índice, mas seus bytes não estão neste ZIP.</p>
+<ul class="mt-3 grid gap-2">{% for original in export.excluded_originals %}<li class="break-all">{{ original.filename }} — {{ original.reason }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% elif expired or export.state == 'expired' %}
+<p class="mt-3">Os originais e o índice permanecem sujeitos à política de retenção. Solicite um novo arquivo no índice.</p>
+{% elif export.state == 'failed' %}
+<p class="mt-3" role="alert">{{ error }}</p>
+<a class="ui-link mt-3" href="{% url 'evidence-index' export.cycle_id %}">Conferir evidências e solicitar outro arquivo</a>
+{% else %}
+<p class="mt-3">O arquivo será preparado em segundo plano. Você pode sair desta página e voltar depois.</p>
+<a class="ui-btn ui-btn-quiet mt-4" href="{% url 'evidence-export-detail' export.pk %}">Atualizar estado</a>
+{% endif %}
+</section>
+{% endblock %}

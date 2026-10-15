@@ -47,7 +47,7 @@ next request rather than a dead link nobody notices.
         <li class="card flex flex-wrap items-center gap-3 px-5 py-4">
           <div class="min-w-0 grow">
             <p class="truncate text-sm font-medium text-ink-900">{{ document.original_filename }}</p>
-            <p class="mt-1 text-xs tabular-nums text-ink-500">
+            <p class="mt-1 text-xs tabular-nums {% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">
               <time datetime="{{ document.created_at.isoformat }}">{{ document.created_at|data_hora }}</time>
               <span aria-hidden="true">·</span>
               {{ tamanho }}
@@ -63,6 +63,6 @@ next request rather than a dead link nobody notices.
 
     {% include 'partials/pure/pagination.html' with page=page filter_query='' only %}
   {% else %}
-    <p class="card empty-state">{% translate "Nenhum documento enviado ainda. Envie o primeiro arquivo no formulário acima." %}</p>
+    <p class="card empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Nenhum documento enviado ainda. Envie o primeiro arquivo no formulário acima." %}</p>
   {% endif %}
 {% endblock %}

@@ -72,6 +72,7 @@ from apps.fiscal.models import UF
 from apps.fiscal.validators import normalize_document, validate_cnpj, validate_cpf
 from apps.obligations.models import Document, MonthlyRevenue, Obligation
 from apps.obligations.models.operations import ObligationStatus
+from apps.tenants.entitlements import lock_entitlement, require_client_capacity
 from apps.tenants.models import Invite, Membership
 
 logger = logging.getLogger(__name__)
@@ -914,6 +915,7 @@ def queue_commit(actor: User, batch_id: UUID, *, expected_version: int) -> Impor
     """Mark a planned (or partially committed) batch as queued for the commit task."""
     tenant_id = _tenant()
     with transaction.atomic():
+        tenant = lock_entitlement(tenant_id)
         batch = _locked_batch(
             actor,
             tenant_id,
@@ -921,6 +923,7 @@ def queue_commit(actor: User, batch_id: UUID, *, expected_version: int) -> Impor
             expected_version,
             (ImportStatus.PLANNED, ImportStatus.PARTIAL),
         )
+        require_client_capacity(tenant, additional=pending_client_count(batch))
         previous = str(batch.status)
         batch.status = ImportStatus.QUEUED
         batch.version += 1
@@ -933,6 +936,15 @@ def queue_commit(actor: User, batch_id: UUID, *, expected_version: int) -> Impor
             metadata={"from": previous, "version": batch.version},
         )
         return batch
+
+
+def pending_client_count(batch: ImportBatch) -> int:
+    """Only new identities need slots; existing or already committed rows do not."""
+    return (
+        batch.rows.filter(outcome=RowOutcome.CREATED, client__isnull=True)
+        .exclude(cnpj__in=ClientCompany.objects.values("cnpj"))
+        .count()
+    )
 
 
 def release_failed_commit(
@@ -1022,6 +1034,7 @@ def commit_import(
     """
     tenant_id = _tenant()
     with transaction.atomic():
+        tenant = lock_entitlement(tenant_id)
         batch = _locked_batch(
             actor,
             tenant_id,
@@ -1039,6 +1052,9 @@ def commit_import(
                 tenant_id=tenant_id,
                 cnpj__in=[row.cnpj for row in pending],
             ).values_list("cnpj", flat=True),
+        )
+        require_client_capacity(
+            tenant, additional=sum(row.cnpj not in existing for row in pending)
         )
         created = failed = skipped = 0
         for row in pending:

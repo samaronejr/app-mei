@@ -1,0 +1,6 @@
+Olá,
+
+Há uma atualização do seu escritório no portal. Entre com sua conta para consultar as orientações:
+{{ portal_url }}
+
+Por segurança, este e-mail não contém documentos anexados. Acesse o portal autenticado.

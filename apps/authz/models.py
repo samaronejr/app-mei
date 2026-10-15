@@ -105,6 +105,7 @@ class RoleGrant(UUIDv7PrimaryKeyModel):
         verbose_name=_("capability"),
     )
     level = models.CharField(_("level"), max_length=24, choices=GrantLevel.choices)
+    version = models.PositiveIntegerField(default=1, db_default=1, editable=False)
 
     class Meta:
         """Model metadata."""
@@ -116,6 +117,10 @@ class RoleGrant(UUIDv7PrimaryKeyModel):
             models.UniqueConstraint(
                 fields=["role", "capability"],
                 name="rolegrant_role_capability_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0),
+                name="rolegrant_positive_version",
             ),
         ]
 
@@ -173,6 +178,8 @@ class UserCapabilityGrant(TenantScopedModel):
     )
     granted_at = models.DateTimeField(_("granted at"), auto_now_add=True)
     revoked_at = models.DateTimeField(_("revoked at"), null=True, blank=True)
+    expires_at = models.DateTimeField(_("expires at"), null=True, blank=True)
+    version = models.PositiveIntegerField(default=1, db_default=1, editable=False)
 
     class Meta(TenantScopedModel.Meta):
         """Model metadata."""
@@ -203,6 +210,10 @@ class UserCapabilityGrant(TenantScopedModel):
                     level__in=(GrantLevel.FULL, GrantLevel.NONE),
                 ),
                 name="usercapabilitygrant_level_full_or_none",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0),
+                name="usercapabilitygrant_positive_version",
             ),
         ]
 

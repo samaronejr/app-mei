@@ -53,6 +53,7 @@ from apps.accounts.invites import (
     InviteRevokedError,
     InviteScope,
     InviteScopeMismatchError,
+    InviteTokenSupersededError,
     accept_invite,
     assert_portal_invite,
     register_and_accept,
@@ -191,6 +192,10 @@ def _reason_for(error: InviteError) -> str:
         InviteRevokedError: _(
             "Este convite foi cancelado pelo escritório. Fale com quem cuida da sua "
             "empresa lá para receber um novo.",
+        ),
+        InviteTokenSupersededError: _(
+            "Este link foi substituído por um convite mais recente. Use o último "
+            "e-mail de convite que você recebeu.",
         ),
         InviteAlreadyAcceptedError: _(
             "Este convite já foi aceito e cada link vale uma única vez. Se o acesso é "

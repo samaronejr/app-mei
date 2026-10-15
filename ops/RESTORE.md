@@ -6,6 +6,139 @@ retain their rehearsal dates. Anything that depends on the new disposable rehear
 marked `PENDING-REHEARSAL`; do not promote a placeholder to a measured result from a
 desk check or a local simulation.
 
+## Axorim restore
+
+For a deployment with the durable outbox, this sequence comes **before** either
+database recovery path below. A database rollback cannot unsend an email.
+Repository evidence uses synthetic data, an isolated PostgreSQL lane and local
+filesystem storage; it does not close the isolated-host operator drill **OG-06**.
+Record the selected backup, start/end times, row/object checks, reconciliation
+results, uncertainty review and teardown in `.evidence/AXR1-027-operator.txt`.
+That checklist remains OPEN until the operator performs and records the drill.
+
+1. **Pause first.** Stop ingress, beat and dispatch workers using the freeze
+   procedure in `ops/README.md`. Put `DELIVERY_PAUSED=true` in the configuration
+   used by **every** web/worker/beat process before any restored process starts.
+   An export in the operator's shell does not change an already-running worker.
+   The per-tenant switch in `/gestao/automacoes/` is additional containment, not
+   a replacement for this global restore switch. Neither switch can undo an
+   SMTP transmission that already started.
+2. **Restore the database and document objects.** Use an isolated, empty target
+   owned by `app_migrator`, with the roles/extensions already bootstrapped.
+   Restore document versions consistent with the selected database and reconcile
+   their bytes. Preserve the **latest complete** independent `effects-journal/`,
+   including records newer than the database backup. Never roll that prefix
+   back to the database timestamp, delete its records, or shorten its retention
+   to make reconciliation pass. The object-store procedures below remain the
+   operator path for real buckets.
+3. **Reconcile documents, then effects, with delivery still paused.** Inspect
+   `reconcile_documents` output: its report-only exit 0 is not an assertion that
+   `missing` and `hash_mismatches` are zero. Run `reconcile_effects` only after
+   database scopes and object inventory are complete. A missing scope, malformed
+   journal or digest conflict is a stop: keep the pause and repair the restore.
+4. **Review `resultado_incerto`.** In Comunicação, inspect each uncertain
+   envelope and its exception. Record the human decision and its basis there;
+   a staff report is not provider acceptance. An unresolved result stays blocked,
+   never automatically resent. Automações can retry or close only a *known*
+   refusal. A retry creates one deterministic successor and preserves the
+   original immutable receipt; it rechecks recipient, source and approval before
+   sending. Reconcile again safely if an independent receipt arrives later.
+5. **Unpause deliberately.** After the checks and review, remove the global
+   pause in the deployed configuration and restart its readers together.
+   Review each tenant pause separately. Verify readiness and the dispatch
+   heartbeat; do not repeatedly restart the web process to hide a backlog alert.
+   Accepted and uncertain intents must not produce another SMTP transmission.
+
+### Executable isolated logical-restore sequence
+
+This is the local engineering form, not permission to target production. First
+prepare an empty isolated database with the existing roles bootstrap. Set
+`DATABASE_URL` to its runtime role and `DATABASE_MIGRATION_URL` to its schema
+owner. `AXORIM_RESTORE_PG_CONTAINER` names that isolated PostgreSQL container,
+whose client tools run the restore, and `POSTGRES_DB` names its empty target.
+`POSTGRES_USER` supplies the bootstrap connection, but `--role=app_migrator`
+pins object creation to the schema owner, as in Path B below. Ignore dump owners
+and ACLs, then reapply `ops/sql/roles.sql` before any application process starts.
+That bootstrap restores the runtime/portal grants and the readiness function's
+explicit execution restrictions without replaying another role's default ACLs.
+`AXORIM_RESTORE_DUMP` names the selected custom-format logical dump;
+`AXORIM_RESTORE_OBJECTS` names a complete private filesystem snapshot with the
+latest independent journal; `AXORIM_RESTORE_MEDIA` is the empty local instance's
+configured `MEDIA_ROOT`. For object storage, use the version-recovery procedure
+below instead of the filesystem copy, preserving the journal's newer objects.
+All commands below run from the repository root with those isolated values.
+
+```sh
+set -euo pipefail
+export DELIVERY_PAUSED=true
+: "${AXORIM_RESTORE_PG_CONTAINER:?select the isolated PostgreSQL container}"
+: "${POSTGRES_DB:?select the isolated database}"
+: "${POSTGRES_USER:?select the bootstrap restoration role}"
+: "${AXORIM_RESTORE_DUMP:?select the isolated logical dump}"
+: "${AXORIM_RESTORE_OBJECTS:?select the complete object snapshot}"
+: "${AXORIM_RESTORE_MEDIA:?select the isolated configured MEDIA_ROOT}"
+test "$(docker exec "$AXORIM_RESTORE_PG_CONTAINER" \
+  psql -U app_migrator -d "$POSTGRES_DB" -XAt -v ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tablename='django_migrations'")" = 0
+docker exec -i "$AXORIM_RESTORE_PG_CONTAINER" \
+  pg_restore -U "$POSTGRES_USER" --role=app_migrator --no-owner --no-privileges \
+  --no-comments --single-transaction --exit-on-error \
+  --dbname="$POSTGRES_DB" < "$AXORIM_RESTORE_DUMP"
+docker exec -i "$AXORIM_RESTORE_PG_CONTAINER" \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -v ON_ERROR_STOP=1 \
+  < ops/sql/roles.sql
+test "$(docker exec "$AXORIM_RESTORE_PG_CONTAINER" \
+  psql -U app_migrator -d "$POSTGRES_DB" -XAt -v ON_ERROR_STOP=1 \
+  -c "SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tableowner <> 'app_migrator'")" = 0
+test -d "$AXORIM_RESTORE_OBJECTS"
+test -d "$AXORIM_RESTORE_MEDIA"
+cp -a "$AXORIM_RESTORE_OBJECTS/." "$AXORIM_RESTORE_MEDIA/"
+DATABASE_URL="$DATABASE_MIGRATION_URL" \
+  uv run python manage.py migrate --noinput --skip-checks
+uv run python manage.py check
+test "$(docker exec "$AXORIM_RESTORE_PG_CONTAINER" \
+  psql -U app_migrator -d "$POSTGRES_DB" -XAt -v ON_ERROR_STOP=1 \
+  -c "SELECT has_function_privilege('app_runtime', 'public.delivery_outbox_health()', 'EXECUTE') AND NOT has_function_privilege('app_portal', 'public.delivery_outbox_health()', 'EXECUTE')")" = t
+```
+
+Do not omit the post-restore roles bootstrap. `--no-privileges` alone would leave
+the readiness function with PostgreSQL's default PUBLIC execution privilege.
+The bootstrap repairs that boundary and the append-only table grants while the
+application is still stopped. The ownership and privilege assertions above are
+independent of a healthy application response.
+
+```sh
+DOCUMENT_REPORT=$(uv run python manage.py reconcile_documents --hash-sample-size 20)
+printf '%s\n' "$DOCUMENT_REPORT"
+printf '%s\n' "$DOCUMENT_REPORT" | grep -Eq '(^| )missing=0( |$)'
+printf '%s\n' "$DOCUMENT_REPORT" | grep -Eq '(^| )hash_mismatches=0( |$)'
+if printf '%s\n' "$DOCUMENT_REPORT" | grep -q '^CRITICAL '; then
+  printf 'FAIL document reconciliation; keep delivery paused\n'
+  exit 1
+fi
+unset DOCUMENT_REPORT
+uv run python manage.py reconcile_effects
+```
+
+These commands must run in a shell that stops on a failing command. In the secure
+operator terminal, compare document counts and sampled hashes against the
+pre-restore manifest; zero restored documents is not proof of a successful
+restore. Do not paste object keys, message bodies or recipient addresses into an
+operator artifact. The local synthetic transcript may contain synthetic ids.
+
+Review the uncertain rows through Comunicação before this final step. In an
+isolated rehearsal, the acceptance check is a controlled SMTP peer receiving
+**zero replays** of accepted/uncertain intents, not simply a zero reconcile count.
+Keep an unresolved result blocked and record why; unpausing other work does not
+turn it into a retry. The export affects only subsequently started processes:
+
+```sh
+export DELIVERY_PAUSED=false
+```
+
+Rehearsal timings are local measurements only. Production recovery, real bucket
+versioning/retention and SMTP deliverability remain operator gates.
+
 ## Recovery timing status
 
 | Result | Value | Command that produces it |
