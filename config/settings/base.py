@@ -13,6 +13,7 @@ from typing import Any
 import django_stubs_ext
 import environ
 from celery.schedules import crontab
+from django.core.exceptions import ImproperlyConfigured
 
 # Makes Django's generic classes subscriptable at runtime, so shipped code can write
 # ModelAdmin[Tenant] and Manager[User] rather than losing the parameter to a bare name.
@@ -51,6 +52,7 @@ INSTALLED_APPS = [
     "allauth.mfa",
     "apps.core",
     "apps.accounts",
+    "apps.automation",
     "apps.clients",
     "apps.briefing",
     "apps.cycles",
@@ -73,7 +75,7 @@ MIDDLEWARE = [
     "apps.security.csp.ContentSecurityPolicyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.locale.LocaleMiddleware",
+    "apps.portal.locale.ClientLocaleMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -87,6 +89,10 @@ MIDDLEWARE = [
     # inside that transaction, the rollback on a failed request would erase the
     # Marco Civil access record for exactly the request an investigation wants.
     "apps.audit.middleware.AccessLogMiddleware",
+    # Same reason as AccessLog: a request answered under a support grant writes
+    # its dual audit row here, after the tenant transaction resolves — a denied
+    # or failed support request is exactly the one the owner must still see.
+    "apps.audit.middleware.SupportRequestAuditMiddleware",
     # Before TenantMiddleware: whether an account must carry a second factor is a
     # property of the account, not of the firm it is visiting, so it is settled
     # without resolving a tenant or opening the tenant transaction.
@@ -219,6 +225,26 @@ CREDENTIAL_BEARING_URL_NAMES = [
 # Dynamic path parameters that are identifiers rather than credentials. Every entry
 # carries its decision here so the resolver guard cannot grow an invisible allow-list.
 CREDENTIAL_ROUTE_EXEMPTIONS = {
+    "account-export-detail": (
+        "AXR1-022. The UUID identifies a private account archive; a live owner "
+        "seat, account capability and tenant RLS authorize access."
+    ),
+    "account-export-download": (
+        "AXR1-022. The UUID is not a bearer credential. Owner authorization, "
+        "tenant RLS, ready state and both download deadlines are required."
+    ),
+    "firm-retention": (
+        "AXR1-022. The UUID identifies a client loaded through the owner's "
+        "portfolio before calling the existing versioned legal-hold service."
+    ),
+    "firm-hold-release": (
+        "AXR1-022. The UUID identifies a tenant/client-scoped hold; live owner "
+        "authority, portfolio loading and a rendered revision authorize release."
+    ),
+    "admin:tenants_tenant_billing": (
+        "AXR1-022. The UUID names a firm, not a credential. Active platform "
+        "operator capabilities are checked before reading or updating billing."
+    ),
     "member-deactivate": (
         "The <uuid:pk> is a tenant-scoped membership object id, not a bearer "
         "credential."
@@ -439,6 +465,21 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "admin is staff-only, behind AdminTenantMiddleware, and those object ids are "
         "not bearer credentials."
     ),
+    "firm-suporte-approve": (
+        "AXR1-023. The UUID identifies a support grant row inside the firm's own "
+        "settings page; a live owner seat and the row's pending state decide the "
+        "transition, so the id names the object, not a credential."
+    ),
+    "firm-suporte-revoke": (
+        "AXR1-023. The UUID identifies a support grant row inside the firm's own "
+        "settings page; a live owner seat decides revocation, so the id names the "
+        "object, not a credential."
+    ),
+    "firm-suporte-trilha": (
+        "AXR1-023. The UUID identifies a support grant row inside the firm's own "
+        "settings page; a live owner seat and tenant RLS scope the audit trail, "
+        "so the id names the object, not a credential."
+    ),
 }
 
 # WebAuthn is out of scope for this phase. Recovery codes are on so that losing a
@@ -494,6 +535,10 @@ SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_PATH = "/"
 CSRF_COOKIE_PATH = "/"
+# A refused CSRF check (a stale tab, since signing in rotates the secret) answers the
+# pt-BR refusal layout with a way back and Sair instead of Django's English page. The
+# check itself is unchanged (AXR1-059).
+CSRF_FAILURE_VIEW = "apps.core.refusal.csrf_failure"
 
 X_FRAME_OPTIONS = "DENY"
 SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -626,6 +671,18 @@ PORTAL_UPLOAD_MAX_BYTES = PORTAL_DOCUMENT_MAX_BYTES
 # apps.core.flags.FEATURES; an unknown slug disables nothing, which fails safe.
 AXORIM_DISABLED_FEATURES = env.list("AXORIM_DISABLED_FEATURES", default=[])
 
+# T24 ships offline. Provider selection/DPA approval (OD-05) stays independent
+# from the per-tenant ai_shadow flag and the global operational kill switch.
+AI_PROVIDER = env.str("AI_PROVIDER", default="")
+AI_GLOBAL_DISABLED = env.bool("AI_GLOBAL_DISABLED", default=True)
+AI_REAL_DATA_APPROVED = env.bool("AI_REAL_DATA_APPROVED", default=False)
+AI_MODEL = env.str("AI_MODEL", default="")
+AI_API_KEY = env.str("AI_API_KEY", default="")
+AI_INPUT_BRL_PER_MILLION = env.str("AI_INPUT_BRL_PER_MILLION", default="0")
+AI_OUTPUT_BRL_PER_MILLION = env.str("AI_OUTPUT_BRL_PER_MILLION", default="0")
+AI_SHADOW_TENANT_DAILY_CALLS = env.int("AI_SHADOW_TENANT_DAILY_CALLS", default=100)
+AI_SHADOW_TENANT_DAILY_BRL = env.str("AI_SHADOW_TENANT_DAILY_BRL", default="5.00")
+
 # The name the product shell shows a customer. "app-mei" until the new name is
 # cleared for public use; the switch is this setting, never a template edit, so no
 # customer-facing screen can adopt a name ahead of that decision.
@@ -644,8 +701,40 @@ CLAMD_TIMEOUT_SECONDS = env.float("CLAMD_TIMEOUT_SECONDS", default=30.0)
 DELIVERY_PAUSED = env.bool("DELIVERY_PAUSED", default=True)
 DELIVERY_DAILY_CAP = env.int("DELIVERY_DAILY_CAP", default=100)
 RETENTION_PURGE_DRY_RUN = env.bool("RETENTION_PURGE_DRY_RUN", default=True)
+ENGAGEMENT_OFFBOARDING_GRACE_DAYS = env.int(
+    "ENGAGEMENT_OFFBOARDING_GRACE_DAYS", default=30
+)
+# Prices remain unknown until operator evidence supplies them. Missing is not zero;
+# the owner sees an incomplete estimate rather than an invented monthly cost.
+USAGE_UNIT_PRICES_BRL = env.json("USAGE_UNIT_PRICES_BRL", default={})
+# Public readiness budgets. Pausing delivery does not hide an aging backlog.
+OUTBOX_MAX_QUEUED_AGE_SECONDS = env.int("OUTBOX_MAX_QUEUED_AGE_SECONDS", default=900)
+OUTBOX_MAX_DEAD_LETTERS = env.int("OUTBOX_MAX_DEAD_LETTERS", default=0)
+if OUTBOX_MAX_QUEUED_AGE_SECONDS < 0 or OUTBOX_MAX_DEAD_LETTERS < 0:
+    _outbox_threshold_error = "Outbox readiness thresholds must be non-negative."
+    raise ImproperlyConfigured(_outbox_threshold_error)
 
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
+    "record-firm-usage": {
+        "task": "apps.tenants.tasks.record_usage",
+        "schedule": crontab(hour=2, minute=30),
+    },
+    "offboard-engagements": {
+        "task": "apps.tenants.tasks.offboard_expired_engagements",
+        "schedule": crontab(hour=3, minute=0),
+    },
+    "daily-firm-summaries": {
+        "task": "apps.tenants.tasks.queue_daily_summaries",
+        "schedule": crontab(hour=7, minute=0),
+    },
+    "dispatch-firm-outbox": {
+        "task": "apps.tenants.notification_tasks.dispatch_firm_outbox",
+        "schedule": 60.0,
+    },
+    "account-exports": {
+        "task": "apps.tenants.export_tasks.sweep_account_exports",
+        "schedule": 60.0,
+    },
     "evidence-exports": {
         "task": "apps.cycles.export_tasks.sweep_evidence_exports",
         "schedule": 60.0,
@@ -661,6 +750,10 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "dispatch-outbox": {
         "task": "apps.delivery.tasks.dispatch_outbox",
         "schedule": 60.0,
+    },
+    "sweep-reminders": {
+        "task": "apps.delivery.tasks.sweep_reminders",
+        "schedule": 300.0,
     },
     # T12: scan quarantined uploads. Minute cadence like the outbox; the per-intake
     # backoff (1-60 min, 24 h deadline) lives in `next_scan_at`, not here.
@@ -693,6 +786,10 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "materialize-receipt-observations": {
         "task": "apps.obligations.tasks.materialize_receipt_observations",
         "schedule": 60.0,
+    },
+    "purge-agent-outputs": {
+        "task": "apps.automation.tasks.purge_agent_outputs",
+        "schedule": crontab(hour=3, minute=45),
     },
     # Every five minutes, and /healthz alarms after fifteen. The scheduler's failure
     # mode is silence: when beat stops, no task raises and nothing reaches Sentry,

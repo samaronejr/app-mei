@@ -1,0 +1,42 @@
+{% extends "portal/base.html" %}
+{% load i18n %}{% comment %}
+The page a refused upload lands on, answered at 400.
+
+It exists because the status alone is not a message. The endpoint used to answer these
+two branches with a single line of unstyled text, which on a phone is indistinguishable
+from the site having broken -- and the two branches are exactly the ones a person can
+fix, if only somebody tells them which one happened.
+
+So each branch names the problem AND what to do next, and the size branch states the
+actual limit rather than the word "grande". The figure comes from the same setting the
+endpoint checks, so the two cannot disagree.
+
+The form is drawn again below rather than linked to. A file input cannot be pre-filled,
+so a retry costs one form and saves a navigation; a refusal that dead-ends is a client
+who gives up. It carries its own token, because a form re-rendered without one answers
+403 on submit and turns a recoverable mistake into a second, more confusing failure.
+
+The colour is not the message either: the notice carries a pt-BR sentence, and the glyph
+beside it is decorative and marked so.
+{% endcomment %}
+
+{% block heading %}{% translate "Não foi possível enviar" %}{% endblock %}
+
+{% block content %}
+  <div class="notice notice-error mb-6 flex items-start gap-2">
+    {% include "partials/pure/icons/alert-triangle.html" %}
+    <span>
+      {% if reason == 'oversized' %}
+        {% blocktranslate with limite=max_size_label %}O arquivo é maior que o limite de {{ limite }}. Envie um menor.{% endblocktranslate %}
+      {% else %}
+        {% translate "Nenhum arquivo foi escolhido. Escolha um arquivo e envie de novo." %}
+      {% endif %}
+    </span>
+  </div>
+
+  {% include "portal/partials/upload_form.html" %}
+
+  <p class="mt-6 text-sm">
+    <a class="link" href="{% url 'portal-documents' %}">{% translate "Voltar aos documentos" %}</a>
+  </p>
+{% endblock %}

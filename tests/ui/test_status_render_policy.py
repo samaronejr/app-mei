@@ -50,6 +50,9 @@ class RenderSite:
 
 
 STATUS_RENDER_SITES: Final[dict[str, RenderSite]] = {
+    # T22 BillingStatus is declared with pt-BR labels, so its native display helper
+    # needs no legacy translation map. This permits only this explicit render site.
+    "tenants/account.html": RenderSite(frozenset(), frozenset()),
     "accounts/invite_confirm.html": RenderSite(
         frozenset({"TENANT_ROLE_LABELS"}),
         frozenset({"get_role_display"}),

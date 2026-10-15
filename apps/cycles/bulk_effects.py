@@ -55,6 +55,7 @@ from apps.cycles.services.cycle import (
 from apps.cycles.services.requests import Recipient, recipients
 from apps.cycles.targeting import AppliesTo
 from apps.delivery.models import OutboundMessage
+from apps.delivery.notice_authority import NoticeOrigin, lock_notice_scope
 from apps.delivery.outbox import enqueue, portal_home_url
 from apps.delivery.policy import KINDS, BusinessIntent, render_body
 from apps.tenants.models import Tenant
@@ -352,7 +353,14 @@ def _execute_open(
 def _execute_notices(
     actor: User, item: SnapshotItem, effect_key: str
 ) -> dict[str, JSONValue]:
-    fresh, client = _lock_context(actor, item.client_id)
+    candidate = get_object_or_404(
+        ServiceCycle.objects, pk=item.subject_ref, client_id=item.client_id
+    )
+    scope = lock_notice_scope(
+        actor,
+        NoticeOrigin("request_notice", item.client_id, candidate.pk),
+    )
+    fresh, client = _lock_context(scope.actor, item.client_id)
     cycle = get_object_or_404(
         ServiceCycle.objects.select_for_update(), pk=item.subject_ref, client=client
     )
@@ -429,6 +437,7 @@ def _execute_notices(
             cycle_id=cycle.pk,
             idempotency_key=f"{effect_key}:{recipient.contact.pk}",
             invite=recipient.invite,
+            notice_scope=scope,
         )
         ids.append(str(message.pk))
     return {"code": "notices_queued", "message_ids": ids}

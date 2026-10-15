@@ -20,6 +20,8 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.models import EvidenceRequest, RequestState
 from apps.cycles.openers import evaluate_tenant_exceptions
 from apps.delivery.models import MessageState, OutboundMessage
+from apps.delivery.outbox import enqueue
+from apps.delivery.policy import BusinessIntent
 from tests.cycles.cycle_fixtures import cycle_setup
 from tests.cycles.test_exceptions import TODAY, _cycle, _firm
 from tests.portal.request_fixtures import portal_setup
@@ -170,20 +172,27 @@ def test_selected_message_refuses_malformed_foreign_and_unassigned_identities() 
             name="Other scoped contact",
             email="other@scope.test",
         )
-        sibling = OutboundMessage.objects.create(
-            tenant=world.graph.tenant,
-            client=world.other_client,
-            contact=contact,
-            cycle=world.other_request.cycle,
-            created_by=world.graph.actor,
+        other_cycle = world.other_request.cycle
+        sibling = enqueue(
+            world.graph.actor,
+            world.other_client.pk,
+            contact.pk,
+            intent=BusinessIntent(
+                other_cycle.engagement_id,
+                other_cycle.playbook_id,
+                other_cycle.period_start,
+                other_cycle.period_end,
+                other_cycle.amendment,
+                "sibling-selection",
+                "notice",
+            ),
+            expected_version=world.other_client.version,
+            cycle_id=other_cycle.pk,
             idempotency_key="sibling-selection",
-            business_intent_key="sibling-selection",
-            content_digest="2" * 64,
-            subject="OTHER-CLIENT-MESSAGE",
-            body_ref="delivery/email/request_notice.txt",
-            portal_url=f"http://{world.portal_host}/",
-            state=MessageState.UNKNOWN,
         )
+        sibling.subject = "OTHER-CLIENT-MESSAGE"
+        sibling.state = MessageState.UNKNOWN
+        sibling.save(update_fields=["subject", "state"])
         ClientAssignment.objects.create(
             tenant=world.graph.tenant,
             client=world.graph.client,

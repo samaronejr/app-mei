@@ -37,6 +37,8 @@ from apps.cycles.retention import after_years, retention_decision
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.delivery.models import OutboundMessage
 from apps.obligations.models import Document
+from apps.tenants.account_state import export_available
+from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +263,13 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
         candidates = _candidates()
     for candidate in candidates:
         with tenant_context(tid):
+            # PLATFORM_QUERY_OK: cancellation and deletion claims share this fence.
+            tenant = Tenant.objects.select_for_update(no_key=True).get(pk=tid)
+            if tenant.cancellation_ends_on is not None and export_available(
+                tenant, on=timezone.localdate(now)
+            ):
+                counts["retained"] += 1
+                continue
             ClientCompany.objects.select_for_update(no_key=True).get(
                 pk=candidate.client_id
             )

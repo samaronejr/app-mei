@@ -33,8 +33,10 @@ import pytest
 from django.conf import settings
 from django.db import connection
 
+from apps.core.checks import _roles_sql_grants
+from apps.core.grants import _declared_grants
 from apps.core.rls import PORTAL_DECISION_EXEMPT, portal_decision_exemption
-from tests.conftest import PORTAL_TABLES, PORTAL_WRITE_TABLES
+from tests.conftest import PORTAL_COLUMN_SELECT, PORTAL_TABLES, PORTAL_WRITE_TABLES
 from tests.isolation.rolecheck import assert_isolated_role
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -63,7 +65,12 @@ RUNTIME_ROLE = "app_runtime"
 # T18 adds seven private completion, export and retention tables with both policies.
 # T19 adds tenant-owned SavedView and client-paired private BriefingFeedback.
 # T20 adds BulkOperation and BulkItem: 56 + 2 = 58 tenant tables.
-EXPECTED_TENANT_TABLE_COUNT = 58
+# T22 adds six tenant-private account, metering, notification and export tables:
+# 58 + 6 = 64 tenant tables.
+# T24 adds one client-paired, independently portal-denied shadow observation table:
+# 64 + 1 = 65 tenant tables.
+# T23 places after T28 on this stack and adds tenants_supportgrant: 65 + 1 = 66.
+EXPECTED_TENANT_TABLE_COUNT = 67
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -79,6 +86,7 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         # Personal feedback carries the same client-isolation + deny-all backstop.
         "cycles_briefingfeedback",
         "cycles_bulkitem",
+        "automation_agentrun",
     }
 )
 
@@ -393,6 +401,29 @@ def test_the_conftest_allow_list_matches_the_production_artifact() -> None:
     assert granted == set(PORTAL_TABLES), granted.symmetric_difference(PORTAL_TABLES)
 
 
+def test_column_select_decisions_match_sql_without_becoming_table_grants() -> None:
+    # Given the independent production column grants and both table-grant consumers.
+    assert_isolated_role()
+    source = Path(settings.BASE_DIR) / "ops" / "sql" / "roles.sql"
+    declared = {
+        match.group(2): tuple(column.strip() for column in match.group(1).split(","))
+        for match in re.finditer(
+            r"GRANT\s+SELECT\s*\(([^)]+)\)\s+ON\s+([a-z0-9_]+)\s+TO\s+app_portal",
+            source.read_text(),
+        )
+    }
+
+    # Then column declarations agree, and neither core.E012 nor the post_migrate
+    # healer promotes the narrow grant to a table-wide SELECT.
+    assert declared
+    assert declared == PORTAL_COLUMN_SELECT
+    for table in declared:
+        assert table not in PORTAL_TABLES
+        assert (table, "SELECT") not in _roles_sql_grants()
+        assert (table, "SELECT") not in _declared_grants()
+        assert not _has_privilege(table, "SELECT")
+
+
 # W1b. An INDEPENDENT literal, and that is the whole requirement. Defined as
 # `_portal_policied_tables() - WRITE_ALLOWLIST` the assertion below would compare a
 # thing to itself and could never fail -- the defect this project keeps finding, in the
@@ -400,6 +431,7 @@ def test_the_conftest_allow_list_matches_the_production_artifact() -> None:
 # coverage, or quietly gaining a write grant, turns the meta-test red.
 STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
     {
+        "automation_agentrun",
         "audit_event",
         "authz_usercapabilitygrant",
         "clients_clientassignment",
@@ -444,9 +476,19 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "delivery_deliveryattempt",
         "delivery_deliveryeffect",
         "delivery_automationpause",
+        "delivery_tenantnoticepolicy",
+        "tenants_billingaccount",
+        "tenants_usagerecord",
+        "tenants_notificationpreference",
+        "tenants_firmoutboundmessage",
+        "tenants_accountexport",
+        "tenants_accountexportattempt",
         "obligations_monthlyrevenue",
         "obligations_obligation",
         "obligations_sourceobservation",
+        # T23: support grants name the platform actor and the owner's decision —
+        # firm-internal by definition, so the portal never sees the table at all.
+        "tenants_supportgrant",
     },
 )
 
@@ -480,7 +522,7 @@ CLIENT_PAIRING_EXEMPT: Final[dict[str, str]] = {
     ),
 }
 
-# Portal-writable tables the portal deliberately cannot read back. cycles_cycleevent
+# Portal-writable tables without table-wide SELECT. cycles_cycleevent
 # (todo 11, S8.2): the upload appends its submission event, but the timeline also
 # carries firm-side event types, so the portal holds INSERT without SELECT. Its WITH
 # CHECK is exercised from the portal side by test_portal_write_refusal.py.
@@ -491,7 +533,8 @@ INSERT_WITHOUT_SELECT: Final[dict[str, str]] = {
     ),
     "cycles_clientacknowledgement": (
         "append-only exact-version receipt; the portal inserts its authenticated "
-        "user's receipt and the firm reads the acknowledgement independently of SMTP"
+        "user's receipt and reads only the T60 exact-match columns; the firm reads "
+        "the full acknowledgement independently of SMTP"
     ),
 }
 

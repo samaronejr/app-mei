@@ -88,7 +88,8 @@ def test_existing_request_writers_and_proposals_serialize_before_cycle(
     entering = Event()
 
     def contender() -> str:
-        with connection.execute_wrapper(LockSignal("clients_clientcompany", entering)):
+        # T53 adds the shared actor fence before the unchanged client/cycle fences.
+        with connection.execute_wrapper(LockSignal("accounts_user", entering)):
             try:
                 if first == "proposal":
                     _request(setup, kind, request_version)

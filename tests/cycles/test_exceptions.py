@@ -66,6 +66,7 @@ from apps.delivery.tasks import dispatch_outbox
 from apps.tenants.models import Invite, TenantRole
 from tests.browser.harness import mfa_session_cookie
 from tests.cycles.cycle_fixtures import PERIOD, CycleSetup, cycle_setup
+from tests.delivery.notice_fixtures import acknowledge
 from tests.delivery.smtp import FakeSMTP
 from tests.portal.request_fixtures import portal_setup
 from tests.support import enrol_totp
@@ -537,6 +538,7 @@ def test_a_provider_rejected_portal_invite_is_withdrawn_and_owned(
     setup = cycle_setup("invite-reject")
     setup.tenant.features = ["cycles_r1", "import_r1"]
     setup.tenant.save(update_fields=["features"])
+    acknowledge(setup, ("contact_portal_invite",))
     with tenant_context(setup.tenant.pk):
         cycle = _cycle(setup)
         contact = ClientContact.objects.create(
@@ -571,7 +573,7 @@ def test_a_provider_rejected_portal_invite_is_withdrawn_and_owned(
         metadata__system=True,
     ).exists()
     with tenant_context(setup.tenant.pk):
-        message = OutboundMessage.objects.get(kind="portal_invite")
+        message = OutboundMessage.objects.get(kind="contact_portal_invite")
         assert message.state == MessageState.REJECTED
         problem = CycleException.objects.get(cycle=cycle)
         assert (problem.reason_code, problem.subject_ref, problem.state) == (

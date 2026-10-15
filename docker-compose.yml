@@ -18,6 +18,8 @@ x-app-environment: &app-environment
   REDIS_URL: redis://redis:6379/0
   DELIVERY_PAUSED: "${DELIVERY_PAUSED:-True}"
   DELIVERY_DAILY_CAP: "${DELIVERY_DAILY_CAP:-100}"
+  OUTBOX_MAX_QUEUED_AGE_SECONDS: "${OUTBOX_MAX_QUEUED_AGE_SECONDS:-900}"
+  OUTBOX_MAX_DEAD_LETTERS: "${OUTBOX_MAX_DEAD_LETTERS:-0}"
 
 x-app-service: &app-service
   build:
