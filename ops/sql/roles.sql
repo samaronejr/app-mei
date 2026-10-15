@@ -120,6 +120,8 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 -- Firm-only reviewer authority: no portal grant. DenyPortalAccess supplies the
 -- restrictive false policy as well. Mirrored by PORTAL_DENIED_TABLES in tests/conftest.py.
 
+-- PORTAL_NONE: clients_clientcontact
+-- Contacts remain ungranted; the existing client predicate is unchanged.
 -- PORTAL_NONE: clients_importbatch
 -- PORTAL_NONE: clients_importrow
 -- PORTAL_NONE: cycles_playbook
@@ -144,10 +146,96 @@ $$;
 
 -- PORTAL_NONE: cycles_cycletask
 -- PORTAL_NONE: cycles_cycleamendment
--- PORTAL_NONE: cycles_cycleevent
 -- PORTAL_NONE: cycles_internalnote
--- PORTAL_NONE: cycles_exception
--- T9 has no portal event writer and exposes no internal work or exception text.
+-- PORTAL_NONE: cycles_exceptioninternal
+-- PORTAL_NONE: cycles_requestinternal
+-- PORTAL_NONE: cycles_extractedfield
+-- PORTAL_NONE: cycles_review
+-- PORTAL_NONE: cycles_actionproposal
+-- PORTAL_NONE: cycles_approval
+-- PORTAL_NONE: cycles_actionexecution
+-- PORTAL_NONE: cycles_evidenceindex
+-- PORTAL_NONE: cycles_evidenceexport
+-- PORTAL_NONE: cycles_exportattempt
+-- PORTAL_NONE: cycles_completiongeneration
+-- PORTAL_NONE: cycles_completionjustification
+-- PORTAL_NONE: cycles_legalhold
+-- PORTAL_NONE: cycles_contentpurgeclaim
+-- PORTAL_NONE: cycles_savedview
+-- PORTAL_NONE: cycles_briefingfeedback
+-- Personal briefing filters and dismissal reasons are firm-private (T19).
+-- PORTAL_NONE: cycles_bulkoperation
+-- PORTAL_NONE: cycles_bulkitem
+-- Bulk snapshots, recipient lists and item results are firm-private.
+-- Exact recipients, frozen payloads and approval authority are firm-private.
+-- T9 exposes no internal work. T14 grants SELECT on cycles_exception (allow-list
+-- below) under a policy that also requires client_visible; instructions and evidence
+-- references live in cycles_exceptioninternal, and resolution prose stays
+-- in cycles_internalnote. T11 keeps each request's firm-only
+-- instructions and waiver reason in cycles_requestinternal, which the portal never
+-- reads. cycles_cycleevent is INSERT-only for the portal (see the write list below):
+-- the upload appends its submission event, and the portal reads no event back,
+-- because the timeline also carries firm-side event types. T13 keeps extracted and
+-- reviewed field values (cycles_extractedfield) and the firm's review decisions
+-- (cycles_review, S8.2) firm-only; the client reads a decision and its pt-BR reason
+-- from the columns the review service writes on cycles_evidencelink.
+
+-- PORTAL_NONE: delivery_outboundmessage
+-- PORTAL_NONE: delivery_deliveryattempt
+-- PORTAL_NONE: delivery_deliveryeffect
+-- PORTAL_NONE: delivery_automationpause
+-- PORTAL_NONE: delivery_tenantnoticepolicy
+-- PORTAL_NONE: automation_agentrun
+-- PORTAL_NONE: automation_evalrun
+-- T24: hidden AI observations and synthetic evaluation metrics have no portal grant.
+-- Message contents, SMTP receipts and operational controls are firm-private.
+-- PORTAL_NONE: tenants_billingaccount
+-- PORTAL_NONE: tenants_usagerecord
+-- PORTAL_NONE: tenants_notificationpreference
+-- PORTAL_NONE: tenants_firmoutboundmessage
+-- PORTAL_NONE: tenants_accountexport
+-- PORTAL_NONE: tenants_accountexportattempt
+-- PORTAL_NONE: tenants_supportgrant
+-- AXR1-023: no DELETE for the runtime role. Revocation writes revoked_at, so
+-- the row IS the audit trail; the blanket GRANT above is narrowed here just
+-- like the append-only tables below.
+DO $$
+BEGIN
+    IF to_regclass('public.tenants_supportgrant') IS NOT NULL THEN
+        REVOKE ALL ON tenants_supportgrant FROM app_runtime;
+        GRANT SELECT, INSERT, UPDATE ON tenants_supportgrant TO app_runtime;
+    END IF;
+END
+$$;
+-- Firm account data is private even when a client belongs to the firm.
+DO $$
+DECLARE
+    receipt_table text;
+BEGIN
+    FOREACH receipt_table IN ARRAY ARRAY[
+        'delivery_deliveryattempt', 'delivery_deliveryeffect', 'cycles_approval',
+        'cycles_actionexecution', 'cycles_clientacknowledgement',
+        'cycles_evidenceindex', 'cycles_completiongeneration', 'tenants_usagerecord'
+    ]
+    LOOP
+        IF to_regclass('public.' || receipt_table) IS NOT NULL THEN
+            EXECUTE format('REVOKE ALL ON %I FROM app_runtime', receipt_table);
+            EXECUTE format('GRANT SELECT, INSERT ON %I TO app_runtime', receipt_table);
+        END IF;
+    END LOOP;
+END
+$$;
+
+-- The identifier-free readiness aggregate is runtime-only, including after an
+-- ownership-pinned logical restore that deliberately omits dump ACLs.
+DO $$
+BEGIN
+    IF to_regprocedure('public.delivery_outbox_health()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION public.delivery_outbox_health() FROM PUBLIC, app_portal;
+        GRANT EXECUTE ON FUNCTION public.delivery_outbox_health() TO app_runtime;
+    END IF;
+END
+$$;
 
 -- app_portal's allow-list. Deliberately NOT `ON ALL TABLES`, and deliberately with no
 -- ALTER DEFAULT PRIVILEGES: a blanket grant would also expose accounts_user (password
@@ -172,6 +260,16 @@ BEGIN
         'clients_engagement',
         'clients_taxprofile',
         'cycles_servicecycle',
+        'cycles_clientpublication',
+        -- S8.2 / T11: the client's own requests (client-visible fields only), the
+        -- links it has submitted and their intake rows.
+        'cycles_evidencerequest',
+        'cycles_evidencelink',
+        'cycles_documentintake',
+        -- S8.2 / T14: the portal predicate adds `client_visible`; only the fixed
+        -- client_message is rendered. Internal instructions/evidence are in the
+        -- portal-denied cycles_exceptioninternal companion, not this table.
+        'cycles_exception',
         'obligations_obligation',
         'obligations_monthlyrevenue',
         'obligations_document',
@@ -207,7 +305,15 @@ DECLARE
     portal_write_table text;
 BEGIN
     FOREACH portal_write_table IN ARRAY ARRAY[
-        'obligations_document'
+        'obligations_document',
+        -- T11: an upload against a request inserts its link, the intake row of a
+        -- new document and one submission event. Each carries the RESTRICTIVE
+        -- client-anchored WITH CHECK from its migration. cycles_cycleevent is the
+        -- one INSERT without SELECT: the portal appends and never reads events.
+        'cycles_evidencelink',
+        'cycles_documentintake',
+        'cycles_cycleevent',
+        'cycles_clientacknowledgement'
     ]
     LOOP
         IF to_regclass('public.' || portal_write_table) IS NOT NULL THEN
@@ -216,5 +322,16 @@ BEGIN
             );
         END IF;
     END LOOP;
+END
+$$;
+
+-- T60: exact-version receipt matching only. No table-wide SELECT, receipt timestamps
+-- or receipt row IDs; existing tenant/client RLS also governs these column reads.
+DO $$
+BEGIN
+    IF to_regclass('public.cycles_clientacknowledgement') IS NOT NULL THEN
+        GRANT SELECT (tenant_id, publication_id, publication_digest, user_id)
+        ON cycles_clientacknowledgement TO app_portal;
+    END IF;
 END
 $$;

@@ -1,0 +1,11 @@
+Olá,
+
+Lembrete: ainda falta um documento pedido pelo seu escritório de contabilidade.
+
+Veja o pedido e envie o arquivo pelo portal:
+{{ portal_url }}
+{% if accept_url %}
+Você ainda não tem acesso ao portal. Para criar seu acesso, use este convite (válido por 7 dias, uso único):
+{{ accept_url }}
+{% endif %}
+Se você já enviou, pode desconsiderar esta mensagem.

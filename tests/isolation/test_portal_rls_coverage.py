@@ -33,8 +33,10 @@ import pytest
 from django.conf import settings
 from django.db import connection
 
+from apps.core.checks import _roles_sql_grants
+from apps.core.grants import _declared_grants
 from apps.core.rls import PORTAL_DECISION_EXEMPT, portal_decision_exemption
-from tests.conftest import PORTAL_TABLES, PORTAL_WRITE_TABLES
+from tests.conftest import PORTAL_COLUMN_SELECT, PORTAL_TABLES, PORTAL_WRITE_TABLES
 from tests.isolation.rolecheck import assert_isolated_role
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -54,7 +56,39 @@ RUNTIME_ROLE = "app_runtime"
 # cycles_{playbook,playbookversion,playbookstep} (todo 8) are firm-internal
 # playbook definitions — portal-NONE, each carrying a DenyPortalAccess policy.
 # Six client-scoped cycle aggregate/history tables (todo 9) extend that union.
-EXPECTED_TENANT_TABLE_COUNT = 31
+# Four firm-private delivery/control tables (todo 10) extend that union.
+# cycles_{evidencerequest,requestinternal,evidencelink,documentintake} (todo 11)
+# are the request/upload tables: three portal-readable, one portal-NONE.
+# cycles_{extractedfield,review} (todo 13) are firm-only extraction and review rows.
+# T14's private exception companion carries instructions and evidence references.
+# T15 adds two exact-effect tables, client-paired and independently portal-denied.
+# T18 adds seven private completion, export and retention tables with both policies.
+# T19 adds tenant-owned SavedView and client-paired private BriefingFeedback.
+# T20 adds BulkOperation and BulkItem: 56 + 2 = 58 tenant tables.
+# T22 adds six tenant-private account, metering, notification and export tables:
+# 58 + 6 = 64 tenant tables.
+# T24 adds one client-paired, independently portal-denied shadow observation table:
+# 64 + 1 = 65 tenant tables.
+# T23 places after T28 on this stack and adds tenants_supportgrant: 65 + 1 = 66.
+EXPECTED_TENANT_TABLE_COUNT = 67
+EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
+    {
+        "cycles_actionproposal",
+        "cycles_approval",
+        "cycles_actionexecution",
+        "cycles_evidenceindex",
+        "cycles_evidenceexport",
+        "cycles_exportattempt",
+        "cycles_completiongeneration",
+        "cycles_completionjustification",
+        "cycles_legalhold",
+        "cycles_contentpurgeclaim",
+        # Personal feedback carries the same client-isolation + deny-all backstop.
+        "cycles_briefingfeedback",
+        "cycles_bulkitem",
+        "automation_agentrun",
+    }
+)
 
 # Pinned deliberately. Widening an exemption must be a two-file edit, because
 # PORTAL_DECISION_EXEMPT is glob-matched and a single "*" would otherwise void every
@@ -260,6 +294,11 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
 
         policies = _portal_policies(table)
         assert policies, f"{table} has no portal policy and no exemption"
+        if table in EXACT_EFFECT_PRIVATE_TABLES:
+            assert {policy.name for policy in policies} == {
+                f"{table}_portal_client_isolation",
+                f"{table}_portal_denied",
+            }
 
         is_client_scoped = table in CLIENT_IDENTITY_COLUMN or _has_column(
             table,
@@ -284,6 +323,15 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
                 f"{table}.{name} is restrictive and also binds {sorted(roles)}"
             )
 
+            if (
+                table in EXACT_EFFECT_PRIVATE_TABLES
+                and name == f"{table}_portal_denied"
+            ):
+                # These client-paired tables have an additional deny-all backstop:
+                # even an accidental portal grant must reveal no frozen effects.
+                assert qual.strip().lower() == "false", f"{table}.{name} USING"
+                assert with_check.strip().lower() == "false", f"{table}.{name} CHECK"
+                continue
             if is_client_scoped:
                 # Then the predicate confines the portal to one client, on BOTH sides.
                 for side, expression in (("USING", qual), ("WITH CHECK", with_check)):
@@ -353,6 +401,29 @@ def test_the_conftest_allow_list_matches_the_production_artifact() -> None:
     assert granted == set(PORTAL_TABLES), granted.symmetric_difference(PORTAL_TABLES)
 
 
+def test_column_select_decisions_match_sql_without_becoming_table_grants() -> None:
+    # Given the independent production column grants and both table-grant consumers.
+    assert_isolated_role()
+    source = Path(settings.BASE_DIR) / "ops" / "sql" / "roles.sql"
+    declared = {
+        match.group(2): tuple(column.strip() for column in match.group(1).split(","))
+        for match in re.finditer(
+            r"GRANT\s+SELECT\s*\(([^)]+)\)\s+ON\s+([a-z0-9_]+)\s+TO\s+app_portal",
+            source.read_text(),
+        )
+    }
+
+    # Then column declarations agree, and neither core.E012 nor the post_migrate
+    # healer promotes the narrow grant to a table-wide SELECT.
+    assert declared
+    assert declared == PORTAL_COLUMN_SELECT
+    for table in declared:
+        assert table not in PORTAL_TABLES
+        assert (table, "SELECT") not in _roles_sql_grants()
+        assert (table, "SELECT") not in _declared_grants()
+        assert not _has_privilege(table, "SELECT")
+
+
 # W1b. An INDEPENDENT literal, and that is the whole requirement. Defined as
 # `_portal_policied_tables() - WRITE_ALLOWLIST` the assertion below would compare a
 # thing to itself and could never fail -- the defect this project keeps finding, in the
@@ -360,6 +431,7 @@ def test_the_conftest_allow_list_matches_the_production_artifact() -> None:
 # coverage, or quietly gaining a write grant, turns the meta-test red.
 STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
     {
+        "automation_agentrun",
         "audit_event",
         "authz_usercapabilitygrant",
         "clients_clientassignment",
@@ -378,12 +450,45 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "cycles_servicecycle",
         "cycles_cycletask",
         "cycles_cycleamendment",
-        "cycles_cycleevent",
         "cycles_internalnote",
         "cycles_exception",
+        "cycles_exceptioninternal",
+        "cycles_evidencerequest",
+        "cycles_requestinternal",
+        "cycles_extractedfield",
+        "cycles_review",
+        "cycles_actionproposal",
+        "cycles_approval",
+        "cycles_actionexecution",
+        "cycles_evidenceindex",
+        "cycles_evidenceexport",
+        "cycles_exportattempt",
+        "cycles_completiongeneration",
+        "cycles_completionjustification",
+        "cycles_legalhold",
+        "cycles_contentpurgeclaim",
+        "cycles_savedview",
+        "cycles_briefingfeedback",
+        "cycles_clientpublication",
+        "cycles_bulkoperation",
+        "cycles_bulkitem",
+        "delivery_outboundmessage",
+        "delivery_deliveryattempt",
+        "delivery_deliveryeffect",
+        "delivery_automationpause",
+        "delivery_tenantnoticepolicy",
+        "tenants_billingaccount",
+        "tenants_usagerecord",
+        "tenants_notificationpreference",
+        "tenants_firmoutboundmessage",
+        "tenants_accountexport",
+        "tenants_accountexportattempt",
         "obligations_monthlyrevenue",
         "obligations_obligation",
         "obligations_sourceobservation",
+        # T23: support grants name the platform actor and the owner's decision —
+        # firm-internal by definition, so the portal never sees the table at all.
+        "tenants_supportgrant",
     },
 )
 
@@ -402,6 +507,34 @@ CLIENT_PAIRING_EXEMPT: Final[dict[str, str]] = {
     "uploaded_by_id": (
         "accounts_user is platform-level and has no client_id. A user is not owned by "
         "a client; the row's own client_id is what confines the document"
+    ),
+    "submitted_by_id": (
+        "accounts_user again (cycles_evidencelink, todo 11): the submitter is a "
+        "platform-level account; the link's own client_id confines the row"
+    ),
+    "actor_id": (
+        "accounts_user again (cycles_cycleevent, todo 11): the event's actor is a "
+        "platform-level account; the event's own client_id confines the row"
+    ),
+    "user_id": (
+        "accounts_user again (cycles_clientacknowledgement, todo 16): the user is "
+        "platform-level; the receipt's client_id and exact publication FK confine it"
+    ),
+}
+
+# Portal-writable tables without table-wide SELECT. cycles_cycleevent
+# (todo 11, S8.2): the upload appends its submission event, but the timeline also
+# carries firm-side event types, so the portal holds INSERT without SELECT. Its WITH
+# CHECK is exercised from the portal side by test_portal_write_refusal.py.
+INSERT_WITHOUT_SELECT: Final[dict[str, str]] = {
+    "cycles_cycleevent": (
+        "append-only timeline shared with firm-side events; the portal writes its "
+        "submission event and never reads the timeline"
+    ),
+    "cycles_clientacknowledgement": (
+        "append-only exact-version receipt; the portal inserts its authenticated "
+        "user's receipt and reads only the T60 exact-match columns; the firm reads "
+        "the full acknowledgement independently of SMTP"
     ),
 }
 
@@ -520,7 +653,12 @@ def test_the_write_allow_list_is_a_subset_of_the_read_one() -> None:
     # Then nothing is writable that is not also readable. A table the portal may INSERT
     # into but not SELECT from would make its own WITH CHECK refusals unverifiable from
     # the portal's side, and would be a shape nobody chose deliberately.
-    assert _write_allow_list_from_roles_sql() <= _allow_list_from_roles_sql()
+    assert (
+        _write_allow_list_from_roles_sql() - set(INSERT_WITHOUT_SELECT)
+        <= _allow_list_from_roles_sql()
+    )
+    assert set(INSERT_WITHOUT_SELECT) <= _write_allow_list_from_roles_sql()
+    assert all(reason.strip() for reason in INSERT_WITHOUT_SELECT.values())
 
 
 def test_the_portal_role_can_read_the_allow_list_and_nothing_else() -> None:

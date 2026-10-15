@@ -255,6 +255,9 @@ def _document(
         byte_size=len(payload),
         uploaded_by=user,
         storage_key=new_storage_key(),
+        # T13: a seeded list row is a firm-published document; a client upload is
+        # listed only through a verified intake (tests/portal/test_vault_quarantine.py).
+        client_upload=False,
     )
     if store_bytes:
         default_storage.save(document.storage_key, io.BytesIO(payload))
@@ -748,7 +751,7 @@ def test_an_upload_returns_to_the_vault_with_the_confirmation_rendered(
     http = firm.signed_in_as(firm.owner)
     filename = "recibo-novo.pdf"
 
-    redirected = _upload(http, b"conteudo inteiramente novo", filename)
+    redirected = _upload(http, b"%PDF-1.4 conteudo inteiramente novo", filename)
     assert redirected.status_code == HTTPStatus.FOUND, redirected.status_code
     assert redirected["Location"] == _list_path(), (
         f"the upload sent the client to {redirected['Location']!r} rather than back to "
@@ -757,7 +760,7 @@ def test_an_upload_returns_to_the_vault_with_the_confirmation_rendered(
 
     landed = _upload(
         http,
-        b"outro conteudo inteiramente novo",
+        b"%PDF-1.4 outro conteudo inteiramente novo",
         "segundo.pdf",
         follow=True,
     )
@@ -770,11 +773,10 @@ def test_an_upload_returns_to_the_vault_with_the_confirmation_rendered(
         f"{UPLOAD_SUCCESS!r} never reached the page the upload landed on, so the "
         f"client is told nothing about whether the file arrived"
     )
-    assert "segundo.pdf" in body, (
-        "the file that was just uploaded is absent from the list it redirected to, so "
-        "the round trip stops short of showing the client their own evidence"
-    )
-    assert filename in body
+    # T13 (plan C-09): the upload is quarantined until the scanner says clean, so it
+    # is NOT on the list yet -- for its uploader or anyone else of the client.
+    assert "segundo.pdf" not in body
+    assert filename not in body
 
 
 def test_the_upload_form_is_a_plain_multipart_post_carrying_its_csrf_token(

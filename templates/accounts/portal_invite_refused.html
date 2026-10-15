@@ -33,6 +33,12 @@
     there is no destination on this origin that would help them, and offering one
     would be a door that answers with another refusal. The way forward is a person at
     the accounting firm, so the guidance names that person instead of an address.
+
+    The way out under it is not an onward link (AXR1-059): the root of this host, which
+    for a visitor is the portal's own sign-in, and Sair when signed in. The 403 here is
+    answered to exactly that reader -- a session that is not the invitee's -- and leaving
+    it is what lets the invitee open the link in the same browser. It names no firm,
+    client or invitation, so the 404s it closes stay one page whatever the token named.
   {% endcomment %}
   {% translate "Este convite não pode ser usado." as recusado %}
   {% include 'partials/pure/notice.html' with title=recusado message=reason variant='error' only %}
@@ -46,4 +52,5 @@
       {% translate "Fale com o seu escritório de contabilidade e peça um novo convite. Ele é enviado para um endereço de e-mail, e é desse endereço que o link precisa ser aberto." %}
     </p>
   </div>
+  {% include "refusal/way_out.html" %}
 {% endblock content %}

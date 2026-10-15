@@ -84,6 +84,11 @@ class ServiceCycle(ClientRecord):
         related_name="reviewed_cycles",
     )
     version = models.PositiveIntegerField(default=1)
+    # Structural effect identity, not unrelated request/task/form bookkeeping.
+    # A database trigger advances it for pinned context and amendment changes.
+    effect_revision = models.PositiveIntegerField(
+        default=1, db_default=1, editable=False
+    )
     amendment = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(default=timezone.now)
 
@@ -245,7 +250,9 @@ class ExceptionState(models.TextChoices):
 class Exception(ClientRecord):  # noqa: A001 - S6.3's domain model name
     """An owned problem with an explicit next action and review/deadline.
 
-    Portal NONE in T9, including client_visible rows. T14 owns any later exposure.
+    Portal SELECT since T14, confined by RLS to the client AND `client_visible` rows.
+    Instructions and evidence references live in ExceptionInternal; resolution
+    prose lives in InternalNote. Neither private table is granted to the portal.
     """
 
     cycle = models.ForeignKey(
@@ -261,12 +268,11 @@ class Exception(ClientRecord):  # noqa: A001 - S6.3's domain model name
         on_delete=models.PROTECT,
         related_name="cycle_exceptions",
     )
-    next_action = models.CharField(max_length=255)
     due_on = models.DateField(null=True, blank=True)
     review_on = models.DateField(null=True, blank=True)
     blocks_completion = models.BooleanField(default=True)
     client_visible = models.BooleanField(default=False)
-    evidence_refs = models.JSONField(default=list)
+    client_message = models.CharField(max_length=500, blank=True, default="")
     version = models.PositiveIntegerField(default=1)
     created_at = models.DateTimeField(default=timezone.now)
 
@@ -284,5 +290,30 @@ class Exception(ClientRecord):  # noqa: A001 - S6.3's domain model name
                 condition=models.Q(due_on__isnull=False)
                 | models.Q(review_on__isnull=False),
                 name="exception_has_review_date",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(client_visible=False) | ~models.Q(client_message=""),
+                name="exception_visible_has_message",
+            ),
+        ]
+
+
+class ExceptionInternal(ClientRecord):
+    """Firm-only instructions and evidence, owned by the exception's version."""
+
+    exception = models.ForeignKey(
+        Exception, on_delete=models.PROTECT, related_name="internals"
+    )
+    next_action = models.CharField(max_length=255)
+    evidence_refs = models.JSONField(default=list)
+
+    class Meta(ClientRecord.Meta):
+        """One private companion per scoped exception, like RequestInternal."""
+
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            *ClientRecord.Meta.constraints,
+            models.UniqueConstraint(
+                fields=["tenant", "client", "exception"],
+                name="exceptioninternal_exception_uniq",
             ),
         ]

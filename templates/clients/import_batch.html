@@ -19,6 +19,13 @@
       <div><dt class="text-xs font-medium text-ink-500">{% translate "Inválidas" %}</dt><dd class="text-lg tabular" data-count="invalid">{{ batch.planned_invalid }}</dd></div>
       <div><dt class="text-xs font-medium text-ink-500">{% translate "Duplicadas (ignoradas)" %}</dt><dd class="text-lg tabular" data-count="duplicate">{{ batch.planned_duplicate }}</dd></div>
     </dl>
+    <p class="mt-4 text-sm text-ink-600" data-active-client-limit="{{ allowance.limit|default_if_none:'unlimited' }}" data-active-client-remaining="{{ allowance.remaining|default_if_none:'unlimited' }}">
+      {% translate "Clientes ativos:" %} {{ allowance.active }}.
+      {% translate "Limite:" %} {% if allowance.limit is None %}{% translate "sem limite" %}{% else %}{{ allowance.limit }}. {% translate "Vagas disponíveis:" %} {{ allowance.remaining }}{% endif %}.
+      {% translate "Novas vagas necessárias:" %} {{ allowance.additional }}.
+    </p>
+    {% if error %}<div class="mt-4">{% include "partials/pure/notice.html" with message=error variant="warn" only %}</div>
+    {% elif not allowance.allowed %}<p class="notice notice-warn mt-4">{% translate "Esta importação excede o limite de clientes ativos. Revise a lista ou fale com o responsável pela conta. Nenhum cliente foi criado." %}</p>{% endif %}
     {% if in_progress %}
       <div class="mt-4">{% translate "A importação está em andamento. Esta página se atualiza sozinha." as msg %}{% include "partials/pure/notice.html" with message=msg variant="info" only %}</div>
     {% endif %}
@@ -45,6 +52,30 @@
       {% endif %}
     </div>
   </section>
+
+  {% if created_clients %}
+    {% comment %}
+      AXR1-047: the end of the import is the start of the work. Each client this
+      batch created is linked by name to its own page, which is where the service,
+      the tax profile, the contacts and the responsible people are then configured.
+
+      The link goes to the ordinary client page rather than straight to the setup
+      form: that page is what the rest of the product links to, it is what this
+      firm's roles are already scoped by, and it carries the setup entry point for
+      the accounts allowed to use it. A rolled-back batch lists nothing here --
+      `_created_clients` reads the surviving link, not the counter.
+    {% endcomment %}
+    <section class="card mb-8 p-5" aria-labelledby="criados">
+      <h2 id="criados" class="mb-3 text-sm font-semibold text-ink-700">{% translate "Clientes criados nesta importação" %}</h2>
+      <p class="text-sm text-ink-600">{% translate "Abra um cliente para completar o cadastro: serviço contratado, perfil tributário, contatos e responsáveis." %}</p>
+      <ul class="mt-3 grid gap-2 text-sm" data-created>
+        {% for company in created_clients %}
+          <li><a class="link" href="{% url 'client-detail' company.pk %}">{{ company.legal_name }}</a> <span class="tabular text-ink-600">{{ company.cnpj|cnpj_mask }}</span></li>
+        {% endfor %}
+      </ul>
+      {% if created_truncated %}<p class="mt-3 text-xs text-ink-600">{% blocktranslate with total=batch.committed_count %}Mostrando os primeiros 200 de {{ total }} clientes criados.{% endblocktranslate %}</p>{% endif %}
+    </section>
+  {% endif %}
 
   {% if blocking %}
     <section class="card mb-8 p-5" aria-labelledby="bloqueios">

@@ -179,7 +179,8 @@ QUERY_BUDGET: Final = 26
 # day the list ships has lost a feature it was using.
 NAV_LABEL: Final = "Clientes"
 NAV_EXPORT_LABEL: Final = "Exportar clientes"
-NAV_QUERY_BUDGET: Final = 3
+# AXR1-019 consolidates this answerer's live SQL; the independence spy is unchanged.
+NAV_QUERY_BUDGET: Final = 1
 
 # The RFB's official alphanumeric vector, and a legacy numeric CNPJ whose digits
 # overlap the query used to find the alphanumeric one. Both are checksum-valid.

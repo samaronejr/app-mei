@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Minhas notificações" %}{% endblock %}
+{% block heading %}{% translate "Minhas notificações" %}{% endblock %}
+{% block content %}
+  <p class="mb-5 text-sm"><a class="link" href="{% url 'firm-settings' %}">{% translate "Voltar às configurações" %}</a></p>
+  <section class="card max-w-2xl p-6" aria-labelledby="resumo-diario">
+    <h2 id="resumo-diario" class="mb-3 text-lg font-semibold">{% translate "Resumo da minha carteira" %}</h2>
+    <p class="mb-5 text-sm text-ink-600">{% translate "Um e-mail por dia com os ciclos abertos, solicitações e pendências dos clientes que você pode acessar. O envio ocorre pela fila de notificações da firma." %}</p>
+    {% if read_only %}{% include "tenants/read_only.html" %}{% endif %}
+    <form method="post" class="space-y-4">
+      {% csrf_token %}{% include "partials/pure/form_errors.html" %}
+      <fieldset class="space-y-4"{% if read_only %} disabled{% endif %}>
+        <legend class="visually-hidden">{% translate "Preferências de e-mail" %}</legend>
+        {% for field in form %}{% include "partials/pure/field.html" %}{% endfor %}
+        <button type="submit" class="btn btn-primary">{% translate "Salvar preferências" %}</button>
+      </fieldset>
+    </form>
+  </section>
+{% endblock %}

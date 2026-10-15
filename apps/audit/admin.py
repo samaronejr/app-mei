@@ -9,16 +9,22 @@ where a reviewer reading the admin sees it.
 from typing import Any, ClassVar
 
 from django.contrib import admin
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.http import HttpRequest, HttpResponse
 
 from apps.audit.models import AccessLog, DataSubjectRequest, Event, PlatformEvent
+from apps.authz.support import current_support, in_support_mode
 from apps.core.tenancy import current_tenant_id
 from apps.tenants.admin_views import select_tenant_view
 
 
 class ReadOnlyAdmin(admin.ModelAdmin[Any]):
     """A changelist that can be read and never written."""
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[Any]:
+        """Keep unpartitioned platform audit streams outside a support grant."""
+        rows = super().get_queryset(request)
+        return rows.none() if in_support_mode() else rows
 
     def has_add_permission(self, request: HttpRequest) -> bool:  # noqa: ARG002
         """Refuse creation."""
@@ -76,8 +82,24 @@ class EventAdmin(TenantScopedAdminMixin, ReadOnlyAdmin):
     date_hierarchy = "created_at"
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[Event]:  # noqa: ARG002
-        """Return the selected firm's events, via the scoped default manager."""
-        return Event.objects.all()
+        """Intersect the firm's audit references with the approved support scope."""
+        rows = Event.objects.all()
+        support = current_support.get()
+        if support is None:
+            return rows
+        firm_metadata = (
+            Q(object_type="Tenant", object_id=str(support.tenant_id))
+            | Q(object_type="SupportGrant", object_id=str(support.grant_id))
+        ) & ~Q(metadata__has_key="client_id")
+        client_ids = list(support.client_ids)
+        return rows.filter(
+            firm_metadata
+            | Q(metadata__client_id__in=client_ids)
+            | Q(
+                object_type__in=("ClientCompany", "clients.ClientCompany"),
+                object_id__in=client_ids,
+            )
+        )
 
 
 @admin.register(PlatformEvent)
@@ -119,3 +141,8 @@ class DataSubjectRequestAdmin(admin.ModelAdmin[DataSubjectRequest]):
         "encarregado_notified_at",
         "notification_last_error",
     )
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[DataSubjectRequest]:
+        """Rights requests have no grant-scoped client partition."""
+        rows = super().get_queryset(request)
+        return rows.none() if in_support_mode() else rows
