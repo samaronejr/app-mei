@@ -47,5 +47,5 @@ def test_old_tenant_statistics_before_growth_load(
             cursor.execute("SET ROLE app_runtime")
     assert_isolated_role()
     test_read_budgets.test_named_reads_on_seeded_growth_portfolio(
-        settings, tmp_path / "new", django_assert_max_num_queries
+        settings, tmp_path / "new", django_assert_max_num_queries, 0
     )

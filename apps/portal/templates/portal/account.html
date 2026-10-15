@@ -49,7 +49,7 @@ the tag's own words to the stale-stylesheet guard as class names.
 {% block content %}
   <div class="space-y-4">
     <dl class="card grid grid-cols-2 gap-y-3 px-5 py-4 text-sm">
-      <dt class="text-ink-500">{% translate "Conectado como" %}</dt>
+      <dt class="{% if cycles_r1 %}text-ink-600{% else %}text-ink-500{% endif %}">{% translate "Conectado como" %}</dt>
       <dd class="truncate text-ink-900">{{ request.user.email }}</dd>
     </dl>
 

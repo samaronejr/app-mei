@@ -110,6 +110,28 @@ class CoverageItem:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CoverageInputs:
+    """Already scoped rows; this value grants no client visibility."""
+
+    engagements: list[Engagement]
+    profiles: list[TaxProfile]
+    obligations: list[Obligation]
+    observations: list[SourceObservation]
+
+
+def coverage_from_rows(
+    rows: CoverageInputs, period: date, *, now: datetime
+) -> list[CoverageItem]:
+    """Evaluate the same coverage rules without fetching their inputs again."""
+    profile = claim_at(rows.profiles, period)
+    obligations = {row.obligation_type_id: row for row in rows.obligations}
+    return [
+        _engagement_state(engagement, profile, obligations, rows.observations, now)
+        for engagement in rows.engagements
+    ]
+
+
 def _facet_state(head: SourceObservation | None, now: datetime) -> str:
     if head is None:
         return CoverageState.UNKNOWN
@@ -312,15 +334,14 @@ def coverage_and_engagements_for_clients(
     ):
         observations.setdefault(row.client_id, []).append(row)
     for client_id in client_ids:
-        profile = claim_at(profiles.get(client_id, []), period)
-        answers[client_id] = [
-            _engagement_state(
-                engagement,
-                profile,
-                obligations.get(client_id, {}),
+        answers[client_id] = coverage_from_rows(
+            CoverageInputs(
+                engagements.get(client_id, []),
+                profiles.get(client_id, []),
+                list(obligations.get(client_id, {}).values()),
                 observations.get(client_id, []),
-                moment,
-            )
-            for engagement in engagements.get(client_id, [])
-        ]
+            ),
+            period,
+            now=moment,
+        )
     return answers, loaded
