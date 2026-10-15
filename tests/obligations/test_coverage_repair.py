@@ -3,6 +3,7 @@
 import re
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from http import HTTPStatus
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -29,6 +30,7 @@ from tests.cycles.observation_fixtures import (
 )
 from tests.portal.request_fixtures import PortalSetup
 from tests.ui.factories import add_member
+from tests.ui.refusal_contract import assert_readable_page
 
 receipt_case = observation_fixtures.receipt_case
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -353,6 +355,35 @@ def test_staff_form_correction_cannot_fork_a_superseded_head(
     response = staff_post(receipt_case, op="correct", head_id=str(head.pk))
 
     assert (response.status_code, staff_counts(receipt_case)) == (409, before)
+
+
+def test_a_stale_correction_is_refused_in_plain_sentences(
+    receipt_case: PortalSetup,
+) -> None:
+    """AXR1-054: StaleObservationError is a ValidationError; its 409 reads plainly."""
+    subject = payment_subject(receipt_case)
+    with tenant_context(subject.tenant_id):
+        head = record_staff_fact(
+            receipt_case.graph.actor,
+            subject_id=subject.pk,
+            kind="payment",
+            period=PERIOD,
+        )
+        record_staff_fact(
+            receipt_case.graph.actor,
+            subject_id=subject.pk,
+            kind="payment",
+            period=PERIOD,
+            expected_head_id=head.pk,
+        )
+
+    response = staff_post(receipt_case, op="correct", head_id=str(head.pk))
+
+    assert_readable_page(
+        response,
+        status=HTTPStatus.CONFLICT,
+        reason="O registro observado mudou. Recarregue antes de corrigir.",
+    )
 
 
 def test_cross_client_optional_evidence_is_refused_without_writes(

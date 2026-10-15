@@ -3,11 +3,16 @@
 import hashlib
 from collections.abc import Iterator
 from datetime import timedelta
+from http import HTTPStatus
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.core.files import File
 from django.core.files.storage import default_storage
+from django.urls import reverse
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
@@ -21,6 +26,7 @@ from apps.obligations.models import Document
 from apps.tenants.models import Membership
 from tests.cycles.document_fixtures import reviewed
 from tests.portal.request_fixtures import PortalSetup, portal_setup
+from tests.ui.refusal_contract import assert_readable_page, assert_readable_refusal
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -108,3 +114,69 @@ def test_download_rechecks_revocation_and_foreign_scope_before_storage(
     assert browser.get(f"/evidencias/arquivos/{export.pk}/baixar/").status_code == 403
     with tenant_context(foreign.graph.tenant.pk):
         assert EvidenceExport.objects.get(pk=other.pk).state == ExportState.READY
+
+
+@pytest.mark.parametrize(
+    ("expired", "status", "reason"),
+    [
+        (True, HTTPStatus.GONE, "O prazo deste download encerrou."),
+        (False, HTTPStatus.CONFLICT, "O arquivo ainda não está disponível."),
+    ],
+    ids=["prazo-encerrado", "ainda-em-preparo"],
+)
+def test_a_refused_download_is_a_readable_page_with_a_way_back(
+    settings: SettingsWrapper,
+    tmp_path: Path,
+    expired: bool,
+    status: HTTPStatus,
+    reason: str,
+) -> None:
+    """AXR1-054: an expired or unfinished archive keeps its status and reads."""
+    setup, export, _ = ready_export(
+        settings, tmp_path, f"download-refusal-{int(expired)}"
+    )
+    with tenant_context(setup.graph.tenant.pk):
+        rows = EvidenceExport.objects.filter(pk=export.pk)
+        if expired:
+            rows.update(expires_at=timezone.now() - timedelta(seconds=1))
+        else:
+            rows.update(state=ExportState.BUILDING)
+    response = setup.firm().get(reverse("evidence-export-download", args=[export.pk]))
+    assert_readable_refusal(
+        response,
+        status=status,
+        reason=reason,
+        back=reverse("evidence-export-detail", args=[export.pk]),
+    )
+
+
+def test_an_index_refusal_reads_in_plain_sentences(
+    settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AXR1-054: a ValidationError from the index command reads as sentences.
+
+    No service behind this form raises one today (by reading), so the command is
+    replaced by one that does; what is pinned is the view's handling of it.
+    """
+    settings.ALLOWED_HOSTS = [".localhost", "localhost"]
+    setup = portal_setup("index-refusal")
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        messages = [
+            "O índice não pôde ser gerado.",
+            "Confira as evidências e tente de novo.",
+        ]
+        raise ValidationError(messages)
+
+    monkeypatch.setattr("apps.cycles.export_views.capture_index", refuse)
+    with tenant_context(setup.graph.tenant.pk):
+        setup.cycle.refresh_from_db()
+    response = setup.firm().post(
+        reverse("evidence-index", args=[setup.cycle.pk]),
+        {"expected_version": str(setup.cycle.version), "action": "index"},
+    )
+    assert_readable_page(
+        response,
+        status=HTTPStatus.UNPROCESSABLE_CONTENT,
+        reason="O índice não pôde ser gerado. Confira as evidências e tente de novo.",
+    )

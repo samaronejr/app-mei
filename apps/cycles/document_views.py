@@ -31,6 +31,7 @@ from apps.accounts.views import AuthenticatedRequest
 from apps.authz.objects import load_visible_client
 from apps.authz.services import require_can
 from apps.clients.views import require_tenant
+from apps.core.refusal import forbidden_page
 from apps.cycles.evidence import (
     CLEAN_STATES,
     PENDING_SCAN_STATES,
@@ -109,10 +110,9 @@ def staff_document_download(request: AuthenticatedRequest, pk: UUID) -> HttpResp
             content_type="text/plain; charset=utf-8",
         )
     if intake is not None and intake.state in REJECTED_STATES:
-        return HttpResponse(
+        return forbidden_page(
+            request,
             "Arquivo recusado na verificação. Ele fica guardado e não é entregue.",
-            status=HTTPStatus.FORBIDDEN,
-            content_type="text/plain; charset=utf-8",
         )
     # Unscanned (verificacao_indisponivel, or a vault upload without an intake):
     # the warning first; the bytes only after its POST.

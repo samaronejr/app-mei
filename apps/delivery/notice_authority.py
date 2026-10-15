@@ -1,9 +1,10 @@
-"""Exact manual notice authority, independent from immutable message content."""
+"""Exact notice authority, independent from immutable message content."""
 
 import hashlib
 import json
-from dataclasses import dataclass
-from datetime import datetime
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from datetime import date, datetime
 from typing import Final
 from uuid import UUID
 
@@ -34,9 +35,21 @@ from apps.cycles.bulk_contracts import (
 )
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.effects.manifest import JSONValue, canonicalize
-from apps.cycles.evidence import EvidenceRequest
+from apps.cycles.evidence import CLIENT_OPEN_STATES, EvidenceRequest, counted_links
 from apps.cycles.models import CycleEvent, PlaybookVersion, ServiceCycle, VersionState
+from apps.cycles.services.cycle import OPEN_STATES
 from apps.delivery.models import DeliveryAttempt, OutboundMessage, TenantNoticePolicy
+from apps.delivery.reminder_rule import (
+    ACKNOWLEDGEMENT as AUTOMATIC_ACKNOWLEDGEMENT,
+)
+from apps.delivery.reminder_rule import (
+    RULE_VERSION,
+    SYSTEM_OPERATION,
+    ReminderOccurrence,
+    expires_at,
+    occurrence_day,
+    reminder_intent,
+)
 from apps.delivery.retries import root_intent as retry_root_intent
 from apps.tenants.account_state import require_writable
 from apps.tenants.models import Invite, Tenant
@@ -91,25 +104,52 @@ def may_manage(user: User, tenant: Tenant) -> bool:
     )
 
 
-def _grants(kinds: tuple[str, ...]) -> list[JSONValue]:
+def _grants(
+    kinds: tuple[str, ...], *, automatic_reminders: bool = False
+) -> list[JSONValue]:
     if len(set(kinds)) != len(kinds) or not set(kinds) <= NOTICE_KINDS:
         msg = "Tipo de aviso indisponível."
         raise ValidationError(msg)
-    return [
+    grants: list[JSONValue] = [
         {"kind": kind, "mode": "manual", "rule_version": None} for kind in sorted(kinds)
     ]
+    if automatic_reminders:
+        grants.append(
+            {
+                "kind": "request_reminder",
+                "mode": "automatic",
+                "rule_version": RULE_VERSION,
+            }
+        )
+    return grants
+
+
+def _read_grants(policy: TenantNoticePolicy | None) -> tuple[tuple[str, ...], bool]:
+    if policy is None:
+        return (), False
+    values = list_value(policy.grants_json)
+    kinds = tuple(
+        text_value(object_value(value).get("kind"))
+        for value in values
+        if object_value(value).get("mode") == "manual"
+    )
+    automatic = any(object_value(value).get("mode") == "automatic" for value in values)
+    if canonicalize(values) != canonicalize(
+        _grants(kinds, automatic_reminders=automatic)
+    ):
+        msg = "notice_policy_invalid"
+        raise NoticeRefusalError(msg)
+    return kinds, automatic
 
 
 def granted_kinds(policy: TenantNoticePolicy | None) -> tuple[str, ...]:
-    """Read only the finite canonical manual grant set."""
-    if policy is None:
-        return ()
-    values = list_value(policy.grants_json)
-    kinds = tuple(text_value(object_value(value).get("kind")) for value in values)
-    if canonicalize(values) != canonicalize(_grants(kinds)):
-        msg = "notice_policy_invalid"
-        raise NoticeRefusalError(msg)
-    return kinds
+    """Read manual grants without treating the separate automatic pair as consent."""
+    return _read_grants(policy)[0]
+
+
+def granted_automatic_reminders(policy: TenantNoticePolicy | None) -> bool:
+    """Only the exact implemented automatic kind/mode/rule pair is eligible."""
+    return _read_grants(policy)[1]
 
 
 def _owner(authority: Authority, tenant: Tenant) -> bool:
@@ -127,9 +167,10 @@ def configure(
     kinds: tuple[str, ...],
     acknowledged: bool,
     expected_version: int,
+    automatic_reminders: bool = False,
 ) -> TenantNoticePolicy:
     """Only a fresh ordinary owner may acknowledge exact implemented grants."""
-    grants = _grants(kinds)
+    grants = _grants(kinds, automatic_reminders=automatic_reminders)
     if grants and not acknowledged:
         msg = "Confirme a autorização antes de salvar os avisos."
         raise ValidationError(msg)
@@ -162,7 +203,9 @@ def configure(
             policy.ack_membership_id = member.pk
             policy.ack_membership_version = member.version
             policy.acknowledged_at = timezone.now()
-            policy.acknowledgement_code = ACKNOWLEDGEMENT
+            policy.acknowledgement_code = (
+                AUTOMATIC_ACKNOWLEDGEMENT if automatic_reminders else ACKNOWLEDGEMENT
+            )
         else:
             policy.acknowledged_version = None
             policy.acknowledged_by = None
@@ -210,6 +253,8 @@ class NoticeScope:
     issuer_membership_version: int
     basis: dict[str, JSONValue]
     authorities: dict[UUID, Authority]
+    reminder_on: date | None = None
+    reminder_due_on: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,19 +272,23 @@ def _policy_basis(
     authority: Authority | None,
     tenant: Tenant,
     kind: str,
+    *,
+    automatic: bool = False,
 ) -> dict[str, JSONValue]:
     if policy is None:
         msg = "notice_policy_missing"
         raise NoticeRefusalError(msg)
+    kinds, automatic_grant = _read_grants(policy)
+    acknowledgement = AUTOMATIC_ACKNOWLEDGEMENT if automatic_grant else ACKNOWLEDGEMENT
     if (
         policy.acknowledged_by_id is None
         or policy.acknowledged_at is None
         or policy.acknowledged_version != policy.version
-        or policy.acknowledgement_code != ACKNOWLEDGEMENT
+        or policy.acknowledgement_code != acknowledgement
     ):
         msg = "notice_policy_unacknowledged"
         raise NoticeRefusalError(msg)
-    if kind not in granted_kinds(policy):
+    if (automatic and not automatic_grant) or (not automatic and kind not in kinds):
         msg = "notice_kind_not_allowed"
         raise NoticeRefusalError(msg)
     if (
@@ -259,7 +308,7 @@ def _policy_basis(
         "owner_id": str(authority.user.pk),
         "membership_id": str(authority.membership.pk),
         "membership_version": authority.membership.version,
-        "acknowledgement_code": ACKNOWLEDGEMENT,
+        "acknowledgement_code": acknowledgement,
     }
 
 
@@ -292,12 +341,24 @@ def _definition_digest(definition: PlaybookVersion) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _system_request_id(origin: NoticeOrigin) -> UUID:
+    if origin.request_id is None:
+        msg = "notice_system_operation_invalid"
+        raise NoticeRefusalError(msg)
+    return origin.request_id
+
+
 def _lock_sources(
-    origin: NoticeOrigin, authority: Authority, tid: UUID
+    origin: NoticeOrigin, authority: Authority, tid: UUID, *, automatic: bool = False
 ) -> tuple[ClientCompany, ServiceCycle | None, dict[str, JSONValue] | None]:
     """Acquire client -> assignments -> cycle/requests -> published definition."""
-    client = load_client(authority.user, tid, origin.client_id, lock=True)
-    if not _issuer_permits(authority, origin, tid):
+    if automatic:
+        # The acknowledged, bounded system operation is not an owner session.
+        # Its exact policy has already been checked before this source acquisition.
+        client = ClientCompany.objects.select_for_update().get(pk=origin.client_id)
+    else:
+        client = load_client(authority.user, tid, origin.client_id, lock=True)
+    if not automatic and not _issuer_permits(authority, origin, tid):
         raise PermissionDenied
     # Stable portfolio/assignment decisions share the client aggregate fence.
     list(
@@ -315,11 +376,12 @@ def _lock_sources(
         if cycle is None:
             msg = "notice_source_changed"
             raise NoticeRefusalError(msg)
-        list(
-            EvidenceRequest.objects.select_for_update()
-            .filter(cycle=cycle, client=client)
-            .order_by("pk")
+        requests = EvidenceRequest.objects.select_for_update().filter(
+            cycle=cycle, client=client
         )
+        if automatic:
+            requests = requests.filter(pk=_system_request_id(origin))
+        list(requests.order_by("pk"))
     if origin.request_id is not None and (
         cycle is None
         or not EvidenceRequest.objects.filter(
@@ -364,31 +426,119 @@ def _issuer_permits(authority: Authority, origin: NoticeOrigin, tid: UUID) -> bo
     )
 
 
+def _complete_reminder_scope(
+    scope: NoticeScope,
+    origin: NoticeOrigin,
+    occurrence: ReminderOccurrence,
+    tenant: Tenant,
+) -> NoticeScope:
+    """Refresh the rule after the complete authority/source suffix was acquired."""
+    now = occurrence.clock()
+    require_writable(tenant, on=occurrence_day(now))
+    if occurrence.on != occurrence_day(now):
+        msg = "reminder_expired"
+        raise NoticeRefusalError(msg)
+    cycle = scope.cycle
+    if cycle is None or cycle.state not in OPEN_STATES:
+        msg = "cycle_closed"
+        raise NoticeRefusalError(msg)
+    request = EvidenceRequest.objects.get(
+        pk=_system_request_id(origin), client=scope.client, cycle=cycle
+    )
+    if request.state not in CLIENT_OPEN_STATES:
+        msg = "request_closed"
+        raise NoticeRefusalError(msg)
+    if counted_links().filter(request=request).exists():
+        msg = "request_submitted"
+        raise NoticeRefusalError(msg)
+    if request.due_on is None or request.due_on >= occurrence.on:
+        msg = "request_not_overdue"
+        raise NoticeRefusalError(msg)
+    if request.requested_at is None or request.requested_at > now:
+        msg = "request_not_requested"
+        raise NoticeRefusalError(msg)
+    return replace(scope, reminder_on=occurrence.on, reminder_due_on=request.due_on)
+
+
+def _require_system_origin(origin: NoticeOrigin, *, automatic: bool) -> None:
+    if automatic and (
+        origin.kind != "request_reminder"
+        or origin.cycle_id is None
+        or origin.request_id is None
+    ):
+        msg = "notice_system_operation_invalid"
+        raise NoticeRefusalError(msg)
+
+
+def _policy_required(
+    origin: NoticeOrigin, binding: dict[str, JSONValue] | None, *, automatic: bool
+) -> bool:
+    return (
+        automatic
+        or origin.kind in {"portal_invite", "contact_portal_invite"}
+        or (
+            object_value(binding.get("basis")).get("type") == "tenant_policy"
+            if binding is not None
+            else origin.cycle_id is None
+        )
+    )
+
+
+def _scope_owner_id(
+    binding: dict[str, JSONValue] | None, *, policy_required: bool
+) -> UUID | None:
+    # The candidate read stays unconditional whenever a policy is required.
+    candidate = TenantNoticePolicy.objects.filter().first() if policy_required else None
+    if binding is not None and policy_required:
+        return UUID(text_value(object_value(binding.get("basis")).get("owner_id")))
+    return candidate.acknowledged_by_id if candidate else None
+
+
+def _lock_tenant(tid: UUID, origin: NoticeOrigin, *, automatic: bool) -> Tenant:
+    # PLATFORM_QUERY_OK: current tenant fence, after the full participant union.
+    tenant = Tenant.objects.select_for_update(no_key=True).get(pk=tid)
+    if automatic and not tenant.is_active:
+        raise PermissionDenied
+    feature = "import_r1" if origin.kind == "contact_portal_invite" else "cycles_r1"
+    if not tenant_row_has(tenant, feature):
+        msg = "notice_feature_disabled"
+        raise NoticeRefusalError(msg)
+    require_writable(tenant)
+    return tenant
+
+
+def _require_bound_basis(
+    binding: dict[str, JSONValue] | None, basis: dict[str, JSONValue]
+) -> None:
+    if binding is None:
+        return
+    bound = object_value(binding.get("basis"))
+    if canonicalize(bound) != canonicalize(basis):
+        code = (
+            "notice_policy_changed"
+            if bound.get("type") == "tenant_policy"
+            else "notice_playbook_changed"
+        )
+        raise NoticeRefusalError(code)
+
+
 def lock_notice_scope(
     actor: User,
     origin: NoticeOrigin,
     *,
     binding: dict[str, JSONValue] | None = None,
     extra_actor: User | None = None,
+    reminder: ReminderOccurrence | None = None,
 ) -> NoticeScope:
     """Users -> seats/grants -> tenant/policy -> client/cycle -> contact/invite."""
     if origin.kind not in NOTICE_KINDS:
         msg = "notice_kind_not_allowed"
         raise NoticeRefusalError(msg)
+    automatic = reminder is not None
+    _require_system_origin(origin, automatic=automatic)
     tid = tenant_id()
-    policy_required = origin.kind in {"portal_invite", "contact_portal_invite"} or (
-        object_value(binding.get("basis")).get("type") == "tenant_policy"
-        if binding is not None
-        else origin.cycle_id is None
-    )
-    candidate = TenantNoticePolicy.objects.filter().first() if policy_required else None
-    owner_id = (
-        UUID(text_value(object_value(binding.get("basis")).get("owner_id")))
-        if binding is not None and policy_required
-        else candidate.acknowledged_by_id
-        if candidate
-        else None
-    )
+    policy_required = _policy_required(origin, binding, automatic=automatic)
+    owner_id = _scope_owner_id(binding, policy_required=policy_required)
     participants = {actor.pk}
     participants.update({owner_id} if owner_id else set())
     participants.update({extra_actor.pk} if extra_actor else set())
@@ -400,13 +550,7 @@ def lock_notice_scope(
     authority = authorities[actor.pk]
     if authority.membership is None:
         raise PermissionDenied
-    # PLATFORM_QUERY_OK: current tenant fence, after the full participant union.
-    tenant = Tenant.objects.select_for_update(no_key=True).get(pk=tid)
-    feature = "import_r1" if origin.kind == "contact_portal_invite" else "cycles_r1"
-    if not tenant_row_has(tenant, feature):
-        msg = "notice_feature_disabled"
-        raise NoticeRefusalError(msg)
-    require_writable(tenant)
+    tenant = _lock_tenant(tid, origin, automatic=automatic)
     policy = (
         TenantNoticePolicy.objects.select_for_update().filter().first()
         if policy_required
@@ -415,24 +559,23 @@ def lock_notice_scope(
     if policy and policy.acknowledged_by_id not in {owner_id, None}:
         msg = "notice_owner_changed"
         raise NoticeRefusalError(msg)
-    client, cycle, published_basis = _lock_sources(origin, authority, tid)
     owner = authorities.get(owner_id) if owner_id else None
+    if automatic:
+        if actor.pk != owner_id:
+            msg = "notice_system_operation_invalid"
+            raise NoticeRefusalError(msg)
+        _policy_basis(policy, owner, tenant, origin.kind, automatic=True)
+    client, cycle, published_basis = _lock_sources(
+        origin, authority, tid, automatic=automatic
+    )
     if policy_required:
-        basis = _policy_basis(policy, owner, tenant, origin.kind)
+        basis = _policy_basis(policy, owner, tenant, origin.kind, automatic=automatic)
     elif published_basis is not None:
         basis = published_basis
     else:
         msg = "notice_source_changed"
         raise NoticeRefusalError(msg)
-    if binding is not None and canonicalize(
-        object_value(binding.get("basis"))
-    ) != canonicalize(basis):
-        code = (
-            "notice_policy_changed"
-            if object_value(binding.get("basis")).get("type") == "tenant_policy"
-            else "notice_playbook_changed"
-        )
-        raise NoticeRefusalError(code)
+    _require_bound_basis(binding, basis)
     list(ClientContact.objects.select_for_update().filter(client=client).order_by("pk"))
     list(
         # PLATFORM_QUERY_OK: client invitations are tenant/client fenced; FIRM excluded.
@@ -441,11 +584,11 @@ def lock_notice_scope(
         .order_by("pk")
     )
     # Refresh time-dependent grants after any blocked source acquisition.
-    if not _issuer_permits(authority, origin, tid):
+    if not automatic and not _issuer_permits(authority, origin, tid):
         raise PermissionDenied
     if policy_required:
-        _policy_basis(policy, owner, tenant, origin.kind)
-    return NoticeScope(
+        _policy_basis(policy, owner, tenant, origin.kind, automatic=automatic)
+    scope = NoticeScope(
         authority.user,
         client,
         cycle,
@@ -454,6 +597,11 @@ def lock_notice_scope(
         authority.membership.version,
         basis,
         authorities,
+    )
+    return (
+        _complete_reminder_scope(scope, origin, reminder, tenant)
+        if reminder is not None
+        else scope
     )
 
 
@@ -486,12 +634,12 @@ def _envelope(
         ):
             msg = "notice_source_changed"
             raise NoticeRefusalError(msg)
-    return {
+    envelope: dict[str, JSONValue] = {
         "schema": SCHEMA,
         "feature": "import_r1"
         if message.kind == "contact_portal_invite"
         else "cycles_r1",
-        "mode": "manual",
+        "mode": "automatic" if scope.reminder_on is not None else "manual",
         "kind": message.kind,
         "tenant_id": str(message.tenant_id),
         "client_id": str(message.client_id),
@@ -508,6 +656,34 @@ def _envelope(
         "root_intent": root_intent,
         "basis": scope.basis,
     }
+    if scope.reminder_on is not None:
+        from apps.cycles.services.requests import recipients  # noqa: PLC0415
+
+        if scope.reminder_due_on is None:
+            msg = "notice_source_changed"
+            raise NoticeRefusalError(msg)
+        if not any(
+            row.contact.pk == message.contact_id and row.eligible
+            for row in recipients(scope.client)
+        ):
+            msg = "recipient_not_allowed"
+            raise NoticeRefusalError(msg)
+        envelope.update(
+            {
+                "system_operation": SYSTEM_OPERATION,
+                "rule_version": RULE_VERSION,
+                "occurrence": scope.reminder_on.toordinal(),
+                "due_on": scope.reminder_due_on.isoformat(),
+                "expires_at": expires_at(scope.reminder_on),
+                "cycle_effect_revision": scope.cycle.effect_revision
+                if scope.cycle is not None
+                else None,
+                "playbook_version_id": str(scope.cycle.playbook_version_id)
+                if scope.cycle is not None
+                else None,
+            }
+        )
+    return envelope
 
 
 def bind_notice(scope: NoticeScope, message: OutboundMessage) -> None:
@@ -613,6 +789,19 @@ def _verify_binding(
     if root_intent != retry_root_intent(message):
         msg = "notice_authority_invalid"
         raise NoticeRefusalError(msg)
+    if scope.reminder_on is not None:
+        if scope.cycle is None or message.evidence_request_id is None:
+            msg = "notice_authority_invalid"
+            raise NoticeRefusalError(msg)
+        expected_intent = reminder_intent(
+            scope.cycle,
+            message.evidence_request_id,
+            message.contact_id,
+            scope.reminder_on,
+        ).key(message.tenant_id)
+        if root_intent != expected_intent:
+            msg = "notice_authority_invalid"
+            raise NoticeRefusalError(msg)
     if canonicalize(_envelope(scope, message, root_intent=root_intent)) != (
         message.notice_authorization_bytes
     ):
@@ -621,7 +810,10 @@ def _verify_binding(
 
 
 def validate_notice(
-    message: OutboundMessage, *, extra_actor: User | None = None
+    message: OutboundMessage,
+    *,
+    extra_actor: User | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> tuple[bool, str]:
     """Rebuild the selected authority under live locks; never reselect consent."""
     try:
@@ -638,6 +830,14 @@ def validate_notice(
             ),
             binding=binding,
             extra_actor=extra_actor,
+            reminder=(
+                ReminderOccurrence(
+                    date.fromordinal(integer_value(binding.get("occurrence"))),
+                    clock or timezone.now,
+                )
+                if binding is not None and binding.get("mode") == "automatic"
+                else None
+            ),
         )
         if binding is None:
             if not _legacy_publication(message, scope):
