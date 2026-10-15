@@ -15,11 +15,13 @@ PostgreSQL's `ON CONFLICT DO NOTHING`, where no error is ever raised to abort.
 
 from datetime import date
 
-from django.db import models
+from django.db import models, transaction
 
 from apps.clients.models import ClientCompany
+from apps.core.flags import tenant_has
 from apps.obligations.calendar import due_date_for
 from apps.obligations.models import Obligation, ObligationType
+from apps.obligations.observations import emit_calendar_assertions
 from apps.obligations.rules import DueRuleCache
 
 DAS_CODE = "DAS"
@@ -95,6 +97,21 @@ def generate_das_calendar(
 
     existing = _existing_count(client, das, months)
     Obligation.objects.bulk_create(rows, ignore_conflicts=True)
+    if tenant_has(client.tenant_id, "cycles_r1"):
+        # T17: each persisted row asserts its stored schedule as a
+        # calendar_scheduled observation. Re-reading the subjects is required —
+        # a row that lost the ON CONFLICT race carries an id the table never
+        # stored. Replay-safe: a second sweep finds the winner's assertion
+        # under the subject lock and writes nothing.
+        with transaction.atomic():
+            subjects = list(
+                Obligation.objects.filter(
+                    client=client,
+                    obligation_type=das,
+                    competence_month__in=months,
+                )
+            )
+            emit_calendar_assertions(subjects)
     return len(months) - existing
 
 

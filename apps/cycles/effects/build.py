@@ -105,11 +105,12 @@ def lock_sources(cycle: ServiceCycle, spec: ProposalInput) -> LiveSources:
     if len(contacts) != len(contact_ids):
         code = "recipient_unavailable"
         raise BuildError(code)
-    if spec.withdraw_publication_id is not None:
+    publication_id = spec.withdraw_publication_id or spec.supersedes_publication_id
+    if publication_id is not None:
         target = (
             ClientPublication.objects.select_for_update(no_key=True)
             .filter(
-                pk=spec.withdraw_publication_id,
+                pk=publication_id,
                 client_id=cycle.client_id,
                 cycle=cycle,
             )
@@ -363,23 +364,8 @@ def _observations(sources: LiveSources) -> tuple[ObservationEffect, ...]:
     return tuple(result)
 
 
-def build_manifest(
-    proposal: ActionProposal,
-    spec: ProposalInput,
-    context: ManifestContext,
-) -> EffectManifestV1:
-    """Build from the locked cut, keeping proposal identity, copy and times fixed."""
-    cycle, tenant = context.cycle, context.tenant
-    sources, authorities, now = context.sources, context.authorities, context.now
-    sole = tenant.allow_self_approval and active_staff_count(tenant.pk) == 1
-    policy: dict[str, JSONValue] = {
-        "allow_self_approval": tenant.allow_self_approval,
-        "quorum": tenant.approval_quorum,
-        "separation_of_duties": not sole,
-        "engagement_version": sources.engagement.version,
-    }
-    if sole:
-        policy["roster_version"] = tenant.approval_roster_version
+def definition_hash(version: PlaybookVersion) -> str:
+    """Bind the same pinned definition bytes in approvals and evidence indexes."""
     steps: list[JSONValue] = [
         {
             "key": step.key,
@@ -394,21 +380,128 @@ def build_manifest(
             "client_visible": step.client_visible,
             "is_enabled": step.is_enabled,
         }
-        for step in sources.definition.steps.order_by("key")
+        for step in version.steps.order_by("key")
     ]
     definition: dict[str, JSONValue] = {
-        "id": str(sources.definition.pk),
-        "number": sources.definition.number,
-        "applies_to": sources.definition.applies_to_json,
+        "id": str(version.pk),
+        "number": version.number,
+        "applies_to": version.applies_to_json,
         "steps": steps,
     }
+    return hashlib.sha256(canonicalize(definition)).hexdigest()
+
+
+def _publication_payload(
+    proposal: ActionProposal,
+    spec: ProposalInput,
+    tenant: Tenant,
+    recipients: tuple[Recipient, ...],
+) -> dict[str, JSONValue]:
+    payload: dict[str, JSONValue] = {}
+    from apps.delivery.outbox import portal_home_url  # noqa: PLC0415
+
+    target_id = spec.withdraw_publication_id or proposal.pk
+    url = f"{portal_home_url(tenant.slug)}publicacoes/{target_id}/"
+    notice_subject = (
+        "Publicação retirada pelo escritório"
+        if spec.withdraw_publication_id
+        else "Nova publicação no portal do cliente"
+    )
+    notice_body = f"{notice_subject}.\nAcesse o portal: {url}"
+    notice: dict[str, JSONValue] = {
+        "subject": notice_subject,
+        "body": notice_body,
+        "url": url,
+        "account_id": smtp_account(),
+        **freeze_mail(
+            proposal,
+            EmailMessage(
+                subject=notice_subject,
+                body=notice_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=sorted(
+                    normalize_email(row["address"])
+                    for row in recipients
+                    if row["channel"] == "email"
+                ),
+            ),
+        ),
+    }
+    payload["notice"] = notice
+    if spec.supersedes_publication_id is not None:
+        target = ClientPublication.objects.get(pk=spec.supersedes_publication_id)
+        if target.state != PublicationState.PUBLISHED or (
+            ClientPublication.objects.filter(supersedes=target)
+            .exclude(proposal=proposal)
+            .exists()
+        ):
+            code = "publication_unavailable"
+            raise BuildError(code)
+        payload["supersedes"] = {
+            "publication_id": str(target.pk),
+            "digest": target.publication_digest,
+            "version": target.version,
+        }
+    if spec.withdraw_publication_id is not None:
+        target = ClientPublication.objects.get(pk=spec.withdraw_publication_id)
+        version = target.version
+        if target.state == PublicationState.WITHDRAWN and (
+            ActionExecution.objects.filter(
+                proposal=proposal, digest=proposal.digest
+            ).exists()
+        ):
+            # This exact committed effect advanced the target once. Rebuild
+            # its approved precondition while still rechecking every live
+            # recipient, authority and source before the notice dispatch.
+            version -= 1
+        elif target.state != PublicationState.PUBLISHED:
+            code = "publication_unavailable"
+            raise BuildError(code)
+        payload["withdrawal"] = {
+            "publication_id": str(target.pk),
+            "digest": target.publication_digest,
+            "version": version,
+        }
+    return payload
+
+
+def build_manifest(
+    proposal: ActionProposal,
+    spec: ProposalInput,
+    context: ManifestContext,
+) -> EffectManifestV1:
+    """Build from the locked cut, keeping proposal identity, copy and times fixed."""
+    cycle, tenant = context.cycle, context.tenant
+    sources, authorities, now = context.sources, context.authorities, context.now
+    sole = (
+        not spec.reopen
+        and tenant.allow_self_approval
+        and active_staff_count(tenant.pk) == 1
+    )
+    policy: dict[str, JSONValue] = {
+        "allow_self_approval": tenant.allow_self_approval,
+        "quorum": tenant.approval_quorum,
+        "separation_of_duties": not sole,
+        "engagement_version": sources.engagement.version,
+    }
+    if sole:
+        policy["roster_version"] = tenant.approval_roster_version
     payload: dict[str, JSONValue] = {
         "subject": spec.subject,
         "body": spec.body,
         "reason": spec.reason,
     }
     if spec.action_kind is ActionKind.CYCLE_COMPLETION:
+        from apps.cycles.index_projection import source_digest  # noqa: PLC0415
+
         payload["completion_state"] = spec.completion_state
+        payload["completion_reasons"] = dict(spec.completion_reasons)
+        payload["completion_source_digest"] = source_digest(cycle)
+        if spec.reopen:
+            payload["reopen"] = {
+                "generation_id": str(spec.generation_id),
+                "affected_scope": [str(value) for value in spec.affected_scope],
+            }
     recipients = _recipients(sources, spec.action_kind, authorities)
     if spec.action_kind is ActionKind.EMAIL_NOTICE:
         provider = "smtp"
@@ -427,56 +520,7 @@ def build_manifest(
     else:
         provider, account_id = "axorim", str(tenant.pk)
     if spec.action_kind is ActionKind.CLIENT_PUBLICATION:
-        from apps.delivery.outbox import portal_home_url  # noqa: PLC0415
-
-        target_id = spec.withdraw_publication_id or proposal.pk
-        url = f"{portal_home_url(tenant.slug)}publicacoes/{target_id}/"
-        notice_subject = (
-            "Publicação retirada pelo escritório"
-            if spec.withdraw_publication_id
-            else "Nova publicação no portal do cliente"
-        )
-        notice_body = f"{notice_subject}.\nAcesse o portal: {url}"
-        notice: dict[str, JSONValue] = {
-            "subject": notice_subject,
-            "body": notice_body,
-            "url": url,
-            "account_id": smtp_account(),
-            **freeze_mail(
-                proposal,
-                EmailMessage(
-                    subject=notice_subject,
-                    body=notice_body,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    to=sorted(
-                        normalize_email(row["address"])
-                        for row in recipients
-                        if row["channel"] == "email"
-                    ),
-                ),
-            ),
-        }
-        payload["notice"] = notice
-        if spec.withdraw_publication_id is not None:
-            target = ClientPublication.objects.get(pk=spec.withdraw_publication_id)
-            version = target.version
-            if target.state == PublicationState.WITHDRAWN and (
-                ActionExecution.objects.filter(
-                    proposal=proposal, digest=proposal.digest
-                ).exists()
-            ):
-                # This exact committed effect advanced the target once. Rebuild
-                # its approved precondition while still rechecking every live
-                # recipient, authority and source before the notice dispatch.
-                version -= 1
-            elif target.state != PublicationState.PUBLISHED:
-                code = "publication_unavailable"
-                raise BuildError(code)
-            payload["withdrawal"] = {
-                "publication_id": str(target.pk),
-                "digest": target.publication_digest,
-                "version": version,
-            }
+        payload.update(_publication_payload(proposal, spec, tenant, recipients))
     return EffectManifestV1(
         tenant_id=str(proposal.tenant_id),
         client_id=str(proposal.client_id),
@@ -487,7 +531,7 @@ def build_manifest(
         period_start=cycle.period_start,
         period_end=cycle.period_end + timedelta(days=1),
         playbook_version_id=str(cycle.playbook_version_id),
-        playbook_hash=hashlib.sha256(canonicalize(definition)).hexdigest(),
+        playbook_hash=definition_hash(sources.definition),
         proposal_id=str(proposal.pk),
         proposal_revision=proposal.revision,
         business_intent_key=proposal.business_intent_key,

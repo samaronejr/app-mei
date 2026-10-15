@@ -22,6 +22,7 @@ from django.test import Client
 from django.urls import reverse
 from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
 
+from apps.core.flags import open_flag_cache, prime_flag_cache
 from apps.core.navigation import visible_nav_items
 from apps.core.tenancy import tenant_context
 from tests.ui.factories import Firm, make_firm
@@ -227,13 +228,16 @@ def test_the_disclosure_does_not_raise_the_nav_query_budget(
     django_assert_num_queries: DjangoAssertNumQueries,
 ) -> None:
     """Rendering the bar twice — once flat, once in the disclosure — would double it."""
-    _nav_disclosure(_firm_page(firm), where="the owner's Equipe page")
-    assert NAV_QUERY_BUDGET == 3, (
-        "tests/ui/test_navigation.py pinned the bar at 3 queries; the disclosure is "
-        f"markup and may not move it to {NAV_QUERY_BUDGET}"
-    )
-    with tenant_context(firm.tenant.id), django_assert_num_queries(NAV_QUERY_BUDGET):
-        visible_nav_items(firm.owner)
+    response = firm.as_owner().get(reverse("team"))
+    assert response.status_code == HTTPStatus.OK
+    _nav_disclosure(response.content.decode(), where="the owner's Equipe page")
+    with tenant_context(firm.tenant.id), open_flag_cache():
+        prime_flag_cache(firm.tenant)
+        with django_assert_num_queries(NAV_QUERY_BUDGET) as baseline:
+            visible_nav_items(firm.owner)
+        with django_assert_num_queries(len(baseline)):
+            rendered = render_to_string("base.html", request=response.wsgi_request)
+    _nav_disclosure(rendered, where="the measured base-template render")
 
 
 def test_the_shell_still_renders_with_no_request_and_no_context(firm: Firm) -> None:

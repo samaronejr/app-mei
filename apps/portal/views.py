@@ -28,7 +28,16 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.files.storage import default_storage
 from django.core.paginator import EmptyPage, Page, Paginator
-from django.db.models import Count, Q, QuerySet
+from django.db.models import (
+    BooleanField,
+    Case,
+    Count,
+    Exists,
+    OuterRef,
+    Q,
+    QuerySet,
+    When,
+)
 from django.http import (
     Http404,
     HttpRequest,
@@ -62,6 +71,7 @@ from apps.obligations.models import (
     ObservationSubjectKind,
     SourceObservation,
 )
+from apps.obligations.presentation import current_observation, payment_state
 from apps.obligations.queries import SETTLED
 from apps.portal.middleware import PortalHttpRequest
 
@@ -161,6 +171,8 @@ class Payment:
     status: str
     payment_source: str | None = None
     payment_verification: str | None = None
+    payment_outcome: str | None = None
+    payment_state: str | None = None
 
 
 def _situation(today: date) -> tuple[int, int]:
@@ -185,8 +197,8 @@ def _situation(today: date) -> tuple[int, int]:
     return int(totals["total"]), int(totals["overdue"])
 
 
-def _next_action(today: date) -> NextAction | None:
-    """Return the earliest unsettled obligation still ahead, or `None` if there is none.
+def _next_action(today: date, *, include_overdue: bool = False) -> NextAction | None:
+    """Return the earliest unsettled calendar entry; legacy only considers future dates.
 
     `.values()` rather than a model instance, and `obligation_type_id` rather than the
     relation: the code IS the primary key of `ObligationType`, so the local column
@@ -194,10 +206,11 @@ def _next_action(today: date) -> NextAction | None:
     breaks ties, so two obligations sharing a due date resolve to the same one on every
     request instead of alternating between renders.
     """
+    obligations = Obligation.objects.exclude(status__in=SETTLED)
+    if not include_overdue:
+        obligations = obligations.filter(resolved_due_date__gte=today)
     row = (
-        Obligation.objects.exclude(status__in=SETTLED)
-        .filter(resolved_due_date__gte=today)
-        .order_by("resolved_due_date", "pk")
+        obligations.order_by("resolved_due_date", "pk")
         .values(
             "obligation_type_id",
             "competence_month",
@@ -224,7 +237,7 @@ def _next_action(today: date) -> NextAction | None:
 
 
 @login_required
-def portal_home(request: HttpRequest) -> HttpResponse:
+def portal_home(request: PortalVaultRequest) -> HttpResponse:
     """Render the client's own company, where they stand, and what to do next."""
     client = getattr(request, "client", None)
     # No client filter is applied on purpose, here or in either helper below. The
@@ -240,11 +253,9 @@ def portal_home(request: HttpRequest) -> HttpResponse:
     requests = []
     help_rows = []
     publications = []
+    next_request = None
+    next_publication = None
     if cycles_r1:
-        cycles = [
-            {"id": cycle.pk, **portal_projection(cycle)}
-            for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]
-        ]
         # T11: the client's open requests, confined by RLS like every figure here.
         from apps.portal.request_views import (  # noqa: PLC0415
             client_help,
@@ -252,13 +263,72 @@ def portal_home(request: HttpRequest) -> HttpResponse:
         )
 
         requests = open_requests(today)
+        next_request = next((row for row in requests if row.actionable), None)
+        for cycle in ServiceCycle.objects.order_by("-period_start", "pk")[:12]:
+            has_actionable_requests = any(
+                row.cycle_id == cycle.pk and row.actionable for row in requests
+            )
+            has_submitted_requests = any(
+                row.cycle_id == cycle.pk and row.status == "recebido"
+                for row in requests
+            )
+            cycles.append(
+                {
+                    "id": cycle.pk,
+                    "has_actionable_requests": has_actionable_requests,
+                    "has_submitted_requests": has_submitted_requests,
+                    **portal_projection(
+                        cycle,
+                        has_actionable_requests=has_actionable_requests,
+                        has_submitted_requests=has_submitted_requests,
+                    ),
+                }
+            )
         help_rows = client_help()
-        from apps.cycles.models import ClientPublication  # noqa: PLC0415
+        from apps.cycles.models import (  # noqa: PLC0415
+            ClientAcknowledgement,
+            ClientPublication,
+            PublicationState,
+        )
 
         publications = list(
-            ClientPublication.objects.order_by("-published_at", "pk").values(
-                "id", "title", "state", "published_at"
+            ClientPublication.objects.annotate(
+                revised=Exists(
+                    ClientPublication.objects.filter(supersedes_id=OuterRef("pk"))
+                ),
+                acknowledged=Exists(
+                    ClientAcknowledgement.objects.filter(
+                        publication_id=OuterRef("pk"),
+                        publication_digest=OuterRef("publication_digest"),
+                        user_id=request.user.id,
+                    )
+                ),
+            )
+            .annotate(
+                awaiting_confirmation=Case(
+                    When(
+                        state=PublicationState.PUBLISHED,
+                        revised=False,
+                        acknowledged=False,
+                        then=True,
+                    ),
+                    default=False,
+                    output_field=BooleanField(),
+                ),
+            )
+            # Keep outstanding confirmations ahead of history before applying the cap.
+            .order_by("-awaiting_confirmation", "-published_at", "pk")
+            .values(
+                "id",
+                "title",
+                "state",
+                "published_at",
+                "revised",
+                "awaiting_confirmation",
             )[:12]
+        )
+        next_publication = next(
+            (row for row in publications if row["awaiting_confirmation"]), None
         )
     return render(
         request,
@@ -267,7 +337,9 @@ def portal_home(request: HttpRequest) -> HttpResponse:
             "client": client,
             "obligation_count": obligation_count,
             "overdue_count": overdue_count,
-            "next_action": _next_action(today),
+            "next_action": _next_action(today, include_overdue=cycles_r1),
+            "next_request": next_request,
+            "next_publication": next_publication,
             "cycles": cycles,
             "cycles_r1": cycles_r1,
             "requests": requests,
@@ -322,32 +394,53 @@ def _payment(row: Mapping[str, Any]) -> Payment:
 
 def _latest_payment_source(
     obligations: list[Mapping[str, Any]],
-) -> dict[UUID, tuple[str, str]]:
-    """Return each obligation's newest payment source and verification together.
+) -> dict[UUID, tuple[str, str, str, str]]:
+    """Return each obligation's current payment claim, classified for the card.
 
-    One query for the whole page rather than one per card — the per-row pattern is
-    the N+1 the page's query budget exists to forbid. "Newest" is the last row in
-    `observed_at` order with `pk` breaking ties, matching the table's own ordering:
-    superseding writes a NEW row (the table is append-only), so the latest
-    assertion is the current belief and there is nothing to join against.
+    One query for the whole page rather than one per card — the per-row pattern
+    is the N+1 the page's query budget exists to forbid. "Current" means the
+    claim chain's heads: superseded rows are excluded (the table is
+    append-only, so a rejected receipt's positive claim never resurfaces), and
+    among the surviving heads the newest USABLE one wins — a rejected or
+    retracted head is knowledge about a claim, not a claim. Periods match the
+    row's competence or are unscoped (the T9 backfill wrote period-free rows),
+    and the final word on what the row LOOKS like is `payment_state`'s,
+    computed here so the template can never diverge from the coverage panel.
     """
     subject_ids = [row["id"] for row in obligations]
     if not subject_ids:
         return {}
-    observations = (
+    rows = list(
         SourceObservation.objects.filter(
             subject_kind=ObservationSubjectKind.OBLIGATION,
             kind=ObservationKind.PAYMENT,
             subject_ref_id__in=subject_ids,
-        )
-        .order_by("observed_at", "pk")
-        .values_list("subject_ref_id", "source_kind", "verification_status")
+        ).order_by("observed_at", "pk")
     )
-    # Ascending order, later keys win: each newer assertion replaces the earlier.
-    return {
-        subject: (source, verification)
-        for subject, source, verification in observations
-    }
+    answers: dict[UUID, tuple[str, str, str, str]] = {}
+    moment = timezone.now()
+    for obligation in obligations:
+        head = current_observation(
+            rows,
+            subject_id=obligation["id"],
+            period=obligation["competence_month"],
+            kind=ObservationKind.PAYMENT,
+        )
+        if head is None:
+            continue
+        answers[obligation["id"]] = (
+            head.source_kind,
+            head.verification_status,
+            head.outcome,
+            payment_state(
+                head.source_kind,
+                head.verification_status,
+                head.outcome,
+                observed_at=head.observed_at,
+                now=moment,
+            ),
+        )
+    return answers
 
 
 @require_http_methods(["GET"])
@@ -405,7 +498,11 @@ def portal_payments(request: HttpRequest) -> HttpResponse:
         source = sources.get(row["id"])
         if source is not None:
             payment = replace(
-                payment, payment_source=source[0], payment_verification=source[1]
+                payment,
+                payment_source=source[0],
+                payment_verification=source[1],
+                payment_outcome=source[2],
+                payment_state=source[3],
             )
         payments.append(payment)
     return render(
@@ -520,6 +617,11 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     """
     rows = Document.objects.filter(_served()).order_by("-created_at", "pk")
     page = _documents_page(rows, request)
+    # T45: the R1 ink for this page and the layout around it, answered from the portal
+    # stash without a query exactly as on `portal_payments`. Unflagged tenants keep
+    # their bytes.
+    tenant = request.tenant
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
     return render(
         request,
         "portal/documents.html",
@@ -530,6 +632,7 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
                 for document in page.object_list
             ],
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+            "cycles_r1": cycles_r1,
         },
     )
 
@@ -539,9 +642,9 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
 def portal_account(request: HttpRequest) -> HttpResponse:
     """Render the three things a client can do to their own sign-in, and nothing else.
 
-    **Zero data reads, and no context, which is the finished shape rather than a page
-    still waiting to be filled in.** Every destination this screen offers is a static
-    address the URL tree already carries, and the one value it shows —
+    **Zero data reads, and one flag of context, which is the finished shape rather than
+    a page still waiting to be filled in.** Every destination this screen offers is a
+    static address the URL tree already carries, and the one value it shows —
     `request.user.email` — is materialised by the middleware BEFORE the transaction
     opens and before the role switch, so the template reads it without issuing
     anything. `tests/portal/test_portal_templates_render.py:102-106` allows exactly
@@ -565,8 +668,14 @@ def portal_account(request: HttpRequest) -> HttpResponse:
     The links are named, not built. `account_logout` is reached by a POST form in the
     template rather than an anchor, because a signing-out GET is a link any prefetch,
     scanner or preloading browser can follow on the client's behalf.
+
+    The one context value is `cycles_r1` (T45), answered from the portal stash without
+    a query exactly as on `portal_payments`. It gives the layout and this page the R1
+    ink; unflagged tenants keep their bytes.
     """
-    return render(request, "portal/account.html")
+    tenant = getattr(request, "tenant", None)
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
+    return render(request, "portal/account.html", {"cycles_r1": cycles_r1})
 
 
 def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
@@ -584,13 +693,20 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
     The page carries the upload form again rather than a link back to it. A refusal that
     dead-ends is a client who gives up, and a file input cannot be pre-filled anyway, so
     the retry costs exactly one form and saves a navigation.
+
+    T63: `cycles_r1` rides along exactly as on `portal_documents`, answered from the
+    portal stash without a query, so the layout and the retry form keep the vault's R1
+    ink on the 400 as on the 200. Unflagged tenants keep their bytes.
     """
+    tenant = request.tenant
+    cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
     return render(
         request,
         "portal/upload_error.html",
         {
             "reason": reason,
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
+            "cycles_r1": cycles_r1,
         },
         status=HTTPStatus.BAD_REQUEST,
     )

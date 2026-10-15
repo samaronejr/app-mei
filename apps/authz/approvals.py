@@ -30,7 +30,10 @@ APPROVE: Final = "actions.approve"
 AUTHORITY_CAPABILITIES: Final = (
     "cycles.operate",
     "cycles.complete",
+    "cycles.review",
     APPROVE,
+    # Bulk approval composes this same fence; its final can() stays locked too.
+    "bulk.run",
     VIEW_ALL,
     VIEW_ASSIGNED,
 )
@@ -151,8 +154,14 @@ class Authority:
         }
 
 
-def lock_authorities(user_ids: set[UUID], *, tenant_id: UUID) -> dict[UUID, Authority]:
+def lock_authorities(
+    user_ids: set[UUID],
+    *,
+    tenant_id: UUID,
+    extra_capabilities: tuple[str, ...] = (),
+) -> dict[UUID, Authority]:
     """Acquire users, seats and actual policy rows in one deterministic order."""
+    capabilities = (*AUTHORITY_CAPABILITIES, *extra_capabilities)
     users = lock_users(user_ids)
     members = {
         row.user_id: row
@@ -167,14 +176,14 @@ def lock_authorities(user_ids: set[UUID], *, tenant_id: UUID) -> dict[UUID, Auth
         .select_related("capability")
         .filter(
             role__in={member.role for member in members.values()},
-            capability__slug__in=AUTHORITY_CAPABILITIES,
+            capability__slug__in=capabilities,
         )
         .order_by("pk")
     )
     user_rows = tuple(
         UserCapabilityGrant.objects.select_for_update(no_key=True, of=("self",))
         .select_related("capability")
-        .filter(user_id__in=user_ids, capability__slug__in=AUTHORITY_CAPABILITIES)
+        .filter(user_id__in=user_ids, capability__slug__in=capabilities)
         .order_by("pk")
     )
     return {

@@ -1,0 +1,18 @@
+{% extends "base.html" %}{% load i18n %}
+{% block title %}{% translate "Preços" %}{% endblock %}
+{% block heading %}{% translate "Preços" %}{% endblock %}
+{% block content %}
+  {% comment %}
+    "Fale conosco" until OD-07 publishes a price validated with partners. No amount
+    appears here; tests/ui/test_public_pages_claims.py refuses one.
+  {% endcomment %}
+  <div class="max-w-2xl space-y-6">
+  <section class="card p-6 space-y-3" aria-labelledby="fale-conosco">
+    <h2 id="fale-conosco" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Fale conosco{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O preço do {{ product_name }} ainda não está publicado. Nesta fase, as condições são combinadas diretamente com cada escritório parceiro.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Para conversar, fale com quem apresentou o {{ product_name }} ao seu escritório. Quando houver um preço publicado, ele aparece nesta página.{% endblocktranslate %}</p>
+  </section>
+    <p class="text-sm"><a class="link" href="{% url 'public-product' %}">{% translate "Voltar para o produto" %}</a></p>
+  </div>
+{% endblock %}
+{% block footer %}{% include "partials/pure/footer_public.html" %}{% endblock %}

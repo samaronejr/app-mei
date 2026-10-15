@@ -69,18 +69,49 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
         <h2 id="publications" class="text-sm font-semibold text-ink-700">Publicações do escritório</h2>
         <ul class="space-y-3">{% for publication in publications %}<li class="min-w-0">
           <a class="ui-link break-words" href="{% url 'portal-publication-detail' publication.id %}">{{ publication.title }}</a>
-          <p class="text-sm text-ink-600">{{ publication.published_at|data_hora }}{% if publication.state == 'retirada' %} · Retirada pelo escritório{% endif %}</p>
+          <p class="text-sm text-ink-600">{{ publication.published_at|data_hora }}{% if publication.state == 'retirada' %} · Retirada pelo escritório{% endif %}{% if publication.revised %} · Revisada{% endif %}</p>
+          {% if publication.awaiting_confirmation %}<p class="text-sm text-ink-700" data-publication-pending="{{ publication.id }}">{% translate "Confirme o recebimento desta publicação." %}</p>{% endif %}
         </li>{% endfor %}</ul>
       </section>{% endif %}
       {% endif %}{% if cycles %}
       <section class="card space-y-4 px-5 py-4" aria-labelledby="service-cycles">
         <h2 id="service-cycles" class="text-sm font-semibold text-ink-700">Ciclos do período</h2>
-        <ul class="space-y-3">{% for cycle in cycles %}<li>
+        <ul class="space-y-3">{% for cycle in cycles %}<li data-cycle-id="{{ cycle.id }}" data-action-kind="{% if cycle.has_actionable_requests %}request{% elif cycle.has_submitted_requests %}review{% else %}office{% endif %}">
           <a class="ui-link" href="{% url 'portal-cycle-detail' cycle.id %}">{{ cycle.period|competencia }}</a>
           <p>{{ cycle.state_label }}</p><p>{{ cycle.next_action }}</p>
         </li>{% endfor %}</ul>
       </section>{% endif %}
-      <p class="card flex items-center gap-3 px-5 py-4 text-sm text-ink-700">
+      {% if cycles_r1 %}<section id="portal-status" class="card space-y-4 px-5 py-4 text-sm text-ink-700" data-status="{% if next_request or next_publication %}action_required{% elif overdue_count %}calendar_overdue{% elif next_action %}calendar_upcoming{% elif help_rows %}contact_required{% elif requests %}awaiting_review{% else %}no_client_action{% endif %}">
+        {% if next_request %}
+          <span class="badge badge-warn">{% translate "Solicitação pendente" %}</span>
+          <p>{% translate "O escritório precisa de um documento seu. Veja a próxima ação abaixo." %}</p>
+        {% elif next_publication %}
+          <span class="badge badge-warn">{% translate "Confirmação de recebimento pendente" %}</span>
+          <p>{% translate "O escritório publicou um documento para você. Confira e confirme o recebimento na próxima ação abaixo." %}</p>
+        {% elif overdue_count %}
+          <span class="badge badge-late">{% translate "Vencimento em atraso" %}</span>
+          <p>{% translate "Há um vencimento em atraso no calendário de obrigações acompanhado pelo escritório. Veja a próxima ação abaixo." %}</p>
+        {% elif next_action %}
+          <span class="badge badge-neutral">{% translate "Próximo vencimento" %}</span>
+          <p>{% translate "Veja a próxima data no calendário acompanhado pelo escritório." %}</p>
+        {% elif help_rows %}
+          <span class="badge badge-warn">{% translate "Precisamos da sua ajuda" %}</span>
+          <p>{% translate "Confira a orientação do escritório neste portal." %}</p>
+        {% elif requests %}
+          <span class="badge badge-neutral">{% translate "Arquivo recebido" %}</span>
+          <p>{% translate "Nos pedidos em aberto, seus arquivos aguardam conferência da equipe." %}</p>
+        {% else %}
+          <span class="badge badge-neutral">{% translate "Sem ação sua nos pedidos" %}</span>
+          <p>{% translate "Não identificamos uma solicitação que precise de envio seu neste portal." %}</p>
+        {% endif %}
+        <p data-coverage-state="unknown">{% translate "Este resumo mostra pedidos do escritório e datas cadastradas. Não confirma a situação fiscal da empresa junto à Receita." %}</p>
+      </section>
+      <section id="legacy-obligations" class="card space-y-4 px-5 py-4 text-sm text-ink-700" aria-labelledby="legacy-obligations-title" data-fact-kind="calendar" data-source-kind="legacy_status" data-obligation-count="{{ obligation_count }}" data-overdue-count="{{ overdue_count }}">
+        <h2 id="legacy-obligations-title" class="text-sm font-semibold">{% translate "Calendário de obrigações acompanhado" %}</h2>
+        <p>{% blocktranslate with total=obligation_count atrasadas=overdue_count %}{{ total }} obrigações cadastradas neste portal; {{ atrasadas }} com vencimento passado e sem baixa nos registros.{% endblocktranslate %}</p>
+        <p>{% translate "Datas e baixas do registro legado não comprovam pagamento ou entrega oficial. Comprovantes enviados e registros manuais continuam sujeitos à conferência." %}</p>
+        <a class="ui-link" href="{% url 'portal-payments' %}">{% translate "Ver registros e fontes de pagamento" %}</a>
+      </section>{% else %}<p class="card flex items-center gap-3 px-5 py-4 text-sm text-ink-700">
         {% if overdue_count %}
           <span class="badge badge-late">{% translate "Em atraso" %}</span>
           {% blocktranslate count pendencias=overdue_count %}Você tem {{ pendencias }} pendência vencida. Enquanto ela não for paga, o valor cresce com juros e multa.{% plural %}Você tem {{ pendencias }} pendências vencidas. Enquanto não forem pagas, o valor cresce com juros e multa.{% endblocktranslate %}
@@ -88,11 +119,21 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
           <span class="badge badge-ok">{% translate "Em dia" %}</span>
           {% translate "Sua empresa está em dia com as obrigações que acompanhamos." %}
         {% endif %}
-      </p>
+      </p>{% endif %}
 
-      <section class="card space-y-4 px-5 py-4" aria-labelledby="proxima-acao">
+      <section class="card space-y-4 px-5 py-4" aria-labelledby="proxima-acao"{% if cycles_r1 %} data-action-kind="{% if next_request %}request{% elif next_publication %}publication{% elif next_action %}calendar{% elif help_rows %}contact{% elif requests %}review{% else %}none{% endif %}"{% endif %}>
         <h2 id="proxima-acao" class="text-sm font-semibold text-ink-700">{% translate "Próxima ação" %}</h2>
-        {% if next_action %}
+        {% if next_request %}
+          <p class="text-lg font-semibold text-ink-900">{{ next_request.title }}</p>
+          {% if next_request.client_note %}<p class="text-sm text-ink-700">{{ next_request.client_note }}</p>{% endif %}
+          {% if next_request.due_on %}<p class="text-sm text-ink-700">{% translate "Enviar até" %} <time datetime="{{ next_request.due_on.isoformat }}">{{ next_request.due_on|data }}</time></p>{% endif %}
+          {% if next_request.hint %}<p class="text-sm text-ink-700">{{ next_request.hint }}</p>{% endif %}
+          <a class="btn btn-primary" href="{% url 'portal-request-detail' next_request.id %}" data-primary-action="request" data-primary-request-id="{{ next_request.id }}" data-status="{{ next_request.status }}">{% translate "Ver solicitação e enviar arquivo" %}</a>
+        {% elif next_publication %}
+          <p class="text-lg font-semibold text-ink-900 break-words">{{ next_publication.title }}</p>
+          <p class="text-sm text-ink-700">{% translate "Confira a publicação do escritório e confirme que a recebeu." %}</p>
+          <a class="btn btn-primary" href="{% url 'portal-publication-detail' next_publication.id %}" data-primary-action="publication">{% translate "Ver publicação e confirmar recebimento" %}</a>
+        {% elif next_action %}
           <p class="text-lg font-semibold text-ink-900">{% if next_action.type_code == 'DAS' %}{% translate "Guia mensal (DAS)" %}{% elif next_action.type_code == 'DASN' %}{% translate "Declaração anual (DASN)" %}{% else %}{{ next_action.type_code }}{% endif %}</p>
 
           <dl class="grid grid-cols-2 gap-y-3 text-sm tabular-nums">
@@ -102,9 +143,11 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
             <dd><time datetime="{{ next_action.due_date.isoformat }}">{{ next_action.due_date|data }}</time></dd>
           </dl>
 
-          <p class="text-sm font-medium text-ink-700">{% if next_action.days_until == 0 %}{% translate "vence hoje" %}{% else %}{% blocktranslate count dias=next_action.days_until %}vence em {{ dias }} dia{% plural %}vence em {{ dias }} dias{% endblocktranslate %}{% endif %}</p>
+          <p class="text-sm font-medium text-ink-700">{% if cycles_r1 and next_action.days_until < 0 %}{% translate "O vencimento passou. Confira a pendência com o escritório." %}{% elif next_action.days_until == 0 %}{% translate "vence hoje" %}{% else %}{% blocktranslate count dias=next_action.days_until %}vence em {{ dias }} dia{% plural %}vence em {{ dias }} dias{% endblocktranslate %}{% endif %}</p>
 
-          {% if next_action.type_code == 'DASN' %}
+          {% if cycles_r1 and next_action.days_until < 0 %}
+            <p class="text-sm text-ink-700">{% translate "Peça ao escritório a orientação para regularizar este vencimento." %}</p>
+          {% elif next_action.type_code == 'DASN' %}
             <p class="text-sm text-ink-700">{% translate "Entregue a declaração até essa data. Depois dela há multa, mesmo quando não há imposto a pagar." %}</p>
           {% else %}
             <p class="text-sm text-ink-700">{% translate "Pague até essa data. Depois dela há juros e multa." %}</p>
@@ -117,11 +160,11 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
           {% endif %}
 
           <div class="flex flex-wrap gap-2">
-            <a class="btn btn-primary" href="{% url 'portal-payments' %}">{% translate "Ver pagamentos" %}</a>
+            <a class="btn btn-primary" href="{% url 'portal-payments' %}"{% if cycles_r1 %} data-primary-action="calendar"{% endif %}>{% translate "Ver pagamentos" %}</a>
             <a class="btn btn-quiet" href="{% url 'portal-documents' %}">{% translate "Enviar documento" %}</a>
           </div>
         {% else %}
-          <p class="empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Nenhuma obrigação em aberto por enquanto. Avisaremos por aqui assim que a próxima abrir." %}</p>
+          <p class="empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% if cycles_r1 %}{% if help_rows %}{% translate "Confira o que o escritório precisa na seção Precisamos da sua ajuda." %}{% elif requests %}{% translate "Seus arquivos foram recebidos nos pedidos em aberto. A próxima etapa é a conferência pela equipe." %}{% else %}{% translate "Nenhum envio seu pendente nos pedidos deste portal e nenhum vencimento sem baixa no calendário cadastrado. Isso não confirma cobertura fiscal." %}{% endif %}{% else %}{% translate "Nenhuma obrigação em aberto por enquanto. Avisaremos por aqui assim que a próxima abrir." %}{% endif %}</p>
         {% endif %}
       </section>
 
@@ -133,6 +176,6 @@ sentence saying its deadline moved, whatever the two stored dates happen to say.
       </dl>
     </div>
   {% else %}
-    <p class="card empty-state">{% translate "Nenhuma empresa vinculada a esta conta. Fale com a sua contadora para liberar o seu acesso." %}</p>
+    <p class="card empty-state{% if cycles_r1 %} text-ink-600{% endif %}">{% translate "Nenhuma empresa vinculada a esta conta. Fale com a sua contadora para liberar o seu acesso." %}</p>
   {% endif %}
 {% endblock %}

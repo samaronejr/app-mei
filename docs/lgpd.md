@@ -76,6 +76,36 @@ ANPD's guidance treats **2 business days** as the working expectation.
 7. **Record.** File the timeline, the decision, and the ANPD protocol number. This
    record is itself evidence of diligence.
 
+### Outbox containment switches
+
+For a suspected outbound-data incident, the operator sets **`DELIVERY_PAUSED=true`**
+in the configuration read by web, workers and beat and restarts those readers
+together. Stop dispatchers before a restore. Exporting the variable in one shell
+does not change a running worker. This switch prevents new dispatch; it cannot
+revoke an SMTP transmission that already started or unsend an accepted message.
+
+An authorized firm manager can additionally pause that firm's sends at
+`/gestao/automacoes/` with `automations.manage`. The control is tenant-scoped,
+versioned, locked and audited. The global pause always prevails over a local resume.
+Pausing mail does not pause other scheduled work or erase messages, immutable
+receipts, the independent effect journal or the audit trail.
+
+If the affected R1 surface itself must be stood down, the existing
+`AXORIM_DISABLED_FEATURES=cycles_r1` switch disables that feature after its
+readers restart; it is not a substitute for `DELIVERY_PAUSED` during recovery.
+Preserve the incident window and the journal's newest records. After database
+and object recovery, run `reconcile_documents` and `reconcile_effects` while
+delivery remains paused, review every `resultado_incerto`, and only then
+consider resuming other work. Uncertain effects are never automatically retried.
+The complete sequence is **Axorim restore** in `ops/RESTORE.md`; its local
+engineering evidence does not close operator gate OG-06.
+
+Treat a message body, frozen MIME payload or recipient appearing in Sentry as
+a data exposure, not a diagnostic to forward. The outbox canary suite exercises
+the production scrubber, including payloads captured outside the egress redaction
+scope. Record reference ids and timestamps in the incident record, not those
+payloads.
+
 ## 5. Erasure requests and why some data cannot be deleted
 
 Response template for a deletion request that touches retained data:

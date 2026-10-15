@@ -55,6 +55,8 @@ EXPECTED_ICONS: Final[frozenset[str]] = frozenset(
         "home",
         "info",
         "menu",
+        "search",
+        "settings",
         "upload",
         "user-round",
         "users",

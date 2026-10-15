@@ -1,5 +1,6 @@
 """Translate existing consequential form intents into exact, unexecuted proposals."""
 
+from collections.abc import Mapping
 from datetime import timedelta
 from uuid import UUID
 
@@ -52,7 +53,7 @@ def propose_completion(
     cycle_id: UUID,
     *,
     to_state: str,
-    reason: str,
+    reason: str | Mapping[str, str],
     expected_version: int,
 ) -> ActionProposal:
     """Propose a named terminal target; approval never overrides completion guards."""
@@ -67,7 +68,10 @@ def propose_completion(
                 action_kind=ActionKind.CYCLE_COMPLETION,
                 step_key="completion",
                 completion_state=to_state,
-                reason=reason,
+                reason=reason if isinstance(reason, str) else "",
+                completion_reasons=tuple(sorted(reason.items()))
+                if isinstance(reason, Mapping)
+                else (),
             ),
             timezone.now() + timedelta(hours=72),
         ),

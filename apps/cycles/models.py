@@ -28,6 +28,15 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from apps.core.models import TenantScopedModel
+from apps.cycles.briefing_records import BriefingFeedback, SavedView
+from apps.cycles.bulk import (
+    BulkItem,
+    BulkItemState,
+    BulkKind,
+    BulkOperation,
+    BulkOperationState,
+)
+from apps.cycles.completion_records import CompletionGeneration, CompletionJustification
 from apps.cycles.effects.records import (
     ActionProposal,
     Approval,
@@ -48,6 +57,12 @@ from apps.cycles.evidence import (
     Review,
     ReviewDecision,
 )
+from apps.cycles.export_records import (
+    EvidenceExport,
+    EvidenceIndex,
+    ExportAttempt,
+    ExportState,
+)
 from apps.cycles.publications import (
     ActionExecution,
     ClientAcknowledgement,
@@ -66,28 +81,43 @@ from apps.cycles.records import (
     ServiceCycle,
     TaskState,
 )
+from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
 
 __all__ = [
     "ActionExecution",
     "ActionProposal",
     "Approval",
     "ApprovalDecision",
+    "BriefingFeedback",
+    "BulkItem",
+    "BulkItemState",
+    "BulkKind",
+    "BulkOperation",
+    "BulkOperationState",
     "ClientAcknowledgement",
     "ClientPublication",
+    "CompletionGeneration",
+    "CompletionJustification",
+    "ContentPurgeClaim",
     "CycleAmendment",
     "CycleEvent",
     "CycleState",
     "CycleTask",
     "DocumentIntake",
+    "EvidenceExport",
+    "EvidenceIndex",
     "EvidenceLink",
     "EvidenceRequest",
     "Exception",
     "ExceptionInternal",
     "ExceptionState",
+    "ExportAttempt",
+    "ExportState",
     "ExtractedField",
     "FieldOrigin",
     "IntakeState",
     "InternalNote",
+    "LegalHold",
     "LinkOrigin",
     "OwnerRule",
     "Playbook",
@@ -99,6 +129,7 @@ __all__ = [
     "RequestState",
     "Review",
     "ReviewDecision",
+    "SavedView",
     "ServiceCycle",
     "StepKind",
     "TaskState",

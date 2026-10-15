@@ -14,7 +14,16 @@ class CyclesConfig(AppConfig):
         # Imported inside ready(), not at module scope: the receivers reference
         # models, and importing models before the app registry is populated
         # raises AppRegistryNotReady.
-        from apps.cycles import dependents, signals  # noqa: F401, PLC0415
+        from apps.cycles import (  # noqa: F401, PLC0415
+            dependents,
+            export_tasks,
+            retention_tasks,
+            signals,
+        )
+        from apps.cycles.evidence_index import index_current  # noqa: PLC0415
+        from apps.cycles.services.cycle import COMPLETION_GUARDS  # noqa: PLC0415
+
+        COMPLETION_GUARDS["evidence_index"] = index_current
         from apps.cycles.extraction.service import (  # noqa: PLC0415
             EXCEPTION_REASON as WRONG_COMPANY,
         )
