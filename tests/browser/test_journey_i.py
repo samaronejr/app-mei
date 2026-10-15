@@ -78,7 +78,7 @@ def test_journey_i_upload_during_smtp_outage_cancels_the_reminder(
         "data-state", MessageState.TEMPORARY
     )
     expect(waiting.locator("[data-state]")).to_have_text(
-        str(MessageState.TEMPORARY.label)
+        f"Estado atual: {MessageState.TEMPORARY.label}"
     )
     expect(waiting).to_contain_text(reminder.last_error_code)
     record(staff, "i-01-smtp-down")
@@ -120,7 +120,7 @@ def test_journey_i_upload_during_smtp_outage_cancels_the_reminder(
         "data-state", MessageState.CANCELLED
     )
     expect(cancelled.locator("[data-state]")).to_have_text(
-        str(MessageState.CANCELLED.label)
+        f"Estado atual: {MessageState.CANCELLED.label}"
     )
     expect(cancelled).to_contain_text("request_submitted")
     expect(cancelled.get_by_role("button", name="Cancelar envio")).to_have_count(0)

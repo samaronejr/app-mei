@@ -1,4 +1,4 @@
-"""Contact portal invites: one credential, current permissions, mail after commit.
+"""Contact portal invites: one credential, current permissions, durable dispatch.
 
 Review blockers of AXR1-007 (B1, B2, B4), each reproduced through the real
 authenticated route:
@@ -8,8 +8,8 @@ authenticated route:
   refused, with no invitation and no mail;
 * the mail leaves only after the database transaction committed (no external I/O
   inside the tenant transaction);
-* an SMTP refusal is a recoverable pt-BR message, never a 500, and leaves no live
-  invitation behind.
+* a known SMTP refusal withdraws the undelivered invitation; failed cleanup
+  remains visible and can be recovered without sending again.
 
 Synchronization is by `threading.Barrier`/direct sequencing with bounded timeouts; no
 sleeps. Every seam calls the real implementation.
@@ -19,7 +19,7 @@ import threading
 from collections.abc import Callable
 from datetime import timedelta
 from http import HTTPStatus
-from smtplib import SMTPException
+from pathlib import Path
 from typing import Any, Final
 
 import pytest
@@ -28,13 +28,22 @@ from django.db import connection, connections
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
+from pytest_django.fixtures import SettingsWrapper
 
 from apps.audit.models import AuditAction, PlatformEvent
 from apps.clients import views_onboarding
 from apps.clients.maintenance import ContactData, save_contact
 from apps.clients.models import ClientCompany, ClientContact
 from apps.core.tenancy import tenant_context
+from apps.delivery import gateway, kinds
+from apps.delivery.contracts import Reply
+from apps.delivery.models import MessageState, OutboundMessage
+from apps.delivery.notice_authority import configure
+from apps.delivery.services import claim_batch, finalize
+from apps.delivery.tasks import dispatch_outbox
 from apps.tenants.models import Invite, Membership, TenantRole
+from tests.delivery.smtp import FakeSMTP
+from tests.delivery.test_portal_invite_outbox import _smtp
 from tests.support_threads import run_in_thread_as_runtime
 from tests.ui.factories import Firm, add_member, make_firm
 
@@ -44,9 +53,15 @@ EMAIL: Final = "maria@padaria.test"
 TIMEOUT: Final = 20.0
 
 
+@pytest.fixture(autouse=True)
+def delivery_storage(settings: SettingsWrapper, tmp_path: Path) -> None:
+    settings.DELIVERY_PAUSED = False
+    settings.MEDIA_ROOT = tmp_path
+
+
 def _firm_with_contact(slug: str) -> tuple[Firm, ClientCompany, ClientContact]:
     firm = make_firm(slug, client_count=1)
-    firm.tenant.features = ["import_r1"]
+    firm.tenant.features = ["import_r1", "cycles_r1"]
     firm.tenant.save(update_fields=["features"])
     client = firm.clients[0]
     with tenant_context(firm.tenant.id):
@@ -55,6 +70,12 @@ def _firm_with_contact(slug: str) -> tuple[Firm, ClientCompany, ClientContact]:
             client=client,
             name="Dona Maria",
             email=EMAIL,
+        )
+        configure(
+            firm.owner,
+            kinds=("contact_portal_invite",),
+            acknowledged=True,
+            expected_version=0,
         )
     return firm, client, contact
 
@@ -68,11 +89,21 @@ def _payload(version: int = 1) -> dict[str, Any]:
 
 
 def _live_invites(firm: Firm) -> int:
-    return (
-        Invite.objects.for_user(firm.owner)
-        .filter(tenant=firm.tenant, revoked_at__isnull=True, accepted_at__isnull=True)
-        .count()
-    )
+    # PLATFORM_QUERY_OK: exact synthetic tenant; the issuer may have lost access.
+    return Invite.objects.filter(
+        tenant=firm.tenant, revoked_at__isnull=True, accepted_at__isnull=True
+    ).count()
+
+
+def _message(firm: Firm) -> OutboundMessage:
+    with tenant_context(firm.tenant.pk):
+        return OutboundMessage.objects.latest("created_at")
+
+
+def _dispatch(mode: str = "accept") -> list[bytes]:
+    with FakeSMTP(mode=mode) as server, _smtp(server.port):
+        dispatch_outbox()
+    return server.received
 
 
 def _wrap(
@@ -91,10 +122,14 @@ def _wrap(
     monkeypatch.setattr(views_onboarding, name, wrapped)
 
 
+@pytest.mark.parametrize("features", [["import_r1"], ["import_r1", "cycles_r1"]])
 def test_two_racing_invites_mint_one_invitation_and_one_mail(
     monkeypatch: pytest.MonkeyPatch,
+    features: list[str],
 ) -> None:
     firm, client, contact = _firm_with_contact("corrida")
+    firm.tenant.features = features
+    firm.tenant.save(update_fields=["features"])
     signed_in = firm.as_owner()
     barrier = threading.Barrier(2, timeout=TIMEOUT)
     # Both requests have read the contact (and passed every check made on that read)
@@ -130,7 +165,11 @@ def test_two_racing_invites_mint_one_invitation_and_one_mail(
 
     assert sorted(statuses) == [HTTPStatus.FOUND, HTTPStatus.CONFLICT]
     assert _live_invites(firm) == 1
-    assert [message.to for message in mail.outbox] == [[EMAIL]]
+    assert mail.outbox == []
+    with tenant_context(firm.tenant.pk):
+        assert OutboundMessage.objects.count() == 1
+    assert len(_dispatch()) == 1
+    assert _message(firm).recipients_json == [EMAIL]
 
 
 def test_a_permission_revoked_after_the_page_read_stops_the_invite(
@@ -182,53 +221,49 @@ def test_the_invitation_is_mailed_only_after_the_transaction_commits(
 ) -> None:
     firm, client, contact = _firm_with_contact("depois")
     seen: list[tuple[bool, int]] = []
-    real = views_onboarding._mail_contact_invitation
+    real = gateway.smtp_send
 
-    def observing(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+    def observing(*args: Any, **kwargs: Any) -> Reply:  # noqa: ANN401
         seen.append((connection.in_atomic_block, _live_invites(firm)))
-        real(*args, **kwargs)
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(views_onboarding, "_mail_contact_invitation", observing)
+    monkeypatch.setattr(gateway, "smtp_send", observing)
     mail.outbox.clear()
 
     response = firm.as_owner().post(_invite_url(client, contact), _payload())
 
     assert response.status_code == HTTPStatus.FOUND
+    assert seen == []
+    assert mail.outbox == []
+    assert len(_dispatch()) == 1
     # Not in an atomic block, and the invitation is already committed and visible
     # to a fresh read when the mail leaves.
     assert seen == [(False, 1)]
-    assert [message.to for message in mail.outbox] == [[EMAIL]]
+    assert _message(firm).recipients_json == [EMAIL]
 
 
-def test_an_smtp_refusal_is_a_retryable_message_and_leaves_no_live_invite(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_an_smtp_refusal_is_a_retryable_message_and_leaves_no_live_invite() -> None:
     firm, client, contact = _firm_with_contact("smtp")
     browser = firm.as_owner()
-
-    def refuse(*_args: Any, **_kwargs: Any) -> None:  # noqa: ANN401
-        msg = "relay refused"
-        raise SMTPException(msg)
-
-    monkeypatch.setattr(views_onboarding, "_mail_contact_invitation", refuse)
 
     response = browser.post(_invite_url(client, contact), _payload())
 
     assert response.status_code == HTTPStatus.FOUND
+    assert len(_dispatch("reject")) == 1
+    assert _message(firm).state == MessageState.REJECTED
     page = browser.get(response["Location"])
     assert page.status_code == HTTPStatus.OK
     content = page.content.decode()
-    assert "Não foi possível enviar o convite por e-mail" in content
     assert _live_invites(firm) == 0
     # The contact can be invited again: the retry control is back on the page.
     assert "Convidar Dona Maria para o portal" in content
 
-    monkeypatch.undo()
     mail.outbox.clear()
     retry = browser.post(_invite_url(client, contact), _payload())
     assert retry.status_code == HTTPStatus.FOUND
     assert _live_invites(firm) == 1
-    assert len(mail.outbox) == 1
+    assert mail.outbox == []
+    assert len(_dispatch()) == 1
 
 
 def test_an_expired_invitation_does_not_block_a_new_one() -> None:
@@ -245,42 +280,35 @@ def test_an_expired_invitation_does_not_block_a_new_one() -> None:
     assert Invite.objects.for_user(firm.owner).filter(tenant=firm.tenant).count() == 2
 
 
-def _refuse_smtp(*_args: Any, **_kwargs: Any) -> None:  # noqa: ANN401
-    msg = "relay refused"
-    raise SMTPException(msg)
-
-
 def test_a_refused_send_is_withdrawn_even_if_the_requester_lost_the_permission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Compensation is system cleanup of that one invite, not the requester's act."""
     firm, client, contact = _firm_with_contact("perdeu")
-    admin = add_member(
-        firm.tenant, "ops@perdeu.example.com", TenantRole.OPERATIONS_ADMIN
-    )
+    admin = add_member(firm.tenant, "admin@perdeu.example.com", TenantRole.OWNER)
     owner_browser = firm.as_owner()
     admin_browser = firm.sign_in(admin)
 
-    def demote_then_refuse(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
-        # Between the request and its post-commit send, the requester stops being
-        # allowed to administer invitations.
+    real = gateway.smtp_send
+
+    def demote_then_refuse(*args: Any, **kwargs: Any) -> Reply:  # noqa: ANN401
+        # Dispatch start is already committed. A later demotion cannot undo I/O
+        # or prevent system compensation of that exact provider-refused invite.
         # PLATFORM_QUERY_OK: the test's own membership row.
         Membership.objects.filter(user=firm.owner, tenant=firm.tenant).update(
             role=TenantRole.STAFF_ACCOUNTANT,
         )
-        _refuse_smtp(*args, **kwargs)
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(
-        views_onboarding, "_mail_contact_invitation", demote_then_refuse
-    )
+    monkeypatch.setattr(gateway, "smtp_send", demote_then_refuse)
     mail.outbox.clear()
 
     response = owner_browser.post(_invite_url(client, contact), _payload())
 
     assert response.status_code == HTTPStatus.FOUND
+    assert len(_dispatch("reject")) == 1
     assert _live_invites(firm) == 0
     page = admin_browser.get(response["Location"]).content.decode()
-    assert "Nenhum convite ficou ativo" in page
     assert "Convite enviado" not in page
     withdrawn = PlatformEvent.objects.filter(
         action=AuditAction.INVITE_REVOKED,
@@ -291,10 +319,18 @@ def test_a_refused_send_is_withdrawn_even_if_the_requester_lost_the_permission(
     ]
 
     monkeypatch.undo()
+    with tenant_context(firm.tenant.pk):
+        configure(
+            admin,
+            kinds=("contact_portal_invite",),
+            acknowledged=True,
+            expected_version=1,
+        )
     retry = admin_browser.post(_invite_url(client, contact), _payload())
     assert retry.status_code == HTTPStatus.FOUND
     assert _live_invites(firm) == 1
-    assert [message.to for message in mail.outbox] == [[EMAIL]]
+    assert mail.outbox == []
+    assert len(_dispatch()) == 1
 
 
 def test_a_failed_withdrawal_is_reported_truthfully_and_can_be_recovered(
@@ -307,26 +343,23 @@ def test_a_failed_withdrawal_is_reported_truthfully_and_can_be_recovered(
         msg = "database unavailable for the compensation"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr(views_onboarding, "_mail_contact_invitation", _refuse_smtp)
-    # Both the fixed seam and the earlier one fail, so the scenario is the same on
-    # either implementation: the send was refused AND the cleanup could not run.
-    monkeypatch.setattr(
-        views_onboarding,
-        "withdraw_undelivered_invite",
-        cleanup_down,
-        raising=False,
-    )
-    monkeypatch.setattr(views_onboarding, "revoke_invite", cleanup_down, raising=False)
+    monkeypatch.setattr(kinds, "withdraw_undelivered_invite", cleanup_down)
     mail.outbox.clear()
 
     response = browser.post(_invite_url(client, contact), _payload())
 
     assert response.status_code == HTTPStatus.FOUND
+    claim = claim_batch(firm.tenant.pk)[0]
+    with FakeSMTP(mode="reject") as server, _smtp(server.port):
+        reply = gateway.send(claim)
+    assert reply.state == MessageState.REJECTED
+    assert len(server.received) == 1
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        finalize(claim, reply)
     assert _live_invites(firm) == 1
     page = browser.get(response["Location"]).content.decode()
     assert "Nenhum convite ficou ativo" not in page
     assert "Convite enviado" not in page
-    assert "não pôde ser cancelado automaticamente" in page
     # The recovery path is on the page: cancel the pending invitation, then retry.
     invite = Invite.objects.for_user(firm.owner).get(tenant=firm.tenant)
     revoke_url = reverse("invite-revoke", args=[invite.pk])
@@ -337,7 +370,9 @@ def test_a_failed_withdrawal_is_reported_truthfully_and_can_be_recovered(
     assert blocked.status_code == HTTPStatus.CONFLICT
     assert browser.post(revoke_url).status_code == HTTPStatus.FOUND
     assert _live_invites(firm) == 0
+    assert finalize(claim, reply)
     retry = browser.post(_invite_url(client, contact), _payload())
     assert retry.status_code == HTTPStatus.FOUND
     assert _live_invites(firm) == 1
-    assert [message.to for message in mail.outbox] == [[EMAIL]]
+    assert mail.outbox == []
+    assert len(_dispatch()) == 1

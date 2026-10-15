@@ -75,7 +75,7 @@ MIDDLEWARE = [
     "apps.security.csp.ContentSecurityPolicyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.locale.LocaleMiddleware",
+    "apps.portal.locale.ClientLocaleMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -535,6 +535,10 @@ SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_PATH = "/"
 CSRF_COOKIE_PATH = "/"
+# A refused CSRF check (a stale tab, since signing in rotates the secret) answers the
+# pt-BR refusal layout with a way back and Sair instead of Django's English page. The
+# check itself is unchanged (AXR1-059).
+CSRF_FAILURE_VIEW = "apps.core.refusal.csrf_failure"
 
 X_FRAME_OPTIONS = "DENY"
 SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -746,6 +750,10 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "dispatch-outbox": {
         "task": "apps.delivery.tasks.dispatch_outbox",
         "schedule": 60.0,
+    },
+    "sweep-reminders": {
+        "task": "apps.delivery.tasks.sweep_reminders",
+        "schedule": 300.0,
     },
     # T12: scan quarantined uploads. Minute cadence like the outbox; the per-intake
     # backoff (1-60 min, 24 h deadline) lives in `next_scan_at`, not here.

@@ -1,5 +1,6 @@
 """Synthetic portfolios converge; production and malformed selectors write nothing."""
 
+import json
 import re
 from datetime import date
 from hashlib import sha256
@@ -13,9 +14,10 @@ from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, TaxProfile
+from apps.core.demo_data import demo_id
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import DocumentIntake, EvidenceRequest, ServiceCycle
-from apps.delivery.models import OutboundMessage
+from apps.delivery.models import DeliveryAttempt, OutboundMessage, TenantNoticePolicy
 from apps.fiscal.validators import validate_cnpj
 from apps.obligations.models import Document
 from apps.tenants.models import Tenant
@@ -111,6 +113,24 @@ def test_rerun_preserves_data_and_credentials_and_repairs_missing_files(
     with tenant_context(tenant.pk):
         before = list(ClientCompany.objects.order_by("id").values())
         cycle_ids = set(ServiceCycle.objects.values_list("pk", flat=True))
+        messages = list(OutboundMessage.objects.order_by("id").values())
+        attempts = list(DeliveryAttempt.objects.order_by("id").values())
+        assert len(messages) == len(attempts) == 10
+        assert not TenantNoticePolicy.objects.exists()
+        for message in OutboundMessage.objects.select_related("cycle", "contact"):
+            request_key = f"message:{message.evidence_request_id}"
+            assert message.pk == demo_id(7 * 3, request_key)
+            raw = message.notice_authorization_bytes
+            assert raw is not None
+            binding = json.loads(bytes(raw))
+            assert sha256(raw).digest() == message.notice_authorization_digest
+            assert binding["basis"]["type"] == "playbook"
+            assert message.cycle is not None
+            assert binding["basis"]["playbook_version_id"] == str(
+                message.cycle.playbook_version_id
+            )
+            assert binding["root_intent"] == message.business_intent_key
+            assert not message.contact.channel_email_allowed
         document = Document.objects.first()
         assert document is not None
         path = tmp_path / document.storage_key
@@ -124,6 +144,9 @@ def test_rerun_preserves_data_and_credentials_and_repairs_missing_files(
     with tenant_context(tenant.pk):
         assert list(ClientCompany.objects.order_by("id").values()) == before
         assert set(ServiceCycle.objects.values_list("pk", flat=True)) == cycle_ids
+        assert list(OutboundMessage.objects.order_by("id").values()) == messages
+        assert list(DeliveryAttempt.objects.order_by("id").values()) == attempts
+        assert not TenantNoticePolicy.objects.exists()
     assert path.read_bytes() == original
     assert list(User.objects.order_by("id").values_list("password", flat=True)) == (
         password_hashes

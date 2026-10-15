@@ -37,6 +37,8 @@ from apps.cycles.openers import REQUEST_OVERDUE
 from apps.cycles.services.approvals import propose
 from apps.cycles.services.cycle import open_cycle
 from apps.delivery.models import MessageState, OutboundMessage
+from apps.delivery.notice_authority import NoticeOrigin, bind_notice, lock_notice_scope
+from apps.delivery.policy import content_digest
 from apps.obligations.models import (
     Document,
     Obligation,
@@ -147,7 +149,10 @@ def provider_graph(
             name="Contato sintético",
             email="synthetic@example.test",
         )
-        message = OutboundMessage.objects.create(
+        scope = lock_notice_scope(
+            setup.actor, NoticeOrigin("notice", setup.client.pk, cycle.pk)
+        )
+        message = OutboundMessage(
             tenant=setup.tenant,
             client=setup.client,
             cycle=cycle,
@@ -155,13 +160,16 @@ def provider_graph(
             created_by=setup.actor,
             idempotency_key=f"briefing-{setup.client.pk}",
             business_intent_key=f"briefing-{setup.client.pk}",
-            content_digest="b" * 64,
+            recipients_json=[contact.email],
             state=MessageState.UNKNOWN,
             subject="Solicitação do mês",
             body_ref="synthetic notice",
             portal_url="https://portal.example.test/",
             updated_at=NOW,
         )
+        message.content_digest = content_digest(message)
+        bind_notice(scope, message)
+        message.save(force_insert=True)
         payload = fixture("recibo_outra_empresa.pdf")
         document = Document.objects.create(
             tenant=setup.tenant,

@@ -5,30 +5,55 @@ import os
 import sys
 from io import StringIO
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 import psycopg
 import pytest
 from django.core.management import call_command
-from django.db import connection
 from django.test import Client
-from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
-from apps.cycles.models import ServiceCycle
+from apps.cycles.models import EvidenceRequest, RequestState, ServiceCycle
 from apps.tenants.models import Membership, Tenant
 from tests.browser.harness import mfa_session_cookie
 
 pytestmark = [pytest.mark.scale, pytest.mark.django_db(transaction=True)]
 
-# Measured on populated pages: workspace=46 and cycle_detail=50. These are
-# open follow-ups, not larger budgets. The three compliant reads enforce 25 and
-# the pre-existing tests/briefing/test_scale.py remains completely unchanged.
-FOLLOW_UP_READS = frozenset({"workspace", "cycle_detail"})
+# T35 and T36 enforce 25 for workspace and cycle detail alongside the other reads.
+# The original five-read baseline and the workspace-only lookup witness stay apart.
+# The pre-existing tests/briefing/test_scale.py remains completely unchanged.
+
+
+def _populate_workspace_requests(
+    company: ClientCompany, cycle: ServiceCycle, owner: User, extra_rows: int
+) -> set[str]:
+    """Make a single renewed per-request lookup breach 25, outside measurement."""
+    EvidenceRequest.objects.bulk_create(
+        [
+            EvidenceRequest(
+                tenant_id=company.tenant_id,
+                client=company,
+                cycle=cycle,
+                title=f"Workspace budget request {index}",
+                state=RequestState.REQUESTED,
+                due_on=cycle.period_end,
+                requested_at=cycle.created_at,
+                created_at=cycle.created_at,
+                created_by=owner,
+            )
+            for index in range(extra_rows)
+        ]
+    )
+    return {
+        str(pk)
+        for pk in EvidenceRequest.objects.filter(
+            client=company, cycle__period_start=cycle.period_start
+        ).values_list("pk", flat=True)
+    }
 
 
 def _analyze_seeded_tables(settings: SettingsWrapper) -> None:
@@ -74,10 +99,15 @@ def _analyze_seeded_tables(settings: SettingsWrapper) -> None:
     assert never_analyzed == [], never_analyzed
 
 
+@pytest.mark.parametrize(
+    "extra_workspace_rows",
+    [pytest.param(0, id="baseline"), pytest.param(30, id="lookup-witness")],
+)
 def test_named_reads_on_seeded_growth_portfolio(
     settings: SettingsWrapper,
     tmp_path: Path,
     django_assert_max_num_queries: DjangoAssertNumQueries,
+    extra_workspace_rows: int,
 ) -> None:
     settings.MEDIA_ROOT = str(tmp_path)
     call_command("seed_axorim_demo", "--firms=growth", "--seed=42", stdout=StringIO())
@@ -92,6 +122,11 @@ def test_named_reads_on_seeded_growth_portfolio(
         assert ClientCompany.objects.count() == 1_000
         cycle = ServiceCycle.objects.filter(client=company).latest("period_start")
         assert ServiceCycle.objects.count() == 12_000
+        workspace_requests = _populate_workspace_requests(
+            company, cycle, owner, extra_workspace_rows
+        )
+        if extra_workspace_rows:
+            assert len(workspace_requests) > 25
     sessions = {}
     for role, actor in (("firm", owner), ("portal", portal_user)):
         host = f"{tenant.slug}{'-portal' if role == 'portal' else ''}.localhost"
@@ -101,9 +136,14 @@ def test_named_reads_on_seeded_growth_portfolio(
         assert "value" in cookie
         session.cookies[cookie["name"]] = cookie["value"]
         sessions[role] = session
-    reads = (
+    reads: tuple[tuple[str, str, str], ...] = (
         ("hoje", "firm", reverse("dashboard")),
         ("clientes", "firm", reverse("clients-list")),
+        (
+            "clientes_search",
+            "firm",
+            reverse("clients-list") + "?" + urlencode({"q": company.legal_name}),
+        ),
         (
             "workspace",
             "firm",
@@ -113,14 +153,13 @@ def test_named_reads_on_seeded_growth_portfolio(
         ("cycle_detail", "firm", reverse("cycle-detail", args=[cycle.pk])),
         ("portal_inicio", "portal", "/"),
     )
+    # Keep the original five-read seed intact. The amplified case measures only
+    # workspace, so it cannot change T36's cycle-detail or the portal baseline.
+    if extra_workspace_rows:
+        reads = tuple(row for row in reads if row[0] == "workspace")
     counts: dict[str, int] = {}
     for name, role, path in reads:
-        budget = (
-            CaptureQueriesContext(connection)
-            if name in FOLLOW_UP_READS
-            else django_assert_max_num_queries(25)
-        )
-        with budget as queries:
+        with django_assert_max_num_queries(25) as queries:
             response = sessions[role].get(path)
         assert response.status_code == 200, (name, response.status_code)
         if name == "hoje":
@@ -131,7 +170,22 @@ def test_named_reads_on_seeded_growth_portfolio(
             assert company.legal_name.encode() in response.content
         if name == "workspace":
             assert str(cycle.pk).encode() in response.content
+            assert {
+                str(row.request_id) for row in response.context["period_requests"]
+            } == workspace_requests
+            assert all(
+                f'data-request-id="{pk}"'.encode() in response.content
+                for pk in workspace_requests
+            )
         counts[name] = len(queries)
-    sys.stdout.write(f"\nAXR1_READ_QUERIES={json.dumps(counts, sort_keys=True)}\n")
-    followups = {name: count for name, count in counts.items() if count > 25}
-    sys.stdout.write(f"AXR1_QUERY_FOLLOW_UPS={json.dumps(followups, sort_keys=True)}\n")
+    marker = (
+        "AXR1_WORKSPACE_WITNESS_QUERIES"
+        if extra_workspace_rows
+        else "AXR1_READ_QUERIES"
+    )
+    sys.stdout.write(f"\n{marker}={json.dumps(counts, sort_keys=True)}\n")
+    if not extra_workspace_rows:
+        followups = {name: count for name, count in counts.items() if count > 25}
+        sys.stdout.write(
+            f"AXR1_QUERY_FOLLOW_UPS={json.dumps(followups, sort_keys=True)}\n"
+        )

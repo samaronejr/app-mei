@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.http import Http404
 
 from apps.audit.models import Event
@@ -17,6 +17,7 @@ from apps.delivery.outbox import enqueue
 from apps.delivery.tasks import dispatch_outbox
 from tests.cycles.cycle_fixtures import PERIOD, cycle_setup
 from tests.delivery.conftest import DeliverySetup
+from tests.delivery.notice_fixtures import acknowledge
 from tests.delivery.smtp import FakeSMTP
 from tests.delivery.test_boundaries import _web
 
@@ -74,6 +75,7 @@ def test_retry_reference_cannot_cross_clients_in_the_same_tenant(
     delivery: DeliverySetup, smtp_server: Callable[[str], FakeSMTP]
 ) -> None:
     # Given a legitimate successor plus another client's legitimate envelope.
+    acknowledge(delivery.graph)
     smtp_server("reject")
     original = delivery.queue()
     dispatch_outbox()
@@ -110,13 +112,24 @@ def test_retry_reference_cannot_cross_clients_in_the_same_tenant(
         )
 
         # When a raw write bypasses the service's same-client check.
-        with (
-            pytest.raises(IntegrityError, match="outbound_retry_client_fk"),
-            transaction.atomic(),
-        ):
-            OutboundMessage.objects.filter(pk=successor.pk).update(
-                retry_of_id=foreign.pk
-            )
+        with transaction.atomic():
+            # Isolate the paired FK from the separately tested immutable binding.
+            # Always roll back this guard removal, including a broken-FK control.
+            with connection.cursor() as cursor:
+                cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+                cursor.execute("RESET ROLE")
+                cursor.execute(
+                    "ALTER TABLE delivery_outboundmessage "
+                    "DISABLE TRIGGER delivery_notice_binding_guard"
+                )
+                cursor.execute("SET ROLE app_runtime")
+            try:
+                with pytest.raises(IntegrityError, match="outbound_retry_client_fk"):
+                    OutboundMessage.objects.filter(pk=successor.pk).update(
+                        retry_of_id=foreign.pk
+                    )
+            finally:
+                transaction.set_rollback(True)
 
         # Then the composite FK, not a tenant-only FK, rejects the reference.
         successor.refresh_from_db()
