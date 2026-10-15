@@ -17,13 +17,18 @@
     targeting scope. The fields render through the same pure partial every other
     form uses, so the accessibility chain (label, help, error) is identical.
     `unsavedGuard` (AXR1-040) asks before typed fields are left behind; a refused
-    create redirects back with a message, so this form is never re-rendered bound.
+    create retains the bound form and starts the guard armed.
   {% endcomment %}
   <section class="ui-panel mt-6" aria-labelledby="novo-playbook">
     <h2 id="novo-playbook" class="ui-panel-heading">{% translate "Novo playbook" %}</h2>
-    <form method="post" class="grid gap-4 px-4 py-4" novalidate x-data="unsavedGuard">
+    <form method="post" class="grid gap-4 px-4 py-4" novalidate x-data="unsavedGuard"{% if create_form.is_bound %} data-unsaved{% endif %}>
       {% csrf_token %}
       <input type="hidden" name="action" value="create">
+      {% if create_form.non_field_errors %}
+        <div role="alert" class="field-error">
+          {% for error in create_form.non_field_errors %}<p>{{ error }}</p>{% endfor %}
+        </div>
+      {% endif %}
       {% for field in create_form %}
         {% include "partials/pure/field.html" with field=field only %}
       {% endfor %}
