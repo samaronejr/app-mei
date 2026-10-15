@@ -5,13 +5,14 @@ from datetime import timedelta
 from uuid import UUID, uuid4
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
+from apps.authz.approvals import lock_authorities
 from apps.clients.maintenance import load_client
 from apps.core.flags import tenant_has
 from apps.core.tasks import assert_no_transaction
@@ -29,6 +30,7 @@ from apps.delivery.models import (
     MessageState,
     OutboundMessage,
 )
+from apps.delivery.policy import enabled_kinds
 
 # S8.1: pausing and resuming automations is its own capability.
 AUTOMATIONS_MANAGE = "automations.manage"
@@ -175,38 +177,46 @@ def claim_batch(tid: UUID) -> list[Claim]:
     """Commit SKIP LOCKED claims before the caller can perform any network I/O."""
     assert_no_transaction()
     with tenant_context(tid):
-        if not tenant_has(tid, "cycles_r1"):
+        kinds = enabled_kinds(tid)
+        if not kinds:
             return []
         control = _control()
         now = timezone.now()
         # Expired sending leases are never reclaimed: the previous process might
         # still be transmitting. Only an explicit human decision can resolve them.
-        expired = (
+        expired = list(
             OutboundMessage.objects.select_for_update(skip_locked=True)
-            .filter(state=MessageState.SENDING, lease_until__lte=now)
+            .filter(kind__in=kinds, state=MessageState.SENDING, lease_until__lte=now)
             .order_by("pk")[:CLAIM_LIMIT]
         )
-        for message in expired:
-            transition(message, Reply(MessageState.UNKNOWN, "lease_expired"))
-            effect(message)
-            report_problem(message)
-        if settings.DELIVERY_PAUSED or control.paused:
-            return []
-        if control.quota_day != timezone.localdate():
+        paused = settings.DELIVERY_PAUSED or control.paused
+        if not paused and control.quota_day != timezone.localdate():
             control.quota_day = timezone.localdate()
             control.reserved_today = 0
         limit = min(
             CLAIM_LIMIT, max(0, settings.DELIVERY_DAILY_CAP - control.reserved_today)
         )
         rows = (
-            OutboundMessage.objects.select_for_update(skip_locked=True)
-            .filter(
-                state__in=[MessageState.QUEUED, MessageState.TEMPORARY],
-                next_attempt_at__lte=now,
-                attempts__lt=MAX_ATTEMPTS,
+            list(
+                OutboundMessage.objects.select_for_update(skip_locked=True)
+                .filter(
+                    kind__in=kinds,
+                    state__in=[MessageState.QUEUED, MessageState.TEMPORARY],
+                    next_attempt_at__lte=now,
+                    attempts__lt=MAX_ATTEMPTS,
+                )
+                .order_by("next_attempt_at", "pk")[:limit]
             )
-            .order_by("next_attempt_at", "pk")[:limit]
+            if not paused
+            else []
         )
+        # All existing messages precede source locks taken by problem reporting.
+        for message in expired:
+            transition(message, Reply(MessageState.UNKNOWN, "lease_expired"))
+            effect(message)
+            report_problem(message)
+        if paused:
+            return []
         claims = []
         for message in rows:
             existing = DeliveryEffect.objects.filter(
@@ -262,35 +272,63 @@ def authorize_and_prepare(claim: Claim) -> tuple[OutboundMessage, dict[str, str]
     hook refusing (`ValueError`) cancels the message with the hook's reason code. The
     returned values are never written to any row.
     """
-    from apps.delivery.policy import KINDS, still_valid  # noqa: PLC0415
-
     assert_no_transaction()
     with tenant_context(claim.tenant_id):
-        control = _control()
-        message = _locked_claim(claim)
-        if message.send_started_at is not None:
-            msg = "This fence already entered the gateway."
-            raise StaleFenceError(msg)
+        return prepare_claim(claim)
+
+
+@transaction.atomic
+def prepare_claim(claim: Claim) -> tuple[OutboundMessage, dict[str, str]]:
+    """Lock control, message, authority, client and cycle through dispatch start.
+
+    The caller owns tenant_context. This is also the boundary exercised by real
+    runtime-role race threads. Every acquired authorization lock survives through
+    send_started_at and the outer commit; no I/O occurs here.
+    """
+    from apps.delivery.policy import KINDS, still_valid  # noqa: PLC0415
+
+    if tenant_id() != claim.tenant_id:
+        raise Http404
+    control = _control()
+    message = _locked_claim(claim)
+    if message.send_started_at is not None:
+        msg = "This fence already entered the gateway."
+        raise StaleFenceError(msg)
+    if (
+        settings.DELIVERY_PAUSED
+        or control.paused
+        or message.kind not in enabled_kinds(claim.tenant_id)
+    ):
+        valid, reason = False, "delivery_paused"
+    else:
         valid, reason = still_valid(message)
-        if (
-            settings.DELIVERY_PAUSED
-            or control.paused
-            or not tenant_has(claim.tenant_id, "cycles_r1")
-        ):
-            valid, reason = False, "delivery_paused"
-        secrets: dict[str, str] = {}
-        prepare = KINDS[message.kind].prepare if valid else None
-        if prepare is not None:
-            try:
-                secrets = prepare(message)
-            except ValueError as refusal:
-                valid, reason = False, str(refusal) or "prepare_refused"
-        if not valid:
-            transition(message, Reply(MessageState.CANCELLED, reason))
-        else:
-            message.send_started_at = timezone.now()
-            message.save(update_fields=["send_started_at"])
-        return message, secrets
+    secrets: dict[str, str] = {}
+    prepare = KINDS[message.kind].prepare if valid else None
+    if prepare is not None:
+        try:
+            secrets = prepare(message)
+        except ValueError as refusal:
+            valid, reason = False, str(refusal) or "prepare_refused"
+    # Time keeps advancing while an authority/source acquisition is blocked.
+    if message.lease_until is None or message.lease_until <= timezone.now():
+        valid, reason = False, "lease_expired_before_dispatch"
+    if not valid:
+        transition(message, Reply(MessageState.CANCELLED, reason))
+    else:
+        message.send_started_at = timezone.now()
+        message.save(update_fields=["send_started_at"])
+        if message.proposal_id is not None and message.cycle_id is not None:
+            CycleEvent.objects.create(
+                tenant_id=message.tenant_id,
+                client_id=message.client_id,
+                cycle_id=message.cycle_id,
+                type="proposal.dispatch_started",
+                aggregate_type="ActionProposal",
+                aggregate_id=message.proposal_id,
+                aggregate_version=message.fence,
+                payload={"message_id": str(message.pk), "digest": message.body_ref},
+            )
+    return message, secrets
 
 
 def finalize(claim: Claim, reply: Reply) -> bool:
@@ -334,8 +372,8 @@ def decide(
         candidate = OutboundMessage.objects.filter(pk=message_id).first()
         if candidate is None:
             raise Http404
-        load_client(actor, tenant_id(), candidate.client_id, lock=True)
         message = OutboundMessage.objects.select_for_update().get(pk=message_id)
+        load_client(actor, tenant_id(), message.client_id, lock=True)
         require_actor(actor, CYCLES_OPERATE)
         if message.version != expected_version:
             msg = "Este registro mudou. Recarregue antes de salvar."
@@ -362,10 +400,21 @@ def decide(
 
 def set_pause(actor: User, *, paused: bool, expected_version: int) -> AutomationPause:
     """Change the kill switch; quota reservations do not change its revision."""
-    require_enabled()
+    if not (
+        tenant_has(tenant_id(), "cycles_r1") or tenant_has(tenant_id(), "import_r1")
+    ):
+        raise Http404
     with transaction.atomic():
         control = _control()
-        require_actor(actor, AUTOMATIONS_MANAGE)
+        authority = lock_authorities(
+            {actor.pk},
+            tenant_id=tenant_id(),
+            extra_capabilities=(AUTOMATIONS_MANAGE,),
+        )[actor.pk]
+        fresh_actor = authority.user
+        if not fresh_actor.is_active:
+            raise PermissionDenied
+        require_actor(fresh_actor, AUTOMATIONS_MANAGE)
         if control.version != expected_version:
             msg = "Este registro mudou. Recarregue antes de salvar."
             raise VersionConflict(msg)
@@ -374,7 +423,7 @@ def set_pause(actor: User, *, paused: bool, expected_version: int) -> Automation
         control.save()
         record_event(
             action="delivery.pause_changed",
-            actor=actor,
+            actor=fresh_actor,
             obj=ObjectRef("AutomationPause", str(control.pk)),
             metadata={"paused": paused, "version": control.version},
         )

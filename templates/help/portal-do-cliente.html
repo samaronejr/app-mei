@@ -1,0 +1,37 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    Written for the client company, in plain Portuguese. Routes described: the portal
+    home, request upload, company switch, publications and payments of apps/portal/urls.py,
+    and the refusal page of templates/403.html (T25) a client meets once access ends.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="acesso">
+    <h2 id="acesso" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Seu acesso{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}A sua contabilidade envia um convite por e-mail. Siga o link do convite para criar o seu acesso. Use sempre o mesmo e-mail que a contabilidade cadastrou.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="pedidos">
+    <h2 id="pedidos" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Responder aos pedidos{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Na página inicial do portal aparece o que a contabilidade está pedindo, com o documento, a empresa e o prazo.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Abra o pedido, escolha o arquivo e envie. A página confirma que o arquivo foi recebido.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}A contabilidade revisa o arquivo. Se faltar algo, aparece Precisamos da sua ajuda, dizendo o que corrigir.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="empresas">
+    <h2 id="empresas" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Mais de uma empresa{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Se você responde por mais de uma empresa, escolha a empresa antes de enviar. Cada pedido mostra a qual empresa ele se refere.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="publicacoes">
+    <h2 id="publicacoes" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Publicações e pagamentos{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Publicações são documentos que a contabilidade deixa para você, como guias. Quando você abre ou baixa uma publicação, a contabilidade fica sabendo.{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Um pagamento que você informa aparece como informado até a contabilidade conferir. Isso não é uma confirmação da Receita.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="fim">
+    <h2 id="fim" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando o acesso termina{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Se a contabilidade encerra o serviço da sua empresa, o acesso ao portal termina depois de um prazo. A partir daí, o portal mostra a página Acesso não permitido. Se você acha que o acesso deveria continuar, fale com a sua contabilidade.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="duvidas">
+    <h2 id="duvidas" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Dúvidas{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Dúvidas sobre um pedido ou um prazo devem ir direto para a sua contabilidade. Para exercer os seus direitos sobre dados pessoais, use o canal LGPD indicado no rodapé.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    The first-month path, in the order the product asks for it. Each step names the
+    screen label it lives under, so the text can be checked against the UI.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="passos">
+    <h2 id="passos" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O primeiro mês, em cinco passos{% endblocktranslate %}</h2>
+    <ol class="list-decimal space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Importe a carteira em Clientes, a partir de uma planilha. A prévia mostra o que vai ser criado antes de criar qualquer coisa.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Complete o cadastro de cada cliente: o serviço contratado com o escritório e o perfil tributário.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Abra o ciclo do mês a partir de um playbook publicado. Há dois modelos: MEI mensal, e Coleta e revisão de documentos do mês.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Acompanhe o dia pela tela Hoje. Cada item mostra por que está ali e quem é o responsável.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Feche o ciclo. Ele termina como Concluído, ou como Encerrado com pendências, com os motivos escritos.{% endblocktranslate %}</li>
+    </ol>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="nao-faz">
+    <h2 id="nao-faz" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O que o produto não faz{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Não calcula impostos além do calendário do DAS e do limite de faturamento do MEI.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Não transmite declarações e não faz pagamentos em nome de ninguém.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Não consulta a Receita nem outros órgãos. Um pagamento informado continua marcado como informado.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Não decide nada por você. Publicações e e-mails de texto livre exigem aprovação humana do conteúdo exato. Avisos, lembretes e convites com texto de modelo seguem a versão publicada do playbook ou a política do escritório, sem cartão de aprovação.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="proximos">
+    <h2 id="proximos" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Para ler em seguida{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Os artigos sobre ciclos, aprovações e o significado de "aceita pelo servidor" explicam os três pontos que mais geram dúvidas no primeiro mês.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

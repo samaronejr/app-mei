@@ -1,0 +1,10 @@
+{% load ptbr %}
+<div class="min-w-0">
+  <label class="ui-field-label" for="evidence-{{ subject_id }}-{{ field_key }}">Documento de apoio (opcional)</label>
+  <select class="ui-field-input min-w-0 max-w-full" id="evidence-{{ subject_id }}-{{ field_key }}" name="evidence_link_id">
+    <option value="">Sem documento vinculado</option>
+    {% for evidence in choices %}{% if not evidence.obligation_id or evidence.obligation_id == subject_id %}
+    <option value="{{ evidence.id }}"{% if evidence.id == selected %} selected{% endif %}>{{ evidence.filename }} · {{ evidence.created_at|data_hora }}</option>
+    {% endif %}{% endfor %}
+  </select>
+</div>

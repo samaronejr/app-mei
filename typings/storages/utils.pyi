@@ -1,0 +1,6 @@
+# Public path helpers, verified against django-storages 1.14.6.
+
+from pathlib import PurePath
+
+def clean_name(name: str | PurePath) -> str: ...
+def safe_join(base: str, *paths: str) -> str: ...

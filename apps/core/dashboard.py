@@ -27,7 +27,9 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
+from apps.briefing.presentation import briefing_view
 from apps.clients.models import ClientCompany, ClientStatus
+from apps.core.flags import tenant_has
 from apps.obligations.models import Obligation
 from apps.obligations.queries import threshold_warning
 from apps.obligations.views import queue_counts
@@ -145,6 +147,8 @@ def dashboard_view(request: AuthenticatedRequest) -> HttpResponse:
     """Render the firm's portfolio, its work queues and one client's DAS calendar."""
     tenant = _tenant(request)
     tenant_id = UUID(str(tenant.pk))
+    if tenant_has(tenant_id, "briefing_r1"):
+        return briefing_view(request)
     clients = visible_clients(request.user, tenant_id=tenant_id)
     selected = _selected_client(request, clients)
 

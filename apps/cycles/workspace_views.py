@@ -1,22 +1,34 @@
 """Workspace rendering kept separate from the cycle URL decorators."""
 
+from http import HTTPStatus
+from typing import Final
 from uuid import UUID
 
-from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import render
+from django.urls import reverse
 
 from apps.accounts.views import AuthenticatedRequest
-from apps.authz.services import can
-from apps.clients.maintenance import load_client
-from apps.clients.models import ClientContact, Engagement, OnboardingItem
+from apps.clients.maintenance import MANAGE_CAPABILITY, load_client
+from apps.core.flags import tenant_has
+from apps.core.refusal import WayBack, refusal_page
 from apps.cycles.capabilities import CYCLES_OPERATE
-from apps.cycles.exception_context import exception_rows
+from apps.cycles.exception_context import (
+    exception_selection,
+    present_exceptions,
+    read_exceptions,
+)
 from apps.cycles.models import Exception as CycleException
-from apps.cycles.models import PlaybookVersion, ServiceCycle, VersionState
 from apps.cycles.services.cycle import tenant_id
-from apps.cycles.workspace import get_cycle_context, parse_period, timeline
-from apps.obligations.models import Document, Obligation
+from apps.cycles.workspace import parse_period
+from apps.cycles.workspace_queries import read_workspace
+
+# AXR1-047: the flag the setup route is gated on, written as a literal for the
+# reason `cycle_views` writes `"bulk_r1"` and `clients.views` writes `"cycles_r1"`
+# — `apps.clients.views` imports this module, so importing its `ONBOARDING_FLAG`
+# back would close an import cycle. A misspelling is not silent: `tenant_has`
+# refuses a slug outside `FEATURES` instead of answering False.
+SETUP_FLAG: Final = "import_r1"
 
 
 def client_workspace(
@@ -27,7 +39,6 @@ def client_workspace(
     status: int = 200,
 ) -> HttpResponse:
     """Render the existing detail route after its auth and feature gates."""
-    client = load_client(request.user, tenant_id(), pk)
     try:
         period = (
             selected_exception.cycle.period_start
@@ -35,52 +46,61 @@ def client_workspace(
             else parse_period(request.GET.get("periodo"))
         )
     except ValueError:
-        return HttpResponse("Competência inválida. Use AAAA-MM.", status=422)
-    context = get_cycle_context(request.user, pk, period)
-    cycles = (
-        ServiceCycle.objects.filter(client=client, period_start=period)
-        .select_related("playbook", "owner", "engagement")
-        .order_by("created_at", "pk")
-    )
-    engagements = (
-        Engagement.objects.filter(client=client, starts_on__lte=period)
-        .filter(Q(ends_on__isnull=True) | Q(ends_on__gt=period))
-        .select_related("responsible")
+        # Preserve the portfolio-first refusal even for malformed periods.
+        load_client(request.user, tenant_id(), pk)
+        return refusal_page(
+            request,
+            HTTPStatus.UNPROCESSABLE_CONTENT,
+            heading="Não foi possível abrir o espaço do cliente",
+            reason="Competência inválida. Use AAAA-MM.",
+            back=WayBack(
+                reverse("client-detail", args=[pk]), "Voltar ao espaço do cliente"
+            ),
+        )
+    workspace = read_workspace(request.user, pk, period)
+    selection = exception_selection(request, selected_exception, error)
+    exceptions = read_exceptions(
+        CycleException.objects.filter(client_id=pk, cycle__period_start=period),
+        selection,
     )
     return render(
         request,
         "cycles/workspace.html",
         {
-            "client": client,
+            "client": workspace.client,
             "period": period,
-            "cycle_context": context,
-            "cycles": cycles,
-            "exceptions": exception_rows(
-                request,
-                CycleException.objects.filter(
-                    client=client, cycle__period_start=period
-                ),
+            "cycle_context": workspace.context,
+            "cycles": workspace.cycles,
+            "exceptions": present_exceptions(
+                exceptions,
+                selection,
+                workspace.exception_controls,
                 "cliente",
-                selected_exception,
-                error,
             ),
-            "engagements": engagements,
-            "definitions": PlaybookVersion.objects.filter(state=VersionState.PUBLISHED)
-            .select_related("playbook")
-            .order_by("playbook_id", "-number")
-            .distinct("playbook_id"),
-            "may_operate": can(request.user, CYCLES_OPERATE, tenant_id=tenant_id()),
-            "timeline": timeline(request.user, pk, period),
-            "documents": Document.objects.filter(client=client).order_by(
-                "-created_at", "pk"
-            )[:20],
-            "obligations": Obligation.objects.filter(
-                client=client, competence_month=period
-            ).select_related("obligation_type"),
-            "contacts": ClientContact.objects.filter(client=client, active=True),
-            "checklist": OnboardingItem.objects.filter(client=client).order_by(
-                "position", "pk"
-            ),
+            "engagements": workspace.engagements,
+            "definitions": workspace.definitions,
+            "may_operate": CYCLES_OPERATE in workspace.allowed,
+            # AXR1-047: whether to draw the way into this client's setup page.
+            # The route behind it answers 404 without `import_r1` and 403 without
+            # `clients.manage` (`apps/clients/views_onboarding.py:412-424`), so the
+            # link is offered exactly when both already say yes — the decorators
+            # there remain the authorization, this only keeps the page honest about
+            # what it offers. A read-only support session resolves `clients.manage`
+            # to NONE and is therefore shown no link it would be refused.
+            "may_set_up": tenant_has(tenant_id(), SETUP_FLAG)
+            and MANAGE_CAPABILITY in workspace.allowed,
+            "timeline": workspace.timeline,
+            # AXR1-043: the linked request and communication sections, read once
+            # for the client this page already resolved through its portfolio.
+            "period_requests": workspace.requests,
+            "communication": workspace.communication,
+            "documents": workspace.documents,
+            "obligations": workspace.obligations,
+            # T17: the Cobertura panel — what the firm knows about each
+            # engagement's obligations this competence, honest states only.
+            "coverage": workspace.coverage,
+            "contacts": workspace.contacts,
+            "checklist": workspace.checklist,
         },
         status=status,
     )

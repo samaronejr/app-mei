@@ -7,6 +7,7 @@ from django.core.mail import EmailMessage
 
 from apps.core.tasks import assert_no_transaction
 from apps.delivery.contracts import Claim, Reply
+from apps.delivery.frozen import FrozenEmailMessage
 from apps.delivery.models import MessageState
 
 SMTP_TEMPORARY_MIN = 400
@@ -55,11 +56,15 @@ def send(claim: Claim, *, before_network_io: Callable[[], None] | None = None) -
     public_body = render_body(message)
     if content_digest(message, rendered_body=public_body) != message.content_digest:
         return Reply(MessageState.CANCELLED, "content_changed")
-    email = EmailMessage(
-        subject=message.subject,
-        body=render_body(message, secrets) if secrets else public_body,
-        to=message.recipients_json,
-        headers={"Message-ID": f"<{message.pk}@outbox.local>"},
+    email = (
+        FrozenEmailMessage(message, secrets)
+        if "frozen_mime" in secrets
+        else EmailMessage(
+            subject=message.subject,
+            body=render_body(message, secrets) if secrets else public_body,
+            to=message.recipients_json,
+            headers={"Message-ID": f"<{message.pk}@outbox.local>"},
+        )
     )
     with delivery_secrets(
         str(email.subject),
