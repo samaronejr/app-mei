@@ -13,6 +13,8 @@ from pytest_django.fixtures import SettingsWrapper
 from apps.core.tenancy import tenant_context
 from apps.cycles.openers import REQUEST_OVERDUE
 from apps.delivery.models import MessageState, OutboundMessage
+from apps.delivery.outbox import enqueue
+from apps.delivery.policy import BusinessIntent
 from apps.delivery.services import report_problem
 from tests.cycles.document_fixtures import reviewed
 from tests.cycles.test_exception_subjects import Target
@@ -93,25 +95,29 @@ def test_delivery_evidence_selects_its_actual_message_past_page_one(
         message.save(update_fields=["state", "created_at"])
         report_problem(message)
         # Real persisted peer rows force the target past the existing 30-row page.
-        OutboundMessage.objects.bulk_create(
-            OutboundMessage(
-                tenant=world.graph.tenant,
-                client=world.graph.client,
-                contact=world.contact,
-                cycle=world.cycle,
-                created_by=world.graph.actor,
+        for index in range(31):
+            world.graph.client.refresh_from_db()
+            peer = enqueue(
+                world.graph.actor,
+                world.graph.client.pk,
+                world.contact.pk,
+                intent=BusinessIntent(
+                    world.cycle.engagement_id,
+                    world.cycle.playbook_id,
+                    world.cycle.period_start,
+                    world.cycle.period_end,
+                    world.cycle.amendment,
+                    "evidence-peer",
+                    "request_notice",
+                    index,
+                ),
+                expected_version=world.graph.client.version,
                 kind="request_notice",
+                cycle_id=world.cycle.pk,
                 idempotency_key=f"t14-evidence-peer-{index}",
-                business_intent_key=f"t14-evidence-peer-{index}",
-                content_digest="1" * 64,
-                recipients_json=[world.contact.email],
-                subject=f"Other synthetic message {index}",
-                body_ref="delivery/email/request_notice.txt",
-                portal_url=f"http://{world.portal_host}/",
-                state=MessageState.UNKNOWN,
             )
-            for index in range(31)
-        )
+            peer.state = MessageState.UNKNOWN
+            peer.save(update_fields=["state"])
     browser = world.firm()
     response = browser.get(_surface(world, surface))
     assert response.status_code == 200

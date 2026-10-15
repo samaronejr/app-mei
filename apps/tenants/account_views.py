@@ -22,6 +22,7 @@ from apps.clients.maintenance import load_client
 from apps.clients.models import ClientCompany
 from apps.clients.views import require_tenant
 from apps.core.flags import require_feature
+from apps.core.refusal import WayBack, refusal_page, sentences
 from apps.core.retention import RetentionClass
 from apps.cycles.archive_response import ArchiveDescriptor, EvidenceArchiveResponse
 from apps.cycles.errors import IllegalTransition, VersionConflict
@@ -36,6 +37,19 @@ from apps.tenants.models import AccountExport, AccountExportState, BillingAccoun
 from apps.tenants.services import TenantConflictError
 from apps.tenants.usage import cost_estimate
 from apps.tenants.views import FLAG, resolved_firm
+
+
+def _account_refusal(
+    request: AuthenticatedRequest, status: HTTPStatus, heading: str, reason: str
+) -> HttpResponse:
+    """Refuse an account command as a page that leads back to the account."""
+    return refusal_page(
+        request,
+        status,
+        heading=heading,
+        reason=reason,
+        back=WayBack(reverse("firm-account"), "Voltar à conta"),
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -112,13 +126,23 @@ def export_request_view(request: AuthenticatedRequest) -> HttpResponse:
     require_account_owner(request.user, tenant.pk)
     form = VersionForm(request.POST)
     if not form.is_valid():
-        return HttpResponse("Recarregue a página antes de exportar.", status=409)
+        return _account_refusal(
+            request,
+            HTTPStatus.CONFLICT,
+            "Não foi possível solicitar a exportação",
+            "Recarregue a página antes de exportar.",
+        )
     try:
         export = request_export(
             request.user, tenant.pk, expected_version=form.cleaned_data["version"]
         )
     except TenantConflictError as error:
-        return HttpResponse(str(error), status=HTTPStatus.CONFLICT)
+        return _account_refusal(
+            request,
+            HTTPStatus.CONFLICT,
+            "Não foi possível solicitar a exportação",
+            str(error),
+        )
     return HttpResponseRedirect(reverse("account-export-detail", args=[export.pk]))
 
 
@@ -161,7 +185,12 @@ def export_download_view(
     tenant = resolved_firm(request)
     require_account_owner(request.user, tenant.pk)
     if not export_available(tenant):
-        return HttpResponse("O prazo de exportação encerrou.", status=410)
+        return _account_refusal(
+            request,
+            HTTPStatus.GONE,
+            "Não foi possível baixar a exportação",
+            "O prazo de exportação encerrou.",
+        )
     export = AccountExport.objects.filter(pk=export_id).first()
     if export is None:
         raise Http404
@@ -170,7 +199,12 @@ def export_download_view(
         or export.expires_at is None
         or export.expires_at <= timezone.now()
     ):
-        return HttpResponse("Este arquivo não está disponível.", status=410)
+        return _account_refusal(
+            request,
+            HTTPStatus.GONE,
+            "Não foi possível baixar a exportação",
+            "Este arquivo não está disponível.",
+        )
     return EvidenceArchiveResponse(
         ArchiveDescriptor(
             export.storage_key,
@@ -204,7 +238,7 @@ def retention_view(request: AuthenticatedRequest, client_id: UUID) -> HttpRespon
                     expected_version=form.cleaned_data["version"],
                 )
             except (ValidationError, VersionConflict, IllegalTransition) as error:
-                form.add_error(None, str(error))
+                form.add_error(None, sentences(error))
                 status = HTTPStatus.CONFLICT
             else:
                 messages.success(request, "Retenção registrada.")
@@ -233,11 +267,21 @@ def release_hold_view(request: AuthenticatedRequest, hold_id: UUID) -> HttpRespo
     require_account_owner(request.user, tenant.pk)
     form = VersionForm(request.POST)
     if not form.is_valid():
-        return HttpResponse("Recarregue a página antes de liberar.", status=409)
+        return _account_refusal(
+            request,
+            HTTPStatus.CONFLICT,
+            "Não foi possível liberar a retenção",
+            "Recarregue a página antes de liberar.",
+        )
     try:
         hold = release_hold(
             request.user, hold_id, expected_version=form.cleaned_data["version"]
         )
     except (VersionConflict, IllegalTransition) as error:
-        return HttpResponse(str(error), status=409)
+        return _account_refusal(
+            request,
+            HTTPStatus.CONFLICT,
+            "Não foi possível liberar a retenção",
+            str(error),
+        )
     return HttpResponseRedirect(reverse("firm-retention", args=[hold.client_id]))

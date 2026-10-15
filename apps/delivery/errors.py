@@ -11,3 +11,7 @@ class VersionConflict(Exception):  # noqa: N818 - shared service vocabulary
 
 class StaleFenceError(Exception):
     """A lease no longer authorizes this worker to send or finalize."""
+
+
+class ReminderSweepError(RuntimeError):
+    """One tenant phase failed; the original exception is retained as its cause."""

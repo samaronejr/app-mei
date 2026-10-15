@@ -190,9 +190,9 @@ class SupportRequestAuditMiddleware:
 
     Registered BEFORE `TenantMiddleware` for the same reason AccessLog is: the
     write lands after that transaction resolves, so a denied or failed request
-    is still recorded — exactly the request an investigation wants. Requests
-    that never set ``request.support_grant`` (no grant, static, health probes)
-    cost one attribute check and nothing else.
+    is still recorded — exactly the request an investigation wants. The actor
+    is resolved before the handler; requests without a grant write no rows.
+    Static and health exemptions do not resolve authentication here.
     """
 
     def __init__(
@@ -204,19 +204,27 @@ class SupportRequestAuditMiddleware:
 
     def __call__(self, request: HttpRequest) -> HttpResponseBase:
         """Serve the request, then dual-write it when a grant was attached."""
+        if self._is_exempt(request.path_info):
+            return self.get_response(request)
+        user = getattr(request, "user", None)
+        # isinstance forces Django's lazy user to resolve BEFORE the handler.
+        # Keeping an unevaluated wrapper until after logout would be too late.
+        actor = user if isinstance(user, User) else None
         try:
             response = self.get_response(request)
         except Exception:
-            self._audit(request, 500)
+            self._audit(request, 500, actor)
             raise
-        self._audit(request, response.status_code)
+        self._audit(request, response.status_code, actor)
         return response
 
-    def _audit(self, request: HttpRequest, status_code: int) -> None:
+    def _audit(
+        self, request: HttpRequest, status_code: int, actor: User | None
+    ) -> None:
         """Dual-write when a grant rode the request; exempts stay quiet."""
         grant = getattr(request, "support_grant", None)
         if grant is not None and not self._is_exempt(request.path_info):
-            self._record(request, grant, status_code)
+            self._record(request, grant, status_code, actor)
 
     @staticmethod
     def _is_exempt(path: str) -> bool:
@@ -224,7 +232,12 @@ class SupportRequestAuditMiddleware:
         return path.startswith(tuple(settings.ACCESS_LOG_EXEMPT_PREFIXES))
 
     @staticmethod
-    def _record(request: HttpRequest, grant: _SupportGrant, status_code: int) -> None:
+    def _record(
+        request: HttpRequest,
+        grant: _SupportGrant,
+        status_code: int,
+        actor: User | None,
+    ) -> None:
         """Write one row into each audit stream for this request."""
         grant = cast("Any", request).support_grant
         metadata: dict[str, object] = {
@@ -236,8 +249,6 @@ class SupportRequestAuditMiddleware:
             )[:PATH_MAX_LENGTH],
             "status_code": status_code,
         }
-        user = getattr(request, "user", None)
-        actor = user if isinstance(user, User) else None
         # The platform stream buffers and flushes in PlatformEventMiddleware —
         # the same write a rolled-back request cannot take with it.
         record_platform_event(

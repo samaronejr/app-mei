@@ -19,7 +19,7 @@ command, an API, a test helper — cannot reach acceptance without them.
 import logging
 import secrets
 from enum import StrEnum
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 from allauth.account.models import EmailAddress
 from django.db import transaction
@@ -30,10 +30,9 @@ from apps.accounts.models import User
 from apps.audit.models import AuditAction
 from apps.audit.services import Origin, record_platform_event
 from apps.authz.services import can
+from apps.clients.models import ClientCompany, ClientContact
+from apps.core.tenancy import tenant_context
 from apps.tenants.models import INVITE_TOKEN_BYTES, Invite, Membership, Tenant
-
-if TYPE_CHECKING:
-    from apps.clients.models import ClientCompany
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +154,7 @@ def _invite_metadata(invite: Invite) -> dict[str, object]:
         "invite_id": str(invite.pk),
         "role": invite.role,
         "client_id": str(invite.client_id) if invite.client_id else None,
+        "contact_id": str(invite.contact_id) if invite.contact_id else None,
     }
 
 
@@ -188,6 +188,7 @@ def issue_invite(
     return invite, raw_token
 
 
+@transaction.atomic
 def issue_client_invite(
     *,
     actor: User,
@@ -226,16 +227,58 @@ def issue_client_invite(
         role=role,
         client=client,
     )
+    _client_invite_issued(actor=actor, invite=invite)
+    return invite, raw_token
+
+
+def _client_invite_issued(*, actor: User, invite: Invite) -> None:
+    """Record the same issuance event after the invitation's origin is fixed."""
     logger.info(
         "portal invite issued",
-        extra={"invite_id": str(invite.pk), "tenant_id": str(tenant.pk)},
+        extra={"invite_id": str(invite.pk), "tenant_id": str(invite.tenant_id)},
     )
     record_platform_event(
         action=AuditAction.INVITE_ISSUED,
-        origin=Origin(actor=actor, subject=email),
-        tenant_id=tenant.pk,
+        origin=Origin(actor=actor, subject=invite.email),
+        tenant_id=invite.tenant_id,
         metadata=_invite_metadata(invite),
     )
+
+
+@transaction.atomic
+def issue_contact_invite(
+    *, actor: User, tenant: Tenant, contact: ClientContact, role: str
+) -> tuple[Invite, str]:
+    """Offer a seat to this exact contact, re-reading its scope and consent."""
+    if not may_issue_invites(actor, tenant):
+        msg = "This role may not administer the firm's roster."
+        raise InviteNotPermittedError(msg)
+    with tenant_context(tenant.pk):
+        client = (
+            ClientCompany.objects.select_for_update(no_key=True)
+            .filter(pk=contact.client_id)
+            .first()
+        )
+        origin = (
+            ClientContact.objects.select_for_update()
+            .filter(
+                pk=contact.pk,
+                client_id=contact.client_id,
+                email__iexact=contact.email,
+                active=True,
+                channel_email_allowed=True,
+            )
+            .first()
+        )
+        if client is None or origin is None:
+            msg = "No invitation matches that link."
+            raise InviteNotFoundError(msg)
+        invite, raw_token = Invite.issue(
+            tenant=tenant, client=client, email=origin.email, role=role
+        )
+        invite.contact = origin
+        invite.save(update_fields=["contact"])
+        _client_invite_issued(actor=actor, invite=invite)
     return invite, raw_token
 
 
@@ -385,6 +428,13 @@ def _controls_invited_mailbox(user: User, invite: Invite) -> bool:
     )
 
 
+def _assert_current_token(presented: Invite, locked: Invite) -> None:
+    """Refuse a token refreshed after the anonymous lookup but before redemption."""
+    if presented.token != locked.token:
+        msg = "That link was replaced by a more recent invitation e-mail."
+        raise InviteTokenSupersededError(msg)
+
+
 def _firm_seat(invite: Invite, user: User) -> Membership:
     """Attach the firm-wide membership a firm-side invitation promises.
 
@@ -423,6 +473,33 @@ def _firm_seat(invite: Invite, user: User) -> Membership:
     return membership
 
 
+def _client_acceptance_sources(invite: Invite, user: User | None) -> None:
+    """Prelock existing seats and origins before an existing CLIENT Invite."""
+    if invite.client_id is None:
+        return
+    if user is not None:
+        # PLATFORM_QUERY_OK: exact target seat, after the accepting User fence.
+        Membership.objects.select_for_update(no_key=True).filter(
+            user=user, tenant_id=invite.tenant_id, client_id=invite.client_id
+        ).first()
+    with tenant_context(invite.tenant_id):
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=invite.client_id)
+        if invite.contact_id is not None:
+            ClientContact.objects.select_for_update().filter(
+                pk=invite.contact_id, client_id=invite.client_id
+            ).first()
+
+
+def _assert_same_origin(presented: Invite, locked: Invite) -> None:
+    if (locked.tenant_id, locked.client_id, locked.contact_id) != (
+        presented.tenant_id,
+        presented.client_id,
+        presented.contact_id,
+    ):
+        msg = "No invitation matches that link."
+        raise InviteNotFoundError(msg)
+
+
 def _client_seat(invite: Invite, user: User) -> Membership:
     """Attach the seat inside ONE client that a portal invitation promises.
 
@@ -446,18 +523,59 @@ def _client_seat(invite: Invite, user: User) -> Membership:
     `client__isnull=False`. Mutating the firm row into a client row would revoke that
     accountant's access to the firm as the side effect of handing them a portal login.
 
-    update_or_create rather than get_or_create for the reason spelled out on the twin: a
-    portal seat that was deactivated and later re-invited would otherwise consume its
-    token and stay switched off.
+    Lock an existing seat before client/contact locks, under the accepting user's
+    fence. A new seat is inserted only after the origin is locked and re-checked:
+    inserting first takes a client FK lock that a waiting editor would conflict
+    with. Both branches apply the invited role and reactivate the seat.
     """
-    # PLATFORM_QUERY_OK: creates the membership named by the invite, keyed to the
-    # invite's own tenant and its own client. The caller influences neither.
-    membership, _created = Membership.objects.update_or_create(
-        user=user,
-        tenant_id=invite.tenant_id,
-        client_id=invite.client_id,
-        defaults={"role": invite.role, "is_active": True},
+    if invite.client_id is None:
+        msg = "No invitation matches that link."
+        raise InviteNotFoundError(msg)
+    membership = (
+        # PLATFORM_QUERY_OK: the exact target seat, after the caller's user fence.
+        # Other redemptions for this user cannot race creation of a missing row.
+        Membership.objects.select_for_update(no_key=True)
+        .filter(user=user, tenant_id=invite.tenant_id, client_id=invite.client_id)
+        .first()
     )
+    with tenant_context(invite.tenant_id):
+        contact: ClientContact | None = None
+        if invite.contact_id is not None:
+            ClientCompany.objects.select_for_update(no_key=True).get(
+                pk=invite.client_id
+            )
+            contact = (
+                ClientContact.objects.select_for_update()
+                .filter(
+                    pk=invite.contact_id,
+                    client_id=invite.client_id,
+                    email__iexact=invite.email,
+                    active=True,
+                    channel_email_allowed=True,
+                )
+                .first()
+            )
+            existing_id = membership.pk if membership is not None else None
+            if contact is None or contact.membership_id not in (None, existing_id):
+                msg = "No invitation matches that link."
+                raise InviteNotFoundError(msg)
+        if membership is None:
+            # PLATFORM_QUERY_OK: only the invite's proven tenant/client and user.
+            membership = Membership.objects.create(
+                user=user,
+                tenant_id=invite.tenant_id,
+                client_id=invite.client_id,
+                role=invite.role,
+                is_active=True,
+            )
+        else:
+            membership.role = invite.role
+            membership.is_active = True
+            membership.save(update_fields=["role", "is_active"])
+        if contact is not None and contact.membership_id is None:
+            contact.membership = membership
+            contact.version += 1
+            contact.save(update_fields=["membership", "version"])
     return membership
 
 
@@ -470,13 +588,21 @@ def accept_invite(
 ) -> Membership:
     """Redeem at the expected door for an account that owns the invited address."""
     user = User.objects.select_for_update(no_key=True).get(pk=user.pk)
+    if invite.client_id is not None:
+        _client_acceptance_sources(invite, user)
     # Re-read under a row lock: two clicks on the same link land in two requests, and
     # a check made outside the lock would let both create a membership.
     # PLATFORM_QUERY_OK: re-reads by primary key the invite already resolved from
     # its token, purely to take a row lock against a double redemption.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
+    _assert_same_origin(invite, locked)
     _assert_redeemable(locked)
     _assert_expected_scope(locked, expected_scope)
+    _assert_current_token(invite, locked)
+
+    if locked.client_id is not None and not user.is_active:
+        msg = "No invitation matches that link."
+        raise InviteNotFoundError(msg)
 
     if not _controls_invited_mailbox(user, locked):
         msg = (
@@ -490,6 +616,8 @@ def accept_invite(
         if locked.client_id is None
         else _client_seat(locked, user)
     )
+    # The expiry may have passed while a member/client/contact lock was awaited.
+    _assert_redeemable(locked)
     locked.accepted_at = timezone.now()
     locked.save(update_fields=["accepted_at"])
     logger.info(
@@ -500,7 +628,7 @@ def accept_invite(
         action=AuditAction.INVITE_ACCEPTED,
         origin=Origin(actor=user, subject=locked.email),
         tenant_id=locked.tenant_id,
-        metadata=_invite_metadata(locked),
+        metadata={**_invite_metadata(locked), "membership_id": str(membership.pk)},
     )
     return membership
 
@@ -514,12 +642,18 @@ def register_and_accept(
     full_name: str = "",
 ) -> tuple[User, Membership]:
     """Create the account and redeem at the expected door in one transaction."""
+    if invite.client_id is not None:
+        _client_acceptance_sources(invite, None)
     # PLATFORM_QUERY_OK: same primary-key re-read under a row lock as above.
     locked = Invite.objects.select_for_update().get(pk=invite.pk)
+    _assert_same_origin(invite, locked)
     _assert_redeemable(locked)
     _assert_expected_scope(locked, expected_scope)
+    _assert_current_token(invite, locked)
 
-    if User.objects.filter(email__iexact=locked.email).exists():
+    if User.objects.filter(email__iexact=locked.email).exists() or (
+        EmailAddress.objects.filter(email__iexact=locked.email, verified=True).exists()
+    ):
         msg = "That address already has an account. Sign in to accept."
         raise InviteAccountExistsError(msg)
 
