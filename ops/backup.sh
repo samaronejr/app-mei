@@ -254,9 +254,16 @@ trap 'die 4 "could not record the freshness marker at line $LINENO — the backu
 # hours-old "low" against a minutes-old "ok" — and nothing in the probe could have told
 # which one described the present. tests/obligations/test_disk_headroom.py reads this
 # file and fails if `free_disk_kib` reappears in it.
+#
+# obligations 0022 added outcome columns that are NOT NULL with no database default.
+# Django fills them on every model write; this raw insert has to fill them too, or it
+# fails after a complete local backup and the off-host copy below never runs, which is
+# what happened on the pilot from 2026-10-16. Postgres checks NOT NULL before ON
+# CONFLICT, so the existing row does not help. tests/obligations/test_backup_marker_sql.py
+# runs this exact statement against the migrated schema.
 dbx psql -v ON_ERROR_STOP=1 -qtAc "
-  insert into obligations_schedulerheartbeat (name, updated_at)
-  values ('backup', now())
+  insert into obligations_schedulerheartbeat (name, updated_at, last_error_code, outcomes_json)
+  values ('backup', now(), '', '{}')
   on conflict (name) do update set updated_at = excluded.updated_at
 " >/dev/null
 log "freshness marker recorded; /healthz reports backup=fresh"
