@@ -96,8 +96,9 @@ steps, and `deploy-pilot` needs both. Pull requests into `axrm/**` now run CI.
 Collected at this commit: 5292 default tests (1186 + 4106, node-id sets disjoint and
 equal to the single-job selection plus this todo's 9 shape tests) and 177 browser
 tests. `tests/ops/test_ci_workflow_shape.py` pins the complement, the shared guards,
-the deploy needs and the ceiling. Browser screenshots now wait for `networkidle` and a
-laid-out `body`, and retry only Chromium's `Page.captureScreenshot` "Unable to capture
+the deploy needs and the ceiling. Browser screenshots now wait for `networkidle` (skipped only for
+the three captures of a request deliberately held in flight, which pass
+`mid_request=True`) and a laid-out `body`, and retry only Chromium's `Page.captureScreenshot` "Unable to capture
 screenshot" protocol error, once, keeping the first failure as a
 `*.capture-error.txt` artifact beside the screenshots. Recovery: revert to the single
 job. Adding the `test-rest` check to main's required status checks is an owner
