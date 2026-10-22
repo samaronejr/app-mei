@@ -327,15 +327,21 @@ class BrowserPage:
         """No console error and no uncaught exception: CSP refusals land here."""
         assert self.console_errors == [], self.console_errors
 
-    def screenshot(self, name: str) -> Path | None:
-        """Save a full-page screenshot when `BROWSER_SCREENSHOT_DIR` is set."""
+    def screenshot(self, name: str, *, mid_request: bool = False) -> Path | None:
+        """Save a full-page screenshot when `BROWSER_SCREENSHOT_DIR` is set.
+
+        A step that captures a request deliberately held in flight (an upload under
+        throttling, a held route) passes `mid_request=True`: `networkidle` cannot fire
+        while that request is open, so only the caller's own state wait applies.
+        """
         directory = os.environ.get(SCREENSHOT_DIR_ENV)
         if not directory:
             return None
         path = Path(directory) / f"{name}-{self.viewport}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         # Capture only once the page has settled and its body is laid out.
-        self.page.wait_for_load_state("networkidle")
+        if not mid_request:
+            self.page.wait_for_load_state("networkidle")
         self.page.locator(CAPTURE_READY_SELECTOR).wait_for(state="visible")
         capture_retrying_protocol_error(
             # Hiding the caret leaves empty inline styles that HTMX history re-parses.

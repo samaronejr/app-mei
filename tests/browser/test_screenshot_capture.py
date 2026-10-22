@@ -7,6 +7,7 @@ assertion, a timeout or any other error is never retried.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from playwright.sync_api import Error as PlaywrightError
@@ -14,8 +15,14 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from tests.browser.harness import (
     CAPTURE_PROTOCOL_ERROR,
+    CAPTURE_READY_SELECTOR,
+    SCREENSHOT_DIR_ENV,
+    BrowserPage,
     capture_retrying_protocol_error,
 )
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Page
 
 STATE = "url=http://acme.localhost/ viewport={'width': 1440, 'height': 900}"
 
@@ -31,6 +38,29 @@ class ScriptedCapture:
         self.calls += 1
         if self.outcomes:
             raise self.outcomes.pop(0)
+
+
+class RecordingPage:
+    """The slice of a Playwright page `BrowserPage.screenshot` uses, call by call."""
+
+    url = "http://acme.localhost/"
+
+    def __init__(self) -> None:
+        self.viewport_size = {"width": 1440, "height": 900}
+        self.calls: list[str] = []
+
+    def wait_for_load_state(self, state: str) -> None:
+        self.calls.append(f"load:{state}")
+
+    def locator(self, selector: str) -> "RecordingPage":
+        self.calls.append(f"locator:{selector}")
+        return self
+
+    def wait_for(self, *, state: str) -> None:
+        self.calls.append(f"wait_for:{state}")
+
+    def screenshot(self, **kwargs: object) -> None:
+        self.calls.append("capture")
 
 
 def protocol_error() -> PlaywrightError:
@@ -82,6 +112,36 @@ def test_nothing_else_is_retried(tmp_path: Path, failure: BaseException) -> None
     assert raised.value is failure
     assert capture.calls == 1
     assert not artifact.exists()
+
+
+@pytest.mark.parametrize(
+    ("mid_request", "waits"),
+    [
+        (False, ["load:networkidle"]),
+        (True, []),
+    ],
+    ids=["settled", "mid-request"],
+)
+def test_the_capture_waits_for_a_settled_page_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mid_request: bool,
+    waits: list[str],
+) -> None:
+    monkeypatch.setenv(SCREENSHOT_DIR_ENV, str(tmp_path))
+    recorder = RecordingPage()
+    page: object = recorder
+    opened = BrowserPage(page=cast("Page", page), viewport="desktop")
+
+    path = opened.screenshot("shot", mid_request=mid_request)
+
+    assert path == tmp_path / "shot-desktop.png"
+    assert recorder.calls == [
+        *waits,
+        f"locator:{CAPTURE_READY_SELECTOR}",
+        "wait_for:visible",
+        "capture",
+    ]
 
 
 def test_a_clean_capture_runs_once_and_keeps_nothing(tmp_path: Path) -> None:

@@ -87,7 +87,7 @@ def test_upload_survives_a_dropped_connection_and_retries_to_recebido(
         retry.click()
         expect(progress).to_be_visible()
         expect(progress).not_to_have_attribute("value", "0", timeout=15000)
-        portal.screenshot("AXR1-025-o-03-slow-retry-in-flight")
+        portal.screenshot("AXR1-025-o-03-slow-retry-in-flight", mid_request=True)
     assert sent.value.status == 200
     expect(page.locator("#request-status .badge")).to_have_text("Recebido")
     expect(page.locator("#request-status")).to_contain_text("extrato.pdf")

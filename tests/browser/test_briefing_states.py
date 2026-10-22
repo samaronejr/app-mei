@@ -78,7 +78,7 @@ def test_refresh_preserves_timestamped_data_on_failure_and_can_retry(
     expect(page.locator("[data-briefing-skeleton]")).to_have_count(3)
     expect(page.locator("#briefing-results")).to_be_hidden()
     expect(submit).to_be_disabled()
-    opened.screenshot("AXR1-019-loading")
+    opened.screenshot("AXR1-019-loading", mid_request=True)
 
     with page.expect_response(lambda response: response.status == 503):
         pending.pop().fulfill(status=503, content_type="text/plain", body="Unavailable")
