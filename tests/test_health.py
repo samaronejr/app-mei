@@ -12,6 +12,7 @@ def test_healthz_returns_200_json(client: Client) -> None:
     # Given a running application, a scheduler that has checked in, and no
     # authentication
     url = reverse("healthz")
+    assert False, "AXRM-003 failure probe: group 2 must fail the workflow"  # noqa: B011, PT015
 
     # When the health probe is called
     response = client.get(url)
