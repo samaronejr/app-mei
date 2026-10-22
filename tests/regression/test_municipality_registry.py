@@ -333,6 +333,26 @@ def test_rio_metro_seed_round_trip_keeps_capitals_and_unrelated_rows() -> None:
     assert Municipality.objects.count() == before
 
 
+def test_rio_metro_reverse_keeps_a_metro_row_that_predates_the_seed() -> None:
+    """Rollback ownership: the reverse removes only the rows the forward inserted."""
+    migration = importlib.import_module("apps.fiscal.migrations.0003_seed_rio_metro")
+    # Return the registry to its pre-0003 state, then register Niteroi by hand.
+    migration.unseed(global_apps, None)
+    assert not Municipality.objects.filter(ibge_code="3303302").exists()
+    Municipality.objects.create(ibge_code="3303302", name="Niteroi", uf="RJ")
+
+    migration.seed(global_apps, None)
+    migration.unseed(global_apps, None)
+
+    assert Municipality.objects.filter(ibge_code="3303302").exists()
+    assert not Municipality.objects.filter(ibge_code="3304904").exists()
+    assert Municipality.objects.filter(ibge_code="3304557").exists()
+
+    migration.seed(global_apps, None)
+    migration.unseed(global_apps, None)
+    assert Municipality.objects.filter(ibge_code="3303302").exists()
+
+
 def test_rio_metro_reverse_refuses_related_registry_records() -> None:
     migration = importlib.import_module("apps.fiscal.migrations.0003_seed_rio_metro")
     MunicipalityCapability.objects.create(municipality_id="3303302")

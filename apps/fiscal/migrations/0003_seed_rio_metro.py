@@ -1,7 +1,9 @@
 """Seed Rio metro identities, without asserting municipal capabilities.
 
-Rio de Janeiro already belongs to 0002's capital seed and is retained on reverse.
-The other fifteen codes are introduced here. Once referenced, they require forward
+The upsert cannot tell afterwards which rows it created and which it found, so each
+row it creates is recorded in `fiscal_municipalityseedrow`, and the reverse deletes
+only those. A metro row registered before this migration (or Rio de Janeiro from the
+capital seed) survives the reverse. Once referenced, an inserted row requires forward
 repair rather than deleting the registry identity from under clients or rules.
 """
 
@@ -14,7 +16,7 @@ from typing import Final
 
 from django.apps import apps as global_apps
 from django.apps import registry as app_registry
-from django.db import migrations
+from django.db import migrations, models
 from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
 RIO_METRO: Final = (
@@ -35,28 +37,40 @@ RIO_METRO: Final = (
     ("3305554", "Seropédica"),
     ("3303609", "Paracambi"),
 )
-INSERTED_CODES: Final = tuple(code for code, _name in RIO_METRO if code != "3304557")
+SEED: Final = "fiscal.0003_seed_rio_metro"
 
 
 def seed(apps: app_registry.Apps, editor: BaseDatabaseSchemaEditor | None) -> None:
     """Idempotently register the IBGE identities; capabilities remain untouched."""
     municipality = apps.get_model("fiscal", "Municipality")
+    seed_row = apps.get_model("fiscal", "MunicipalitySeedRow")
     alias = editor.connection.alias if editor is not None else "default"
     for code, name in RIO_METRO:
-        municipality.objects.using(alias).update_or_create(
+        _row, created = municipality.objects.using(alias).update_or_create(
             ibge_code=code,
             defaults={"name": name, "uf": "RJ"},
         )
+        if created:
+            seed_row.objects.using(alias).update_or_create(
+                ibge_code=code,
+                defaults={"seed": SEED},
+            )
 
 
 def unseed(apps: app_registry.Apps, editor: BaseDatabaseSchemaEditor | None) -> None:
-    """Refuse referenced identities, then delete only this seed's new codes."""
+    """Refuse referenced identities, then delete only the rows this seed inserted."""
     municipality = apps.get_model("fiscal", "Municipality")
+    seed_row = apps.get_model("fiscal", "MunicipalitySeedRow")
     client = apps.get_model("clients", "ClientCompany")
     alias = editor.connection.alias if editor is not None else "default"
+    inserted = list(
+        seed_row.objects.using(alias)
+        .filter(seed=SEED)
+        .values_list("ibge_code", flat=True),
+    )
     if (
         client._base_manager.using(alias)
-        .filter(municipality_ibge_code__in=INSERTED_CODES)
+        .filter(municipality_ibge_code__in=inserted)
         .exists()
     ):
         msg = (
@@ -68,7 +82,7 @@ def unseed(apps: app_registry.Apps, editor: BaseDatabaseSchemaEditor | None) -> 
     for relation in municipality._meta.related_objects:
         if (
             relation.related_model._base_manager.using(alias)
-            .filter(**{f"{relation.field.name}__in": INSERTED_CODES})
+            .filter(**{f"{relation.field.name}__in": inserted})
             .exists()
         ):
             msg = (
@@ -76,7 +90,8 @@ def unseed(apps: app_registry.Apps, editor: BaseDatabaseSchemaEditor | None) -> 
                 f"{relation.related_model._meta.label} references a seeded municipality."
             )
             raise RuntimeError(msg)
-    municipality.objects.using(alias).filter(ibge_code__in=INSERTED_CODES).delete()
+    municipality.objects.using(alias).filter(ibge_code__in=inserted).delete()
+    seed_row.objects.using(alias).filter(seed=SEED).delete()
 
 
 def seed_from_global_registry() -> None:
@@ -90,4 +105,25 @@ class Migration(migrations.Migration):
         ("clients", "0001_initial"),
     ]
 
-    operations = [migrations.RunPython(seed, unseed)]
+    operations = [
+        migrations.CreateModel(
+            name="MunicipalitySeedRow",
+            fields=[
+                (
+                    "ibge_code",
+                    models.CharField(
+                        max_length=7,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="IBGE code",
+                    ),
+                ),
+                ("seed", models.CharField(max_length=100, verbose_name="seed")),
+            ],
+            options={
+                "verbose_name": "municipality seed row",
+                "verbose_name_plural": "municipality seed rows",
+            },
+        ),
+        migrations.RunPython(seed, unseed),
+    ]

@@ -3,7 +3,7 @@
 **These tables are platform-level, not tenant-scoped, and that is deliberate.** Which
 NFS-e system Curitiba runs is a fact about Curitiba, not about any one accounting firm.
 A per-tenant copy would let two firms hold contradictory answers about the same city
-and would make every firm re-discover the same municipal variance independently. Both
+and would make every firm re-discover the same municipal variance independently. These
 tables are therefore listed in `apps.core.rls.NON_TENANT_TABLES`; T-014's coverage
 meta-test fails the build if a table is neither tenant-scoped nor listed there.
 
@@ -132,3 +132,30 @@ class MunicipalityCapability(models.Model):
     def __str__(self) -> str:
         """Identify the capability by the municipality it describes."""
         return f"capability for {self.municipality}"
+
+
+class MunicipalitySeedRow(models.Model):
+    """A registry row that a data migration inserted, rather than found in place.
+
+    A seed upserts by IBGE code, so after it runs a row it created and a row that
+    already existed look identical. Its reverse reads this ledger to delete only the
+    rows it created. There is deliberately no foreign key: the ledger is bookkeeping
+    about the registry, not a reference that should block or cascade a delete.
+    """
+
+    ibge_code = models.CharField(
+        _("IBGE code"),
+        primary_key=True,
+        max_length=IBGE_CODE_LENGTH,
+    )
+    seed = models.CharField(_("seed"), max_length=100)
+
+    class Meta:
+        """Model metadata."""
+
+        verbose_name = _("municipality seed row")
+        verbose_name_plural = _("municipality seed rows")
+
+    def __str__(self) -> str:
+        """Name the row and the seed that owns it."""
+        return f"{self.ibge_code} inserted by {self.seed}"
