@@ -161,6 +161,18 @@ clean. The first full run failed three static source guards on the new operator
 command only; the one-file fix was re-gated under the lock (1414 passed). Evidence:
 `.evidence/AXRM-005-gates.txt`, `AXRM-005-gates-fix.txt`.
 
+Review fix (`AXRM-005` attempt 2, independent review needs-fix): under `scan_required`
+the portal serves only scanner-cleared bytes (the R1 firm-upload exemption for
+originals without an intake now applies only with the flag off), and `record_review`
+refuses a `verificacao_indisponivel` or never-scanned file with the typed
+`UnscannedReviewRefused` (409, no row written); cycle detail, the review queue and the
+review page drop the review affordance for those files. Flag-off behaviour is
+unchanged. Suites after the fix: default 5343 collected, 5302 passed and 41 skipped
+(`test` 1227, `test-rest` 4075 with 41 skipped; 11 new cases), isolation 722 passed and
+41 skipped, CNPJ 29, browser 181 (5343 deselected), static build clean. Evidence:
+`.evidence/AXRM-005-red-fix.txt`, `AXRM-005-mutations-fix.txt`, `AXRM-005-flaky-fix.txt`,
+`AXRM-005-gates-r2.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
