@@ -4,7 +4,8 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main", "axr1/**"]
+    # axrm/** carries the regional MVP's stacked PRs (AXRM-003); without it they get no CI.
+    branches: ["main", "axr1/**", "axrm/**"]
 
 # A superseded push to the same ref is wasted signal, but never cancel main: the
 # green run on main is the artifact T-021 exists to produce.
@@ -29,6 +30,12 @@ jobs:
     # the serial suite reached only 53% of 5190 tests in 74 minutes on this runner (run
     # 38537217704). Both pytest steps therefore use every runner CPU (pytest-xdist, one test
     # database per worker, whole files per worker) instead of a longer ceiling.
+    # AXRM-003: this job then used 65m51s of the 75 (run 38638197711), so the default suite
+    # is split by directory between this job (tests/cycles, tests/delivery,
+    # tests/integrations, plus the isolation and CNPJ steps) and `test-rest` (everything
+    # else), which run in parallel. The two selections are exact complements: the paths
+    # listed here are the --ignore list there (tests/ops/test_ci_workflow_shape.py). The
+    # job id and name stay as they are because branch protection requires this check.
     timeout-minutes: 75
 
     # Every credential below is a workflow-local literal for a container that is
@@ -192,7 +199,7 @@ jobs:
 
       - name: Tests with coverage
         run: |
-          uv run pytest \
+          uv run pytest tests/cycles tests/delivery tests/integrations \
             -n auto --dist loadfile \
             --durations=50 \
             --durations-min=1.0 \
@@ -271,7 +278,168 @@ jobs:
         if: always() && hashFiles('coverage.xml') != ''
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-${{ github.run_id }}
+          name: coverage-test-${{ github.run_id }}
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 7
+
+  test-rest:
+    name: Tests outside cycles, delivery and integrations
+    runs-on: ubuntu-24.04
+    # The second half of the default suite (see the `test` job). Same ceiling, never more.
+    timeout-minutes: 75
+
+    # The service containers, the env block and the guard steps (source identity, role
+    # bootstrap, RLS-bypass assertion) mirror the `test` job exactly; the shape test
+    # fails if they drift. Lint, types, system checks, migrations, isolation and the
+    # CNPJ pack run once, in `test`.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: app_mei
+          POSTGRES_USER: app_mei
+          POSTGRES_PASSWORD: ephemeral-ci-superuser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app_mei -d app_mei"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DJANGO_ENV_FILE: /nonexistent
+      SECRET_KEY: ephemeral-ci-secret-key-not-used-outside-this-runner-0000000000
+
+      APP_MIGRATOR_PASSWORD: ephemeral-ci-app-migrator
+      APP_RUNTIME_PASSWORD: ephemeral-ci-app-runtime
+      APP_TEST_PASSWORD: ephemeral-ci-app-test
+
+      SUPERUSER_DATABASE_URL: postgres://app_mei:ephemeral-ci-superuser@localhost:5432/app_mei
+
+      DATABASE_URL: postgres://app_runtime:ephemeral-ci-app-runtime@localhost:5432/app_mei
+      DATABASE_MIGRATION_URL: postgres://app_migrator:ephemeral-ci-app-migrator@localhost:5432/app_mei
+      TEST_DB_USER: app_test
+      TEST_DB_PASSWORD: ephemeral-ci-app-test
+      CONN_MAX_AGE: "0"
+
+      REDIS_URL: redis://localhost:6379/0
+      ALLOWED_HOSTS: localhost,127.0.0.1,.localhost
+      CSRF_TRUSTED_ORIGINS: http://localhost:8000,http://127.0.0.1:8000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Assert checked-out source identity
+        env:
+          EXPECTED_SOURCE_SHA: ${{ startsWith(github.base_ref, 'axr1/') && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          printf 'source_sha=%s event_sha=%s workflow_sha=%s workflow_ref=%s\n' \
+            "$source_sha" "$GITHUB_SHA" "$GITHUB_WORKFLOW_SHA" "$GITHUB_WORKFLOW_REF"
+          test "$source_sha" = "$EXPECTED_SOURCE_SHA"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Same reason and position as in the `test` job: the roles and the template1
+      # extensions must exist before the first step that touches the database.
+      - name: Bootstrap database roles
+        run: |
+          psql "$SUPERUSER_DATABASE_URL" -v ON_ERROR_STOP=1 -f ops/sql/roles.sql
+          # pytest-django clones each test database from template1, so extensions
+          # that exist only in app_mei never reach the suite. btree_gist in
+          # particular is asserted by the clients migration that needs it, and a
+          # test database without it fails there, not here.
+          #
+          # The URL's own database component is swapped to template1 rather than
+          # overridden with -d: psql parses a positional URI first, so URL + -d
+          # leaves the positional argument to be read as the USERNAME and the
+          # connection fails before the SQL runs.
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS btree_gist;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS unaccent;'
+          psql "${SUPERUSER_DATABASE_URL%/*}/template1" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+
+      # Every directory the `test` job selects is ignored here, and nothing else is.
+      - name: Tests with coverage
+        run: |
+          uv run pytest \
+            --ignore=tests/cycles --ignore=tests/delivery --ignore=tests/integrations \
+            -n auto --dist loadfile \
+            --durations=50 \
+            --durations-min=1.0 \
+            --cov=apps --cov=config \
+            --cov-report=term-missing --cov-report=xml
+
+      # Same assertion as in the `test` job: this job's denial tests bite only if the
+      # effective role after SET ROLE cannot bypass row-level security.
+      - name: Assert effective role cannot bypass RLS
+        run: |
+          psql "postgres://app_test:${APP_TEST_PASSWORD}@localhost:5432/app_mei" \
+            -v ON_ERROR_STOP=1 <<'SQL'
+          SET ROLE app_runtime;
+
+          \echo '-- effective role after SET ROLE (this is what RLS is evaluated against)'
+          SELECT current_user AS effective_role,
+                 session_user AS login_role,
+                 (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+                     AS effective_rolsuper,
+                 (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user)
+                     AS effective_rolbypassrls;
+
+          DO $$
+          DECLARE
+              effective_role text;
+              effective_rolsuper boolean;
+              effective_rolbypassrls boolean;
+          BEGIN
+              SELECT current_user,
+                     (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+                     (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user)
+                INTO effective_role, effective_rolsuper, effective_rolbypassrls;
+
+              IF effective_role <> 'app_runtime'
+                 OR effective_rolsuper
+                 OR effective_rolbypassrls THEN
+                  RAISE EXCEPTION
+                      'isolation assertions would not bite: effective role is %, '
+                      'rolsuper=%, rolbypassrls=% (expected app_runtime/false/false)',
+                      effective_role, effective_rolsuper, effective_rolbypassrls;
+              END IF;
+          END
+          $$;
+          SQL
+
+      - name: Upload coverage
+        if: always() && hashFiles('coverage.xml') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-test-rest-${{ github.run_id }}
           path: coverage.xml
           if-no-files-found: error
           retention-days: 7
@@ -498,7 +666,7 @@ jobs:
   deploy-pilot:
     name: Deploy to the pilot host (main only, after the gates above)
     runs-on: ubuntu-24.04
-    needs: [test, container-smoke, browser]
+    needs: [test, test-rest, container-smoke, browser]
     # Both halves are load-bearing. `push` excludes pull_request runs, whose head is a
     # synthetic merge commit that exists on no branch and therefore cannot be checked
     # out on the box. The ref check excludes any branch a future trigger might add.
