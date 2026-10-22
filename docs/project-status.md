@@ -104,6 +104,39 @@ screenshot" protocol error, once, keeping the first failure as a
 job. Adding the `test-rest` check to main's required status checks is an owner
 setting, still open.
 
+`AXRM-004` (EG-5 baseline, promotes R1 T91): the existing harness (`ops/perf`, the
+mobile driver in `tests/perf`) ran under the gate lock at `88f9f03` on a disposable
+constrained lane (PostgreSQL 320 MiB, Redis 96 MiB, web one CPU/400 MiB, image built from
+`git archive` of that SHA) with `seed_axorim_demo --firms=growth --seed=42`: 200 samples per
+read, ten synthetic actors per role. The p50/p95 values below are server time in ms; the
+last two columns are the per-sample maxima.
+
+| Read | p50 | p95 | Max queries | Max gzip bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Hoje | 473.2 | **517.4** | 23 | 12159 |
+| Clientes | 15.9 | 17.7 | 16 | 4653 |
+| Clientes search | 12.7 | 14.5 | 16 | 2675 |
+| Client workspace | 40.6 | 87.2 | 19 | 4995 |
+| Cycle detail | 24.7 | 67.1 | 23 | 6741 |
+| Portal Inicio | 14.6 | 15.8 | 23 | 3214 |
+| Hoje period filter, click to populated swap | 806.5 | 881.6 | 23 | 11728 |
+
+Hoje's p95 misses the <500 ms server target at this head and stays an open follow-up;
+no target was raised and no cause is claimed. Another project's tests shared the host
+(load average 12-16 on 32 cores, recorded before and after). Every other read is within
+its targets. These are constrained-local numbers, not a production SLO.
+`tests/perf/test_regional_read_budgets.py` holds workspace and cycle detail to 25 queries
+and 150,000 gzip bytes, measured on the cold first request against
+`tests/perf/regional_world.py`: the seeded small firm's portal client with 31 requests in
+its competence (currently 21 and 25 queries, so cycle detail has no headroom). Later
+regional todos add their rows and witnesses to that world. A per-row cycle fetch injected
+into the workspace request section fails the budget at 52 queries. Separately, the T36
+fully populated cycle-detail fixture costs 32 queries on both reads, constant in row count;
+that fixture is not under a 25-query assertion, and this item records the count without
+changing it. Suite at this item: 5253 passed, 41 skipped (5251 before, plus the 2 new
+cases); isolation 722 passed, 41 skipped; CNPJ 29. Recovery: revert (tests and local
+measurement only).
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
@@ -1231,7 +1264,7 @@ removed authority. Evidence: `.evidence/AXR1-004-fix-1.txt` through `-fix-5.txt`
 
 | Plan | Status | Basis |
 | --- | --- | --- |
-| `axorim-regional-mvp` | **current** (product direction) | Approved 2026-10-22 on top of the delivered R1 release. 42 todos in seven waves plus a final verification wave, merged per wave on the owner's authorization; `AXRM-001` recorded the decisions and gate rows. |
+| `axorim-regional-mvp` | **current** (product direction) | Approved 2026-10-22 on top of the delivered R1 release. 42 todos in seven waves plus a final verification wave, merged per wave on the owner's authorization; `AXRM-001` recorded the decisions and gate rows; `AXRM-004` recorded the final-head performance baseline and the regional read budgets. |
 | `axorim-pivot-r1` | **delivered** (merged 2026-10-15) | Started 2026-09-27. 29 todos in five waves plus a final verification wave; `AXR1-001` recorded the pivot. Release `00f1d41`, followed by backup fix `71225ef` on 2026-10-21; the regional MVP is now current. Pilot-authorization carry-forward remains OD-02. |
 | `pilot-readiness-v2` | **historical** (authorized for `a962173` only) | All 41 execution rows recorded closed; F1-F4 recorded complete in the v2 plan. `pilot_start_authorized=2026-09-26` covers `a962173` (tag `v0.2.0-rc1`), not `71225ef` or the regional MVP. AXRM-002's read-only checker exits 1 for S1, S2, S3, S18, S20; OG-02 remains open pending the owner's OD-02 carry-forward-or-re-run decision. |
 | `pilot-readiness-v1` | **superseded** | Replaced by `pilot-readiness-v2` on 2026-09-21. Its checkbox states are frozen and its evidence is kept, never rewritten; v2's legacy reconciliation ledger classifies every v1 row (13 verified-complete, 5 repo-complete with operator evidence open, 12 partial, 8 open-valid, 2 superseded, 2 invalid-premise, plus the four F-rows that never ran). |
