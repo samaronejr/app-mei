@@ -23,8 +23,15 @@ from apps.cycles.evidence import IntakeState, LinkOrigin
 from apps.cycles.export_records import ExportState
 from apps.cycles.export_service import request_export
 from apps.cycles.export_tasks import build_export
-from apps.cycles.models import CycleEvent, DocumentIntake, EvidenceLink
+from apps.cycles.models import (
+    CycleEvent,
+    DocumentIntake,
+    EvidenceLink,
+    EvidenceRequest,
+    Review,
+)
 from apps.cycles.scanning import FakeScanner, scan_intake, scan_required
+from apps.cycles.services.review import record_review
 from apps.cycles.tasks import scan_quarantine
 from apps.obligations.models import Document
 from tests.cycles.document_fixtures import reviewed
@@ -39,6 +46,7 @@ SCANNER_OFF_COPY = (
 )
 UNSCANNED_REFUSAL = "não passou pela verificação antivírus"
 WARNING_COPY = "não passou por verificação antivírus"
+REVIEW_REFUSAL = "não pode ser revisado"
 
 
 @pytest.fixture
@@ -332,3 +340,192 @@ def test_document_review_shows_the_intake_state_and_no_risk_download(
     assert "Baixar com aviso de risco" not in page
     assert 'data-intake-state="verificacao_indisponivel"' in page
     assert "Situação do arquivo: Verificação indisponível" in page
+
+
+# --- portal: only scanned bytes under the flag (review B1) --------------------------
+
+
+def _staff_original(setup: PortalSetup) -> Document:
+    """A legacy firm-origin original: client_upload=False and no intake at all."""
+    payload = b"%PDF-1.4\n% original da equipe sem verificacao\n%%EOF\n"
+    with tenant_context(setup.graph.tenant.pk):
+        document = Document.objects.create(
+            tenant=setup.graph.tenant,
+            client=setup.graph.client,
+            uploaded_by=setup.graph.actor,
+            client_upload=False,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            original_filename="equipe-sem-verificacao.pdf",
+            byte_size=len(payload),
+            content_type="application/pdf",
+        )
+        default_storage.save(document.storage_key, upload("x.pdf", payload))
+    return document
+
+
+def test_the_portal_never_serves_an_unscanned_staff_original_under_the_flag(
+    setup: PortalSetup,
+) -> None:
+    document = _staff_original(setup)
+    url = f"/documentos/{document.storage_key}"
+    r1 = setup.portal().get(url)
+    assert r1.status_code == HTTPStatus.OK, "R1 keeps serving firm uploads"
+    assert b"original da equipe" in r1.content
+    assert (
+        "equipe-sem-verificacao.pdf"
+        in setup.portal().get("/documentos/").content.decode()
+    )
+
+    _flag(setup, on=True)
+
+    refused = setup.portal().get(url)
+    assert refused.status_code == HTTPStatus.NOT_FOUND
+    assert b"original da equipe" not in refused.content
+    listing = setup.portal().get("/documentos/").content.decode()
+    assert "equipe-sem-verificacao.pdf" not in listing
+
+
+def test_the_portal_still_serves_a_scanned_clean_file_under_the_flag(
+    setup: PortalSetup, settings: SettingsWrapper
+) -> None:
+    _flag(setup, on=True)
+    settings.CLAMAV_ENABLED = True
+    assert (
+        setup.portal()
+        .post("/documentos/enviar", {"file": upload("limpo.pdf", PDF_BYTES)})
+        .status_code
+        == HTTPStatus.FOUND
+    )
+    with tenant_context(setup.graph.tenant.pk):
+        intake = DocumentIntake.objects.select_related("document").get()
+    scan_intake(
+        setup.graph.tenant.pk, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+
+    served = setup.portal().get(f"/documentos/{intake.document.storage_key}")
+
+    assert served.status_code == HTTPStatus.OK
+    assert served.content == PDF_BYTES
+
+
+# --- review: scan failures are never reviewed under the flag (review B2) -----------
+
+
+def _review_target(setup: PortalSetup, *, legacy: bool) -> EvidenceLink:
+    document = _never_scanned(setup) if legacy else _unavailable(setup).document
+    with tenant_context(setup.graph.tenant.pk):
+        return EvidenceLink.objects.get(document=document)
+
+
+def _request_state(setup: PortalSetup) -> tuple[str, int]:
+    with tenant_context(setup.graph.tenant.pk):
+        request = EvidenceRequest.objects.get(pk=setup.request.pk)
+    return request.state, request.version
+
+
+def _reviews(setup: PortalSetup) -> int:
+    with tenant_context(setup.graph.tenant.pk):
+        return Review.objects.count()
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["indisponivel", "sem_intake"])
+@pytest.mark.parametrize("decision", ["aceito", "rejeitado"])
+def test_an_unscanned_file_cannot_be_reviewed_under_the_flag(
+    setup: PortalSetup, legacy: bool, decision: str
+) -> None:
+    link = _review_target(setup, legacy=legacy)
+    _flag(setup, on=True)
+    before = _request_state(setup)
+
+    response = setup.firm().post(
+        f"/documentos/{link.pk}/revisar/",
+        {
+            "expected_version": before[1],
+            "decision": decision,
+            "client_reason": "Envie o arquivo de novo, por favor.",
+        },
+    )
+
+    assert response.status_code == HTTPStatus.CONFLICT
+    assert REVIEW_REFUSAL in response.content.decode()
+    assert _reviews(setup) == 0
+    assert _request_state(setup) == before
+    with tenant_context(setup.graph.tenant.pk):
+        link.refresh_from_db()
+    assert link.review_decision == ""
+    assert link.reviewed_at is None
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["indisponivel", "sem_intake"])
+def test_the_shared_review_service_refuses_with_a_typed_error(
+    setup: PortalSetup, legacy: bool
+) -> None:
+    from apps.cycles.errors import UnscannedReviewRefused  # noqa: PLC0415
+
+    link = _review_target(setup, legacy=legacy)
+    _flag(setup, on=True)
+    state, version = _request_state(setup)
+
+    with (
+        tenant_context(setup.graph.tenant.pk),
+        pytest.raises(UnscannedReviewRefused, match="verificação antivírus"),
+    ):
+        record_review(
+            setup.graph.actor,
+            link.pk,
+            decision="aceito",
+            client_reason="",
+            corrections=[],
+            expected_version=version,
+        )
+
+    assert _reviews(setup) == 0
+    assert _request_state(setup) == (state, version)
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["indisponivel", "sem_intake"])
+def test_without_the_flag_an_unscanned_file_is_still_reviewed_as_in_r1(
+    setup: PortalSetup, legacy: bool
+) -> None:
+    link = _review_target(setup, legacy=legacy)
+    _, version = _request_state(setup)
+
+    response = setup.firm().post(
+        f"/documentos/{link.pk}/revisar/",
+        {"expected_version": version, "decision": "aceito"},
+    )
+
+    assert response.status_code == HTTPStatus.FOUND
+    assert _reviews(setup) == 1
+    assert _request_state(setup)[0] == "aceito"
+
+
+def test_no_review_affordance_for_unscanned_files_under_the_flag(
+    setup: PortalSetup,
+) -> None:
+    unavailable = _review_target(setup, legacy=False)
+    legacy = _review_target(setup, legacy=True)
+    firm = setup.firm()
+    pages = {
+        "cycle": reverse("cycle-detail", args=[setup.cycle.pk]),
+        "queue": reverse("document-queue"),
+    }
+    targets = [
+        reverse("document-review", args=[link.pk]) for link in (unavailable, legacy)
+    ]
+    r1 = {name: firm.get(url).content.decode() for name, url in pages.items()}
+    for target in targets:
+        assert all(f'href="{target}"' in body for body in r1.values()), target
+    r1_review = firm.get(targets[0]).content.decode()
+    assert 'name="decision"' in r1_review
+
+    _flag(setup, on=True)
+
+    flagged = {name: firm.get(url).content.decode() for name, url in pages.items()}
+    for target in targets:
+        assert not [n for n, body in flagged.items() if f'href="{target}"' in body]
+    review_page = firm.get(targets[0])
+    assert review_page.status_code == HTTPStatus.OK
+    body = review_page.content.decode()
+    assert 'name="decision"' not in body
+    assert REVIEW_REFUSAL in body

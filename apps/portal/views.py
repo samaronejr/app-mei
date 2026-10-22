@@ -565,7 +565,7 @@ def _documents_page(
         return paginator.page(1)
 
 
-def _served() -> Q:
+def _served(*, strict: bool = False) -> Q:
     """Match the documents the portal may serve; everything else fails closed.
 
     Quarantine rule (T12, T13): a client upload -- through a request or through this
@@ -579,10 +579,20 @@ def _served() -> Q:
     upload (`client_upload=False`, which the portal role cannot INSERT) keeps the
     vault's old semantics without an intake. RLS still confines every row to the
     client; this only narrows further.
+
+    `strict` (AXRM-005, a firm carrying `scan_required`): only bytes the scanner
+    cleared are served; the firm-upload exemption above does not apply.
     """
-    return Q(intakes__state__in=PORTAL_SERVABLE_STATES) | Q(
-        client_upload=False, intakes__isnull=True
-    )
+    scanned = Q(intakes__state__in=PORTAL_SERVABLE_STATES)
+    if strict:
+        return scanned
+    return scanned | Q(client_upload=False, intakes__isnull=True)
+
+
+def _strict(request: PortalVaultRequest) -> bool:
+    """Whether this firm requires scanned bytes, answered from the portal stash."""
+    tenant = request.tenant
+    return tenant is not None and scan_required(tenant.pk)
 
 
 @require_http_methods(["GET"])
@@ -622,7 +632,9 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     needs one figure this model does not store, and computing it here keeps the template
     rendering values instead of deriving them.
     """
-    rows = Document.objects.filter(_served()).order_by("-created_at", "pk")
+    rows = Document.objects.filter(_served(strict=_strict(request))).order_by(
+        "-created_at", "pk"
+    )
     page = _documents_page(rows, request)
     # T45: the R1 ink for this page and the layout around it, answered from the portal
     # stash without a query exactly as on `portal_payments`. Unflagged tenants keep
@@ -787,7 +799,7 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
 @login_required
 @require_can(VAULT_CAPABILITY)
 def document_download(
-    request: PortalVaultRequest,  # noqa: ARG001 - the decorators read it
+    request: PortalVaultRequest,
     storage_key: str,
 ) -> HttpResponse:
     """Return one document's bytes, authorised against the row before storage is asked.
@@ -804,7 +816,8 @@ def document_download(
     both GUCs are gone, yielding nothing.
     """
     document = get_object_or_404(
-        Document.objects.filter(_served()), storage_key=storage_key
+        Document.objects.filter(_served(strict=_strict(request))),
+        storage_key=storage_key,
     )
 
     try:

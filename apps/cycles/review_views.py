@@ -22,7 +22,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.files.storage import default_storage
 from django.core.paginator import Paginator
-from django.db.models import OuterRef, Q, QuerySet, Subquery
+from django.db.models import BooleanField, OuterRef, Q, QuerySet, Subquery, Value
 from django.http import Http404, HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -54,7 +54,11 @@ from apps.cycles.extraction import FIELD_LABELS, KIND_FIELDS, XML_LAYOUTS, kind_
 from apps.cycles.receipt_observations import payment_evidence_eligible
 from apps.cycles.scanning import scan_required
 from apps.cycles.services.cycle import require_enabled, tenant_id
-from apps.cycles.services.review import FieldCorrection, record_review
+from apps.cycles.services.review import (
+    UNSCANNED_REVIEW_REFUSAL,
+    FieldCorrection,
+    record_review,
+)
 from apps.cycles.serving import document_response
 from apps.cycles.sniffing import JPEG, PNG
 from apps.obligations.views import QueueSpec
@@ -126,7 +130,10 @@ def _links(actor: User) -> QuerySet[EvidenceLink]:
                 DocumentIntake.objects.filter(document=OuterRef("document_id")).values(
                     "state"
                 )[:1]
-            )
+            ),
+            # AXRM-005: rows render through the shared table partial (`only`), so
+            # the firm's scan_required answer rides on each row as a constant.
+            scan_locked=Value(scan_required(tenant_id()), output_field=BooleanField()),
         )
         .order_by("created_at", "pk")
     )
@@ -367,6 +374,12 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     evidence_request = EvidenceRequest.objects.get(pk=link.request_id)
     following = next_link(request.user, link)
     clean = intake is not None and intake.state in CLEAN_STATES
+    strict = scan_required(link.tenant_id)
+    # AXRM-005: under scan_required a file the scanner never cleared is not reviewed
+    # (record_review refuses it); the page shows why instead of a decision form.
+    review_blocked = strict and (
+        intake is None or intake.state == IntakeState.SCAN_UNAVAILABLE
+    )
     return render(
         request,
         "cycles/document_review.html",
@@ -376,7 +389,7 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             "document": link.document,
             "intake": intake,
             "rows": rows,
-            "note": _note(intake),
+            "note": UNSCANNED_REVIEW_REFUSAL if review_blocked else _note(intake),
             "divergent": intake is not None and intake.state == IntakeState.DIVERGENT,
             "clean": clean,
             "payment_eligible": payment_evidence_eligible(
@@ -388,7 +401,8 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             "error": error,
             "field_prefix": FIELD_PREFIX,
             "queue_url": reverse("document-queue"),
-            "scan_required": scan_required(link.tenant_id),
+            "scan_required": strict,
+            "review_blocked": review_blocked,
             "intake_label": intake.get_state_display()
             if intake is not None
             else "Sem verificação antivírus",

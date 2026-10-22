@@ -47,12 +47,12 @@ a field, and every action is also an ordinary button or link.
       <th scope="row" class="text-left font-medium">{{ row.label }}</th>
       <td data-label="Sugerido" data-suggested>{{ row.suggested|default:"—" }}</td>
       <td data-label="Origem" class="text-sm text-ink-600">{% if row.suggested_origin %}{{ row.suggested_origin }}{% if row.source_span %} <span class="text-ink-500">({{ row.source_span }})</span>{% endif %}{% else %}Não lido{% endif %}{% if row.reviewed_by %}<br>{{ row.reviewed_by }}{% endif %}</td>
-      <td data-label="Revisado">{% if decided %}{{ row.reviewed|default:"—" }}{% else %}<label class="visually-hidden" for="{{ field_prefix }}{{ row.name }}">{{ row.label }} revisado</label><input class="ui-field-input" id="{{ field_prefix }}{{ row.name }}" name="{{ field_prefix }}{{ row.name }}" value="{{ row.reviewed }}" maxlength="255" autocomplete="off">{% endif %}</td>
+      <td data-label="Revisado">{% if decided or review_blocked %}{{ row.reviewed|default:"—" }}{% else %}<label class="visually-hidden" for="{{ field_prefix }}{{ row.name }}">{{ row.label }} revisado</label><input class="ui-field-input" id="{{ field_prefix }}{{ row.name }}" name="{{ field_prefix }}{{ row.name }}" value="{{ row.reviewed }}" maxlength="255" autocomplete="off">{% endif %}</td>
     </tr>{% empty %}<tr><td colspan="4">Nenhum campo lido.</td></tr>{% endfor %}</tbody>
   </table>
   </div>
 </section>
-{% if not decided %}
+{% if not decided and not review_blocked %}
 {% if payment_eligible %}<fieldset class="ui-panel p-4" data-receipt-review>
   <legend class="ui-panel-heading">Comprovante de pagamento</legend>
   <label class="mt-2 flex min-h-11 cursor-pointer items-center gap-3" for="payment_relevant"><input type="checkbox" id="payment_relevant" name="payment_relevant" value="1"><span>Este documento informa o pagamento desta obrigação</span></label>
