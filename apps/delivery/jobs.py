@@ -18,12 +18,14 @@ from config.celery import app as celery_app
 HEARTBEAT_NAMES: Final = {
     "generate_monthly_cycles": "generate_cycles",
     "record_scheduler_heartbeat": "beat",
+    "ping_scanner": "scanner",
 }
 JOB_LABELS: Final = {
     "dispatch_outbox": "Envios da fila",
     "sweep_reminders": "Lembretes automáticos de documentos",
     "generate_monthly_cycles": "Geração de ciclos",
     "scan_quarantine": "Verificação de arquivos",
+    "ping_scanner": "Verificador antivírus",
     "extract_documents": "Extração de documentos",
     "open_deterministic_exceptions": "Abertura de exceções",
     "purge_access_logs": "Retenção de registros de acesso",
@@ -64,6 +66,8 @@ class JobStatus:
     last_attempt_at: datetime | None = None
     last_error_code: str = ""
     outcomes: tuple[tuple[str, int], ...] = ()
+    # AXRM-005: the scanner job's last-known signature database version.
+    signature_version: str = ""
 
 
 def registered_jobs() -> tuple[JobStatus, ...]:
@@ -135,6 +139,9 @@ def registered_jobs() -> tuple[JobStatus, ...]:
                     (label, int(stamp.outcomes_json[key]))
                     for key, label in OUTCOME_LABELS.items()
                     if stamp is not None and key in stamp.outcomes_json
+                ),
+                signature_version=str(
+                    stamp.outcomes_json.get("signature_version", "") if stamp else ""
                 ),
             )
         )

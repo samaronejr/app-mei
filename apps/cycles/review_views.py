@@ -52,6 +52,7 @@ from apps.cycles.evidence import (
 )
 from apps.cycles.extraction import FIELD_LABELS, KIND_FIELDS, XML_LAYOUTS, kind_for
 from apps.cycles.receipt_observations import payment_evidence_eligible
+from apps.cycles.scanning import scan_required
 from apps.cycles.services.cycle import require_enabled, tenant_id
 from apps.cycles.services.review import FieldCorrection, record_review
 from apps.cycles.serving import document_response
@@ -387,6 +388,10 @@ def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             "error": error,
             "field_prefix": FIELD_PREFIX,
             "queue_url": reverse("document-queue"),
+            "scan_required": scan_required(link.tenant_id),
+            "intake_label": intake.get_state_display()
+            if intake is not None
+            else "Sem verificação antivírus",
         },
         status=status,
     )

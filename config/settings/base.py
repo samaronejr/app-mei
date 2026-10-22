@@ -761,6 +761,12 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
         "task": "apps.cycles.tasks.scan_quarantine",
         "schedule": 60.0,
     },
+    # AXRM-005: clamd PING + VERSION for the Automações page (last success, signature
+    # version). Records "switched off" while CLAMAV_ENABLED is False; never readiness.
+    "ping-scanner": {
+        "task": "apps.cycles.tasks.ping_scanner",
+        "schedule": 300.0,
+    },
     # T13: extract verified uploads, one task per document (soft time limit each).
     "extract-documents": {
         "task": "apps.cycles.tasks.extract_documents",

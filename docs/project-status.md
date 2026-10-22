@@ -137,6 +137,30 @@ changing it. Suite at this item: 5253 passed, 41 skipped (5251 before, plus the 
 cases); isolation 722 passed, 41 skipped; CNPJ 29. Recovery: revert (tests and local
 measurement only).
 
+`AXRM-005` (required integrated scanning, promotes R1 T70/T85 and the scanner part
+of T80): a new per-firm flag `scan_required` (off by default; binds only with
+`cycles_r1`). For a flagged firm, every portal upload (request and vault) is refused
+with "Envio temporariamente indisponível: a verificação antivírus está
+desligada." while `CLAMAV_ENABLED` is off, before any byte or row is stored; staff
+never download a `verificacao_indisponivel` or never-scanned file (403 refusal on GET
+and POST, no warning dialog); exports keep excluding unscanned originals. Cycle
+detail and document review name each file's intake state without a risk download
+(T70); the vault refusal page distinguishes missing, oversized, refused type and
+scanner off by a machine reason (T85). The beat task `ping_scanner` (PING + VERSION)
+feeds a "Verificador antivírus" row on the Automações page with last success and
+signature version, never `/readyz`; the compose `clamav` service gains the pinned
+image's own `clamdcheck.sh` healthcheck (memory limit unchanged); and `manage.py
+scanner_selfcheck --tenant <synthetic>` sends EICAR and a clean PDF through the real
+intake for operator gate OG-R1, which stays open (`ops/README.md`, "Required scanning
+per firm"). Unflagged firms keep the R1 behaviour byte for byte, including the
+warning download. Recovery: flag off. Production settings and the `CLAMD_*` defaults
+are unchanged. Suites at this commit: default 5332 collected, 5291 passed and 41
+skipped (`test` 1216, `test-rest` 4075 with 41 skipped; 40 new cases), isolation 722
+passed and 41 skipped, CNPJ 29, browser 181 (2 new cases at both widths), static build
+clean. The first full run failed three static source guards on the new operator
+command only; the one-file fix was re-gated under the lock (1414 passed). Evidence:
+`.evidence/AXRM-005-gates.txt`, `AXRM-005-gates-fix.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

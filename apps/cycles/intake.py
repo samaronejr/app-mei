@@ -27,6 +27,11 @@ again, without a link.
 
 `vault_upload` (T13) routes the portal vault's free-form upload through the same
 sniff -> quarantine -> intake path, with no request and so no link.
+
+Required scanning (AXRM-005): for a firm carrying `scan_required`, both entry points
+refuse with `UploadScannerOff` while `CLAMAV_ENABLED` is off -- before the file is
+read, so no bytes, `Document`, intake or link exist. Without the flag the R1 fallback
+stands: the file is stored and later becomes `verificacao_indisponivel`.
 """
 
 import hashlib
@@ -55,6 +60,7 @@ from apps.cycles.evidence import (
     quarantine_key,
 )
 from apps.cycles.records import CycleEvent
+from apps.cycles.scanning import scan_required
 from apps.cycles.sniffing import sniff
 from apps.obligations.models import Document
 from apps.tenants.models import Tenant
@@ -80,6 +86,15 @@ class UploadMissing(Exception):  # noqa: N818 - domain vocabulary
 
 class UploadRejected(Exception):  # noqa: N818 - domain vocabulary
     """The bytes are not an accepted type (or match a refused document); not linked."""
+
+
+class UploadScannerOff(Exception):  # noqa: N818 - domain vocabulary
+    """The firm requires the integrated scanner and it is switched off; nothing kept."""
+
+
+def _require_scanner(tenant: Tenant) -> None:
+    if not settings.CLAMAV_ENABLED and scan_required(tenant.pk):
+        raise UploadScannerOff
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +236,7 @@ def intake_upload(
     ).first()
     if request is None:
         raise Http404
+    _require_scanner(tenant)
     if upload is None:
         raise UploadMissing
     payload, digest = _read_capped(upload)
@@ -316,6 +332,7 @@ def vault_upload(
     already_sent); refused bytes raise `UploadRejected` with the refused original and
     its intake kept, exactly as for a request upload.
     """
+    _require_scanner(tenant)
     if upload is None:
         raise UploadMissing
     payload, digest = _read_capped(upload)
