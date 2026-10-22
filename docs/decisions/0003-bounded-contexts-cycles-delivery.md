@@ -73,3 +73,17 @@ the monthly value report are derived views, not tables.
   data-subject-request notifier, and they stay on an explicit allowlist.
 - The context map above is the default home for later work. A new table that doesn't
   fit it needs an amendment to this ADR, not a quiet addition.
+
+## Amendment 2026-10-22: regional MVP (AXRM-001)
+
+The local-only plan `axorim-regional-mvp` adds provider integrations. ADR 0008 records
+the boundary and ADR 0009 the municipal rules. The context map gains these rows:
+
+| Context | Django app | Adds in the regional MVP | Notes |
+| --- | --- | --- | --- |
+| Provider integrations | `integrations` (new) | provider connections, client provider links, authority records, sync cursors and runs, the provider call journal, budgets and metering; adapters, the operation allowlist and simulated providers | Talks to SERPRO and Focus NFe. Writes into `obligations` and `cycles` through their services; neither of them imports `integrations` |
+| Obligations calendar | `obligations` (existing) | fiscal documents and their revisions, federal observations (payments found, fiscal-situation reports, DAS guides), municipal rule versions with their rules and holidays, client applicability overrides, municipal obligations | Municipal rules are firm data (ADR 0009); municipal obligations are never portal-visible |
+| Service cycle | `cycles` (existing) | reviews of fiscal-situation reports and ISS stated values, document-capture and municipal exceptions, Ciencia batch approvals | Reuses the R1 review, exception and exact-effect approval paths |
+
+"Connector connections and cursors" leave the no-table list above: they now live in
+`integrations`. Every new table still follows the rules in this ADR in the same PR.
