@@ -53,6 +53,34 @@ capture. What remains is the F1-F4 final-verification wave and, after it, the
 owner's authorization of the pilot start; the `v0.2.0-rc1` tag and release follow
 that authorization per `ops/RELEASES.md` Phase B.
 
+## Regional MVP
+
+On 2026-10-22 the owner approved the local-only plan **`axorim-regional-mvp`**, which
+builds on the delivered R1 release (origin/main `71225ef`). It adds federal checks
+through SERPRO Integra Contador, fiscal document capture through Focus NFe and a
+municipal workbench, for one accounting firm with clients in a bounded set of Rio de
+Janeiro municipalities. Like every plan since the exclusion, it lives under
+`.omo/plans/` and is never committed.
+
+- **Ids.** Todo N is cited as `AXRM-NNN` (todo 1 is `AXRM-001`) in commit bodies and in
+  evidence filenames of the form `.evidence/AXRM-NNN-<kind>.txt`. Gate evidence uses
+  `.evidence/AXRM-<gate id>-<kind>.txt`.
+- **Delivery (owner answer Q3, 2026-10-22, "Merge per wave").** One PR per todo,
+  stacked linearly within a wave; the first PR of a wave is based on the current
+  `main`. When every PR of a wave is green and reviewed, the owner authorizes merging
+  that wave. Each merge deploys to the pilot host with every new flag off and
+  `PROVIDERS_PAUSED=True`. No force pushes, and no merge without that authorization.
+- **Records.** ADR 0008 (provider boundary, operation allowlist, credential custody and
+  threat model), ADR 0009 (municipal rules as reviewed firm data), the amendments to
+  ADRs 0003 and 0006, the regional section of `docs/product/pivot-supersession.md`, the
+  regional labels in `docs/product/vocabulary.md`, and the "Regional MVP" section of
+  `ops/AXORIM-R1-GO-NO-GO.md`, which holds every regional gate.
+- **Gates stay open.** Engineering work prepares the provider-qualification, operator,
+  live-qualification and owner gates; it closes none of them.
+
+Progress: `AXRM-001` (the regional records) lands with the commit that adds this
+section.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. Product work is now governed by the
@@ -1179,7 +1207,8 @@ removed authority. Evidence: `.evidence/AXR1-004-fix-1.txt` through `-fix-5.txt`
 
 | Plan | Status | Basis |
 | --- | --- | --- |
-| `axorim-pivot-r1` | **current** (product direction) | Started 2026-09-27. 29 todos in five waves plus a final verification wave; `AXR1-001` recorded the pivot. It runs separately from the open F1-F4 wave and pilot authorization of `pilot-readiness-v2`. |
+| `axorim-regional-mvp` | **current** (product direction) | Approved 2026-10-22 on top of the delivered R1 release. 42 todos in seven waves plus a final verification wave, merged per wave on the owner's authorization; `AXRM-001` recorded the decisions and gate rows. |
+| `axorim-pivot-r1` | **delivered** (merged 2026-10-15) | Started 2026-09-27. 29 todos in five waves plus a final verification wave; `AXR1-001` recorded the pivot. It runs separately from the open F1-F4 wave and pilot authorization of `pilot-readiness-v2`. |
 | `pilot-readiness-v2` | **current** | Execution complete: all 41 rows closed and `ops/check_go_no_go.py` exits 0 against the evidence directory, every S-line GO on the final capture. Only the F1-F4 audits and the owner's authorization remain. |
 | `pilot-readiness-v1` | **superseded** | Replaced by `pilot-readiness-v2` on 2026-09-21. Its checkbox states are frozen and its evidence is kept, never rewritten; v2's legacy reconciliation ledger classifies every v1 row (13 verified-complete, 5 repo-complete with operator evidence open, 12 partial, 8 open-valid, 2 superseded, 2 invalid-premise, plus the four F-rows that never ran). |
 | `resend-smtp-pilot-provider-amendment` | **superseded** | Superseded by owner decision D-Q1: Resend is used through the existing provider-neutral SMTP settings, so the amendment's new email machinery is unneeded. Its branch `chore/pilot-resend-smtp-round3h` is frozen, unpushed, and never to be merged. |

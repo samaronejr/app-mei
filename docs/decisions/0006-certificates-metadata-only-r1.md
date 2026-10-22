@@ -49,3 +49,20 @@ certificate itself.
 - A guard test that fails when a client-scoped model gains a field able to hold key
   material is worth adding alongside the first R1 migration on the client registry. It
   is proposed here and described in words because it doesn't exist yet.
+
+## Amendment 2026-10-22: regional MVP (AXRM-001)
+
+The owner's custody decision (answer Q1 of the plan `axorim-regional-mvp`) is recorded
+in ADR 0008. For this ADR it means:
+
+- **Status records are allowed.** Axorim may store, per client, the status of a
+  certificate held at the provider: certificate CNPJ, validity dates, provider identity,
+  credential generation and last synced time.
+- **Client key material is still forbidden.** No table, file field, upload path, cache,
+  journal, log or setting may hold a client certificate, PFX or P12 file, private key or
+  password. Client A1 certificates are registered only in Focus NFe's own interface.
+- **One platform exception.** Axorim's own SERPRO contratante e-CNPJ exists only as PEM
+  secrets mounted into the broker container, as ADR 0008 describes. That is the broker
+  option of the decision above, applied to one platform credential and no client key.
+- The guard test proposed above exists as
+  `tests/clients/test_certificate_metadata_only.py`; provider models extend it.

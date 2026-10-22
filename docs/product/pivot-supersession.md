@@ -74,3 +74,21 @@ frozen `.omo/plans/accounting-mei-saas.md`.
 - It doesn't close any operator gate. Email proof from the production host, bucket
   configuration, legal review, a named encarregado and pilot authorization each close
   only with their own evidence.
+
+## Regional MVP supersession (2026-10-22)
+
+The owner approved a regional MVP on 2026-10-22, executed under the local-only plan
+`axorim-regional-mvp` with ids of the form `AXRM-###`. It changes two R1 restrictions
+and nothing else:
+
+| R1 restriction | Treatment now |
+| --- | --- |
+| No government connectors in R1; Integra Contador in R2 at the earliest (R1 decision OD-03) | **Superseded for the regional MVP.** Federal checks through SERPRO Integra Contador and fiscal document capture through Focus NFe are in scope, limited to the operations ADR 0008 allows. Invoice issuance, declarations, payments and conclusive manifestations stay out. |
+| Certificate custody blocked pending a decision (ADR 0006) | **Decided** by the owner's answer Q1 and recorded in ADR 0008: client certificates stay at Focus, Axorim stores status only, and its own SERPRO certificate lives only in the broker container. |
+
+The R1 safety controls remain binding: tenant and client isolation, row-level security,
+the portal role, append-only audit, the self-only CSP, mandatory MFA, credential-free
+logs, per-tenant flags off by default, exact-effect approvals and the status vocabulary.
+Provider features add a global `PROVIDERS_PAUSED` switch that defaults on. Municipal
+rules are firm-reviewed data (ADR 0009). None of this closes an operator gate; the
+regional gates are in `ops/AXORIM-R1-GO-NO-GO.md`.
