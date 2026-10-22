@@ -130,7 +130,7 @@ def test_import_rechecks_a_municipality_removed_after_the_preview() -> None:
         assert not ClientCompany.objects.exists()
         row = ImportRow.objects.get(batch_id=plan.batch_id)
         assert row.client_id is None
-        assert row.commit_error
+        assert UNKNOWN_CODE_MESSAGE in row.commit_error
 
 
 @pytest.mark.parametrize(

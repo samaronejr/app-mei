@@ -69,7 +69,10 @@ from apps.clients.models import (
 )
 from apps.core.tenancy import MissingTenantContext, current_tenant_id
 from apps.fiscal.models import UF
-from apps.fiscal.municipalities import validate_municipality_code
+from apps.fiscal.municipalities import (
+    MUNICIPALITY_NOT_FOUND,
+    validate_municipality_code,
+)
 from apps.fiscal.validators import normalize_document, validate_cnpj, validate_cpf
 from apps.obligations.models import Document, MonthlyRevenue, Obligation
 from apps.obligations.models.operations import ObligationStatus
@@ -1083,9 +1086,15 @@ def commit_import(
                     "import row failed",
                     extra={"batch_id": str(batch.pk), "row": row.row_number},
                 )
-                row.commit_error = _("Falha ao gravar: %(kind)s") % {
-                    "kind": type(error).__name__,
-                }
+                # The registry refusal explains itself; other failures keep naming
+                # only their kind.
+                kind = (
+                    error.messages[0]
+                    if isinstance(error, ValidationError)
+                    and getattr(error, "code", None) == MUNICIPALITY_NOT_FOUND
+                    else type(error).__name__
+                )
+                row.commit_error = _("Falha ao gravar: %(kind)s") % {"kind": kind}
                 row.save(update_fields=["commit_error"])
                 failed += 1
                 continue
