@@ -189,6 +189,9 @@ $$;
 -- PORTAL_NONE: automation_evalrun
 -- T24: hidden AI observations and synthetic evaluation metrics have no portal grant.
 -- Message contents, SMTP receipts and operational controls are firm-private.
+-- PORTAL_NONE: fiscal_municipalityseedrow
+-- AXRM-006: migration bookkeeping about the shared municipality registry (which
+-- rows fiscal.0003 inserted); no tenant content and no portal grant.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
 -- PORTAL_NONE: tenants_notificationpreference

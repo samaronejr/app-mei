@@ -68,6 +68,9 @@ PORTAL_DENIED_TABLES = (
     "delivery_deliveryeffect",
     "delivery_automationpause",
     "delivery_tenantnoticepolicy",
+    # AXRM-006: the registry seed ledger is platform migration bookkeeping with no
+    # tenant content. Mirrors `-- PORTAL_NONE: fiscal_municipalityseedrow`.
+    "fiscal_municipalityseedrow",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
