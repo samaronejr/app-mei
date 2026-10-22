@@ -173,6 +173,25 @@ unchanged. Suites after the fix: default 5343 collected, 5302 passed and 41 skip
 `.evidence/AXRM-005-red-fix.txt`, `AXRM-005-mutations-fix.txt`, `AXRM-005-flaky-fix.txt`,
 `AXRM-005-gates-r2.txt`.
 
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-006` | Rio metro registry identities, client create/edit and import validation, and the municipality name in the workspace header. Verification results are recorded below. | Apply `fiscal.0003_seed_rio_metro`; no capability or municipal coverage is asserted. Reverse retains Rio de Janeiro from the capital seed and unrelated municipalities, removes only the fifteen new codes, and refuses while a client or related registry record references them. Referenced data requires forward repair. |
+
+The pre-change baseline for `AXRM-006` is the documented **5148 passed, 41 skipped,
+168 deselected**, accepted on 2026-10-22 without a local re-run because base
+`014123f` changes only documentation relative to the delivered code. At the
+`AXRM-006` code the default suite passes **5267** (41 skipped, 174 deselected),
+isolation **722 passed, 41 skipped**, CNPJ **29 passed** and browser **174 passed**;
+lint, format, Mypy, migration drift and the static rebuild are clean. The
+municipality pack (registry plus form/import validation) passes **50 tests in each of
+three consecutive runs**. A populated forward/reverse/forward round trip removes only
+the fifteen new codes, keeps the capital and unrelated rows, and refuses the reverse
+while a client or a capability row references a seeded code. The CSV import accepts a
+Niteroi row and shows "Niterói/RJ" in the workspace header, and refuses an unknown
+code at row level with nothing created, at 1440x900 and 390x844. Evidence:
+`.evidence/AXRM-006-gates.txt`, `AXRM-006-targeted.txt`, `AXRM-006-migration.txt`,
+`AXRM-006-happy.txt`, `AXRM-006-failure.txt`, `AXRM-006-adversarial.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

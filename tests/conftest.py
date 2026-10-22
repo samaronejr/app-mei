@@ -330,6 +330,8 @@ def _seeded_municipalities(request: pytest.FixtureRequest) -> None:
         return
     migration = importlib.import_module("apps.fiscal.migrations.0002_seed_capitals")
     migration.seed_from_global_registry()
+    regional = importlib.import_module("apps.fiscal.migrations.0003_seed_rio_metro")
+    regional.seed_from_global_registry()
 
 
 @pytest.fixture(autouse=True)

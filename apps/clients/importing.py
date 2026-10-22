@@ -69,6 +69,7 @@ from apps.clients.models import (
 )
 from apps.core.tenancy import MissingTenantContext, current_tenant_id
 from apps.fiscal.models import UF
+from apps.fiscal.municipalities import validate_municipality_code
 from apps.fiscal.validators import normalize_document, validate_cnpj, validate_cpf
 from apps.obligations.models import Document, MonthlyRevenue, Obligation
 from apps.obligations.models.operations import ObligationStatus
@@ -728,8 +729,7 @@ def _validate_row(  # noqa: C901 - one flat branch per mapped field, in field or
     ibge = "".join(
         char for char in _text(cell("municipality_ibge_code")) if char.isalnum()
     )
-    if ibge and not (len(ibge) == 7 and ibge.isdigit()):  # noqa: PLR2004 - IBGE width
-        errors.append(_("O código IBGE do município deve ter 7 dígitos."))
+    errors.extend(_municipality_code_errors(ibge))
     values["municipality_ibge_code"] = ibge[:7]
     cnae = "".join(char for char in _text(cell("main_cnae")) if char.isalnum())
     if cnae and not (len(cnae) == 7 and cnae.isdigit()):  # noqa: PLR2004 - CNAE width
@@ -996,8 +996,19 @@ def release_failed_commit(
         return batch
 
 
+def _municipality_code_errors(ibge: str) -> list[str]:
+    if ibge and not (len(ibge) == 7 and ibge.isdigit()):  # noqa: PLR2004 - IBGE width
+        return [_("O código IBGE do município deve ter 7 dígitos.")]
+    try:
+        validate_municipality_code(ibge)
+    except ValidationError as error:
+        return list(error.messages)
+    return []
+
+
 def _create_client(batch: ImportBatch, row: ImportRow) -> ClientCompany:
     values = row.values
+    validate_municipality_code(values.get("municipality_ibge_code", ""))
     client = ClientCompany(
         tenant_id=batch.tenant_id,
         cnpj=row.cnpj,
