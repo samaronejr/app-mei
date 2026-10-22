@@ -175,7 +175,7 @@ unchanged. Suites after the fix: default 5343 collected, 5302 passed and 41 skip
 
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |
-| `AXRM-006` | Rio metro registry identities, client create/edit and import validation, and the municipality name in the workspace header. Verification results are recorded below. | Apply `fiscal.0003_seed_rio_metro`; no capability or municipal coverage is asserted. Reverse retains Rio de Janeiro from the capital seed and unrelated municipalities, removes only the fifteen new codes, and refuses while a client or related registry record references them. Referenced data requires forward repair. |
+| `AXRM-006` | Rio metro registry identities, client create/edit and import validation, and the municipality name in the workspace header. Verification results are recorded below. | Apply `fiscal.0003_seed_rio_metro`; no capability or municipal coverage is asserted. Reverse removes only the registry rows the forward actually inserted (recorded in `fiscal_municipalityseedrow`), so Rio de Janeiro from the capital seed, unrelated municipalities and a metro row registered beforehand survive, and it refuses while a client or related registry record references an inserted row. Referenced data requires forward repair. |
 
 The pre-change baseline for `AXRM-006` is the documented **5148 passed, 41 skipped,
 168 deselected**, accepted on 2026-10-22 without a local re-run because base
@@ -191,6 +191,25 @@ Niteroi row and shows "Niterói/RJ" in the workspace header, and refuses an unkn
 code at row level with nothing created, at 1440x900 and 390x844. Evidence:
 `.evidence/AXRM-006-gates.txt`, `AXRM-006-targeted.txt`, `AXRM-006-migration.txt`,
 `AXRM-006-happy.txt`, `AXRM-006-failure.txt`, `AXRM-006-adversarial.txt`.
+
+Review fix (`AXRM-006` attempt 2, independent review reject): the reverse of
+`fiscal.0003_seed_rio_metro` deleted a metro row that existed before the migration.
+The forward now records each row its upsert created in a platform-level ledger,
+`fiscal_municipalityseedrow` (allow-listed, no tenant data, no foreign key), which 0003
+creates and drops itself, and the reverse deletes only those rows while keeping the
+client and related-record refusals. A saved CSV preview committed after its codes left
+the registry now records "Falha ao gravar: Município não encontrado no cadastro
+(código IBGE)" instead of the exception class name; other commit failures are
+unchanged. Suites after the fix: default **5330 passed, 41 skipped** (the first run
+failed only the scope test's pin of fiscal models, which now registers the ledger),
+isolation **722 passed, 41 skipped**, CNPJ **29**, `tests/clients` plus the registry
+pack **216**, and the municipality pack **51** in each of three runs. Workspace reads
+take 22 of 25 queries and cycle detail 25 of 25. Lint, format, Mypy and migration
+drift are clean. An `app_migrator` round trip on a populated two-tenant database keeps
+a pre-existing Niterói through the reverse and a second forward/reverse cycle, and a
+fresh database records exactly the fifteen codes 0003 inserts. Evidence:
+`.evidence/AXRM-006-red-fix.txt`, `AXRM-006-mutations-fix.txt`,
+`AXRM-006-flaky-fix.txt`, `AXRM-006-gates-fix.txt`, `AXRM-006-fix-*.log`.
 
 ## Axorim pivot
 
