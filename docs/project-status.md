@@ -211,6 +211,18 @@ fresh database records exactly the fifteen codes 0003 inserts. Evidence:
 `.evidence/AXRM-006-red-fix.txt`, `AXRM-006-mutations-fix.txt`,
 `AXRM-006-flaky-fix.txt`, `AXRM-006-gates-fix.txt`, `AXRM-006-fix-*.log`.
 
+Review fix (`AXRM-006` attempt 3, re-review blocker B3): the ledger table had no
+explicit portal decision. The portal already had no grant on it; the decision is now
+declared as `-- PORTAL_NONE: fiscal_municipalityseedrow` in `ops/sql/roles.sql` and in
+`PORTAL_DENIED_TABLES`. A new meta-test requires every model table to carry a portal
+decision (a frozen pin lists the tables that predate the rule), so a table missing
+from both registries now fails; removing the conftest entry fails it and the parity
+test. Suites: isolation **724 passed, 41 skipped** (722 plus the two new cases),
+`tests/portal` **319**, the portal meta-tests **7**, and the municipality pack **31**.
+Lint, format, Mypy and migration drift are clean. Evidence:
+`.evidence/AXRM-006-red-fix3.txt`, `AXRM-006-mutation-fix3.txt`,
+`AXRM-006-fix3-*.log`, `AXRM-006-fix3-static.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
