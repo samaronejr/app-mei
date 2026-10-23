@@ -114,18 +114,77 @@ CLIENT_IDENTITY_COLUMN = {"clients_clientcompany": "id"}
 
 # AXRM-012 folds a visibility test into the anchored client comparison
 # (`client_id = CASE WHEN <visible> THEN <client> END`, as cycles 0006 does for
-# client_visible): on BOTH sides for the row's own flag, on USING for an intake's
-# parent document (its WITH CHECK stays client-only so the composite FK refuses).
-_OWN_FLAG = r"=\s+CASE\s+WHEN\s+portal_visible\s+THEN\s+\(NULLIF\("
-PORTAL_VISIBILITY_FOLDS: Final = {
-    "obligations_document": _OWN_FLAG,
-    "obligations_obligation": _OWN_FLAG,
+# client_visible): on BOTH sides for a row's own flag; on USING only for rows that
+# reference a hidden parent, whose WITH CHECK stays client-only so the composite FKs
+# still refuse a foreign parent. Terms are compared whitespace-normalized.
+BOTH_SIDES: Final = frozenset({"USING", "WITH CHECK"})
+USING_ONLY: Final = frozenset({"USING"})
+PORTAL_VISIBILITY_FOLDS: Final[dict[str, tuple[frozenset[str], tuple[str, ...]]]] = {
+    "obligations_document": (BOTH_SIDES, ("= CASE WHEN portal_visible THEN (NULLIF(",)),
+    "obligations_obligation": (
+        BOTH_SIDES,
+        ("= CASE WHEN portal_visible THEN (NULLIF(",),
+    ),
     "cycles_documentintake": (
-        r"=\s+CASE\s+WHEN\s+\(EXISTS\s+\(\s*SELECT\s+1\s+FROM\s+obligations_document\s+"
-        r"document\s+WHERE\s+\(document\.id\s+=\s+cycles_documentintake\.document_id\)"
-        r"\)\)\s+THEN\s+\(NULLIF\("
+        USING_ONLY,
+        (
+            (
+                "= CASE WHEN (EXISTS ( SELECT 1 FROM obligations_document document "
+                "WHERE (document.id = cycles_documentintake.document_id))) "
+                "THEN (NULLIF("
+            ),
+        ),
+    ),
+    "cycles_evidencerequest": (
+        USING_ONLY,
+        (
+            "= CASE WHEN ",
+            (
+                "obligation_id IS NULL) OR (EXISTS ( SELECT 1 FROM "
+                "obligations_obligation obligation "
+                "WHERE (obligation.id = cycles_evidencerequest.obligation_id)))"
+            ),
+            " THEN (NULLIF(",
+        ),
+    ),
+    "cycles_evidencelink": (
+        USING_ONLY,
+        (
+            "= CASE WHEN ",
+            (
+                "EXISTS ( SELECT 1 FROM obligations_document document "
+                "WHERE (document.id = cycles_evidencelink.document_id))"
+            ),
+            (
+                "EXISTS ( SELECT 1 FROM cycles_evidencerequest parent_request "
+                "WHERE (parent_request.id = cycles_evidencelink.request_id))"
+            ),
+            " THEN (NULLIF(",
+        ),
+    ),
+    "obligations_sourceobservation": (
+        USING_ONLY,
+        (
+            "= CASE WHEN ",
+            (
+                "EXISTS ( SELECT 1 FROM obligations_obligation obligation "
+                "WHERE (obligation.id = obligations_sourceobservation.subject_ref_id))"
+            ),
+            (
+                "evidence_link_id IS NULL) OR (EXISTS ( SELECT 1 FROM "
+                "cycles_evidencelink link "
+                "WHERE (link.id = obligations_sourceobservation.evidence_link_id)))"
+            ),
+            " THEN (NULLIF(",
+        ),
     ),
 }
+
+
+def _folded(expression: str, terms: tuple[str, ...]) -> bool:
+    normalized = " ".join(expression.split())
+    return all(term in normalized for term in terms)
+
 
 WRITE_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES")
 # The flat-zero set: everything above except the one privilege Phase 2b grants.
@@ -361,10 +420,9 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
                         f"{table}.{name} {side} does not compare {column} as its left "
                         f"operand: {expression}"
                     )
-                    if table in PORTAL_VISIBILITY_FOLDS and (
-                        side == "USING" or table != "cycles_documentintake"
-                    ):
-                        assert re.search(PORTAL_VISIBILITY_FOLDS[table], expression), (
+                    sides, terms = PORTAL_VISIBILITY_FOLDS.get(table, (frozenset(), ()))
+                    if side in sides:
+                        assert _folded(expression, terms), (
                             f"{table}.{name} {side} lost its AXRM-012 visibility "
                             f"fold: {expression}"
                         )

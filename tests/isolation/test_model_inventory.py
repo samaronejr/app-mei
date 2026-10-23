@@ -37,6 +37,9 @@ SWEEP_LABELS: Final = frozenset(
         "cycles.DocumentIntake",
         "cycles.EvidenceExport",
         "cycles.EvidenceIndex",
+        # AXRM-012 reference visibility (request -> obligation, link -> document and
+        # request, observation -> subject and link):
+        # test_portal_reference_visibility.py, as the real portal role.
         "cycles.EvidenceLink",
         "cycles.EvidenceRequest",
         "cycles.Exception",
@@ -59,6 +62,7 @@ SWEEP_LABELS: Final = frozenset(
         "delivery.TenantNoticePolicy",
         "integrations.ClientProviderLink",
         "integrations.ProviderConnection",
+        # AXRM-012 subject/evidence visibility: test_portal_reference_visibility.py.
         "obligations.SourceObservation",
         "tenants.AccountExport",
         "tenants.AccountExportAttempt",

@@ -69,7 +69,7 @@ from apps.cycles.evidence import (
 from apps.cycles.records import CycleEvent
 from apps.cycles.scanning import scan_required
 from apps.cycles.sniffing import sniff
-from apps.obligations.models import AcquisitionOrigin, Document
+from apps.obligations.models import AcquisitionOrigin, Document, Obligation
 from apps.tenants.models import Tenant
 
 CHUNK_BYTES: Final = 64 * 1024
@@ -369,7 +369,18 @@ def vault_upload(
     account of the same client -- until the scanner says clean. Returns (document,
     already_sent); refused bytes raise `UploadRejected` with the refused original and
     its intake kept, exactly as for a request upload.
+
+    AXRM-012: a named obligation must be this client's AND portal-visible; anything
+    else is a 404 before a byte is read, so a client upload can never carry a
+    reference to a firm-private obligation (the vault form offers no obligation).
     """
+    if (
+        obligation_id is not None
+        and not Obligation.objects.filter(
+            pk=obligation_id, client=client, portal_visible=True
+        ).exists()
+    ):
+        raise Http404
     require_scanner(tenant)
     if upload is None:
         raise UploadMissing

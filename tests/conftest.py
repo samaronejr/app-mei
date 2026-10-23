@@ -128,6 +128,9 @@ PORTAL_TABLES = (
     "clients_taxprofile",
     "cycles_servicecycle",
     "cycles_clientpublication",
+    # AXRM-012: SELECT also requires a visible obligation (request) or a visible
+    # document AND request (link); INSERT keeps the client-only check.
+    # Real-role probes: test_portal_reference_visibility.py.
     "cycles_evidencerequest",
     "cycles_evidencelink",
     # AXRM-012: SELECT also requires a parent Document visible to app_portal; INSERT
@@ -142,6 +145,7 @@ PORTAL_TABLES = (
     # originals (and their receipt refs) are private; INSERT is pinned to a human
     # upload_portal with portal_visible=True and no receipt by the database trigger.
     "obligations_document",
+    # AXRM-012: SELECT also requires a visible subject and a visible evidence link.
     "obligations_sourceobservation",
 )
 

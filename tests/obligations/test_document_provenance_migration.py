@@ -18,6 +18,29 @@ from tests.portal.request_fixtures import PortalSetup
 
 pytestmark = pytest.mark.django_db(transaction=True)
 PREVIOUS = ("obligations", "0022_schedulerheartbeat_job_outcome")
+FOLDED_POLICIES = tuple(
+    f"{table}_portal_client_isolation"
+    for table in (
+        "obligations_document",
+        "obligations_obligation",
+        "cycles_documentintake",
+        "cycles_evidencerequest",
+        "cycles_evidencelink",
+        "obligations_sourceobservation",
+    )
+)
+
+
+def _folded_policies() -> int:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            # pg_policies pretty-prints the predicate across lines (CASE / WHEN).
+            "SELECT count(*) FROM pg_policies WHERE policyname = ANY(%s) AND qual ~ %s",
+            [list(FOLDED_POLICIES), r"CASE\s+WHEN"],
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def test_populated_two_tenant_legacy_rows_reverse_and_reapply_without_changes() -> None:
@@ -86,6 +109,7 @@ def test_populated_two_tenant_legacy_rows_reverse_and_reapply_without_changes() 
                 obligations = cursor.fetchall()
                 assert {row[0] for row in obligations} == set(obligation_ids)
                 assert all(row[1] is True for row in obligations)
+            assert _folded_policies() == len(FOLDED_POLICIES)
             MigrationExecutor(connection).migrate([PREVIOUS])
             with connection.cursor() as cursor:
                 cursor.execute("SELECT id FROM obligations_document")
@@ -95,6 +119,8 @@ def test_populated_two_tenant_legacy_rows_reverse_and_reapply_without_changes() 
                     "'document_portal_client_upload()'::regprocedure)"
                 )
                 assert "portal_visible" not in cursor.fetchone()[0]
+            # The reverse restores each pre-existing client-only predicate.
+            assert _folded_policies() == 0
         # Then every original survives and the final schema is restored below.
     finally:
         MigrationExecutor(connection).migrate(leaves)

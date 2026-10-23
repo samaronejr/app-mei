@@ -23,7 +23,53 @@ PARENT_VISIBLE = (
     "WHERE document.id = cycles_documentintake.document_id)"
 )
 INTAKE_VISIBLE = f"client_id = CASE WHEN {PARENT_VISIBLE} THEN {CLIENT} END"
-TABLES = ("obligations_document", "obligations_obligation", "cycles_documentintake")
+# Rows that REFERENCE a hidden obligation or document are hidden the same way, so the
+# portal cannot read a private parent through a request, link or observation. Each
+# subquery runs as app_portal under the parent's own policy; a request reaches its
+# obligation, a link its document and request (and so the request's obligation), an
+# observation its subject and its evidence link (and so the link's document). Only
+# USING folds: the portal never writes requests or observations, and a link INSERT
+# keeps the client-only WITH CHECK so the composite FKs still refuse a foreign parent.
+REQUEST_OBLIGATION = (
+    "EXISTS (SELECT 1 FROM obligations_obligation obligation "
+    "WHERE obligation.id = cycles_evidencerequest.obligation_id)"
+)
+REQUEST_VISIBLE = (
+    "client_id = CASE WHEN (cycles_evidencerequest.obligation_id IS NULL OR "
+    f"{REQUEST_OBLIGATION}) THEN {CLIENT} END"
+)
+LINK_DOCUMENT = (
+    "EXISTS (SELECT 1 FROM obligations_document document "
+    "WHERE document.id = cycles_evidencelink.document_id)"
+)
+LINK_REQUEST = (
+    "EXISTS (SELECT 1 FROM cycles_evidencerequest parent_request "
+    "WHERE parent_request.id = cycles_evidencelink.request_id)"
+)
+LINK_VISIBLE = (
+    f"client_id = CASE WHEN ({LINK_DOCUMENT} AND {LINK_REQUEST}) THEN {CLIENT} END"
+)
+OBSERVATION_SUBJECT = (
+    "EXISTS (SELECT 1 FROM obligations_obligation obligation "
+    "WHERE obligation.id = obligations_sourceobservation.subject_ref_id)"
+)
+OBSERVATION_LINK = (
+    "EXISTS (SELECT 1 FROM cycles_evidencelink link "
+    "WHERE link.id = obligations_sourceobservation.evidence_link_id)"
+)
+OBSERVATION_VISIBLE = (
+    f"client_id = CASE WHEN ({OBSERVATION_SUBJECT} AND "
+    f"(obligations_sourceobservation.evidence_link_id IS NULL OR {OBSERVATION_LINK})) "
+    f"THEN {CLIENT} END"
+)
+TABLES = (
+    "obligations_document",
+    "obligations_obligation",
+    "cycles_documentintake",
+    "cycles_evidencerequest",
+    "cycles_evidencelink",
+    "obligations_sourceobservation",
+)
 
 
 def _policies(*sides: tuple[str, str]) -> str:
@@ -34,11 +80,16 @@ def _policies(*sides: tuple[str, str]) -> str:
     )
 
 
-POLICIES = _policies((VISIBLE, VISIBLE), (VISIBLE, VISIBLE), (INTAKE_VISIBLE, ORIGINAL))
-# The pre-existing EnablePortalClientRLS predicates, restored on reverse (never dropped).
-OLD_POLICIES = _policies(
-    (ORIGINAL, ORIGINAL), (ORIGINAL, ORIGINAL), (ORIGINAL, ORIGINAL)
+POLICIES = _policies(
+    (VISIBLE, VISIBLE),
+    (VISIBLE, VISIBLE),
+    (INTAKE_VISIBLE, ORIGINAL),
+    (REQUEST_VISIBLE, ORIGINAL),
+    (LINK_VISIBLE, ORIGINAL),
+    (OBSERVATION_VISIBLE, ORIGINAL),
 )
+# The pre-existing EnablePortalClientRLS predicates, restored on reverse (never dropped).
+OLD_POLICIES = _policies(*[(ORIGINAL, ORIGINAL)] * len(TABLES))
 TRIGGER = """
 CREATE OR REPLACE FUNCTION document_portal_client_upload() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -98,7 +149,8 @@ PROVIDERS = ["captura_provedor", "provedor_federal"]
 class Migration(migrations.Migration):
     dependencies = [
         ("obligations", "0022_schedulerheartbeat_job_outcome"),
-        ("cycles", "0003_evidence_requests"),
+        # 0010 adds cycles_evidencerequest.obligation_id, which REQUEST_VISIBLE reads.
+        ("cycles", "0010_receipt_binding"),
     ]
 
     operations = [

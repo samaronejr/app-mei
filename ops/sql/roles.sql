@@ -274,6 +274,10 @@ BEGIN
         'cycles_clientpublication',
         -- S8.2 / T11: the client's own requests (client-visible fields only), the
         -- links it has submitted and their intake rows.
+        -- AXRM-012: a request is READABLE only while its obligation (if any) is
+        -- visible to app_portal, a link only while its document AND request are
+        -- (USING folds, obligations 0023). WITH CHECK stays client-only, so the
+        -- composite FKs still refuse a foreign parent.
         'cycles_evidencerequest',
         'cycles_evidencelink',
         -- AXRM-012: an intake row is READABLE only while its parent
@@ -301,6 +305,8 @@ BEGIN
         -- S8.2: the payments page labels paid rows from the newest payment
         -- observation. SELECT only; the append-only trigger and the missing
         -- INSERT grant together keep the portal from writing or rewriting any.
+        -- AXRM-012: READABLE only while its subject obligation and its evidence
+        -- link (if any) are visible to app_portal (USING fold, obligations 0023).
         'obligations_sourceobservation'
     ]
     LOOP

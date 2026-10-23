@@ -228,7 +228,7 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |
 | `AXRM-007` | New `apps/integrations` with `ProviderConnection` (tenant) and `ClientProviderLink` (client): tenant RLS, portal NONE (`DenyPortalAccess`, `-- PORTAL_NONE:` in `ops/sql/roles.sql`, `PORTAL_DENIED_TABLES`), composite (tenant, parent) foreign keys, version-checked locked transitions for the link's three A7.3 state fields, a capture start month that a database trigger keeps immutable, and a `secret_ref` that holds a secret *name* only (validator plus CHECK). Flags `federal_checks`, `document_capture` and `municipal_work`, each inert without `cycles_r1` and `scan_required` (INV-R13). Closed provider settings (`PROVIDERS_PAUSED=True`, environments `fake`, no real-data approval, no cap) and the `integrations.E001`/`E002` startup checks. Five A7.6 capabilities (matrix 36 rows / 216 cells, seeded by `authz.0009`). A read-only "Conexões fiscais" panel on `/configuracoes/` for holders of `fiscal.connections.manage` while a regional flag is on. | Tables ship empty, flags off, providers paused. `integrations.0001` reverses while both tables are empty and refuses (with a test) once a row exists: recovery is then flags off with the tables kept (forward repair). `authz.0009` records what it created or changed in the platform ledger `authz_capabilityseedrow`; its reverse deletes only the capabilities and role cells it created, puts back any label or level it changed, and refuses (forward repair) while a firm holds a user grant on a capability it created. |
-| `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses, and quarantine metadata follows its parent document; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows keep their visibility. Reverse restores the previous policies and trigger body, and refuses while provider-origin documents, private documents (including visible/private hash pairs) or private obligations exist; retained new data requires forward repair. |
+| `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses, and quarantine metadata, requests, links and observations follow the obligation or document they reference; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows keep their visibility. Reverse restores the previous policies and trigger body, and refuses while provider-origin documents, private documents (including visible/private hash pairs) or private obligations exist; retained new data requires forward repair. |
 
 The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
 at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**
@@ -313,6 +313,23 @@ Evidence: `.evidence/AXRM-012-gates.txt`, `AXRM-012-red.txt`,
 `AXRM-012-red-corrective.txt`, `AXRM-012-mutations.txt`, `AXRM-012-happy.txt`,
 `AXRM-012-failure.txt`, `AXRM-012-invariants.txt`, `AXRM-012-adversarial.txt`,
 `AXRM-012-final2-migration-cli.txt`.
+
+Review fix (`AXRM-012` attempt 1, independent review reject): a hidden obligation or
+document stayed readable one hop away. A firm payment fact (`POST /ciclos/<id>/`,
+`record_staff_fact`, the receipt materializer), a request bound to the obligation
+(`create_request`, `send_requests`, then `/solicitacoes/<id>/`) and links to a hidden
+document or request were readable by `app_portal`, and the vault accepted a hidden
+obligation id. `obligations.0023` now also folds the parents into the USING client
+comparison of `cycles_evidencerequest` (its obligation), `cycles_evidencelink` (its
+document and request) and `obligations_sourceobservation` (its subject and evidence
+link); each subquery runs under the parent's own portal policy, so the chain reaches
+the request's obligation and the link's document. WITH CHECK stays client-only, so
+the composite foreign keys still refuse a foreign parent first. On the write side a
+client-facing request cannot be bound to, or sent with, a private obligation, and a
+vault upload naming an obligation that is not this client's and visible is a 404
+before any byte is read. Firm facts about private obligations remain allowed and
+private. Nothing private before the fix becomes visible; the reverse restores the
+original predicates of all six tables behind the same forward-repair guard.
 
 ## Axorim pivot
 
