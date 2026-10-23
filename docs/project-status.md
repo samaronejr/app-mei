@@ -291,9 +291,23 @@ the capture-producer interface and forward-repair recovery.
 
 Baseline reused with code-identity proof: default **5582 passed, 44 skipped**;
 isolation **777 passed, 44 skipped**; CNPJ **29 passed**; browser **189 passed**.
-Evidence is in `.evidence/AXRM-010-baseline.txt`; final committed-head totals and
-command exits are recorded in `.evidence/AXRM-010-gates.txt`.
-Provider qualification, operator evidence and owner activation gates remain open.
+Evidence is in `.evidence/AXRM-010-baseline.txt`.
+
+STD-GATES on the clean committed head `5bc93da` (`AXRM-010-gates.txt`, every
+command exit 0): Ruff, format, Mypy and migration drift clean; default
+**5662 passed, 46 skipped** (+80 against the baseline); isolation **793 passed,
+46 skipped** (+16); CNPJ pack **29 passed**; browser **191 passed** (+2). The two
+new skips are the existing per-table composite-key probes reporting that the
+tenant-scoped `integrations_providerbudget` has no client composite. No template,
+CSS or JavaScript changed. The first run at `c10406d` failed two static scope
+scans (banking vocabulary in a budget docstring; an unpinned ORM `"owner"`
+relation), fixed in `5bc93da`. Tests first: `AXRM-010-red-acceptance.txt` (33
+assertion failures, 1 non-regression pass), `AXRM-010-red-guards.txt`; QA
+`AXRM-010-happy.txt`, `AXRM-010-failure.txt`, `AXRM-010-failure-*.txt` (cap,
+reservation, release and billed-error mutations each fail their witness),
+`AXRM-010-adversarial.txt`, `AXRM-010-usage-{desktop,mobile}.png`.
+Provider qualification (PQ-FOCUS-4), the OD-R1 ceilings and owner activation
+gates remain open.
 
 The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
 at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**
