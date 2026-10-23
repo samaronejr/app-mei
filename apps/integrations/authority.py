@@ -510,12 +510,13 @@ def declare_authority(  # noqa: PLR0913 - the rendered form's fields plus the cl
     _validate_evidence(evidence_document, visible)
     with transaction.atomic():
         client, head = _locked_head(actor, client_id, service, expected_version)
-        current = evaluate_record(head, on) if head else None
+        # A revision whose validity ended -- active or still pending verification --
+        # can be declared again; otherwise a pending declaration that lapsed before
+        # anyone verified it could never be verified, revoked or replaced.
+        lapsed = head is not None and head.valid_to is not None and head.valid_to < on
         if head is None or head.status == AuthorityStatus.DESCONHECIDA:
             status = AuthorityStatus.ATIVA
-        elif head.status in _NEEDS_REVERIFICATION or (
-            current is not None and current.state is Admission.EXPIRED
-        ):
+        elif head.status in _NEEDS_REVERIFICATION or lapsed:
             status = AuthorityStatus.VERIFICACAO_PENDENTE
         else:
             message = (
@@ -786,10 +787,9 @@ def record_certificate_status(  # noqa: PLR0913 - the provider's report plus the
             today=on,
         )
         allowed = LINK_TRANSITIONS[LinkMachine.CREDENTIAL].get(current, frozenset())
+        # Every state but `divergente` itself may move to `divergente`, so a move the
+        # machine refuses always lands there instead of being accepted.
         if target != current and target not in allowed:
-            if CredentialState.DIVERGENTE not in allowed:
-                message = f"credential_state: {current!r} -> {target!r} is not allowed"
-                raise InvalidTransitionError(message)
             target, generation = CredentialState.DIVERGENTE, link.credential_generation
         link.certificate_cnpj = certificate_cnpj
         link.certificate_valid_from = valid_from

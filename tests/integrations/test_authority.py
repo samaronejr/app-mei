@@ -13,7 +13,11 @@ from django.http import Http404
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
-from apps.integrations.models import ClientProviderLink, ProviderConnection
+from apps.integrations.models import (
+    AuthorityRecord,
+    ClientProviderLink,
+    ProviderConnection,
+)
 from apps.integrations.services import (
     IntegrationConflictError,
     InvalidTransitionError,
@@ -444,3 +448,155 @@ def test_provider_certificate_drift_blocks_capture_and_opens_owned_work(
             reason="credencial_divergente",
         )
         assert issue.owner_id == firm.owner.pk
+
+
+_REVOKED_UNVERIFIED: Final = ("declare", "revoke")
+_REVOKED_VERIFIED: Final = ("declare", "verify", "revoke")
+
+
+def _run_steps(
+    api: ModuleType, firm: Firm, steps: tuple[str, ...], valid_to: date | None
+) -> None:
+    client = firm.clients[0]
+    for version, step in enumerate(steps):
+        if step == "declare":
+            api.declare_authority(
+                firm.owner,
+                client.pk,
+                service="sitfis",
+                code="00002",
+                valid_from=TODAY,
+                valid_to=valid_to,
+                expected_version=version,
+                today=TODAY,
+            )
+        elif step == "verify":
+            api.verify_authority(
+                firm.owner,
+                client.pk,
+                service="sitfis",
+                expected_version=version,
+                today=TODAY,
+            )
+        else:
+            api.revoke_authority(
+                firm.owner,
+                client.pk,
+                service="sitfis",
+                expected_version=version,
+                today=TODAY,
+            )
+
+
+@pytest.mark.parametrize(
+    ("steps", "valid_to"),
+    [
+        pytest.param(("declare",), None, id="active-unverified"),
+        pytest.param(("declare", "verify"), None, id="active-verified"),
+        pytest.param(
+            ("declare",), TODAY + timedelta(days=10), id="expiring-unverified"
+        ),
+        pytest.param(
+            ("declare", "verify"), TODAY + timedelta(days=10), id="expiring-verified"
+        ),
+        pytest.param(
+            (*_REVOKED_UNVERIFIED, "declare"), None, id="pending-after-unverified"
+        ),
+        pytest.param(
+            (*_REVOKED_VERIFIED, "declare"), None, id="pending-after-verified"
+        ),
+    ],
+)
+def test_a_declaration_cannot_replace_a_current_or_pending_one(
+    firm: Firm,
+    steps: tuple[str, ...],
+    valid_to: date | None,
+) -> None:
+    api = authority_api()
+    client = firm.clients[0]
+    records = apps.get_model("integrations", "AuthorityRecord").objects
+    with tenant_context(firm.tenant.pk):
+        _run_steps(api, firm, steps, valid_to)
+        before = (records.count(), Event.objects.count())
+        decision = api.authority_for(client, "SP-SIT-P", today=TODAY)
+        with pytest.raises(InvalidTransitionError):
+            api.declare_authority(
+                firm.owner,
+                client.pk,
+                service="sitfis",
+                code="00002",
+                valid_from=TODAY,
+                expected_version=len(steps),
+                today=TODAY,
+            )
+        assert (records.count(), Event.objects.count()) == before
+        after = api.authority_for(client, "SP-SIT-P", today=TODAY)
+        assert (after.state, after.reason) == (decision.state, decision.reason)
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        pytest.param(_REVOKED_UNVERIFIED, id="revoked-unverified"),
+        pytest.param(_REVOKED_VERIFIED, id="revoked-verified"),
+    ],
+)
+def test_after_a_revocation_a_declaration_is_never_usable_before_verification(
+    firm: Firm,
+    steps: tuple[str, ...],
+) -> None:
+    api = authority_api()
+    client = firm.clients[0]
+    with tenant_context(firm.tenant.pk):
+        _run_steps(api, firm, steps, None)
+        pending = api.declare_authority(
+            firm.owner,
+            client.pk,
+            service="sitfis",
+            code="00002",
+            valid_from=TODAY,
+            expected_version=len(steps),
+            today=TODAY,
+        )
+        assert pending.status == "verificacao_pendente"
+        assert pending.verified_by_id is None
+        decision = api.authority_for(client, "SP-SIT-P", today=TODAY)
+        assert (decision.state, decision.reason) == ("unknown", "verificacao_pendente")
+
+
+def test_a_pending_declaration_whose_validity_lapsed_can_be_declared_again(
+    firm: Firm,
+) -> None:
+    api = authority_api()
+    client = firm.clients[0]
+    lapsed_on = TODAY + timedelta(days=5)
+    later = TODAY + timedelta(days=20)
+    with tenant_context(firm.tenant.pk):
+        _run_steps(api, firm, (*_REVOKED_UNVERIFIED, "declare"), lapsed_on)
+        with pytest.raises(InvalidTransitionError):
+            api.verify_authority(
+                firm.owner,
+                client.pk,
+                service="sitfis",
+                expected_version=3,
+                today=later,
+            )
+        try:
+            renewed = api.declare_authority(
+                firm.owner,
+                client.pk,
+                service="sitfis",
+                code="00002",
+                valid_from=later,
+                expected_version=3,
+                today=later,
+            )
+        except InvalidTransitionError as refused:
+            renewed = refused
+        assert isinstance(renewed, AuthorityRecord), (
+            f"lapsed pending stays stuck: {renewed}"
+        )
+        assert renewed.status == "verificacao_pendente"
+        assert renewed.verified_by_id is None
+        decision = api.authority_for(client, "SP-SIT-P", today=later)
+        assert (decision.state, decision.reason) == ("unknown", "verificacao_pendente")

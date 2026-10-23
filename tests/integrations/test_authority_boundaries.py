@@ -192,3 +192,98 @@ def test_unexpected_generation_is_divergent_even_when_cnpj_matches() -> None:
         link.refresh_from_db()
         assert link.credential_state == "divergente"
         assert link.credential_generation == 1
+
+
+@pytest.mark.parametrize(
+    (
+        "current",
+        "valid_to_days",
+        "reported_days",
+        "generation",
+        "expected",
+        "expected_generation",
+    ),
+    [
+        # Forbidden by A7.3 on the same certificate: validity only moves forward through
+        # rotation, so each of these is drift and must block capture.
+        pytest.param("vencendo", 10, 200, 1, "divergente", 1, id="vencendo-to-ativa"),
+        pytest.param("vencida", -1, 200, 1, "divergente", 1, id="vencida-to-ativa"),
+        pytest.param("vencida", -1, 10, 1, "divergente", 1, id="vencida-to-vencendo"),
+        # Allowed moves, as controls.
+        pytest.param("ativa", 200, 10, 1, "vencendo", 1, id="ativa-to-vencendo"),
+        pytest.param("vencendo", 10, -1, 1, "vencida", 1, id="vencendo-to-vencida"),
+        pytest.param(
+            "rotacao_pendente", -1, 200, 2, "ativa", 2, id="rotation-to-ativa"
+        ),
+    ],
+)
+def test_a_reported_certificate_only_moves_along_the_credential_machine(  # noqa: PLR0913, PLR0917
+    current: str,
+    valid_to_days: int,
+    reported_days: int,
+    generation: int,
+    expected: str,
+    expected_generation: int,
+) -> None:
+    api = authority_api()
+    firm = make_firm("authority-credential", client_count=1)
+    firm.tenant.features = ["cycles_r1", "scan_required", "document_capture"]
+    firm.tenant.save(update_fields=["features"])
+    company = firm.clients[0]
+    with tenant_context(firm.tenant.pk):
+        connection = ProviderConnection.objects.create(
+            tenant=firm.tenant,
+            provider="focus",
+            environment="fake",
+            status="ativa",
+        )
+        link = ClientProviderLink.objects.create(
+            tenant=firm.tenant,
+            client=company,
+            connection=connection,
+            provider_company_ref="credential",
+            streams=["nfe_recebidas"],
+            status="ativa",
+            credential_state=current,
+            credential_generation=1,
+            certificate_cnpj=company.cnpj,
+            certificate_valid_to=TODAY + timedelta(days=valid_to_days),
+        )
+        api.declare_authority(
+            firm.owner,
+            company.pk,
+            service="captura_nfe",
+            code="autorizacao_cliente",
+            valid_from=TODAY,
+            expected_version=0,
+            today=TODAY,
+        )
+        api.record_certificate_status(
+            link.pk,
+            expected_version=1,
+            certificate_cnpj=company.cnpj,
+            valid_from=TODAY,
+            valid_to=TODAY + timedelta(days=reported_days),
+            credential_generation=generation,
+            today=TODAY,
+        )
+        link.refresh_from_db()
+        assert (link.credential_state, link.credential_generation) == (
+            expected,
+            expected_generation,
+        )
+        drift = apps.get_model("integrations", "IntegrationIssue").objects.filter(
+            reason="credencial_divergente",
+            link=link,
+            state="aberta",
+        )
+        decision = api.authority_for(company, "FC-NFE", today=TODAY, link=link)
+        if expected == "divergente":
+            assert drift.exists()
+            assert (decision.state, decision.reason) == (
+                "missing",
+                "credencial_divergente",
+            )
+        else:
+            assert not drift.exists()
+            assert decision.reason != "credencial_divergente"

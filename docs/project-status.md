@@ -429,6 +429,23 @@ clean. Evidence:
 `AXRM-008-adversarial.txt`, `AXRM-008-gates.txt`, `AXRM-008-teardown.txt`,
 `AXRM-008-screens/`.
 
+Review fix (`AXRM-008` attempt 1, independent review needs-fix): three guards had no
+test that failed without them -- the declaration transition guard, the reported
+credential transition guard and the view-level `require_can`. Checking the
+declaration guard against A7.3 found a real gap as well: a pending declaration whose
+validity lapsed before anyone verified it could be neither verified, revoked nor
+declared again. A revision whose validity ended (active or pending) now accepts a
+new declaration, which is again pending and unusable until verified; every other
+re-declaration over a current or pending revision is still refused with no row and
+no event. The credential guard's unreachable error branch is removed (every state
+but `divergente` may move to `divergente`). New tests re-declare over pending,
+active, expiring and revoked revisions with and without a verifier, report each
+forbidden certificate move (`vencendo`/`vencida` -> `ativa`, `vencida` ->
+`vencendo`) and its drift work item, and hit the authority routes over HTTP as each
+role of the six-role matrix (staff refused at the view gate with its recorded
+refusal before any upload; client roles and the platform admin refused with no
+rows; owner and ops reach the service).
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
