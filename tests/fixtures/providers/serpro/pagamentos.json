@@ -1,0 +1,14 @@
+{
+  "contratante": {"numero": "00000000000000", "tipo": 2},
+  "autorPedidoDados": {"numero": "00000000000000", "tipo": 2},
+  "contribuinte": {"numero": "00000000000000", "tipo": 2},
+  "pedidoDados": {
+    "idSistema": "PAGTOWEB",
+    "idServico": "PAGAMENTOS71",
+    "versaoSistema": "1.0",
+    "dados": "{}"
+  },
+  "status": 200,
+  "mensagens": [],
+  "dados": "{\"pagamentos\":[]}"
+}

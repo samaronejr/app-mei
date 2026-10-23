@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe><infNFe Id="NFe00000000000000000000000000000000000000000000" versao="4.00">
+    <emit><CNPJ>00000000000000</CNPJ><xNome>Emitente sintetico</xNome></emit>
+    <dest><CNPJ>00000000000000</CNPJ><xNome>Destinatario sintetico</xNome></dest>
+  </infNFe></NFe>
+</nfeProc>

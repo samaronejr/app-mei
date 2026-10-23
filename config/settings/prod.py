@@ -16,6 +16,7 @@ from sentry_sdk.types import Event, Hint
 
 from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
+from apps.integrations.privacy import provider_field, scrub_provider_text
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING, env
 
@@ -122,7 +123,9 @@ def _scrub_sentry_urls(value: SentryValue, credentials: set[str]) -> SentryValue
     if isinstance(value, dict):
         scrubbed: dict[str, SentryValue] = {}
         for key, item in value.items():
-            if key.lower() in SENTRY_CREDENTIAL_FIELDS:
+            if key.lower() in SENTRY_CREDENTIAL_FIELDS or provider_field(key):
+                if isinstance(item, str) and item:
+                    credentials.add(item)
                 scrubbed[key] = SENTRY_REDACTION_MARKER
             else:
                 scrubbed[key] = _scrub_sentry_urls(item, credentials)
@@ -132,7 +135,7 @@ def _scrub_sentry_urls(value: SentryValue, credentials: set[str]) -> SentryValue
     if isinstance(value, str):
         redacted, found = _redact_credential_url(value)
         credentials.update(found)
-        return redacted
+        return scrub_provider_text(redacted)
     return value
 
 
@@ -189,7 +192,11 @@ def _request_credentials(record: logging.LogRecord) -> set[str]:
 def _replace_log_credentials(value: LogValue, credentials: set[str]) -> LogValue:
     if isinstance(value, dict):
         return {
-            key: _replace_log_credentials(item, credentials)
+            key: (
+                SENTRY_REDACTION_MARKER
+                if provider_field(key)
+                else _replace_log_credentials(item, credentials)
+            )
             for key, item in value.items()
         }
     if isinstance(value, tuple):
@@ -199,6 +206,7 @@ def _replace_log_credentials(value: LogValue, credentials: set[str]) -> LogValue
     if isinstance(value, str):
         for credential in credentials:
             value = value.replace(credential, SENTRY_REDACTION_MARKER)
+        value = scrub_provider_text(value)
     return value
 
 
@@ -207,16 +215,17 @@ class CredentialURLLogFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         credentials = _request_credentials(record) | set(sensitive_values.get())
-        if not credentials:
-            return True
+        # Interpolate before redacting: a token-shaped value may be the `%s`
+        # placeholder itself, and removing it early breaks logging's formatting.
+        rendered = record.getMessage()
+        record.args = ()
         record.msg = _replace_log_credentials(
-            cast("LogValue", record.msg),
+            rendered,
             credentials,
         )
-        record.args = cast(
-            "tuple[Any, ...] | dict[str, Any]",
-            _replace_log_credentials(cast("LogValue", record.args), credentials),
-        )
+        for name in record.__dict__:
+            if provider_field(name):
+                record.__dict__[name] = SENTRY_REDACTION_MARKER
         if record.exc_text is not None:
             record.exc_text = cast(
                 "str",
@@ -232,6 +241,9 @@ class CredentialURLLogFilter(logging.Filter):
                         credentials,
                     ),
                 )
+            record.exc_text = scrub_provider_text(
+                logging.Formatter().formatException(record.exc_info)
+            )
         return True
 
 
