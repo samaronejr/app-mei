@@ -215,3 +215,31 @@ def test_three_fake_billed_calls_consume_three_units(
         budget = ProviderBudget.objects.get()
         assert (budget.known_liability, budget.reserved) == (720_000, 0)
         assert UsageRecord.objects.filter(metric="serpro_consulta").count() == 3
+
+
+def test_platform_cap_counts_inactive_firms_exposure(
+    budget_link: ClientProviderLink, settings: SettingsWrapper
+) -> None:
+    # Given an inactive firm that still carries this month's SERPRO liability.
+    settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "0.24"}
+    inactive = Tenant.objects.create(
+        name="Inactive capped firm",
+        slug="inactive-capped",
+        features=["cycles_r1", "scan_required", "federal_checks"],
+        is_active=False,
+    )
+    with tenant_context(inactive.pk):
+        ProviderBudget.objects.create(
+            tenant=inactive,
+            provider="serpro",
+            window_start=timezone.now().date().replace(day=1),
+            cap_microbrl=500_000,
+            known_liability=240_000,
+            tariff_revision="synthetic-tariff-v1",
+        )
+    # When an active firm asks for one more unit under the platform ceiling.
+    with pytest.raises(AdmissionDeniedError, match="cota_esgotada"):
+        reserve(budget_link.tenant_id, budget_link.pk, paid_request())
+    # Then deactivation does not erase spend already counted platform-wide.
+    with tenant_context(budget_link.tenant_id):
+        assert ProviderBudget.objects.get().reserved == 0

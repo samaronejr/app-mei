@@ -1,5 +1,7 @@
 """Move per-attempt balances without losing uncertainty or double billing replay."""
 
+from typing import Final
+
 from apps.integrations.budget import BudgetPolicy, lock_budget
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.budget_pricing import BudgetDeniedError, classify
@@ -12,6 +14,9 @@ BUCKETS = {
     "known": "known_liability",
     "uncertain": "uncertain_exposure",
 }
+# An observed billed or unbilled outcome is final for its attempt: a later
+# quarantine or replay may change the call's state, never this attempt's money.
+SETTLED: Final = frozenset({"known", "released"})
 
 
 def billing_result(
@@ -50,6 +55,7 @@ def settle(call: ProviderCall, result: CallResult) -> None:
         .filter(call=call, attempt_number=call.attempts)
         .first()
     )
+    rebuilt = held is None
     if held is None:
         # A journaled call can be newer than the restored DB; its original month
         # and quoted amount survive independently in the receipt.
@@ -81,8 +87,9 @@ def settle(call: ProviderCall, result: CallResult) -> None:
     target = {"sim": "known", "nao": "released", "desconhecido": "uncertain"}[
         result.billed
     ]
-    # Uncertainty never rolls confirmed evidence backwards.
-    if held.state == "known" and target == "uncertain":
+    # Only a still-reserved or uncertain attempt moves; a rebuilt receipt starts
+    # from "released" (no bucket) and takes its journaled outcome once.
+    if held.state in SETTLED and not rebuilt:
         return
     _move(held, target)
 

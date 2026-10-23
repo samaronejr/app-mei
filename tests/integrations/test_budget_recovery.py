@@ -14,7 +14,14 @@ from apps.integrations import provider_journal
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_contracts import AdmissionDeniedError, CallResult
 from apps.integrations.call_models import CallState, ProviderCall
-from apps.integrations.call_protocol import begin_io, claim, perform, reserve
+from apps.integrations.call_protocol import (
+    Dispatch,
+    begin_io,
+    claim,
+    perform,
+    reserve,
+)
+from apps.integrations.firm_calls import FirmDispatch
 from apps.integrations.models import ClientProviderLink
 from apps.integrations.provider_replay import reconcile
 from apps.tenants.models import UsageRecord
@@ -23,6 +30,65 @@ from tests.integrations.test_budget_caps import budget_link, paid_request, provi
 
 pytestmark = pytest.mark.django_db(transaction=True)
 __all__ = ["budget_link", "provider_link"]
+
+
+class BilledRetryPeer(ProviderPeer):
+    """A read the adapter schedules for retry although its status was billed."""
+
+    def send(self, dispatch: Dispatch | FirmDispatch) -> CallResult:
+        return replace(super().send(dispatch), state=CallState.RETRY)
+
+
+def balances(link: ClientProviderLink) -> tuple[tuple[int, int, int], list[str]]:
+    with tenant_context(link.tenant_id):
+        budget = ProviderBudget.objects.get()
+        return (
+            (budget.known_liability, budget.uncertain_exposure, budget.reserved),
+            list(
+                ProviderReservation.objects.order_by("attempt_number").values_list(
+                    "state", flat=True
+                )
+            ),
+        )
+
+
+def test_restored_unbilled_read_retry_keeps_its_released_amount(
+    budget_link: ClientProviderLink,
+) -> None:
+    # Given a read SERPRO answered with 503: known not billed, retry scheduled.
+    call = reserve(budget_link.tenant_id, budget_link.pk, paid_request())
+    ticket = claim(budget_link.tenant_id, call.pk)
+    assert ticket is not None
+    with ProviderPeer(status=503) as peer:
+        perform(ticket, peer)
+    assert balances(budget_link) == ((0, 0, 0), ["released"])
+    # When restore reconciliation quarantines the pending retry (twice).
+    with override_settings(PROVIDERS_PAUSED=True):
+        reconcile(uuid4())
+        reconcile(uuid4())
+    # Then the call needs review, but the unbilled amount never returns as exposure.
+    assert balances(budget_link) == ((0, 0, 0), ["released"])
+    with tenant_context(budget_link.tenant_id):
+        assert ProviderCall.objects.get().state == CallState.UNCERTAIN
+
+
+def test_restored_billed_read_retry_keeps_its_known_amount(
+    budget_link: ClientProviderLink,
+) -> None:
+    # Given a read whose billed 202 the adapter scheduled for another attempt.
+    call = reserve(budget_link.tenant_id, budget_link.pk, paid_request())
+    ticket = claim(budget_link.tenant_id, call.pk)
+    assert ticket is not None
+    with BilledRetryPeer(status=202) as peer:
+        perform(ticket, peer)
+    assert balances(budget_link) == ((240_000, 0, 0), ["known"])
+    # When restore reconciliation quarantines that pending retry.
+    with override_settings(PROVIDERS_PAUSED=True):
+        reconcile(uuid4())
+    # Then confirmed liability stays known; it is not demoted to uncertain.
+    assert balances(budget_link) == ((240_000, 0, 0), ["known"])
+    with tenant_context(budget_link.tenant_id):
+        assert ProviderCall.objects.get().state == CallState.UNCERTAIN
 
 
 def test_dispatch_refusal_releases_only_unsent_reservation(

@@ -40,6 +40,9 @@ One reservation is keyed by tenant, client, call and attempt number. Retries
 therefore have separate balances. Claim and dispatch recheck the held reservation
 and current caps. An untransmitted refused dispatch releases its reservation.
 An uncertain transmitted attempt retains maximum exposure until reconciliation.
+An observed outcome is final for its attempt: once a reservation is `known` or
+`released`, a later quarantine or journal replay may mark the call uncertain
+(for example a restored pending read retry), but never moves that money again.
 The journal's original month, amount and tariff rebuild a lost reservation;
 the corresponding budget must exist before reconciliation can complete.
 
