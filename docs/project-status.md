@@ -368,6 +368,23 @@ obligation-private document is a separate visible row instead of a collision, an
 reverse also refuses while that wider key holds rows the original key would reject.
 Visible-parent and null-parent rows read as before.
 
+Suites after review fix 2 at `6c8e90a`: the default suite passes **5536, 44 skipped**
+(group 1: 1294; group 2: 4242 passed, 44 skipped), isolation **782 passed, 44 skipped**,
+`tests/portal` **319** with no portal test changed, CNPJ **29** and browser **189**; the
+targeted set passes **93** in each of three runs. Collected counts over `85493e7` grow
+by exactly this fix's 13 new tests (+12 isolation, +1 migration). Against the reviewed
+product code 10 of them fail, among them the reviewer's own B1 reproduction, while every
+visible-parent and null-parent control passes. All 43 deliberate breaks fail a named
+test, including one per new clause: the document's obligation fold and its null escape,
+the chain fold and its subject and link checks, the chain function's ancestors,
+descendants and client scope, the widened hash key and the reverse guard's duplicate
+check. The `app_migrator` round trip, run on a freshly reset database, also checks that
+the chain function exists forward, is dropped on reverse and returns on reapply.
+Evidence: `.evidence/AXRM-012-gates.txt`, `AXRM-012-rv2-red-smoke.txt`,
+`AXRM-012-mutations.txt`, `AXRM-012-failure.txt`, `AXRM-012-invariants.txt`,
+`AXRM-012-happy.txt`, `AXRM-012-adversarial.txt`, `AXRM-012-rv2-reference-audit.txt`,
+`AXRM-012-rv2-collection-delta.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
