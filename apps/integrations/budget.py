@@ -143,7 +143,7 @@ class BudgetPolicy:
         return quoted
 
     def settle(self, call: ProviderCall, result: CallResult) -> None:
-        """Move a reservation once, including uncertain-to-known reconciliation."""
+        """Move a reservation once, including uncertain attempts proven billed."""
         from apps.integrations.budget_settlement import settle  # noqa: PLC0415
 
         settle(call, result)
