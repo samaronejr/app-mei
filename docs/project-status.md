@@ -292,6 +292,15 @@ explicit decision for later approved publication, not a permanent provider-origi
 ban. Migration reversal refuses provider data even after that later decision, and
 also refuses to expose private staff or municipal rows by dropping their predicate.
 
+The AXRM-012 corrective commit additionally confines `cycles_documentintake`
+metadata through its parent document's RLS on both SELECT and INSERT, retaining the
+client predicate. Real `app_portal` probes cover actor-less ingestion, sibling
+clients, aggregate metadata, the SQL bootstrap mirror and visible-upload controls.
+This corrects the unshipped `obligations.0023` migration; its reverse restores the
+pre-existing intake policy rather than deleting it. The correction is a new commit
+above `f234dec`, not an amend. Gates at `f234dec` are not acceptance evidence for
+the correction; all required gates are rerun at the corrective commit.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

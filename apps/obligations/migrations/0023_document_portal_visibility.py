@@ -6,15 +6,33 @@ from django.db import migrations, models
 
 CLIENT = "client_id = NULLIF(current_setting('app.client_id', true), '')::uuid"
 TABLES = ("obligations_document", "obligations_obligation")
-POLICIES = "\n".join(
+DOCUMENT_POLICIES = "\n".join(
     f"ALTER POLICY {table}_portal_client_isolation ON {table} "
     f"USING ({CLIENT} AND portal_visible) WITH CHECK ({CLIENT} AND portal_visible);"
     for table in TABLES
 )
-OLD_POLICIES = "\n".join(
+OLD_DOCUMENT_POLICIES = "\n".join(
     f"ALTER POLICY {table}_portal_client_isolation ON {table} "
     f"USING ({CLIENT}) WITH CHECK ({CLIENT});"
     for table in TABLES
+)
+# The parent lookup executes as app_portal, so the document's tenant/client/
+# portal_visible policies also confine its quarantine metadata. No independent
+# visibility flag can drift away from the parent.
+INTAKE_VISIBLE = (
+    "EXISTS (SELECT 1 FROM obligations_document document "
+    "WHERE document.id = cycles_documentintake.document_id)"
+)
+POLICIES = DOCUMENT_POLICIES + (
+    "\nALTER POLICY cycles_documentintake_portal_client_isolation "
+    "ON cycles_documentintake "
+    f"USING ({CLIENT} AND {INTAKE_VISIBLE}) "
+    f"WITH CHECK ({CLIENT} AND {INTAKE_VISIBLE});"
+)
+OLD_POLICIES = OLD_DOCUMENT_POLICIES + (
+    "\nALTER POLICY cycles_documentintake_portal_client_isolation "
+    "ON cycles_documentintake "
+    f"USING ({CLIENT}) WITH CHECK ({CLIENT});"
 )
 TRIGGER = """
 CREATE OR REPLACE FUNCTION document_portal_client_upload() RETURNS trigger
@@ -75,6 +93,7 @@ PROVIDERS = ["captura_provedor", "provedor_federal"]
 class Migration(migrations.Migration):
     dependencies = [
         ("obligations", "0022_schedulerheartbeat_job_outcome"),
+        ("cycles", "0003_evidence_requests"),
     ]
 
     operations = [

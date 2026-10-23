@@ -355,6 +355,15 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
                         assert re.search(r"\bAND\s+portal_visible\b", expression), (
                             f"{table}.{name} {side} lacks explicit portal visibility"
                         )
+                    if table == "cycles_documentintake":
+                        assert all(
+                            term in expression
+                            for term in (
+                                "EXISTS",
+                                "obligations_document",
+                                "document_id",
+                            )
+                        ), f"{table}.{name} {side} lacks parent-document visibility"
             else:
                 # Then the portal is denied outright, by shape and not by presence.
                 assert qual.strip().lower() == "false", f"{table}.{name} USING"

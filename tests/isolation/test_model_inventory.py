@@ -32,6 +32,8 @@ SWEEP_LABELS: Final = frozenset(
         "cycles.CycleAmendment",
         "cycles.CycleEvent",
         "cycles.CycleTask",
+        # AXRM-012 parent-document visibility: test_portal_intake_visibility.py
+        # proves row/aggregate denial for actor-less and sibling-client originals.
         "cycles.DocumentIntake",
         "cycles.EvidenceExport",
         "cycles.EvidenceIndex",

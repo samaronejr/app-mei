@@ -276,6 +276,8 @@ BEGIN
         -- links it has submitted and their intake rows.
         'cycles_evidencerequest',
         'cycles_evidencelink',
+        -- AXRM-012: intake metadata inherits its parent document's portal visibility
+        -- on SELECT and INSERT, in addition to this client's restrictive predicate.
         'cycles_documentintake',
         -- S8.2 / T14: the portal predicate adds `client_visible`; only the fixed
         -- client_message is rendered. Internal instructions/evidence are in the
@@ -327,6 +329,16 @@ BEGIN
             );
         END IF;
     END LOOP;
+    IF to_regclass('public.cycles_documentintake') IS NOT NULL AND EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('public.obligations_document')
+          AND attname = 'portal_visible' AND NOT attisdropped
+    ) THEN
+        EXECUTE
+            'ALTER POLICY cycles_documentintake_portal_client_isolation ON cycles_documentintake '
+            'USING (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND EXISTS (SELECT 1 FROM obligations_document document WHERE document.id = cycles_documentintake.document_id)) '
+            'WITH CHECK (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND EXISTS (SELECT 1 FROM obligations_document document WHERE document.id = cycles_documentintake.document_id))';
+    END IF;
 END
 $$;
 
