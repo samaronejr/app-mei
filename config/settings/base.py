@@ -339,6 +339,11 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "The UUID is a cycle object id, not a bearer credential; portfolio loading, "
         "capability checks and tenant RLS authorize every request."
     ),
+    "client-authority-action": (
+        "AXRM-008. The UUID names a client resolved through the actor's portfolio "
+        "(404 otherwise); `service` is a catalog slug and `action` one of three "
+        "verbs. None authorizes anything: fiscal.authority.manage does."
+    ),
     "cycle-open": (
         "The UUID names a client resolved through the actor's portfolio; it does "
         "not authorize creation, which requires the cycle operation capability."

@@ -7,6 +7,7 @@ from uuid import UUID
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.urls import reverse
+from django.utils import timezone
 
 from apps.accounts.views import AuthenticatedRequest
 from apps.clients.maintenance import MANAGE_CAPABILITY, load_client
@@ -23,6 +24,7 @@ from apps.cycles.services.cycle import tenant_id
 from apps.cycles.workspace import parse_period
 from apps.cycles.workspace_queries import read_workspace
 from apps.fiscal.models import Municipality
+from apps.integrations.workspace import authority_panel
 
 # AXR1-047: the flag the setup route is gated on, written as a literal for the
 # reason `cycle_views` writes `"bulk_r1"` and `clients.views` writes `"cycles_r1"`
@@ -107,6 +109,10 @@ def client_workspace(
             "coverage": workspace.coverage,
             "contacts": workspace.contacts,
             "checklist": workspace.checklist,
+            # AXRM-008: drawn only while a regional flag is on (None otherwise).
+            "authority_panel": authority_panel(
+                request.user, workspace.client, timezone.localdate()
+            ),
         },
         status=status,
     )

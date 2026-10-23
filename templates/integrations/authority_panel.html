@@ -1,0 +1,39 @@
+{% comment %}
+AXRM-008: the client workspace's "Autorizacoes e certificados" section (plan A9).
+Firm-side only; drawn only while federal_checks or document_capture is on. A declaration
+or a staff verification is a person's record, so no row uses the `confirmed` badge
+(A7.7). Forms are offered only to holders of fiscal.authority.manage and carry the chain
+version they were rendered with.
+{% endcomment %}<section id="autorizacoes" class="ui-panel p-4" aria-labelledby="authority-title" data-authority-panel>
+  <h2 id="authority-title" class="ui-panel-heading">Autorizações e certificados</h2>
+  <p class="text-sm text-ink-600">Procurações e autorizações do cliente, registradas pela equipe, e a validade do certificado informada pelo provedor. Nenhuma consulta é feita sem autorização vigente.</p>
+  <ul class="mt-3 grid gap-3">{% for row in panel.rows %}
+    <li class="border-t border-ink-200 pt-3" data-authority-service="{{ row.service }}" data-authority-version="{{ row.version }}">
+      <p class="font-medium text-ink-900">{{ row.label }}{% if not row.not_required %} <span class="text-sm font-normal text-ink-600">· {% if row.code == 'autorizacao_cliente' %}autorização do cliente{% else %}código {{ row.code }}{% endif %}</span>{% endif %}</p>
+      <p class="mt-1">{% if row.badge %}{% include "partials/ui/status_badge.html" with state=row.badge label=row.status_label only %}{% else %}<span>{{ row.status_label }}</span>{% endif %}</p>
+      <p class="mt-1 text-sm text-ink-600">{{ row.detail }}</p>
+      {% if row.record.evidence_document_id %}<p class="mt-1 text-sm"><a class="ui-link" href="{% url 'staff-document-download' row.record.evidence_document_id %}">Ver evidência</a></p>{% endif %}
+      {% if panel.may_manage %}
+        {% if row.may_declare %}<form method="post" enctype="multipart/form-data" action="{% url 'client-authority-action' client.pk row.service 'declarar' %}" class="mt-3 grid gap-3 sm:grid-cols-3">{% csrf_token %}
+          <input type="hidden" name="expected_version" value="{{ row.version }}"><input type="hidden" name="code" value="{{ row.code }}">
+          <div class="ui-field"><label class="ui-field-label" for="authority-{{ row.service }}-from">Válida desde</label><input class="ui-field-input" type="date" name="valid_from" id="authority-{{ row.service }}-from" required></div>
+          <div class="ui-field"><label class="ui-field-label" for="authority-{{ row.service }}-to">Válida até</label><input class="ui-field-input" type="date" name="valid_to" id="authority-{{ row.service }}-to"></div>
+          <div class="ui-field"><label class="ui-field-label" for="authority-{{ row.service }}-evidence">Evidência PDF</label><input class="ui-field-input py-1.5" type="file" name="evidence" id="authority-{{ row.service }}-evidence" accept="application/pdf,image/png,image/jpeg"></div>
+          <div class="sm:col-span-3"><button class="ui-btn ui-btn-primary" type="submit">Registrar declaração</button></div>
+        </form>{% endif %}
+        {% if row.may_verify or row.may_revoke %}<div class="mt-3 flex flex-wrap gap-3">
+          {% if row.may_verify %}<form method="post" action="{% url 'client-authority-action' client.pk row.service 'verificar' %}">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ row.version }}"><button class="ui-btn ui-btn-primary" type="submit">Verificar autorização</button></form>{% endif %}
+          {% if row.may_revoke %}<form method="post" action="{% url 'client-authority-action' client.pk row.service 'revogar' %}">{% csrf_token %}<input type="hidden" name="expected_version" value="{{ row.version }}"><button class="ui-btn ui-btn-quiet" type="submit">Revogar autorização</button></form>{% endif %}
+        </div>{% endif %}
+      {% endif %}
+    </li>{% endfor %}
+  </ul>
+  {% if panel.certificates %}<h3 class="mt-4 font-semibold">Certificado digital no provedor</h3>
+  <ul class="mt-2 grid gap-3">{% for certificate in panel.certificates %}
+    <li class="border-t border-ink-200 pt-3" data-provider-certificate="{{ certificate.link_id }}">
+      <p class="text-sm text-ink-600">Focus · {{ certificate.environment_label }}</p>
+      <p class="mt-1">{% if certificate.badge %}{% include "partials/ui/status_badge.html" with state=certificate.badge label=certificate.status_label only %}{% else %}<span>{{ certificate.status_label }}</span>{% endif %}</p>
+      <p class="mt-1 text-sm text-ink-600">{{ certificate.detail }} O arquivo do certificado fica somente no provedor.</p>
+    </li>{% endfor %}
+  </ul>{% endif %}
+</section>

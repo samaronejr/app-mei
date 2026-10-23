@@ -57,6 +57,12 @@ EXEMPT_TABLES: Final[frozenset[str]] = frozenset({"clients_clientcompany"})
 # the row's UUIDv7, which the `columns != ["id"]` exemption above already treats as
 # disclosing nothing the caller did not learn elsewhere.
 #
+# `document_tenant_id_uniq` (tenant_id, id) is AXRM-008's anchor for the firm
+# termo's tenant-paired document FK (`firmauthorization_document_pair_fk`): a
+# FirmAuthorization has no client, so it cannot use the (tenant, client, id) anchor.
+# Same argument as `invite_tenant_id_uniq`: the second column IS the primary key, so
+# colliding on it presupposes already holding the document's UUIDv7.
+#
 # `clientproviderlink_company_ref_uniq` (tenant_id, connection_id,
 # provider_company_ref) is AXRM-007's attribution invariant (plan A7.1, INV-R1): one
 # provider company is never bound to two clients of the same connection, so a
@@ -70,6 +76,7 @@ EXEMPT_CONSTRAINTS: Final[frozenset[str]] = frozenset(
         "tenants_invite_token_key",
         "invite_tenant_id_uniq",
         "clientproviderlink_company_ref_uniq",
+        "document_tenant_id_uniq",
     }
 )
 

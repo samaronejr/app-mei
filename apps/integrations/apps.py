@@ -11,7 +11,18 @@ class IntegrationsConfig(AppConfig):
     name = "apps.integrations"
 
     def ready(self) -> None:
-        """Attach the provider settings guard to `manage.py check` and startup."""
+        """Attach the settings guard; register AXRM-008's reasons and sweep rule."""
+        from apps.cycles.openers import TENANT_EVALUATORS  # noqa: PLC0415
+        from apps.cycles.services.exceptions import (  # noqa: PLC0415
+            register_exception_reason,
+        )
+        from apps.integrations.authority import (  # noqa: PLC0415
+            REASONS,
+            evaluate_provider_conditions,
+        )
         from apps.integrations.checks import check_provider_settings  # noqa: PLC0415
 
         register(check_provider_settings)
+        for code, reason in REASONS.items():
+            register_exception_reason(code, reason)
+        TENANT_EVALUATORS.append(evaluate_provider_conditions)

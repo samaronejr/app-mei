@@ -9,6 +9,7 @@ responsible, then the firm's earliest active owner membership. A cycle with no
 resolvable owner is counted and skipped: S6.3 requires every problem to have one.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Final
@@ -77,6 +78,38 @@ class EvaluationCounts:
     skipped_no_owner: int = 0
 
 
+# AXRM-008: other domains' deterministic openers (provider authority and certificate
+# conditions), registered by their app's ready() like COMPLETION_GUARDS. Each runs
+# once per sweep for the firm, after the cycle rules, inside the task's tenant
+# context, and is responsible for its own flag checks.
+TENANT_EVALUATORS: list[Callable[[Tenant, date], None]] = []
+
+
+def fallback_owner(tenant_id: UUID) -> User | None:
+    """Return the firm's earliest active owner membership, else its earliest member."""
+    return _fallback_owner(tenant_id)
+
+
+def owner_for(cycle: ServiceCycle) -> User | None:
+    """Return the R1 owner chain: cycle owner, engagement responsible, firm fallback."""
+    return (
+        cycle.owner or cycle.engagement.responsible or _fallback_owner(cycle.tenant_id)
+    )
+
+
+def open_once(  # noqa: PLR0913 - the opener contract: reason, scope, subject, owner, dates
+    reason_code: str,
+    cycle: ServiceCycle,
+    subject_ref: UUID,
+    owner: User,
+    *,
+    due_on: date | None = None,
+    review_on: date | None = None,
+) -> None:
+    """Open one problem under the same convergence rule as the cycle openers."""
+    _open(reason_code, cycle, subject_ref, owner, due_on=due_on, review_on=review_on)
+
+
 def _fallback_owner(tenant_id: UUID) -> User | None:
     members = (
         # PLATFORM_QUERY_OK: tenants_membership is a tenancy root; this firm only.
@@ -122,9 +155,7 @@ def _open(  # noqa: PLR0913 - the opener contract: reason, scope, subject, owner
 
 def evaluate_cycle(cycle: ServiceCycle, today: date) -> bool:
     """Apply every rule to one open cycle; False when no owner can be resolved."""
-    owner = (
-        cycle.owner or cycle.engagement.responsible or _fallback_owner(cycle.tenant_id)
-    )
+    owner = owner_for(cycle)
     if owner is None:
         return False
     overdue = EvidenceRequest.objects.filter(
@@ -167,4 +198,6 @@ def evaluate_tenant_exceptions(
             evaluated += 1
         else:
             skipped += 1
+    for evaluator in TENANT_EVALUATORS:
+        evaluator(tenant, on)
     return EvaluationCounts(evaluated=evaluated, skipped_no_owner=skipped)

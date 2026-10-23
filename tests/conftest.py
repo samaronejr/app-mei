@@ -79,6 +79,12 @@ PORTAL_DENIED_TABLES = (
     # from integrations.0001. Mirrors the `-- PORTAL_NONE: integrations_*` lines.
     "integrations_providerconnection",
     "integrations_clientproviderlink",
+    # AXRM-008: client authority, the firm termo record and owned provider problems
+    # are firm-side (INV-R10); DenyPortalAccess from integrations.0002. Mirrors the
+    # `-- PORTAL_NONE: integrations_*` lines added with them.
+    "integrations_authorityrecord",
+    "integrations_firmauthorization",
+    "integrations_integrationissue",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -107,6 +113,9 @@ APPEND_ONLY_TABLES = (
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
     "tenants_usagerecord",
+    # AXRM-008: authority revisions and firm termo records are append-only.
+    "integrations_authorityrecord",
+    "integrations_firmauthorization",
 )
 
 # AXR1-023: writable-but-undeletable tables — UPDATE stays (revocation sets

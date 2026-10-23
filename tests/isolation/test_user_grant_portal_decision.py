@@ -17,6 +17,9 @@ NONE_TABLES = (
     "authz_capabilityseedrow",
     "integrations_providerconnection",
     "integrations_clientproviderlink",
+    "integrations_authorityrecord",
+    "integrations_firmauthorization",
+    "integrations_integrationissue",
 )
 
 # Tables that predate the explicit portal-decision rule (plan A7.1) and are on no
