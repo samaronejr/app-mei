@@ -331,6 +331,23 @@ before any byte is read. Firm facts about private obligations remain allowed and
 private. Nothing private before the fix becomes visible; the reverse restores the
 original predicates of all six tables behind the same forward-repair guard.
 
+Suites after the review fix at `5ab4c32`, rebased on `AXRM-007` (`8da6d30`): the default
+suite passes **5523, 44 skipped** (group 1: 1294; group 2: 4229 passed, 44 skipped),
+isolation **770 passed, 44 skipped**, `tests/portal` **319** with no portal test
+changed, CNPJ **29** and browser **189**; the targeted set passes **80** in each of
+three runs. Collected counts over `8da6d30` grow by exactly the new `AXRM-012` tests
+(+30 isolation, +61 default, +0 portal). Against the pre-fix product code the seven new
+hidden-case tests and the fold coverage test fail. All 35 deliberate breaks fail a named
+test, including one per new clause (request obligation, link document, link request,
+observation subject, observation link) and one per new write guard (binding, send, the
+vault check and its visibility filter). The `app_migrator` round trip now checks all six
+folded policies forward, the original predicates after reverse, the folds after reapply
+and the refused reverse once a provider-origin row exists. Evidence:
+`.evidence/AXRM-012-gates.txt`, `AXRM-012-rv1-red-smoke.txt`, `AXRM-012-mutations.txt`,
+`AXRM-012-failure.txt`, `AXRM-012-invariants.txt`, `AXRM-012-happy.txt`,
+`AXRM-012-adversarial.txt`, `AXRM-012-rv1-reference-audit.txt`,
+`AXRM-012-rv1-collection-delta.txt`, `AXRM-012-rv1-migration-cli-classification.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
