@@ -287,7 +287,9 @@ credentials without a scheme, and known values are replaced before pattern rules
 Tests whose names claimed more than they checked were renamed (Sentry extra field,
 Sentry JWT extra, response body/auth header, socket timeout configuration); the
 review's three B2 reproductions are kept verbatim as regressions. The transport
-selection collects **186** tests; the default suite **5812**, browser **189**.
+selection collects **187** tests; the default suite **5813**, browser **189**. An
+exception-note case witnesses the rendered-chain scrub, which argument redaction
+alone no longer exercises.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.

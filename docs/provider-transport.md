@@ -58,8 +58,8 @@ while their structure still exists: values under provider field names
 (`Authorization`, `jwt_token`, `X-*Token*`, `body`, `data`, `payload`, ...)
 and header-style `(name, value)` pairs become `[Filtered]`, and those values are
 remembered. Only then is the message interpolated; the rendered text, stack and
-the entire exception chain (causes and contexts, re-rendered from redacted
-arguments) are scrubbed again with the active credential values registered for
+the entire exception chain (causes, contexts and notes, re-rendered from
+redacted arguments) are scrubbed again with the active credential values registered for
 the current call and every remembered value. Text-level rules also cover rendered
 pairs such as `('Authorization', '...')`, bare `Bearer` tokens, quoted body
 fields and presigned query credentials (`X-Amz-*`, `Signature`, `AWSAccessKeyId`)

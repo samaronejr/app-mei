@@ -246,6 +246,33 @@ def test_structured_log_message_is_redacted() -> None:
     assert "provider diagnostic" in output
 
 
+def test_active_secret_in_an_exception_note_is_absent_from_console_output() -> None:
+    # Given an active credential that only a cause's note mentions (notes are
+    # rendered with the chain but are not exception arguments).
+    def emit(logger: logging.Logger) -> None:
+        with delivery_secrets(CANARY):
+            try:
+                try:
+                    upstream_rejection_with_note()
+                except ValueError as error:
+                    wrapped = "provider call failed"
+                    raise RuntimeError(wrapped) from error
+            except RuntimeError:
+                logger.exception("provider failure")
+
+    # When the production console handler renders the chain.
+    output = production_console(emit)
+    # Then the note is rendered without the credential.
+    assert "request reference" in output
+    assert CANARY not in output
+
+
+def upstream_rejection_with_note() -> None:
+    error = ValueError("upstream rejected")
+    error.add_note(f"request reference {CANARY}")
+    raise error
+
+
 def test_structured_fields_in_a_cause_are_absent_from_console_output() -> None:
     # Given a cause whose arguments carry a nested provider field.
     def emit(logger: logging.Logger) -> None:
