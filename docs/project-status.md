@@ -235,15 +235,16 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),
-not the inherited annotation error. Fifty-seven new protocol/recovery cases have
+not the inherited annotation error. Fifty-nine new protocol/recovery cases have
 three successful runs each, including the positive stale-fence witness.
 The real synthetic HTTP peer proves both a successful billed response and a
 connection reset after receipt, with no repeated request after reconciliation.
 The migration command, grants bootstrap and documented reconciliation CLI have
-run on lane 009. The final focused selection passes **57 tests**; collection finds
-**5624 default cases** and **189 separately marked browser cases**. These are
-inventory counts, not passing full-suite totals. Per the commit-first gate order,
-the clean committed-HEAD results are recorded in `AXRM-009-gates.txt`.
+run on lane 009. STD-GATES on the clean committed head `2e2afc4`
+(`AXRM-009-gates.txt`, every command exit 0): Ruff, format, Mypy and migration
+drift clean; default **5582 passed, 44 skipped** (+120 against the baseline);
+isolation **777 passed, 44 skipped** (+37); CNPJ pack **29 passed**; browser
+**189 passed**. No template, CSS or JavaScript changed.
 Configuration effects retain barriers even at zero reserved cost; included-plan
 reads skip reservation/journal but retain claim/fence. An incomplete sequence of
 journal attempts fails recovery rather than losing earlier billed usage.
