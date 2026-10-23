@@ -74,7 +74,9 @@ RUNTIME_ROLE = "app_runtime"
 # client-paired integrations_clientproviderlink (both policies): 67 + 2 = 69.
 # AXRM-008 adds integrations_firmauthorization (tenant, deny-all) and the client-paired
 # integrations_authorityrecord and integrations_integrationissue (both policies): 72.
-EXPECTED_TENANT_TABLE_COUNT = 72
+# AXRM-009 adds three client-scoped private protocol tables (it reuses AXRM-008's
+# integrations_integrationissue): 72 + 3 = 75.
+EXPECTED_TENANT_TABLE_COUNT = 75
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -96,6 +98,10 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         # AXRM-008: client authority revisions and owned provider problems.
         "integrations_authorityrecord",
         "integrations_integrationissue",
+        # AXRM-009: provider calls, their attempt receipts and effect barriers.
+        "integrations_providercall",
+        "integrations_providercallattempt",
+        "integrations_providereffectbarrier",
     }
 )
 
@@ -588,6 +594,10 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "integrations_authorityrecord",
         "integrations_firmauthorization",
         "integrations_integrationissue",
+        # AXRM-009: provider-call protocol rows are portal NONE.
+        "integrations_providercall",
+        "integrations_providercallattempt",
+        "integrations_providereffectbarrier",
     },
 )
 

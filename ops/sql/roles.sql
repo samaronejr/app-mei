@@ -197,6 +197,10 @@ $$;
 -- rows fiscal.0003 inserted); no tenant content and no portal grant.
 -- PORTAL_NONE: integrations_providerconnection
 -- PORTAL_NONE: integrations_clientproviderlink
+-- PORTAL_NONE: integrations_providercall
+-- PORTAL_NONE: integrations_providercallattempt
+-- PORTAL_NONE: integrations_providereffectbarrier
+-- PORTAL_NONE: integrations_providerexecutionepoch
 -- AXRM-007: provider connections and client provider links are firm-side provider
 -- configuration (ADR-0008); no portal grant, and each table carries DenyPortalAccess
 -- from integrations.0001, so a grant added by mistake would still read nothing.
@@ -245,7 +249,8 @@ BEGIN
     FOREACH receipt_table IN ARRAY ARRAY[
         'delivery_deliveryattempt', 'delivery_deliveryeffect', 'cycles_approval',
         'cycles_actionexecution', 'cycles_clientacknowledgement',
-        'cycles_evidenceindex', 'cycles_completiongeneration', 'tenants_usagerecord'
+        'cycles_evidenceindex', 'cycles_completiongeneration', 'tenants_usagerecord',
+        'integrations_providercallattempt', 'integrations_providereffectbarrier'
     ]
     LOOP
         IF to_regclass('public.' || receipt_table) IS NOT NULL THEN
@@ -253,6 +258,26 @@ BEGIN
             EXECUTE format('GRANT SELECT, INSERT ON %I TO app_runtime', receipt_table);
         END IF;
     END LOOP;
+END
+$$;
+
+-- The epoch has no tenant content and no portal grant. Runtime code may only read
+-- it; the ownership-pinned restore procedure is its only increment path.
+DO $$
+BEGIN
+    IF to_regclass('public.integrations_providerexecutionepoch') IS NOT NULL THEN
+        REVOKE ALL ON integrations_providerexecutionepoch FROM app_runtime, app_portal;
+        GRANT SELECT ON integrations_providerexecutionepoch TO app_runtime;
+    END IF;
+    IF to_regprocedure('public.integrations_current_provider_epoch()') IS NOT NULL THEN
+        REVOKE ALL ON FUNCTION integrations_current_provider_epoch()
+            FROM PUBLIC, app_portal;
+        GRANT EXECUTE ON FUNCTION integrations_current_provider_epoch() TO app_runtime;
+        REVOKE ALL ON FUNCTION integrations_restore_provider_epoch(bigint, uuid)
+            FROM PUBLIC, app_portal;
+        GRANT EXECUTE ON FUNCTION integrations_restore_provider_epoch(bigint, uuid)
+            TO app_runtime;
+    END IF;
 END
 $$;
 

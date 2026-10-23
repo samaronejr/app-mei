@@ -85,6 +85,10 @@ PORTAL_DENIED_TABLES = (
     "integrations_authorityrecord",
     "integrations_firmauthorization",
     "integrations_integrationissue",
+    "integrations_providercall",
+    "integrations_providercallattempt",
+    "integrations_providereffectbarrier",
+    "integrations_providerexecutionepoch",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -112,6 +116,8 @@ APPEND_ONLY_TABLES = (
     "cycles_completiongeneration",
     "delivery_deliveryattempt",
     "delivery_deliveryeffect",
+    "integrations_providercallattempt",
+    "integrations_providereffectbarrier",
     "tenants_usagerecord",
     # AXRM-008: authority revisions and firm termo records are append-only.
     "integrations_authorityrecord",
@@ -239,6 +245,12 @@ def django_db_setup(
                 $$
                 """,
             )
+        cursor.execute(
+            "REVOKE ALL ON integrations_providerexecutionepoch FROM app_runtime"
+        )
+        cursor.execute(
+            "GRANT SELECT ON integrations_providerexecutionepoch TO app_runtime"
+        )
         # roles.sql runs from the init hook against an empty cluster, so its own guarded
         # grant reaches none of these tables. Without the grant below every portal
         # assertion dies with `permission denied` before it reaches a policy — and the

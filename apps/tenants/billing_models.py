@@ -62,6 +62,10 @@ class UsageMetric(models.TextChoices):
     STORAGE_BYTES = "storage_bytes", "Armazenamento em bytes"
     EMAILS_SENT = "emails_sent", "E-mails aceitos pelo servidor"
     AI_SHADOW_CALLS = "ai_shadow_calls", "Chamadas de IA em avaliação"
+    SERPRO_CONSULTA = "serpro_consulta", "Consultas SERPRO"
+    SERPRO_EMISSAO = "serpro_emissao", "Emissões SERPRO"
+    FOCUS_DOCUMENTOS = "focus_documentos", "Documentos Focus"
+    FOCUS_EVENTOS = "focus_eventos", "Eventos Focus"
 
 
 class UsageKind(models.TextChoices):

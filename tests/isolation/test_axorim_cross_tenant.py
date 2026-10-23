@@ -139,6 +139,7 @@ def test_the_enumeration_covers_every_axorim_model_and_nothing_else() -> None:
         m._meta.label
         for app in ("cycles", "delivery", "briefing", "automation", "integrations")
         for m in django_apps.get_app_config(app).get_models()
+        if m._meta.label != "integrations.ProviderExecutionEpoch"
     }
     expected |= {
         "clients.ClientContact",
@@ -500,6 +501,13 @@ def _issue_swap_parent(
     return {"link": link}
 
 
+def _providereffectbarrier_swap_parent(
+    model: type[models.Model], ctx: SeedContext, row: models.Model
+) -> dict[str, object]:
+    call = seed_model(django_apps.get_model("integrations", "ProviderCall"), ctx)
+    return {"call": call}
+
+
 _SWAP_INSERT_PROBES: dict[
     str,
     Callable[
@@ -514,6 +522,7 @@ _SWAP_INSERT_PROBES: dict[
     # NULLs and only a clone born with alpha's parent on the sibling client probes.
     "integrations_authorityrecord": _authority_swap_parent,
     "integrations_integrationissue": _issue_swap_parent,
+    "integrations_providereffectbarrier": _providereffectbarrier_swap_parent,
 }
 
 
@@ -731,7 +740,7 @@ def _clone_insert(
     for column in ("position", "amendment", "number"):
         if column in kwargs:
             kwargs[column] = cast("int", kwargs[column]) + 1
-    for column in ("business_intent_key", "idempotency_key"):
+    for column in ("business_intent_key", "idempotency_key", "business_effect_key"):
         if column in kwargs:
             kwargs[column] = f"clone-{kwargs[column]}"[:64]
 

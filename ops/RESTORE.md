@@ -49,6 +49,46 @@ That checklist remains OPEN until the operator performs and records the drill.
    heartbeat; do not repeatedly restart the web process to hide a backlog alert.
    Accepted and uncertain intents must not produce another SMTP transmission.
 
+### Provider calls after database restore
+
+Keep `PROVIDERS_PAUSED=true` in every process and stop all provider dispatch
+workers before restoring. The pause is independent of `DELIVERY_PAUSED`.
+Preserve the latest complete `provider-journal/` **and** `provider-epochs/`
+prefixes, including objects newer than the database backup. Neither prefix may
+be restored backwards or pruned to make replay succeed. Their retention and
+versioning are operator evidence, not a property proved by local filesystem tests.
+
+After restoring the database, applying migrations and reapplying `roles.sql`,
+set `PROVIDER_RESTORE_REF` to an opaque UUID identifying the recovery, then run:
+
+```sh
+uv run python manage.py reconcile_provider_operations --restore-ref "$PROVIDER_RESTORE_REF"
+```
+
+The command refuses without the global pause. It advances the execution epoch
+above both the restored database and the independent epoch receipts, rejecting
+claims carried by pre-restore worker messages. It restores each attempt and its
+usage separately, rebuilds issuance/registration/configuration barriers, and never sends a
+provider request. A missing tenant/client/link, malformed receipt or conflicting
+identity is a failed recovery: keep providers paused and repair the restore.
+Repeat reconciliation after an interrupted recovery; already restored receipts
+are not counted or billed twice.
+
+Review `chamada_provedor_incerta` work items before unpausing. An intent without
+a result stays `incerta`, as does an expired lease; neither can be reclaimed.
+Registration/issuance uncertainty requires provider-state evidence via the
+operation's read-only reconciliation path, not a repeat of the initiating call.
+Staff decisions on billed reads are not proof of provider non-execution. Do not
+delete a barrier or change a request key to bypass uncertainty. A known read
+retry from before the backup is quarantined rather than transmitted by recovery.
+
+Only after complete reconciliation and uncertainty review may the operator
+restart workers with the deliberate unpause. Reverting application code means
+flags off and tables retained. The protocol and provider-metric migrations
+refuse reversal while their operational rows exist; repair forward instead.
+The required isolated-host provider restore drill **OG-R8**, live-provider
+qualification and owner activation gates remain open.
+
 ### Executable isolated logical-restore sequence
 
 This is the local engineering form, not permission to target production. First

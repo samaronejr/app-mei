@@ -68,6 +68,9 @@ NFSE_ALLOWED_FILES = frozenset(
         "apps/integrations/authority.py",
         "apps/integrations/migrations/0002_authority_records.py",
         "apps/integrations/workspace.py",
+        # AXRM-009: the uncertain-call issue's service choices repeat AXRM-008's
+        # capture services and name the A6 Focus READ operations (FC-NFS, FC-PDF).
+        "apps/integrations/migrations/0003_call_protocol.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -93,6 +96,18 @@ CONNECTOR_ALLOWED_FILES = frozenset(
     },
 )
 
+# AXRM-009/A7.4 commissions provider-effect recovery, not bank reconciliation.
+# Register only its exact modules; OFX remains forbidden even in these files.
+PROVIDER_RECOVERY_FILES = frozenset(
+    {
+        "apps/integrations/call_dispatch.py",
+        "apps/integrations/call_models.py",
+        "apps/integrations/management/commands/reconcile_provider_operations.py",
+        "apps/integrations/migrations/0003_call_protocol.py",
+        "apps/integrations/provider_replay.py",
+    }
+)
+
 # Row 10. The single `esocial` occurrence is a COMMENT above `has_employee`, saying why
 # the field is a boolean rather than a payroll model. Pinned by location so that a
 # future *field* named `esocial_*` cannot slip in under the same allowance.
@@ -116,6 +131,8 @@ NFE_READ_ONLY_FILES = frozenset(
         # FC-NFE, service label "Captura de NF-e recebidas"); no issuance anywhere.
         "apps/integrations/authority.py",
         "apps/integrations/migrations/0002_authority_records.py",
+        # AXRM-009: the same choices name the A6 read operation FC-NFE.
+        "apps/integrations/migrations/0003_call_protocol.py",
     },
 )
 
@@ -292,11 +309,15 @@ def test_row_6_no_bank_import() -> None:
     assert len(sources) > 100, "the scan found nothing and would pass vacuously"
 
     # When they are searched for the bank-import vocabulary
-    hits = _grep(sources, r"\bofx\b|reconcil")
+    bank_hits = _grep(sources, r"\bofx\b")
+    hits = _grep(sources, r"reconcil")
 
-    # Then there are none, with NO allow-set. Reconciliation is the single largest
-    # feature in Phase 4; a helper named `reconcile_*` is how it starts.
-    assert hits == [], _report("bank-import / reconciliation reference", hits)
+    # Then bank import stays excluded. The regional plan's provider recovery is
+    # registered by exact file, never by app-wide or banking-vocabulary exemption.
+    assert bank_hits == [], _report("bank-import reference", bank_hits)
+    strays = _outside(hits, PROVIDER_RECOVERY_FILES)
+    assert strays == [], _report("reconciliation outside provider recovery", strays)
+    assert {hit.split(":", 1)[0] for hit in hits} == PROVIDER_RECOVERY_FILES
 
 
 def test_row_7_no_reports_v1_and_no_audit_ui() -> None:

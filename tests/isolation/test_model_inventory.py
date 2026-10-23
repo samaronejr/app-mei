@@ -65,6 +65,9 @@ SWEEP_LABELS: Final = frozenset(
         "integrations.FirmAuthorization",
         "integrations.IntegrationIssue",
         "integrations.ProviderConnection",
+        "integrations.ProviderCall",
+        "integrations.ProviderCallAttempt",
+        "integrations.ProviderEffectBarrier",
         # AXRM-012 subject, evidence and supersedes-chain visibility:
         # test_portal_reference_visibility.py.
         "obligations.SourceObservation",
@@ -113,6 +116,9 @@ SWEEP_EXEMPTIONS: Final[dict[str, str]] = {
     "fiscal.MunicipalityCapability": "Shared municipal fiscal capability reference.",
     "fiscal.MunicipalitySeedRow": "Registry seed ownership ledger; no tenant data.",
     "authz.CapabilitySeedRow": "Matrix seed ownership ledger; no tenant data.",
+    "integrations.ProviderExecutionEpoch": (
+        "platform singleton without tenant data; no portal grant"
+    ),
     "obligations.FiscalParameter": "Shared national fiscal reference data.",
     "obligations.Holiday": "Shared statutory holiday reference data.",
     "obligations.ObligationType": "Shared statutory obligation reference data.",

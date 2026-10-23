@@ -20,12 +20,46 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import TenantScopedModel
+from apps.integrations.call_models import (
+    ProviderCall,
+    ProviderCallAttempt,
+    ProviderEffectBarrier,
+    ProviderExecutionEpoch,
+)
 from apps.integrations.validators import (
     REF_MAX_LENGTH,
     REF_NAME_PATTERN,
     REF_VALUE_RUN_PATTERN,
     validate_secret_ref,
 )
+
+__all__ = [
+    "AuthorityKind",
+    "AuthorityRecord",
+    "AuthorityService",
+    "AuthorityStatus",
+    "CaptureStream",
+    "ClientProviderLink",
+    "ConnectionStatus",
+    "CredentialState",
+    "DisablementState",
+    "FirmAuthorization",
+    "FirmAuthorizationKind",
+    "FirmAuthorizationStatus",
+    "IntegrationIssue",
+    "IssueReason",
+    "IssueService",
+    "IssueState",
+    "LinkStatus",
+    "Provider",
+    "ProviderCall",
+    "ProviderCallAttempt",
+    "ProviderConnection",
+    "ProviderEffectBarrier",
+    "ProviderEnvironment",
+    "ProviderExecutionEpoch",
+    "ProviderOperationCode",
+]
 
 
 class Provider(models.TextChoices):
@@ -501,6 +535,31 @@ class IssueReason(models.TextChoices):
         "Certificado no provedor vencido",
     )
     CREDENCIAL_DIVERGENTE = "credencial_divergente", "Credencial divergente"
+    # AXRM-009: an attempt whose provider outcome is unknown (A7.3 `incerta`).
+    CHAMADA_PROVEDOR_INCERTA = (
+        "chamada_provedor_incerta",
+        "Chamada ao provedor com resultado incerto",
+    )
+
+
+class ProviderOperationCode(models.TextChoices):
+    """Implemented A6 operations that may run as client provider calls (AXRM-009)."""
+
+    SP_SIT_P = "SP-SIT-P", "SITFIS: solicitar protocolo"
+    SP_SIT_R = "SP-SIT-R", "SITFIS: emitir relatório"
+    SP_PAG = "SP-PAG", "PAGTOWEB: consultar pagamentos"
+    SP_COMP = "SP-COMP", "PAGTOWEB: emitir comprovante"
+    SP_DAS = "SP-DAS", "PGMEI: gerar DAS"
+    FC_EMP = "FC-EMP", "Focus: empresa"
+    FC_NFE = "FC-NFE", "Focus: NF-e recebidas"
+    FC_CIE = "FC-CIE", "Focus: Ciência da operação"
+    FC_NFS = "FC-NFS", "Focus: NFS-e recebidas"
+    FC_PDF = "FC-PDF", "Focus: DANFe/DANFSe"
+
+
+# An issue's service is an authority service (todo 8) or, for an uncertain
+# provider call, the exact A6 operation, so SITFIS request and emission stay apart.
+IssueService: Final = [*AuthorityService.choices, *ProviderOperationCode.choices]
 
 
 class IssueState(models.TextChoices):
@@ -529,7 +588,7 @@ class IntegrationIssue(TenantScopedModel):
     )
     reason = models.CharField(max_length=40, choices=IssueReason.choices)
     service = models.CharField(
-        max_length=16, choices=AuthorityService.choices, blank=True, default=""
+        max_length=16, choices=IssueService, blank=True, default=""
     )
     link = models.ForeignKey(
         ClientProviderLink,
