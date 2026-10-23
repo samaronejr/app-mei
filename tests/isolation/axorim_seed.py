@@ -161,8 +161,17 @@ def _string_default(field: models.Field[Any, Any], ctx: SeedContext) -> object:
     return f"{ctx.tag}-{name}"[:max_length]
 
 
+# A nullable FK a CHECK still requires here: resolved exactly as `_parent_for`
+# resolves a NOT NULL one.
+_SEEDED_PARENT: Final = object()
+
 # Required-by-constraint-but-nullable columns the generic seeder leaves blank.
 _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
+    "obligations.Document": {
+        # AXRM-012: uploaded_by may be NULL only for provider origins
+        # (document_human_or_provider_origin); the generic seed stays a human upload.
+        "uploaded_by": _SEEDED_PARENT,
+    },
     "cycles.Exception": {
         "due_on": dt.date(2026, 10, 1),
         # The portal predicate is client_visible-folded; a hidden row counts as
@@ -262,7 +271,12 @@ def seed_model(
     # Constraints a blank field cannot express (e.g. cycles.Exception needs a
     # review or due date). Keep this table to what a CHECK actually enforces.
     for name, value in _EXTRA_DEFAULTS.get(model._meta.label, {}).items():
-        kwargs.setdefault(name, value)
+        if value is _SEEDED_PARENT:
+            field = model._meta.get_field(name)
+            assert isinstance(field, models.ForeignKey)
+            kwargs.setdefault(name, _parent_for(field, ctx))
+        else:
+            kwargs.setdefault(name, value)
 
     # The twin columns an exact composite repeats from its parent must match the
     # seeded parent's values, not fresh defaults (e.g. approval_exact_manifest_fk).
