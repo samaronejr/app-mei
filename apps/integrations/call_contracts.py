@@ -147,7 +147,7 @@ class Operation:
     @property
     def journaled(self) -> bool:
         """Only explicitly unbilled reads skip reservations and the journal."""
-        return not (
+        return self.provider == "focus" or not (
             self.operation_class == "read"
             and self.billing_class in {"nao_faturada", "incluido_no_plano"}
         )

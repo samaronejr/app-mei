@@ -3,7 +3,12 @@
 from datetime import datetime
 from uuid import UUID, uuid5
 
-from apps.integrations.call_contracts import CallResult, IntentConflictError
+from apps.integrations.budget import BudgetPolicy
+from apps.integrations.call_contracts import (
+    CallResult,
+    IntentConflictError,
+    operation_for,
+)
 from apps.integrations.call_models import ProviderCall, ProviderCallAttempt
 from apps.tenants.models import UsageKind, UsageRecord
 
@@ -55,21 +60,29 @@ def meter(
     }.get((call.provider, call.operation_class))
     if metric is None:
         return
-    existing = UsageRecord.objects.filter(
-        metric=metric, source_event=attempt_id
-    ).first()
-    if result.billed == "nao" and existing is None:
+    source = attempt_id
+    if isinstance(operation_for(call.operation).policy, BudgetPolicy):
+        source = (
+            call.pk
+            if call.attempts == 1
+            else uuid5(call.pk, f"provider-attempt:{call.attempts}")
+        )
+    existing = UsageRecord.objects.filter(metric=metric, source_event=source).first()
+    focus_event = metric == "focus_eventos"
+    if result.billed == "nao" and existing is None and not focus_event:
         return
-    quantity = int(result.billed != "nao")
+    quantity = int(result.billed != "nao" or focus_event)
     kind = (
-        UsageKind.ESTIMATED if result.billed == "desconhecido" else UsageKind.CONFIRMED
+        UsageKind.ESTIMATED
+        if result.billed == "desconhecido" or focus_event
+        else UsageKind.CONFIRMED
     )
     if existing is not None:
         if existing.kind == UsageKind.ESTIMATED and kind == UsageKind.CONFIRMED:
             UsageRecord.objects.get_or_create(
                 tenant_id=call.tenant_id,
                 metric=metric,
-                source_event=uuid5(attempt_id, "provider-result"),
+                source_event=uuid5(source, "provider-result"),
                 defaults={
                     "period": occurred_at.date(),
                     "quantity": quantity,
@@ -81,7 +94,7 @@ def meter(
     UsageRecord.objects.create(
         tenant_id=call.tenant_id,
         metric=metric,
-        source_event=attempt_id,
+        source_event=source,
         period=occurred_at.date(),
         quantity=quantity,
         kind=kind,

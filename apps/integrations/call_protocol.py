@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 
+from apps.integrations.budget_settlement import billing_result
 from apps.integrations.call_contracts import MAX_ATTEMPTS, CallResult, Claim
 from apps.integrations.call_dispatch import (
     Adapter,
@@ -28,7 +29,7 @@ __all__ = [
 def perform(ticket: Claim, adapter: Adapter) -> CallResult:
     """Start once, transmit once, journal before settling the fenced DB result."""
     dispatch = begin_io(ticket)
-    result = transmit(dispatch, adapter)
+    result = billing_result(dispatch.receipt, transmit(dispatch, adapter))
     if result.state == CallState.RETRY:
         if dispatch.receipt.operation_class != "read":
             result = replace(result, state=CallState.UNCERTAIN)

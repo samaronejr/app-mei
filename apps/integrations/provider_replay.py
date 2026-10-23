@@ -110,7 +110,7 @@ def _restore_attempt(call: ProviderCall, record: JournalRecord) -> int:
     attempt_call.dispatch_started_at = record.occurred_at
     if created:
         operation_for(record.operation).policy.settle(attempt_call, result)
-    meter(call, record.attempt_id, result, record.occurred_at)
+    meter(attempt_call, record.attempt_id, result, record.occurred_at)
     return int(created)
 
 

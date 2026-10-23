@@ -77,7 +77,9 @@ RUNTIME_ROLE = "app_runtime"
 # AXRM-009 adds three client-scoped private protocol tables (it reuses AXRM-008's
 # integrations_integrationissue) and the two client-less SP-TERMO tables (tenant,
 # deny-all): 72 + 3 + 2 = 77.
-EXPECTED_TENANT_TABLE_COUNT = 77
+# AXRM-010 adds the tenant budget (deny-all) and the client-paired private
+# reservation ledger: 77 + 2 = 79.
+EXPECTED_TENANT_TABLE_COUNT = 79
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -99,6 +101,8 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         # AXRM-008: client authority revisions and owned provider problems.
         "integrations_authorityrecord",
         "integrations_integrationissue",
+        # AXRM-010: per-attempt provider spend reservations.
+        "integrations_providerreservation",
         # AXRM-009: provider calls, their attempt receipts and effect barriers.
         "integrations_providercall",
         "integrations_providercallattempt",
@@ -590,6 +594,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "tenants_supportgrant",
         # AXRM-007: provider connections and client provider links are portal NONE.
         "integrations_providerconnection",
+        "integrations_providerbudget",
+        "integrations_providerreservation",
         "integrations_clientproviderlink",
         # AXRM-008: authority, firm termo and provider problem rows are portal NONE.
         "integrations_authorityrecord",

@@ -147,15 +147,28 @@ def cost_estimate(actor: User, tenant_id: UUID, *, on: date) -> CostEstimate:
             else readings.aggregate(
                 total=Sum(
                     "quantity",
-                    default=None if metric == UsageMetric.EMAILS_SENT else 0,
+                    default=None
+                    if metric == UsageMetric.EMAILS_SENT or feature is not None
+                    else 0,
                 )
             )["total"]
         )
         price = settings.USAGE_UNIT_PRICES_BRL.get(metric)
+        label = str(metric.label)
+        if feature is not None:
+            kinds = set(readings.values_list("kind", flat=True))
+            if kinds == {UsageKind.CONFIRMED}:
+                label += " (medido)"
+            elif kinds == {UsageKind.ESTIMATED}:
+                label += " (estimado)"
+            elif kinds:
+                label += " (medido e estimado)"
+            if metric == UsageMetric.FOCUS_DOCUMENTOS:
+                label += " - limite do Axorim - nao e um teto do provedor"
         lines.append(
             UsageLine(
                 metric,
-                str(metric.label),
+                label,
                 int(quantity) if quantity is not None else None,
                 Decimal(str(price)) if price is not None else None,
                 covered_through,
