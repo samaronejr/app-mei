@@ -4,8 +4,6 @@ from pathlib import Path
 
 import pytest
 from django.db import ProgrammingError, connection, transaction
-from django.db.backends.utils import CursorWrapper
-from psycopg import sql
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.identifiers import uuid7
@@ -15,14 +13,11 @@ from apps.cycles.evidence import DocumentIntake
 from apps.cycles.intake import staff_upload
 from apps.obligations.models import Document
 from apps.obligations.system_ingest import ingest_system_document
-from tests.isolation.test_portal_visibility_bootstrap import _bootstrap_sql
 from tests.isolation.test_portal_visibility_predicate import _document
 from tests.obligations.ingest_fixtures import PDF, ingest_setup, portal_cursor
 from tests.portal.request_fixtures import PortalSetup, upload
 
 pytestmark = pytest.mark.django_db(transaction=True)
-CLIENT = "client_id = NULLIF(current_setting('app.client_id', true), '')::uuid"
-POLICY = "cycles_documentintake_portal_client_isolation"
 
 
 @pytest.fixture
@@ -30,20 +25,7 @@ def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
     return ingest_setup(settings, tmp_path)
 
 
-def _replay_bootstrap(cursor: CursorWrapper, *, bootstrap: bool) -> None:
-    if bootstrap:
-        cursor.execute(
-            sql.SQL(
-                "ALTER POLICY {} ON cycles_documentintake USING ({}) WITH CHECK ({})"
-            ).format(sql.Identifier(POLICY), sql.SQL(CLIENT), sql.SQL(CLIENT))
-        )
-        cursor.execute(_bootstrap_sql())
-
-
-@pytest.mark.parametrize("bootstrap", [False, True])
-def test_hidden_originals_do_not_disclose_intake_metadata(
-    setup: PortalSetup, bootstrap: bool
-) -> None:
+def test_hidden_originals_do_not_disclose_intake_metadata(setup: PortalSetup) -> None:
     # Given same-client clean documents and the metadata of both originals.
     hidden = _document(setup, visible=False)
     visible = _document(setup, visible=True)
@@ -52,7 +34,6 @@ def test_hidden_originals_do_not_disclose_intake_metadata(
         visible_intake = DocumentIntake.objects.get(document=visible)
     with transaction.atomic(), connection.cursor() as cursor:
         cursor.execute("RESET ROLE")
-        _replay_bootstrap(cursor, bootstrap=bootstrap)
         query = "SELECT id FROM cycles_documentintake WHERE id IN (%s, %s)"
         ids = [hidden_intake.pk, visible_intake.pk]
         cursor.execute(query, ids)
@@ -65,12 +46,11 @@ def test_hidden_originals_do_not_disclose_intake_metadata(
         transaction.set_rollback(True)
 
 
-@pytest.mark.parametrize("bootstrap", [False, True])
 @pytest.mark.parametrize("visible", [False, True])
-def test_portal_intake_insert_requires_a_visible_parent(
-    setup: PortalSetup, bootstrap: bool, visible: bool
+def test_portal_reads_back_intake_metadata_only_for_a_visible_parent(
+    setup: PortalSetup, visible: bool
 ) -> None:
-    # Given a parent document and the ordinary portal INSERT grant.
+    # Given a same-client parent without an intake and the ordinary portal INSERT grant.
     with tenant_context(setup.graph.tenant.pk):
         document = Document.objects.create(
             tenant=setup.graph.tenant,
@@ -82,33 +62,31 @@ def test_portal_intake_insert_requires_a_visible_parent(
             content_type="application/pdf",
             byte_size=1,
         )
+    intake_id = uuid7()
     with transaction.atomic(), connection.cursor() as cursor:
         cursor.execute("RESET ROLE")
-        _replay_bootstrap(cursor, bootstrap=bootstrap)
+        # RETURNING, as the ORM may emit it: the new row must also pass USING.
         statement = (
             "INSERT INTO cycles_documentintake "
             "(id, tenant_id, client_id, document_id, state, reason, "
             "created_at, version) "
-            "VALUES (%s, %s, %s, %s, 'quarentena', '', now(), 1)"
+            "VALUES (%s, %s, %s, %s, 'quarentena', '', now(), 1) RETURNING id"
         )
-        params = [
-            uuid7(),
-            setup.graph.tenant.pk,
-            setup.graph.client.pk,
-            document.pk,
-        ]
-        # When the portal appends metadata, no SELECT/RETURNING can mask WITH CHECK.
+        params = [intake_id, setup.graph.tenant.pk, setup.graph.client.pk, document.pk]
+        # When the real portal role appends metadata and reads it back.
         if visible:
             with portal_cursor(setup) as portal:
                 portal.execute(statement, params)
+                # Then its own visible upload's metadata round-trips.
+                assert portal.fetchall() == [(intake_id,)]
         else:
+            # Then a hidden parent's metadata is refused rather than returned.
             with (
                 pytest.raises(ProgrammingError, match="row-level security policy"),
                 transaction.atomic(),
                 portal_cursor(setup) as portal,
             ):
                 portal.execute(statement, params)
-        # Then only a visible parent permits the insert; all probe changes roll back.
         transaction.set_rollback(True)
 
 

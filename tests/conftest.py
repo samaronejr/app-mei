@@ -130,8 +130,8 @@ PORTAL_TABLES = (
     "cycles_clientpublication",
     "cycles_evidencerequest",
     "cycles_evidencelink",
-    # AXRM-012: SELECT/INSERT also require a parent Document visible to app_portal.
-    # The real-role metadata/aggregate probes are in test_portal_intake_visibility.py.
+    # AXRM-012: SELECT also requires a parent Document visible to app_portal; INSERT
+    # keeps the client-only check. Real-role probes: test_portal_intake_visibility.py.
     "cycles_documentintake",
     # T14: client-visible exceptions only (the policy adds client_visible).
     "cycles_exception",

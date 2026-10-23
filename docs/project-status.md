@@ -228,7 +228,7 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |
 | `AXRM-007` | New `apps/integrations` with `ProviderConnection` (tenant) and `ClientProviderLink` (client): tenant RLS, portal NONE (`DenyPortalAccess`, `-- PORTAL_NONE:` in `ops/sql/roles.sql`, `PORTAL_DENIED_TABLES`), composite (tenant, parent) foreign keys, version-checked locked transitions for the link's three A7.3 state fields, a capture start month that a database trigger keeps immutable, and a `secret_ref` that holds a secret *name* only (validator plus CHECK). Flags `federal_checks`, `document_capture` and `municipal_work`, each inert without `cycles_r1` and `scan_required` (INV-R13). Closed provider settings (`PROVIDERS_PAUSED=True`, environments `fake`, no real-data approval, no cap) and the `integrations.E001`/`E002` startup checks. Five A7.6 capabilities (matrix 36 rows / 216 cells, seeded by `authz.0009`). A read-only "Conexões fiscais" panel on `/configuracoes/` for holders of `fiscal.connections.manage` while a regional flag is on. | Tables ship empty, flags off, providers paused. `integrations.0001` reverses while both tables are empty and refuses (with a test) once a row exists: recovery is then flags off with the tables kept (forward repair). `authz.0009` records what it created or changed in the platform ledger `authz_capabilityseedrow`; its reverse deletes only the capabilities and role cells it created, puts back any label or level it changed, and refuses (forward repair) while a firm holds a user grant on a capability it created. |
-| `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows retain visibility. Reverse refuses provider-origin documents, private documents (including visible/private hash pairs), and private obligations; retained new data requires forward repair. |
+| `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses, and quarantine metadata follows its parent document; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows keep their visibility. Reverse restores the previous policies and trigger body, and refuses while provider-origin documents, private documents (including visible/private hash pairs) or private obligations exist; retained new data requires forward repair. |
 
 The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
 at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**
@@ -273,33 +273,28 @@ those. Evidence: `.evidence/AXRM-007-red-b1.txt`, `AXRM-007-red-b1-fresh.txt`,
 `AXRM-007-migration-b1.txt`, `AXRM-007-b1-*.log`, `AXRM-007-gates.txt`.
 
 `AXRM-012` adds `portal_visible` to documents and obligations without changing the
-legacy database default or existing rows. Both portal policy clauses require the
-client identity and visibility, and `roles.sql` reasserts that predicate on an
-upgraded schema. No portal grants or view filters are added. Document hash
-uniqueness includes visibility so a client can upload bytes already held privately.
-Origins distinguish portal and staff uploads from provider capture and federal
-acquisition; only provider origins can omit a human uploader, and provider receipts
-are required. The portal INSERT trigger refuses forged origins, private rows,
-missing human attribution and receipt metadata.
+legacy database default or any existing row. Both restrictive portal policy clauses
+fold the flag into the anchored client comparison
+(`client_id = CASE WHEN portal_visible THEN <client> END`, the `cycles_exception`
+precedent), so a hidden row is unreadable and uninsertable for `app_portal` at the
+policy level. `cycles_documentintake` reads follow the parent document the same way:
+the USING client comparison holds only while the parent document is visible to
+`app_portal`, so quarantine metadata of a hidden original is not readable (its WITH
+CHECK stays client-only, so the composite FK still refuses a foreign parent). No portal grant,
+view filter or `roles.sql` policy statement is added; `roles.sql` documents each
+decision beside its grant. Document hash uniqueness includes visibility, so a client
+can upload bytes already held privately and gets a separate visible row.
 
-The shared intake path retains the existing cap, byte sniffing, quarantine, scan
-sweep and compensation behavior. `ingest_system_document` creates a private
-original and intake with no fabricated actor or client submission; `staff_upload`
-is portfolio-scoped and defaults to private evidence. This follows the assignment's
-private-staff invariant rather than the plan's proposed True staff keyword default;
-existing portal uploads and legacy row defaults stay True. Visibility remains an
-explicit decision for later approved publication, not a permanent provider-origin
-ban. Migration reversal refuses provider data even after that later decision, and
-also refuses to expose private staff or municipal rows by dropping their predicate.
-
-The AXRM-012 corrective commit additionally confines `cycles_documentintake`
-metadata through its parent document's RLS on both SELECT and INSERT, retaining the
-client predicate. Real `app_portal` probes cover actor-less ingestion, sibling
-clients, aggregate metadata, the SQL bootstrap mirror and visible-upload controls.
-This corrects the unshipped `obligations.0023` migration; its reverse restores the
-pre-existing intake policy rather than deleting it. The correction is a new commit
-above `f234dec`, not an amend. Gates at `f234dec` are not acceptance evidence for
-the correction; all required gates are rerun at the corrective commit.
+Acquisition origins distinguish portal and staff uploads from provider capture and
+federal acquisition (existing rows backfilled from `client_upload`); only provider
+origins may omit a human uploader, and they require a receipt reference. The portal
+INSERT trigger refuses forged origins, private rows, missing human attribution and
+receipt metadata. `ingest_system_document` creates a private, actor-less original
+and a quarantined intake through the same capped, sniffed intake code as portal
+uploads, which the existing scan sweep processes. `staff_upload` is
+portfolio-scoped and private by default (the plan proposed a `True` default for an
+existing staff path; none exists, so the new function fails closed). Visibility stays
+an explicit later decision for an approved publication.
 
 ## Axorim pivot
 

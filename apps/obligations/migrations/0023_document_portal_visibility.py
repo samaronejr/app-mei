@@ -4,35 +4,40 @@ import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
 
-CLIENT = "client_id = NULLIF(current_setting('app.client_id', true), '')::uuid"
-TABLES = ("obligations_document", "obligations_obligation")
-DOCUMENT_POLICIES = "\n".join(
-    f"ALTER POLICY {table}_portal_client_isolation ON {table} "
-    f"USING ({CLIENT} AND portal_visible) WITH CHECK ({CLIENT} AND portal_visible);"
-    for table in TABLES
-)
-OLD_DOCUMENT_POLICIES = "\n".join(
-    f"ALTER POLICY {table}_portal_client_isolation ON {table} "
-    f"USING ({CLIENT}) WITH CHECK ({CLIENT});"
-    for table in TABLES
-)
-# The parent lookup executes as app_portal, so the document's tenant/client/
-# portal_visible policies also confine its quarantine metadata. No independent
-# visibility flag can drift away from the parent.
-INTAKE_VISIBLE = (
+# INV-R10 at the policy level. The visibility test is folded into the right-hand side
+# of the client comparison, as cycles 0006 does for `client_visible`: the predicate
+# stays anchored on client_id (the shape tests/isolation/test_portal_rls_coverage.py
+# asserts), and a hidden row compares client_id to NULL, which RLS never admits.
+CLIENT = "NULLIF(current_setting('app.client_id', true), '')::uuid"
+ORIGINAL = f"client_id = {CLIENT}"
+VISIBLE = f"client_id = CASE WHEN portal_visible THEN {CLIENT} END"
+# Quarantine metadata has no flag of its own: an intake row is READABLE exactly when
+# its parent document is. The subquery runs as app_portal, so the document's tenant,
+# client and portal_visible policies decide it; no second flag can drift. WITH CHECK
+# keeps the client-only predicate so the composite (tenant, client, document) FK is
+# still what refuses an intake naming another client's document
+# (tests/isolation/test_portal_write_refusal.py); INSERT ... RETURNING still applies
+# USING, and every hidden original already carries its one intake row.
+PARENT_VISIBLE = (
     "EXISTS (SELECT 1 FROM obligations_document document "
     "WHERE document.id = cycles_documentintake.document_id)"
 )
-POLICIES = DOCUMENT_POLICIES + (
-    "\nALTER POLICY cycles_documentintake_portal_client_isolation "
-    "ON cycles_documentintake "
-    f"USING ({CLIENT} AND {INTAKE_VISIBLE}) "
-    f"WITH CHECK ({CLIENT} AND {INTAKE_VISIBLE});"
-)
-OLD_POLICIES = OLD_DOCUMENT_POLICIES + (
-    "\nALTER POLICY cycles_documentintake_portal_client_isolation "
-    "ON cycles_documentintake "
-    f"USING ({CLIENT}) WITH CHECK ({CLIENT});"
+INTAKE_VISIBLE = f"client_id = CASE WHEN {PARENT_VISIBLE} THEN {CLIENT} END"
+TABLES = ("obligations_document", "obligations_obligation", "cycles_documentintake")
+
+
+def _policies(*sides: tuple[str, str]) -> str:
+    return "\n".join(
+        f"ALTER POLICY {table}_portal_client_isolation ON {table} "
+        f"USING ({using}) WITH CHECK ({check});"
+        for table, (using, check) in zip(TABLES, sides, strict=True)
+    )
+
+
+POLICIES = _policies((VISIBLE, VISIBLE), (VISIBLE, VISIBLE), (INTAKE_VISIBLE, ORIGINAL))
+# The pre-existing EnablePortalClientRLS predicates, restored on reverse (never dropped).
+OLD_POLICIES = _policies(
+    (ORIGINAL, ORIGINAL), (ORIGINAL, ORIGINAL), (ORIGINAL, ORIGINAL)
 )
 TRIGGER = """
 CREATE OR REPLACE FUNCTION document_portal_client_upload() RETURNS trigger

@@ -112,10 +112,20 @@ EXPECTED_EXEMPT_TABLES = frozenset(
 # client_id because it *is* the client.
 CLIENT_IDENTITY_COLUMN = {"clients_clientcompany": "id"}
 
-# AXRM-012: both restrictive sides require explicit publication eligibility.
-PORTAL_VISIBILITY_TABLES: Final = frozenset(
-    {"obligations_document", "obligations_obligation"}
-)
+# AXRM-012 folds a visibility test into the anchored client comparison
+# (`client_id = CASE WHEN <visible> THEN <client> END`, as cycles 0006 does for
+# client_visible): on BOTH sides for the row's own flag, on USING for an intake's
+# parent document (its WITH CHECK stays client-only so the composite FK refuses).
+_OWN_FLAG = r"=\s+CASE\s+WHEN\s+portal_visible\s+THEN\s+\(NULLIF\("
+PORTAL_VISIBILITY_FOLDS: Final = {
+    "obligations_document": _OWN_FLAG,
+    "obligations_obligation": _OWN_FLAG,
+    "cycles_documentintake": (
+        r"=\s+CASE\s+WHEN\s+\(EXISTS\s+\(\s*SELECT\s+1\s+FROM\s+obligations_document\s+"
+        r"document\s+WHERE\s+\(document\.id\s+=\s+cycles_documentintake\.document_id\)"
+        r"\)\)\s+THEN\s+\(NULLIF\("
+    ),
+}
 
 WRITE_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES")
 # The flat-zero set: everything above except the one privilege Phase 2b grants.
@@ -256,7 +266,7 @@ def _write_allow_list_from_roles_sql() -> frozenset[str]:
 
 
 def _anchored(column: str, expression: str) -> bool:
-    return re.match(rf"^\(+\s*{re.escape(column)}\s*=", expression) is not None
+    return re.match(rf"^\(\s*{re.escape(column)}\s*=", expression) is not None
 
 
 def test_the_enumeration_is_not_empty_and_has_not_silently_shrunk() -> None:
@@ -351,19 +361,13 @@ def test_every_tenant_table_has_a_deliberate_portal_decision() -> None:
                         f"{table}.{name} {side} does not compare {column} as its left "
                         f"operand: {expression}"
                     )
-                    if table in PORTAL_VISIBILITY_TABLES:
-                        assert re.search(r"\bAND\s+portal_visible\b", expression), (
-                            f"{table}.{name} {side} lacks explicit portal visibility"
+                    if table in PORTAL_VISIBILITY_FOLDS and (
+                        side == "USING" or table != "cycles_documentintake"
+                    ):
+                        assert re.search(PORTAL_VISIBILITY_FOLDS[table], expression), (
+                            f"{table}.{name} {side} lost its AXRM-012 visibility "
+                            f"fold: {expression}"
                         )
-                    if table == "cycles_documentintake":
-                        assert all(
-                            term in expression
-                            for term in (
-                                "EXISTS",
-                                "obligations_document",
-                                "document_id",
-                            )
-                        ), f"{table}.{name} {side} lacks parent-document visibility"
             else:
                 # Then the portal is denied outright, by shape and not by presence.
                 assert qual.strip().lower() == "false", f"{table}.{name} USING"

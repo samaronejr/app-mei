@@ -6,12 +6,12 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
-from apps.cycles.intake import _require_scanner
-from apps.cycles.intake_documents import (
+from apps.cycles.intake import (
     DocumentSource,
     UploadRejected,
     document_for,
     read_capped,
+    require_scanner,
 )
 from apps.obligations.models import AcquisitionOrigin, Document
 from apps.tenants.models import Tenant
@@ -46,7 +46,7 @@ def ingest_system_document(  # noqa: PLR0913 - the plan's keyword-only ingest co
         # PLATFORM_QUERY_OK: the trusted task supplied this exact tenant, not a scan.
         tenant = Tenant.objects.get(pk=tenant_id)
         client = ClientCompany.objects.get(pk=client_id)
-        _require_scanner(tenant)
+        require_scanner(tenant)
         upload = SimpleUploadedFile(filename, payload, content_type=content_type)
         capped, digest = read_capped(upload)
         try:

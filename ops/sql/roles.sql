@@ -276,21 +276,27 @@ BEGIN
         -- links it has submitted and their intake rows.
         'cycles_evidencerequest',
         'cycles_evidencelink',
-        -- AXRM-012: intake metadata inherits its parent document's portal visibility
-        -- on SELECT and INSERT, in addition to this client's restrictive predicate.
+        -- AXRM-012: an intake row is READABLE only while its parent
+        -- obligations_document row is visible to app_portal (EXISTS folded into the
+        -- USING client predicate, obligations 0023); it has no visibility flag of its
+        -- own. WITH CHECK stays client-only, so the composite FK still refuses an
+        -- intake naming another client's document.
         'cycles_documentintake',
         -- S8.2 / T14: the portal predicate adds `client_visible`; only the fixed
         -- client_message is rendered. Internal instructions/evidence are in the
         -- portal-denied cycles_exceptioninternal companion, not this table.
         'cycles_exception',
-        -- AXRM-012: SELECT only when client_id = app.client_id AND portal_visible.
-        -- All obligation columns remain readable on those rows; no new write grant.
+        -- AXRM-012: the predicate adds `portal_visible` (folded into the client
+        -- comparison, obligations 0023), so municipal and other firm-only rows stay
+        -- hidden. SELECT only, as before; no new grant.
         'obligations_obligation',
         'obligations_monthlyrevenue',
-        -- AXRM-012: same visibility predicate. The new visibility/provenance columns
-        -- are readable only on visible rows; provider receipts stay on private rows.
-        -- INSERT remains human upload_portal, portal_visible=true, no receipt, as
-        -- enforced by document_portal_client_upload (obligations.0023).
+        -- AXRM-012: the same `portal_visible` predicate hides staff-private and
+        -- provider originals even after a clean scan. portal_visible,
+        -- acquisition_origin and acquisition_receipt_ref are readable only on visible
+        -- rows. The INSERT grant below is unchanged; trigger
+        -- document_portal_client_upload (obligations 0023) pins a portal INSERT to a
+        -- human upload_portal row with portal_visible=true and no receipt.
         'obligations_document',
         -- S8.2: the payments page labels paid rows from the newest payment
         -- observation. SELECT only; the append-only trigger and the missing
@@ -302,43 +308,6 @@ BEGIN
             EXECUTE format('GRANT SELECT ON public.%I TO app_portal', portal_table);
         END IF;
     END LOOP;
-END
-$$;
-
--- AXRM-012 mirror of obligations.0023. A cold bootstrap has no tables/columns yet.
--- Re-applying roles.sql to an upgraded schema must retain BOTH restrictive sides,
--- not restore the old client-only policy. No grants or role sets change here.
-DO $$
-DECLARE
-    visible_table text;
-BEGIN
-    FOREACH visible_table IN ARRAY ARRAY[
-        'obligations_document', 'obligations_obligation'
-    ]
-    LOOP
-        IF EXISTS (
-            SELECT 1 FROM pg_attribute
-            WHERE attrelid = to_regclass('public.' || visible_table)
-              AND attname = 'portal_visible' AND NOT attisdropped
-        ) THEN
-            EXECUTE format(
-                'ALTER POLICY %I ON %I '
-                'USING (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND portal_visible) '
-                'WITH CHECK (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND portal_visible)',
-                visible_table || '_portal_client_isolation', visible_table
-            );
-        END IF;
-    END LOOP;
-    IF to_regclass('public.cycles_documentintake') IS NOT NULL AND EXISTS (
-        SELECT 1 FROM pg_attribute
-        WHERE attrelid = to_regclass('public.obligations_document')
-          AND attname = 'portal_visible' AND NOT attisdropped
-    ) THEN
-        EXECUTE
-            'ALTER POLICY cycles_documentintake_portal_client_isolation ON cycles_documentintake '
-            'USING (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND EXISTS (SELECT 1 FROM obligations_document document WHERE document.id = cycles_documentintake.document_id)) '
-            'WITH CHECK (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND EXISTS (SELECT 1 FROM obligations_document document WHERE document.id = cycles_documentintake.document_id))';
-    END IF;
 END
 $$;
 
