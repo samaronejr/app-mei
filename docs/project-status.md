@@ -241,7 +241,12 @@ selection passes **15 tests**. The default suite collects **5770 cases**, with
 **189 browser cases** separately marked; these are inventory counts, not an
 unrun full-suite claim. Full committed-HEAD totals and exits are recorded in
 `.evidence/AXRM-011-gates.txt`, using the code-identical `2e2afc4` AXRM-009 baseline
-instead of rerunning it. No existing test was changed.
+instead of rerunning it (default **5582 passed, 44 skipped**, isolation **777 passed,
+44 skipped**, CNPJ pack **29 passed**, browser **189 passed**). The only existing-test
+edit is a registration: `tests/scope/test_scope_fidelity.py` lists
+`apps/integrations/allowlist.py` among the read-only NF-e and NFS-e references (rows 4
+and 10), because the catalog names the received-document GET routes while refusing
+issuance.
 The initial red has six credential-scrubbing assertion failures; the later
 duplicate-key red proves an operation-smuggling case before the parser fix.
 Twenty-eight guard mutations fail their witnesses, with matching source hashes

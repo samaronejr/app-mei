@@ -71,6 +71,10 @@ NFSE_ALLOWED_FILES = frozenset(
         # AXRM-009: the uncertain-call issue's service choices repeat AXRM-008's
         # capture services and name the A6 Focus READ operations (FC-NFS, FC-PDF).
         "apps/integrations/migrations/0003_call_protocol.py",
+        # AXRM-011 (A6): the provider operation allowlist names the GET routes of
+        # the received NFS-e collection (FC-NFS, FC-PDF) and the receipt switches a
+        # company setup may send. Every issuance route (FC-X) is refused there.
+        "apps/integrations/allowlist.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -133,6 +137,9 @@ NFE_READ_ONLY_FILES = frozenset(
         "apps/integrations/migrations/0002_authority_records.py",
         # AXRM-009: the same choices name the A6 read operation FC-NFE.
         "apps/integrations/migrations/0003_call_protocol.py",
+        # AXRM-011 (A6): the operation allowlist's received NF-e read routes
+        # (FC-NFE list, XML, CC-e). POST /v2/nfe and other issuance (FC-X) is refused.
+        "apps/integrations/allowlist.py",
     },
 )
 
