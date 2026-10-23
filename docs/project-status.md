@@ -418,7 +418,12 @@ tests changed only as registrations (portal NONE lists, append-only list, isolat
 inventories and seeder, the tenant-table count 69 -> 72, the credential-route
 exemption, scope pins for the received NF-e/NFS-e capture labels, the client-column
 uniqueness exemption and the regional read-budget world, which now renders every
-authority row inside the unchanged 25-query budget). Evidence:
+authority row inside the unchanged 25-query budget). At the `AXRM-008` code
+(`b52657e`), under the gate lock, the default suite passes **5629, 45 skipped** (+106 tests; the one new skip is a schema fact: `FirmAuthorization`
+has no client column, so the client-swap probe does not apply), isolation **796
+passed, 45 skipped**, CNPJ **29** and browser **191** (two new journey cases at
+1440x900 and 390x844). Lint, format, Mypy, migration drift and the static rebuild are
+clean. Evidence:
 `.evidence/AXRM-008-red.txt`, `AXRM-008-baseline.txt`, `AXRM-008-flaky.txt`,
 `AXRM-008-mutations.txt`, `AXRM-008-happy.txt`, `AXRM-008-failure.txt`,
 `AXRM-008-adversarial.txt`, `AXRM-008-gates.txt`, `AXRM-008-teardown.txt`,
