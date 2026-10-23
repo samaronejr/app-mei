@@ -151,22 +151,33 @@ def test_the_seed_covers_the_matrix_and_nothing_else() -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_seeding_a_second_time_changes_nothing() -> None:
-    # Given the matrix seeded once by the data migration's own function. It is run
-    # here rather than relied upon: a transactional test starts from truncated
-    # tables, so migration-created rows are not present at this point. Seeding
-    # explicitly makes the test assert idempotency rather than assert the fixture.
+    # Given the matrix seeded once by the data migrations' own functions, in order.
+    # They are run here rather than relied upon: a transactional test starts from
+    # truncated tables, so migration-created rows are not present at this point.
+    # Seeding explicitly makes the test assert idempotency rather than assert the
+    # fixture. Every seed, not 0002 alone: 0002 leaves the slugs authz.0009 ledgers
+    # to that migration.
     #
     # schema_editor is unused by seed(), which is why None is safe and this exercises
     # the real code path instead of a re-implementation of it.
-    migration = importlib.import_module("apps.authz.migrations.0002_seed_matrix")
-    migration.seed(django_apps, None)
+    directory = Path(__file__).resolve().parents[2] / "apps" / "authz" / "migrations"
+    modules = [
+        importlib.import_module(f"apps.authz.migrations.{path.stem}")
+        for path in sorted(directory.glob("0*.py"))
+    ]
+    seeds = [
+        module.seed for module in modules if callable(getattr(module, "seed", None))
+    ]
+    for seed in seeds:
+        seed(django_apps, None)
     before = sorted(
         RoleGrant.objects.values_list("role", "capability__slug", "level"),
     )
     assert len(before) == EXPECTED_CELLS, "the first seed did not populate the matrix"
 
     # When it is replayed
-    migration.seed(django_apps, None)
+    for seed in seeds:
+        seed(django_apps, None)
 
     # Then nothing was duplicated and nothing changed, so fixing a wrong cell is a
     # re-run rather than a hand-written repair script
