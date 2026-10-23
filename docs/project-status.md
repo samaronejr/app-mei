@@ -463,7 +463,15 @@ refused by the tenant middleware before any view ran, so no refusal was recorded
 when that refusal targets a `require_can` view the middleware now records the same
 durable `DENIED` event the view would have, for the resolved firm, and still admits
 nothing. Every denied role of the six-role matrix writes exactly one refusal per
-request, and a gated page reached without a seat still refuses without client data.
+request, and a gated page reached without a seat still refuses without client data. At
+`c931570` the default suite passes **5666, 45 skipped** (group 1: 1380; group 2: 4286
+passed, 45 skipped), isolation **808 passed, 45 skipped**, `tests/portal` **319**, CNPJ
+**29**, browser **193** and the migration round trip **15**; static checks and the
+static rebuild are clean, and a bytecode-isolated run kills all 70 mutants (53 worker,
+six of them for the new guards, and the review's 17). Evidence:
+`.evidence/AXRM-008-rv2-red.txt`, `AXRM-008-rv2-green-flaky.txt`,
+`AXRM-008-rv2-registry-check.txt`, `AXRM-008-rv2-mutations.txt`,
+`AXRM-008-rv2-gates.txt`, `AXRM-008-rv2-screens/`.
 
 ## Axorim pivot
 
