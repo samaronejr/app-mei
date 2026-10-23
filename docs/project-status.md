@@ -277,6 +277,18 @@ window. Evidence: `AXRM-011-rework-red.txt` (21 assertion failures),
 `AXRM-011-rework-red-db.txt`, `AXRM-011-rework-mutations-*.txt`,
 `AXRM-011-rework-failure.txt` and the committed-HEAD `AXRM-011-gates.txt`.
 
+`AXRM-011` final-review follow-up. B3: a real-wire regression with the reviewed
+byte pattern (0, 20 and 40 s; unmodified 30 s budget) must abort with
+`tempo_limite` within 29-31 s; it runs alone through the exclusive gate slot. A real
+FC-PDF redirect logged by urllib3 at DEBUG through the production console exposed a
+presigned query leak (`AXRM-011-rework2-red.txt`); each wire call now registers its
+URL, path-and-query and query as active secrets, a text rule removes presigned query
+credentials without a scheme, and known values are replaced before pattern rules.
+Tests whose names claimed more than they checked were renamed (Sentry extra field,
+Sentry JWT extra, response body/auth header, socket timeout configuration); the
+review's three B2 reproductions are kept verbatim as regressions. The transport
+selection collects **186** tests; the default suite **5812**, browser **189**.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),

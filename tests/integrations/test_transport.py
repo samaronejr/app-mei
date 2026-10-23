@@ -286,6 +286,25 @@ def test_body_budget_bounds_every_blocking_read(
     assert elapsed < 2.8
 
 
+def test_production_budget_stops_the_reviewed_real_drip() -> None:
+    # Given the unmodified 30 s read budget and a real peer that sends one body
+    # byte at 0, 20 and 40 s and keeps the body incomplete (review finding B3).
+    drip = Reply(body=b"x" * 8, chunks=(b"x", b"x", b"x"), gap=20.0, hold_open=True)
+    with FakeFocus((drip,)) as peer:
+        # When the body is read.
+        started = time.monotonic()
+        with pytest.raises(TransportFailure) as caught:
+            permitted_send(
+                ProviderTransport("focus", "fake", peer.origin),
+                "FC-NFE",
+                ProviderRequest(),
+            )
+        elapsed = time.monotonic() - started
+    # Then it aborts at the budget plus a small margin (it took 40 s before).
+    assert caught.value.code == "tempo_limite"
+    assert 29.0 <= elapsed <= 31.0
+
+
 def test_exhausted_budget_stops_before_the_next_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

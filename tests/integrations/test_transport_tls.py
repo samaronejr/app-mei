@@ -124,7 +124,7 @@ def test_focus_pdf_one_hop_drops_all_credentials(
         ("SP-SIT-R", "RELATORIOSITFIS92", "SITFIS", 60.0),
     ],
 )
-def test_socket_receives_split_operation_timeouts(
+def test_socket_is_configured_with_split_operation_timeouts(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
     service: str,

@@ -1,4 +1,4 @@
-"""A bounded wire refusal is journaled and fenced into the real call row."""
+"""Wire outcomes finalize the claimed call; only an issued dispatch opens the wire."""
 
 from dataclasses import dataclass, replace
 

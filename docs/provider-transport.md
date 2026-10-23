@@ -38,7 +38,9 @@ origins are fixed. The explicit `fake` environment accepts only an ephemeral
 Each request has a 5-second connect timeout and 30-second read timeout
 (60 seconds for `SP-SIT-R`). The body has the same elapsed budget: before each
 single socket read the socket timeout is lowered to what remains, so a peer
-dripping bytes cannot extend the read by one socket timeout per byte. JSON/XML responses are limited to 5 MiB; direct PDF
+dripping bytes cannot extend the read by one socket timeout per byte. A real-wire
+regression sends bytes at 0, 20 and 40 s against the unmodified 30 s budget and
+requires `tempo_limite` between 29 and 31 s (before the fix it took 40 s). JSON/XML responses are limited to 5 MiB; direct PDF
 responses to 10 MiB. Compressed responses are refused before decompression.
 Provider adapters own format/schema validation and storage after this byte limit.
 No request or response body is logged.
@@ -59,8 +61,12 @@ remembered. Only then is the message interpolated; the rendered text, stack and
 the entire exception chain (causes and contexts, re-rendered from redacted
 arguments) are scrubbed again with the active credential values registered for
 the current call and every remembered value. Text-level rules also cover rendered
-pairs such as `('Authorization', '...')`, bare `Bearer` tokens and quoted body
-fields. The Sentry `before_send` hook applies the same pair rule to event lists.
+pairs such as `('Authorization', '...')`, bare `Bearer` tokens, quoted body
+fields and presigned query credentials (`X-Amz-*`, `Signature`, `AWSAccessKeyId`)
+even without a scheme. While a wire call runs, its full URL, path-and-query and
+query string are active secrets, so urllib3's DEBUG request line
+(`"GET /file?... HTTP/1.1"`) is replaced whole; known values are replaced before
+any pattern rule so a partial rewrite cannot defeat the match. The Sentry `before_send` hook applies the same pair rule to event lists.
 
 `TransportFailure.result()` produces a minimized protocol result: unreadable
 responses with a known status become `falhou`; connection/time-out ambiguity

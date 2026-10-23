@@ -37,6 +37,11 @@ _SIGNED_URL: Final = re.compile(
     r"""https?://[^\s"'<>]*[?&](?:X-Amz-[^=\s]+|Signature|AWSAccessKeyId)=[^\s"'<>]*""",
     re.IGNORECASE,
 )
+# Presigned query credentials, also when logged without scheme and host
+# (urllib3 logs `"GET /file?X-Amz-Signature=... HTTP/1.1"`).
+_SIGNED_QUERY: Final = re.compile(
+    r"(?i)([?&](?:X-Amz-[A-Za-z-]+|Signature|AWSAccessKeyId)=)[^&#\s\"']+"
+)
 _BASE64: Final = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{1025,}={0,2}")
 
 
@@ -54,6 +59,7 @@ def scrub_provider_text(value: str) -> str:
     value = _FIELD_VALUE.sub(lambda match: match[0].replace(match[1], MARKER), value)
     value = _BEARER.sub(lambda match: match[0].replace(match[1], MARKER), value)
     value = _QUOTED_BODY.sub(rf"\1{MARKER}\3", value)
+    value = _SIGNED_QUERY.sub(rf"\1{MARKER}", value)
     value = _QUERY.sub(lambda match: match[1] + MARKER, value)
     return _BASE64.sub(MARKER, value)
 
@@ -112,5 +118,6 @@ def redact_structure(value: object, credentials: set[str]) -> object:
             items = [redact_structure(item, credentials) for item in value]
         return tuple(items) if isinstance(value, tuple) else items
     if isinstance(value, str):
-        return scrub_provider_text(value)
+        # Known values first: pattern rules would alter them and defeat the match.
+        return scrub_text(value, credentials)
     return value

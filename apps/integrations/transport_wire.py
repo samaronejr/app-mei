@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from time import monotonic
 from typing import TYPE_CHECKING, Final, cast
+from urllib.parse import urlsplit
 
 from requests import Request, Response
 from requests.adapters import HTTPAdapter
@@ -110,14 +111,19 @@ def _exchange(
     """Exactly one transmission; redirects return a transient Location, never bytes."""
     # No Session: no cookies, netrc, environment proxies/CA overrides or redirect
     # preparation. HTTPAdapter disables redirects and retries explicitly.
+    prepared = request.prepare()
+    # urllib3 logs the request line (path and query) while this call runs.
     with delivery_secrets(
-        str(request.url), *(str(value) for value in (request.headers or {}).values())
+        str(prepared.url),
+        str(prepared.path_url),
+        urlsplit(str(prepared.url)).query,
+        *(str(value) for value in (request.headers or {}).values()),
     ):
         try:
             with (
                 closing(HTTPAdapter(max_retries=0)) as adapter,
                 adapter.send(
-                    request.prepare(),
+                    prepared,
                     stream=True,
                     timeout=(CONNECT_TIMEOUT, limits.read),
                     verify=limits.ca_file or True,

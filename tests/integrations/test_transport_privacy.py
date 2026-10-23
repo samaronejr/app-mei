@@ -2,8 +2,10 @@
 
 import json
 import logging
+import sys
 from collections.abc import Callable
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,10 +13,12 @@ import sentry_sdk
 
 from apps.delivery.privacy import delivery_secrets
 from apps.integrations.transport import ProviderTransport
-from apps.integrations.transport_types import ProviderRequest
+from apps.integrations.transport_types import ProviderRequest, TransportFailure
 from config.settings import prod
 from tests.fakes.focus import FakeFocus
 from tests.fakes.provider import Reply, permitted_send
+from tests.integrations.test_transport import KEY
+from tests.integrations.transport_tls import HOST, route_storage_host, tls_context
 from tests.security.test_credential_log_hygiene import _CaptureTransport
 
 
@@ -28,7 +32,7 @@ from tests.security.test_credential_log_hygiene import _CaptureTransport
         "X-Broker-Token-HMAC",
     ],
 )
-def test_provider_header_is_redacted_from_sentry(key: str) -> None:
+def test_provider_field_in_sentry_extra_is_redacted(key: str) -> None:
     # Given a provider credential embedded in a captured event.
     canary = "synthetic-provider-secret-781"
     # When the production Sentry hook processes it.
@@ -85,21 +89,28 @@ def test_base64_body_is_not_logged() -> None:
 CANARY = "synthetic-structured-canary-4417"
 
 
-def production_console(emit: Callable[[logging.Logger], None]) -> str:
+def production_console(
+    emit: Callable[[logging.Logger], None],
+    name: str = "transport-privacy-console",
+    level: int = logging.WARNING,
+) -> str:
     """Real production handler: settings formatter plus the installed filter."""
     output = StringIO()
     handler = logging.StreamHandler(output)
     handler.setFormatter(
         logging.Formatter(prod.LOGGING["formatters"]["simple"]["format"])
     )
-    for name in prod.LOGGING["handlers"]["console"]["filters"]:
-        handler.addFilter(prod.LOGGING["filters"][name]["()"]())
-    logger = logging.getLogger("transport-privacy-console")
+    for filter_name in prod.LOGGING["handlers"]["console"]["filters"]:
+        handler.addFilter(prod.LOGGING["filters"][filter_name]["()"]())
+    logger = logging.getLogger(name)
+    previous = logger.level
+    logger.setLevel(level)
     logger.addHandler(handler)
     try:
         emit(logger)
     finally:
         logger.removeHandler(handler)
+        logger.setLevel(previous)
     return output.getvalue()
 
 
@@ -131,6 +142,7 @@ def captured_events(emit: Callable[[], None]) -> list[Any]:
         {"data": [CANARY]},
         f"Bearer {CANARY}",
         f"{{'body': '{CANARY}'}}",
+        f'"GET /synthetic.pdf?X-Amz-Signature={CANARY} HTTP/1.1" 200',
     ],
     ids=[
         "header-pair-list",
@@ -142,6 +154,7 @@ def captured_events(emit: Callable[[], None]) -> list[Any]:
         "data-field-list",
         "bare-bearer",
         "rendered-body-field",
+        "logged-signed-query",
     ],
 )
 def test_structured_credentials_are_absent_from_console_output(
@@ -288,7 +301,7 @@ def test_captured_sentry_exception_chain_drops_active_secret() -> None:
     assert CANARY not in encoded
 
 
-def test_sentry_captures_a_real_event_without_provider_secrets() -> None:
+def test_real_sentry_event_drops_a_jwt_token_extra() -> None:
     transport = _CaptureTransport()
     client = sentry_sdk.Client(
         dsn="http://public@example.invalid/1",
@@ -309,7 +322,7 @@ def test_sentry_captures_a_real_event_without_provider_secrets() -> None:
     assert "retained" in encoded
 
 
-def test_response_body_and_presigned_url_never_reach_wire_logs(
+def test_response_body_and_auth_header_never_reach_wire_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.DEBUG)
@@ -321,3 +334,84 @@ def test_response_body_and_presigned_url_never_reach_wire_logs(
         )
     assert "synthetic-untrusted-body" not in caplog.text
     assert "synthetic-auth" not in caplog.text
+
+
+SIGNATURE = "synthetic-presigned-signature-5521"
+OPAQUE = "synthetic-opaque-capability-7731"
+
+
+@pytest.mark.parametrize("reset", [False, True], ids=["download", "failure"])
+def test_presigned_redirect_never_reaches_debug_console_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reset: bool
+) -> None:
+    # Given a real FC-PDF 302 to a presigned storage URL over verified TLS, with
+    # urllib3 logging the wire at DEBUG through the production console handler.
+    context, ca = tls_context(tmp_path)
+    # `opaque` matches no text rule: only the whole URL is a known secret.
+    location = (
+        f"https://{HOST}/synthetic.pdf?X-Amz-Signature={SIGNATURE}&opaque={OPAQUE}"
+    )
+    request = ProviderRequest(
+        subject=KEY, headers=(("Authorization", "Basic synthetic-pdf-secret"),)
+    )
+    redirect = Reply(status=302, headers=(("Location", location),))
+
+    def emit(logger: logging.Logger) -> None:
+        with (
+            FakeFocus(
+                (Reply(body=b"%PDF-synthetic", reset=reset),), tls=context
+            ) as target,
+            FakeFocus((redirect,)) as source,
+        ):
+            route_storage_host(monkeypatch, target.port)
+            client = ProviderTransport("focus", "fake", source.origin, ca)
+            # When the download (or its failure) runs and is logged.
+            try:
+                response = permitted_send(client, "FC-PDF", request)
+                logger.warning("provider pdf status %s", response.status)
+            except TransportFailure:
+                logger.exception("provider pdf failed")
+            assert len(target.requests) == 1
+
+    output = production_console(emit, name="urllib3", level=logging.DEBUG)
+    # Then the wire was logged, but not the signature or the credential.
+    assert "Starting new HTTPS connection" in output
+    assert ("provider pdf failed" in output) is reset
+    assert SIGNATURE not in output
+    assert OPAQUE not in output
+    assert "synthetic-pdf-secret" not in output
+
+
+def test_reviewed_b2_message_list_pair_is_filtered() -> None:
+    # Given the review's record whose message is a list of header pairs.
+    record = logging.makeLogRecord({"msg": [("Authorization", "Bearer " + CANARY)]})
+    # When the production filter runs.
+    prod.CredentialURLLogFilter().filter(record)
+    # Then the rendered message has no credential.
+    assert CANARY not in record.getMessage()
+
+
+def test_reviewed_b2_sentry_request_header_pairs_are_scrubbed() -> None:
+    # Given the review's event with request headers as pairs.
+    event = {"request": {"headers": [["Authorization", "Bearer " + CANARY]]}}
+    # When the production hook processes it.
+    scrubbed = prod.scrub_sentry_event(event, {})  # type: ignore[arg-type]
+    # Then the credential is gone.
+    assert CANARY not in json.dumps(scrubbed)
+
+
+def test_reviewed_b2_chain_is_scrubbed_in_formatter_output() -> None:
+    # Given the review's active secret raised as a cause of a safe wrapper.
+    with delivery_secrets(CANARY):
+        try:
+            provider_failure(explicit=True)
+        except RuntimeError:
+            record = logging.makeLogRecord(
+                {"msg": "provider failure", "exc_info": sys.exc_info()}
+            )
+        # When the filter runs and a plain Formatter renders the record.
+        prod.CredentialURLLogFilter().filter(record)
+        output = logging.Formatter().format(record)
+    # Then the rendered chain has no credential.
+    assert "ValueError" in output
+    assert CANARY not in output
