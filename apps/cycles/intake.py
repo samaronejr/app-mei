@@ -32,6 +32,11 @@ Required scanning (AXRM-005): for a firm carrying `scan_required`, both entry po
 refuse with `UploadScannerOff` while `CLAMAV_ENABLED` is off -- before the file is
 read, so no bytes, `Document`, intake or link exist. Without the flag the R1 fallback
 stands: the file is stored and later becomes `verificacao_indisponivel`.
+
+AXRM-012: `staff_upload` quarantines firm-side evidence under its human uploader,
+portal-private by default, and `apps.obligations.system_ingest` builds actor-less
+provider originals from the same primitives. Reuse never crosses a client or a
+visibility boundary.
 """
 
 import hashlib
@@ -48,7 +53,9 @@ from django.db import IntegrityError, transaction
 from django.http import Http404
 
 from apps.accounts.models import User
+from apps.authz.objects import load_visible_client
 from apps.clients.models import ClientCompany
+from apps.core.retention import RetentionClass
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
     REJECTED_STATES,
@@ -62,7 +69,7 @@ from apps.cycles.evidence import (
 from apps.cycles.records import CycleEvent
 from apps.cycles.scanning import scan_required
 from apps.cycles.sniffing import sniff
-from apps.obligations.models import Document
+from apps.obligations.models import AcquisitionOrigin, Document, Obligation
 from apps.tenants.models import Tenant
 
 CHUNK_BYTES: Final = 64 * 1024
@@ -92,7 +99,8 @@ class UploadScannerOff(Exception):  # noqa: N818 - domain vocabulary
     """The firm requires the integrated scanner and it is switched off; nothing kept."""
 
 
-def _require_scanner(tenant: Tenant) -> None:
+def require_scanner(tenant: Tenant) -> None:
+    """Refuse before reading any bytes when the firm requires a scanner that is off."""
     if not settings.CLAMAV_ENABLED and scan_required(tenant.pk):
         raise UploadScannerOff
 
@@ -107,7 +115,24 @@ class IntakeResult:
     already_linked: bool
 
 
-def _read_capped(upload: UploadedFile) -> tuple[bytes, str]:
+@dataclass(frozen=True, slots=True)
+class DocumentSource:
+    """Attribution and portal visibility, fixed by the trusted entry point (AXRM-012).
+
+    The defaults are a client's portal upload, exactly as before AXRM-012. Firm-only
+    staff evidence and actor-less provider originals pass `portal_visible=False`, so
+    the restrictive portal policy hides them even after a clean scan.
+    """
+
+    actor: User | None
+    portal_visible: bool = True
+    client_upload: bool = True
+    origin: str = AcquisitionOrigin.UPLOAD_PORTAL
+    receipt_ref: str = ""
+    retention_class: str = RetentionClass.FISCAL_EVIDENCE
+
+
+def read_capped(upload: UploadedFile) -> tuple[bytes, str]:
     """Hash while reading, refusing past the cap before buffering more than it."""
     cap = settings.PORTAL_UPLOAD_MAX_BYTES
     if upload.size is None or upload.size > cap:
@@ -130,7 +155,7 @@ def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
     *,
     tenant: Tenant,
     client: ClientCompany,
-    actor: User,
+    source: DocumentSource,
     upload: UploadedFile,
     payload: bytes,
     digest: str,
@@ -146,7 +171,12 @@ def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
         # The sniffed type, never the declared one; a refused file has no type.
         content_type=sniffed or "application/octet-stream",
         byte_size=len(payload),
-        uploaded_by=actor,
+        uploaded_by=source.actor,
+        portal_visible=source.portal_visible,
+        client_upload=source.client_upload,
+        acquisition_origin=source.origin,
+        acquisition_receipt_ref=source.receipt_ref,
+        retention_class=source.retention_class,
     )
     held = quarantine_key(tenant.pk, client.pk, document.storage_key)
     saved = default_storage.save(held, ContentFile(payload))
@@ -179,24 +209,32 @@ def _discard(name: str) -> None:
         sentry_sdk.capture_exception(error)
 
 
-def _document_for(  # noqa: PLR0913 - keyword-only: every value is verified context
+def document_for(  # noqa: PLR0913 - keyword-only: every value is verified context
     *,
     tenant: Tenant,
     client: ClientCompany,
-    actor: User,
+    source: DocumentSource,
     upload: UploadedFile,
     payload: bytes,
     digest: str,
     obligation_id: UUID | str | None = None,
 ) -> tuple[Document, bool]:
-    """Return (document, relinked), or raise `UploadRejected` for refused bytes."""
-    document = Document.objects.filter(sha256=digest).first()
+    """Return (document, relinked), or raise `UploadRejected` for refused bytes.
+
+    Bytes are reused only inside one client AND one visibility (AXRM-012): a client
+    upload of bytes the firm or a provider already holds privately is a separate,
+    visible row, never the hidden one.
+    """
+    documents = Document.objects.filter(
+        client=client, portal_visible=source.portal_visible
+    )
+    document = documents.filter(sha256=digest).first()
     if document is None:
         try:
             document, intake = _store(
                 tenant=tenant,
                 client=client,
-                actor=actor,
+                source=source,
                 upload=upload,
                 payload=payload,
                 digest=digest,
@@ -206,7 +244,7 @@ def _document_for(  # noqa: PLR0913 - keyword-only: every value is verified cont
             if _constraint(error) != SHA256_CONSTRAINT:
                 raise
             # The same bytes stored by a concurrent upload of this client: reuse it.
-            document = Document.objects.get(sha256=digest)
+            document = documents.get(sha256=digest)
         else:
             if intake.state == IntakeState.REJECTED_TYPE:
                 # Committed with the caller's transaction: the refused original and
@@ -236,14 +274,14 @@ def intake_upload(
     ).first()
     if request is None:
         raise Http404
-    _require_scanner(tenant)
+    require_scanner(tenant)
     if upload is None:
         raise UploadMissing
-    payload, digest = _read_capped(upload)
-    document, relinked = _document_for(
+    payload, digest = read_capped(upload)
+    document, relinked = document_for(
         tenant=tenant,
         client=client,
-        actor=actor,
+        source=DocumentSource(actor=actor),
         upload=upload,
         payload=payload,
         digest=digest,
@@ -331,17 +369,68 @@ def vault_upload(
     account of the same client -- until the scanner says clean. Returns (document,
     already_sent); refused bytes raise `UploadRejected` with the refused original and
     its intake kept, exactly as for a request upload.
+
+    AXRM-012: a named obligation must be this client's AND portal-visible; anything
+    else is a 404 before a byte is read, so a client upload can never carry a
+    reference to a firm-private obligation (the vault form offers no obligation).
     """
-    _require_scanner(tenant)
+    if (
+        obligation_id is not None
+        and not Obligation.objects.filter(
+            pk=obligation_id, client=client, portal_visible=True
+        ).exists()
+    ):
+        raise Http404
+    require_scanner(tenant)
     if upload is None:
         raise UploadMissing
-    payload, digest = _read_capped(upload)
-    return _document_for(
+    payload, digest = read_capped(upload)
+    return document_for(
         tenant=tenant,
         client=client,
-        actor=actor,
+        source=DocumentSource(actor=actor),
         upload=upload,
         payload=payload,
         digest=digest,
         obligation_id=obligation_id,
+    )
+
+
+def staff_upload(  # noqa: PLR0913 - human context plus the two AXRM-012 source keywords
+    actor: User,
+    upload: UploadedFile | None,
+    *,
+    tenant: Tenant,
+    client: ClientCompany,
+    portal_visible: bool = False,
+    acquisition_origin: str = AcquisitionOrigin.UPLOAD_STAFF,
+) -> tuple[Document, bool]:
+    """Quarantine firm-side evidence under its human uploader, never as a submission.
+
+    Portfolio-scoped: a client outside the actor's portfolio is a 404 before anything
+    is read or stored. Private by default (AXRM-012): firm-only evidence reaches the
+    client only through an approved publication, so a caller must opt in to
+    `portal_visible=True`. Only the staff origin is accepted here; portal uploads and
+    provider acquisitions have their own entry points. The caller checks the
+    capability its own action requires.
+    """
+    visible_client = load_visible_client(actor, client.pk, tenant_id=tenant.pk)
+    require_scanner(tenant)
+    if upload is None:
+        raise UploadMissing
+    if acquisition_origin != AcquisitionOrigin.UPLOAD_STAFF:
+        raise UploadRejected
+    payload, digest = read_capped(upload)
+    return document_for(
+        tenant=tenant,
+        client=visible_client,
+        source=DocumentSource(
+            actor=actor,
+            portal_visible=portal_visible,
+            client_upload=False,
+            origin=acquisition_origin,
+        ),
+        upload=upload,
+        payload=payload,
+        digest=digest,
     )

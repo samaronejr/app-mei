@@ -46,6 +46,15 @@ def new_storage_key() -> str:
     return secrets.token_urlsafe(STORAGE_KEY_BYTES)
 
 
+class AcquisitionOrigin(models.TextChoices):
+    """How bytes entered the vault; independent of who may read them."""
+
+    UPLOAD_PORTAL = "upload_portal", _("portal upload")
+    UPLOAD_STAFF = "upload_equipe", _("staff upload")
+    PROVIDER_CAPTURE = "captura_provedor", _("provider capture")
+    FEDERAL_PROVIDER = "provedor_federal", _("federal provider")
+
+
 class Document(TenantScopedModel):
     """One uploaded file, owned by exactly one client."""
 
@@ -78,6 +87,8 @@ class Document(TenantScopedModel):
         on_delete=models.PROTECT,
         related_name="uploaded_documents",
         verbose_name=_("uploaded by"),
+        null=True,
+        blank=True,
     )
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     # T13 (vault quarantine, fail closed): TRUE unless the firm wrote the row. The
@@ -86,6 +97,18 @@ class Document(TenantScopedModel):
     # (trigger `document_portal_client_upload`, obligations 0019).
     client_upload = models.BooleanField(
         _("uploaded by the client"), default=True, db_default=True
+    )
+    # AXRM-012: retain the legacy default. New private staff/provider intake sets
+    # False explicitly; app_portal's restrictive policy enforces this flag.
+    portal_visible = models.BooleanField(default=True, db_default=True)
+    acquisition_origin = models.CharField(
+        max_length=32,
+        choices=AcquisitionOrigin.choices,
+        default=AcquisitionOrigin.UPLOAD_PORTAL,
+        db_default=AcquisitionOrigin.UPLOAD_PORTAL,
+    )
+    acquisition_receipt_ref = models.CharField(
+        max_length=128, blank=True, default="", db_default=""
     )
     retention_class = models.CharField(
         max_length=24,
@@ -114,8 +137,33 @@ class Document(TenantScopedModel):
             # — which is exactly the cross-client disclosure the portal exists to
             # prevent, delivered through a constraint violation.
             models.UniqueConstraint(
-                fields=["tenant", "client", "sha256"],
+                fields=["tenant", "client", "sha256", "portal_visible", "obligation"],
                 name="document_tenant_client_sha256_uniq",
+                nulls_distinct=False,
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(uploaded_by__isnull=False)
+                    | models.Q(
+                        acquisition_origin__in=[
+                            AcquisitionOrigin.PROVIDER_CAPTURE,
+                            AcquisitionOrigin.FEDERAL_PROVIDER,
+                        ]
+                    )
+                ),
+                name="document_human_or_provider_origin",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(
+                        acquisition_origin__in=[
+                            AcquisitionOrigin.PROVIDER_CAPTURE,
+                            AcquisitionOrigin.FEDERAL_PROVIDER,
+                        ]
+                    )
+                    | ~models.Q(acquisition_receipt_ref="")
+                ),
+                name="document_provider_receipt_required",
             ),
             models.CheckConstraint(
                 condition=models.Q(byte_size__gt=0),

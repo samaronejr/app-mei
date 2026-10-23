@@ -47,6 +47,11 @@ from apps.obligations.models import Obligation
 from apps.tenants.models import Invite, Membership
 
 NOTE_MAX_LENGTH: Final = 2000
+# AXRM-012: a request is client-facing, so it may never name a firm-private obligation.
+PRIVATE_OBLIGATION: Final = (
+    "Esta obrigação é interna do escritório e não pode ser vinculada a uma "
+    "solicitação ao cliente."
+)
 EDITABLE_STATES: Final = frozenset({RequestState.DRAFT, RequestState.REQUESTED})
 
 
@@ -134,6 +139,8 @@ def _bind_obligation(
         or obligation.competence_month != cycle.period_start
     ):
         raise Http404
+    if not obligation.portal_visible:
+        raise ValidationError(PRIVATE_OBLIGATION)
     engagement = cycle.engagement
     if engagement.starts_on > cycle.period_start or (
         engagement.ends_on is not None and cycle.period_start >= engagement.ends_on
@@ -462,6 +469,10 @@ def send_requests(
         if not drafts:
             msg = "Não há solicitações em rascunho para enviar."
             raise ValidationError(msg)
+        if EvidenceRequest.objects.filter(
+            pk__in=[draft.pk for draft in drafts], obligation__portal_visible=False
+        ).exists():
+            raise ValidationError(PRIVATE_OBLIGATION)
         client = ClientCompany.objects.get(pk=cycle.client_id)
         eligible = [row for row in recipients(client) if row.eligible]
         if not eligible:

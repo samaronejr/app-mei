@@ -228,6 +228,7 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |
 | `AXRM-007` | New `apps/integrations` with `ProviderConnection` (tenant) and `ClientProviderLink` (client): tenant RLS, portal NONE (`DenyPortalAccess`, `-- PORTAL_NONE:` in `ops/sql/roles.sql`, `PORTAL_DENIED_TABLES`), composite (tenant, parent) foreign keys, version-checked locked transitions for the link's three A7.3 state fields, a capture start month that a database trigger keeps immutable, and a `secret_ref` that holds a secret *name* only (validator plus CHECK). Flags `federal_checks`, `document_capture` and `municipal_work`, each inert without `cycles_r1` and `scan_required` (INV-R13). Closed provider settings (`PROVIDERS_PAUSED=True`, environments `fake`, no real-data approval, no cap) and the `integrations.E001`/`E002` startup checks. Five A7.6 capabilities (matrix 36 rows / 216 cells, seeded by `authz.0009`). A read-only "Conexões fiscais" panel on `/configuracoes/` for holders of `fiscal.connections.manage` while a regional flag is on. | Tables ship empty, flags off, providers paused. `integrations.0001` reverses while both tables are empty and refuses (with a test) once a row exists: recovery is then flags off with the tables kept (forward repair). `authz.0009` records what it created or changed in the platform ledger `authz_capabilityseedrow`; its reverse deletes only the capabilities and role cells it created, puts back any label or level it changed, and refuses (forward repair) while a firm holds a user grant on a capability it created. |
+| `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses, and quarantine metadata, requests, links and observations follow the obligation or document they reference; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows keep their visibility. Reverse restores the previous policies and trigger body, and refuses while provider-origin documents, private documents (including visible/private hash pairs) or private obligations exist; retained new data requires forward repair. |
 
 The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
 at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**
@@ -270,6 +271,119 @@ were not rerun. As `app_migrator` on a fresh lane, `authz.0009` again restores 3
 four capabilities 0009 created, and the reverse refuses once a firm is granted one of
 those. Evidence: `.evidence/AXRM-007-red-b1.txt`, `AXRM-007-red-b1-fresh.txt`,
 `AXRM-007-migration-b1.txt`, `AXRM-007-b1-*.log`, `AXRM-007-gates.txt`.
+
+`AXRM-012` adds `portal_visible` to documents and obligations without changing the
+legacy database default or any existing row. Both restrictive portal policy clauses
+fold the flag into the anchored client comparison
+(`client_id = CASE WHEN portal_visible THEN <client> END`, the `cycles_exception`
+precedent), so a hidden row is unreadable and uninsertable for `app_portal` at the
+policy level. `cycles_documentintake` reads follow the parent document the same way:
+the USING client comparison holds only while the parent document is visible to
+`app_portal`, so quarantine metadata of a hidden original is not readable (its WITH
+CHECK stays client-only, so the composite FK still refuses a foreign parent). No portal grant,
+view filter or `roles.sql` policy statement is added; `roles.sql` documents each
+decision beside its grant. Document hash uniqueness includes visibility, so a client
+can upload bytes already held privately and gets a separate visible row.
+
+Acquisition origins distinguish portal and staff uploads from provider capture and
+federal acquisition (existing rows backfilled from `client_upload`); only provider
+origins may omit a human uploader, and they require a receipt reference. The portal
+INSERT trigger refuses forged origins, private rows, missing human attribution and
+receipt metadata. `ingest_system_document` creates a private, actor-less original
+and a quarantined intake through the same capped, sniffed intake code as portal
+uploads, which the existing scan sweep processes. `staff_upload` is
+portfolio-scoped and private by default (the plan proposed a `True` default for an
+existing staff path; none exists, so the new function fails closed). Visibility stays
+an explicit later decision for an approved publication.
+
+The pre-change baseline for `AXRM-012` at `559bb5a` is **5332 passed, 41 skipped**
+(group 1: 1227; group 2: 4105 passed, 41 skipped). At `28b5f39` the default suite
+passes **5382, 41 skipped** (group 1: 1227; group 2: 4155 passed, 41 skipped; the 50
+new tests), isolation **743 passed, 41 skipped**, `tests/portal` **319** with no portal
+test changed, CNPJ **29** and browser **185**. The new targeted set passes **69** in
+each of three runs. Every new predicate is mutation-proven: 26 of 26 deliberate breaks
+(each policy side, each trigger condition, both checks, the hash unique, the dedup
+filters, the ingest and staff guards, each reverse-guard clause and the backfill) fail
+a named test. An `app_migrator` round trip on a populated two-tenant database
+backfills origins, keeps every row visible and identical through reverse and
+reapply, and refuses the reverse once a provider-origin row exists. Lint, format,
+Mypy and migration drift are clean. The generic isolation seeder registers the now
+nullable uploader in its constraint table, so its document stays a human upload.
+Evidence: `.evidence/AXRM-012-gates.txt`, `AXRM-012-red.txt`,
+`AXRM-012-red-corrective.txt`, `AXRM-012-mutations.txt`, `AXRM-012-happy.txt`,
+`AXRM-012-failure.txt`, `AXRM-012-invariants.txt`, `AXRM-012-adversarial.txt`,
+`AXRM-012-final2-migration-cli.txt`.
+
+Review fix (`AXRM-012` attempt 1, independent review reject): a hidden obligation or
+document stayed readable one hop away. A firm payment fact (`POST /ciclos/<id>/`,
+`record_staff_fact`, the receipt materializer), a request bound to the obligation
+(`create_request`, `send_requests`, then `/solicitacoes/<id>/`) and links to a hidden
+document or request were readable by `app_portal`, and the vault accepted a hidden
+obligation id. `obligations.0023` now also folds the parents into the USING client
+comparison of `cycles_evidencerequest` (its obligation), `cycles_evidencelink` (its
+document and request) and `obligations_sourceobservation` (its subject and evidence
+link); each subquery runs under the parent's own portal policy, so the chain reaches
+the request's obligation and the link's document. WITH CHECK stays client-only, so
+the composite foreign keys still refuse a foreign parent first. On the write side a
+client-facing request cannot be bound to, or sent with, a private obligation, and a
+vault upload naming an obligation that is not this client's and visible is a 404
+before any byte is read. Firm facts about private obligations remain allowed and
+private. Nothing private before the fix becomes visible; the reverse restores the
+original predicates of all six tables behind the same forward-repair guard.
+
+Suites after the review fix at `5ab4c32`, rebased on `AXRM-007` (`8da6d30`): the default
+suite passes **5523, 44 skipped** (group 1: 1294; group 2: 4229 passed, 44 skipped),
+isolation **770 passed, 44 skipped**, `tests/portal` **319** with no portal test
+changed, CNPJ **29** and browser **189**; the targeted set passes **80** in each of
+three runs. Collected counts over `8da6d30` grow by exactly the new `AXRM-012` tests
+(+30 isolation, +61 default, +0 portal). Against the pre-fix product code the seven new
+hidden-case tests and the fold coverage test fail. All 35 deliberate breaks fail a named
+test, including one per new clause (request obligation, link document, link request,
+observation subject, observation link) and one per new write guard (binding, send, the
+vault check and its visibility filter). The `app_migrator` round trip now checks all six
+folded policies forward, the original predicates after reverse, the folds after reapply
+and the refused reverse once a provider-origin row exists. Evidence:
+`.evidence/AXRM-012-gates.txt`, `AXRM-012-rv1-red-smoke.txt`, `AXRM-012-mutations.txt`,
+`AXRM-012-failure.txt`, `AXRM-012-invariants.txt`, `AXRM-012-happy.txt`,
+`AXRM-012-adversarial.txt`, `AXRM-012-rv1-reference-audit.txt`,
+`AXRM-012-rv1-collection-delta.txt`, `AXRM-012-rv1-migration-cli-classification.txt`.
+
+Review fix 2 (`AXRM-012` attempt 2, independent review reject): a document whose own
+flag was visible stayed readable, listable and downloadable, with its intake, while a
+firm-side writer had bound it to a private obligation. `obligations.0023` now folds the
+bound obligation into the document's USING comparison (`obligation_id IS NULL` or a
+visible obligation), and intakes, links and observations inherit it through their
+existing document subqueries. The relational class was enumerated from the model graph
+and matches the reviewer's live catalog query: eight portal-readable foreign keys reach
+a private-capable row, each is now folded, and a catalog test fails when a new one
+appears unregistered. The one self-reference, `sourceobservation.supersedes_id`, cannot
+be folded by a subquery on its own table, so a claim chain is readable only while every
+member's subject and evidence link are: a SECURITY DEFINER function on the cycles `0014`
+pattern (ambient tenant and client checks, empty search_path, EXECUTE for `app_portal`
+only) lists the chain's members, and the policy checks each under the portal's own
+policies. Hiding the whole chain also keeps a superseded claim from becoming the
+portal's current claim when its successor is private. The document hash key now includes
+the bound obligation (nulls not distinct), so a client upload of bytes held in an
+obligation-private document is a separate visible row instead of a collision, and the
+reverse also refuses while that wider key holds rows the original key would reject.
+Visible-parent and null-parent rows read as before.
+
+Suites after review fix 2 at `6c8e90a`: the default suite passes **5536, 44 skipped**
+(group 1: 1294; group 2: 4242 passed, 44 skipped), isolation **782 passed, 44 skipped**,
+`tests/portal` **319** with no portal test changed, CNPJ **29** and browser **189**; the
+targeted set passes **93** in each of three runs. Collected counts over `85493e7` grow
+by exactly this fix's 13 new tests (+12 isolation, +1 migration). Against the reviewed
+product code 10 of them fail, among them the reviewer's own B1 reproduction, while every
+visible-parent and null-parent control passes. All 43 deliberate breaks fail a named
+test, including one per new clause: the document's obligation fold and its null escape,
+the chain fold and its subject and link checks, the chain function's ancestors,
+descendants and client scope, the widened hash key and the reverse guard's duplicate
+check. The `app_migrator` round trip, run on a freshly reset database, also checks that
+the chain function exists forward, is dropped on reverse and returns on reapply.
+Evidence: `.evidence/AXRM-012-gates.txt`, `AXRM-012-rv2-red-smoke.txt`,
+`AXRM-012-mutations.txt`, `AXRM-012-failure.txt`, `AXRM-012-invariants.txt`,
+`AXRM-012-happy.txt`, `AXRM-012-adversarial.txt`, `AXRM-012-rv2-reference-audit.txt`,
+`AXRM-012-rv2-collection-delta.txt`.
 
 ## Axorim pivot
 

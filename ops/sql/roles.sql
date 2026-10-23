@@ -274,19 +274,44 @@ BEGIN
         'cycles_clientpublication',
         -- S8.2 / T11: the client's own requests (client-visible fields only), the
         -- links it has submitted and their intake rows.
+        -- AXRM-012: a request is READABLE only while its obligation (if any) is
+        -- visible to app_portal, a link only while its document AND request are
+        -- (USING folds, obligations 0023). WITH CHECK stays client-only, so the
+        -- composite FKs still refuse a foreign parent.
         'cycles_evidencerequest',
         'cycles_evidencelink',
+        -- AXRM-012: an intake row is READABLE only while its parent
+        -- obligations_document row is visible to app_portal (EXISTS folded into the
+        -- USING client predicate, obligations 0023); it has no visibility flag of its
+        -- own. WITH CHECK stays client-only, so the composite FK still refuses an
+        -- intake naming another client's document.
         'cycles_documentintake',
         -- S8.2 / T14: the portal predicate adds `client_visible`; only the fixed
         -- client_message is rendered. Internal instructions/evidence are in the
         -- portal-denied cycles_exceptioninternal companion, not this table.
         'cycles_exception',
+        -- AXRM-012: the predicate adds `portal_visible` (folded into the client
+        -- comparison, obligations 0023), so municipal and other firm-only rows stay
+        -- hidden. SELECT only, as before; no new grant.
         'obligations_obligation',
         'obligations_monthlyrevenue',
+        -- AXRM-012: the same `portal_visible` predicate hides staff-private and
+        -- provider originals even after a clean scan, and a document bound to an
+        -- obligation is READABLE only while that obligation is visible to app_portal
+        -- (USING fold, obligations 0023). portal_visible,
+        -- acquisition_origin and acquisition_receipt_ref are readable only on visible
+        -- rows. The INSERT grant below is unchanged; trigger
+        -- document_portal_client_upload (obligations 0023) pins a portal INSERT to a
+        -- human upload_portal row with portal_visible=true and no receipt.
         'obligations_document',
         -- S8.2: the payments page labels paid rows from the newest payment
         -- observation. SELECT only; the append-only trigger and the missing
         -- INSERT grant together keep the portal from writing or rewriting any.
+        -- AXRM-012: READABLE only while every member of its supersedes chain has a
+        -- subject and an evidence link (if any) visible to app_portal (USING fold,
+        -- obligations 0023). The chain is walked by the SECURITY DEFINER function
+        -- obligations_observation_chain(uuid); 0023 creates it after this script,
+        -- so 0023 itself revokes PUBLIC and grants EXECUTE to app_portal only.
         'obligations_sourceobservation'
     ]
     LOOP
