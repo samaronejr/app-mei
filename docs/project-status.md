@@ -296,6 +296,24 @@ portfolio-scoped and private by default (the plan proposed a `True` default for 
 existing staff path; none exists, so the new function fails closed). Visibility stays
 an explicit later decision for an approved publication.
 
+The pre-change baseline for `AXRM-012` at `559bb5a` is **5332 passed, 41 skipped**
+(group 1: 1227; group 2: 4105 passed, 41 skipped). At `28b5f39` the default suite
+passes **5382, 41 skipped** (group 1: 1227; group 2: 4155 passed, 41 skipped; the 50
+new tests), isolation **743 passed, 41 skipped**, `tests/portal` **319** with no portal
+test changed, CNPJ **29** and browser **185**. The new targeted set passes **69** in
+each of three runs. Every new predicate is mutation-proven: 26 of 26 deliberate breaks
+(each policy side, each trigger condition, both checks, the hash unique, the dedup
+filters, the ingest and staff guards, each reverse-guard clause and the backfill) fail
+a named test. An `app_migrator` round trip on a populated two-tenant database
+backfills origins, keeps every row visible and identical through reverse and
+reapply, and refuses the reverse once a provider-origin row exists. Lint, format,
+Mypy and migration drift are clean. The generic isolation seeder registers the now
+nullable uploader in its constraint table, so its document stays a human upload.
+Evidence: `.evidence/AXRM-012-gates.txt`, `AXRM-012-red.txt`,
+`AXRM-012-red-corrective.txt`, `AXRM-012-mutations.txt`, `AXRM-012-happy.txt`,
+`AXRM-012-failure.txt`, `AXRM-012-invariants.txt`, `AXRM-012-adversarial.txt`,
+`AXRM-012-final2-migration-cli.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
