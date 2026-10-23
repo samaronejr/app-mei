@@ -29,8 +29,12 @@ def populated_round_trip() -> None:
     migration = importlib.import_module(
         "apps.authz.migrations.0006_seed_r1_capabilities"
     )
-    # T22's later R1 capability is also reversed by the target below.
-    r1_slugs = (*migration.SLUGS, "tenants.account")
+    # T22's later R1 capability and AXRM-007's regional rows (authz.0009) are also
+    # reversed by the target below.
+    regional = importlib.import_module(
+        "apps.authz.migrations.0009_seed_regional_capabilities"
+    )
+    r1_slugs = (*migration.SLUGS, "tenants.account", *regional.SLUGS)
     historical = (
         MigrationExecutor(connection)
         .loader.project_state([("authz", "0005_usercapabilitygrant")])

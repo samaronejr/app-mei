@@ -70,7 +70,9 @@ RUNTIME_ROLE = "app_runtime"
 # T24 adds one client-paired, independently portal-denied shadow observation table:
 # 64 + 1 = 65 tenant tables.
 # T23 places after T28 on this stack and adds tenants_supportgrant: 65 + 1 = 66.
-EXPECTED_TENANT_TABLE_COUNT = 67
+# AXRM-007 adds integrations_providerconnection (tenant, deny-all) and the
+# client-paired integrations_clientproviderlink (both policies): 67 + 2 = 69.
+EXPECTED_TENANT_TABLE_COUNT = 69
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -87,6 +89,8 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "cycles_briefingfeedback",
         "cycles_bulkitem",
         "automation_agentrun",
+        # AXRM-007: provider configuration per client, firm-only (ADR-0008).
+        "integrations_clientproviderlink",
     }
 )
 
@@ -489,6 +493,9 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         # T23: support grants name the platform actor and the owner's decision —
         # firm-internal by definition, so the portal never sees the table at all.
         "tenants_supportgrant",
+        # AXRM-007: provider connections and client provider links are portal NONE.
+        "integrations_providerconnection",
+        "integrations_clientproviderlink",
     },
 )
 

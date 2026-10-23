@@ -58,6 +58,9 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         # Which registry rows a data migration inserted, so its reverse deletes only
         # those. Migration bookkeeping about the shared registry; no tenant content.
         "fiscal_municipalityseedrow",
+        # Which capability rows authz.0009 created or changed, so its reverse undoes
+        # only those. Migration bookkeeping about the platform matrix; no tenant data.
+        "authz_capabilityseedrow",
         "obligations_fiscalparameter",
         "obligations_obligationtype",
         # When the DAS falls due is a fact about Resolução CGSN nº 140/2018, not

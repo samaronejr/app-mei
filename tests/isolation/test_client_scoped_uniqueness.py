@@ -56,8 +56,21 @@ EXEMPT_TABLES: Final[frozenset[str]] = frozenset({"clients_clientcompany"})
 # the second column IS the primary key, so colliding on it presupposes already holding
 # the row's UUIDv7, which the `columns != ["id"]` exemption above already treats as
 # disclosing nothing the caller did not learn elsewhere.
+#
+# `clientproviderlink_company_ref_uniq` (tenant_id, connection_id,
+# provider_company_ref) is AXRM-007's attribution invariant (plan A7.1, INV-R1): one
+# provider company is never bound to two clients of the same connection, so a
+# captured document can only ever be attributed to one client. Naming client_id would
+# defeat it -- the point is to refuse the SAME company on a DIFFERENT client. The oracle
+# argument does not reach it: the table is portal NONE (no grant, DenyPortalAccess),
+# links are written only by operator commands, and firm-side readers already see every
+# link of their own tenant, so a collision tells them nothing their own reads do not.
 EXEMPT_CONSTRAINTS: Final[frozenset[str]] = frozenset(
-    {"tenants_invite_token_key", "invite_tenant_id_uniq"}
+    {
+        "tenants_invite_token_key",
+        "invite_tenant_id_uniq",
+        "clientproviderlink_company_ref_uniq",
+    }
 )
 
 

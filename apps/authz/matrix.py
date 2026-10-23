@@ -234,6 +234,33 @@ MATRIX: Final[tuple[CapabilityRow, ...]] = (
         "Export and cancel firm account, view estimated costs",
         (NONE, FULL, NONE, NONE, NONE, NONE),
     ),
+    # AXRM-007: the regional MVP rows of plan A7.6, FULL/NONE only for the same
+    # reason as the R1 rows above. Seeded by authz.0009.
+    CapabilityRow(
+        "fiscal.connections.manage",
+        "Manage fiscal provider connections",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "fiscal.authority.manage",
+        "Manage client fiscal authority",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "fiscal.checks.run",
+        "Run federal fiscal checks",
+        (NONE, FULL, FULL, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "municipal.rules.manage",
+        "Author municipal rules",
+        (NONE, FULL, FULL, FULL, NONE, NONE),
+    ),
+    CapabilityRow(
+        "municipal.rules.review",
+        "Review municipal rules",
+        (NONE, FULL, NONE, FULL, NONE, NONE),
+    ),
 )
 
 CAPABILITY_SLUGS: Final[frozenset[str]] = frozenset(row.slug for row in MATRIX)

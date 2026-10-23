@@ -224,3 +224,36 @@ class UserCapabilityGrant(TenantScopedModel):
         # are member values elsewhere in the codebase.
         revoked = "+revoked" if self.revoked_at is not None else ""
         return f"{self.user_id}/{self.capability_id}={self.level}{revoked}"
+
+
+class CapabilitySeedRow(UUIDv7PrimaryKeyModel):
+    """What a capability seed migration created, or the value it overwrote.
+
+    A seed upserts by slug, so afterwards a capability or role grant it created and
+    one it found in place look identical. Its reverse reads this ledger to delete
+    only what it created and to put back the label or level it changed. `role` is
+    blank for the capability row itself. Slugs, not foreign keys: the ledger is
+    bookkeeping about the matrix, never a reference that blocks or cascades.
+    """
+
+    seed = models.CharField(_("seed"), max_length=100)
+    capability_slug = models.CharField(_("capability slug"), max_length=64)
+    role = models.CharField(_("role"), max_length=32, blank=True)
+    created = models.BooleanField(_("created by the seed"))
+    previous = models.CharField(_("previous value"), max_length=128, blank=True)
+
+    class Meta:
+        """Model metadata."""
+
+        verbose_name = _("capability seed row")
+        verbose_name_plural = _("capability seed rows")
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["seed", "capability_slug", "role"],
+                name="capabilityseedrow_seed_slug_role_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        """Name the matrix cell and the seed that owns it."""
+        return f"{self.capability_slug}/{self.role or '-'} by {self.seed}"
