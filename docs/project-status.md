@@ -26,32 +26,35 @@ reader who will never see them.
 
 ## Current plan
 
-Two plans are current, and they run on separate tracks: `pilot-readiness-v2`,
-described next, and `axorim-pivot-r1`, described under "Axorim pivot" below.
+**`axorim-regional-mvp` is the current plan**, approved by the owner on 2026-10-22
+and described under "Regional MVP" below. `axorim-pivot-r1` was delivered and merged
+on 2026-10-15 at `00f1d41`; the backup fix merged on 2026-10-21 at `71225ef`.
+These release facts are recorded in `.evidence/AXR1-merge-release-final-20261015.json`
+and `.evidence/AXR1-backup-fix-final-20261021.json`, not new cohort authorizations.
 
-**`pilot-readiness-v2`** — in execution. It supersedes `pilot-readiness-v1` and the
-Resend amendment, and it starts from what is actually true rather than what v1
-assumed: the latest code has never been deployed anywhere, the old OCI host still
-serves a month-old release, no email has ever been sent, and the live-verification
-workflow has been red for weeks. It ends with one accounting firm able to start a
-controlled pilot on the new Lightsail server, every safety claim proven by a real
-effect rather than asserted. 41 numbered rows across six waves, plus four final
-verification passes.
+**`pilot-readiness-v2` is historical release-specific readiness.** Its 41 execution
+rows were recorded closed, and F1-F4 are checked complete in the immutable v2 plan
+`/home/samarone/Documents/app_mei/.omo/plans/pilot-readiness-v2.md:534-543`.
+`/home/samarone/Documents/app_mei-pilot2/.evidence/PILOT2-506-final.txt:1,22-24`
+records `pilot_start_authorized=2026-09-26` for
+`a962173878f9c0cfcfcd11406aba3c7a95701454`, also the target of tag `v0.2.0-rc1`.
+That authorization predates R1 and does not cover `71225ef` or the regional MVP.
 
-Row identifiers from this plan use the `PILOT2-###` form in commit bodies and
-evidence filenames. Rows carry a marker: `[E]` is an engineering row, `[O]` is an
-operator gate that no repository change can close, and `[A]` is an agent-executed
-external effect. Two owner decisions shape the whole plan: email goes through
-Resend's plain SMTP relay (no new email code), and the deploy target is the
-already-provisioned Lightsail instance `app-mei-pilot-sa-east-1` at 18.229.187.66,
-with the OCI host kept intact after cutover as the rollback anchor.
+AXRM-002 captured public `/versionz` on 2026-10-22 at 10:53:17 UTC:
+`71225ef4272cf678bc23b7f927ab5b1e0767a323`, equal to `origin/main` at capture
+time (the local execution branch was at `014123f`). At 10:53:38 UTC the latest
+`verify-live` run listed was **39611651487**, scheduled 2026-10-21 at 13:51:20 UTC,
+completed successfully at 13:51:29 UTC on `71225ef`. This is a dated observation,
+not a fresh health drill or permission to activate a cohort.
 
-All 41 rows are closed, including the operator-run Lightsail Phase B (row 16) and
-the deploy-pipeline cutover (row 17, merged as PR #21, which triggered the first
-deploy to Lightsail). The go/no-go ledger reports every S-line GO on the final
-capture. What remains is the F1-F4 final-verification wave and, after it, the
-owner's authorization of the pilot start; the `v0.2.0-rc1` tag and release follow
-that authorization per `ops/RELEASES.md` Phase B.
+Running `ops/check_go_no_go.py` against the unchanged v2 evidence on 2026-10-22
+exits **1**: **S1, S2, S3, S18 and S20 are NO-GO**, because the final capture names
+`a962173` rather than current `origin/main` and predates that commit. Historical
+drill evidence is not a current-release pass. OG-02 remains
+**open (closes by the owner's OD-02 decision: the v2 obligations carry to the current
+release, or a re-run)**. Source-by-source reconciliation and the complete NO-GO
+output are in `.evidence/AXRM-002-pilot2-reconciliation.txt` and
+`.evidence/AXRM-002-failure.txt`. No v2 row was re-run and no production state changed.
 
 ## Regional MVP
 
@@ -79,13 +82,15 @@ Janeiro municipalities. Like every plan since the exclusion, it lives under
   live-qualification and owner gates; it closes none of them.
 
 Progress: `AXRM-001` (the regional records) lands with the commit that adds this
-section.
+section. `AXRM-002` reconciles the historical v2 authorization with the deployed
+release and prepares OD-02; OG-02 remains open.
 
 ## Axorim pivot
 
-The product direction changed on 2026-09-27. Product work is now governed by the
-local-only plan **`axorim-pivot-r1`**, which, like every plan since the exclusion,
-lives under `.omo/plans/` and is never committed. "Axorim" is an internal working
+The product direction changed on 2026-09-27. The local-only plan
+**`axorim-pivot-r1`** governed the R1 work delivered and merged on 2026-10-15;
+the current plan is the regional MVP above. Like every plan since the exclusion,
+it lives under `.omo/plans/` and is never committed. "Axorim" is an internal working
 name. The repository, the README headline and customer-facing copy stay "app-mei"
 until the name is cleared.
 
@@ -110,10 +115,10 @@ until the name is cleared.
 - **Records.** `docs/product/pivot-supersession.md` says which earlier restrictions are
   superseded and which still bind. ADRs 0002 to 0007 in `docs/decisions/` hold the
   architecture decisions, and `docs/product/vocabulary.md` holds the status words.
-- **Pilot obligations stay open and separate.** The `pilot-readiness-v2` F1-F4 wave
-  and the owner's authorization of the pilot start are neither closed, waived nor
-  absorbed by the pivot. They're decided on their own track. R1 reaches the pilot
-  tenant only behind its flag, and only after that authorization.
+- **Pilot obligations stay separate.** The v2 plan records F1-F4 complete and
+  pilot start authorized on 2026-09-26 for `a962173` only. R1's delivery does not
+  carry that authorization forward: the owner's OD-02 decision must settle
+  carry-forward or a re-run before OG-02 can close for the current release.
 
 Progress: `AXR1-001` (the pivot records) lands with the commit that adds this
 section. `AXR1-002` (per-tenant feature flags with a global kill switch;
@@ -1208,8 +1213,8 @@ removed authority. Evidence: `.evidence/AXR1-004-fix-1.txt` through `-fix-5.txt`
 | Plan | Status | Basis |
 | --- | --- | --- |
 | `axorim-regional-mvp` | **current** (product direction) | Approved 2026-10-22 on top of the delivered R1 release. 42 todos in seven waves plus a final verification wave, merged per wave on the owner's authorization; `AXRM-001` recorded the decisions and gate rows. |
-| `axorim-pivot-r1` | **delivered** (merged 2026-10-15) | Started 2026-09-27. 29 todos in five waves plus a final verification wave; `AXR1-001` recorded the pivot. It runs separately from the open F1-F4 wave and pilot authorization of `pilot-readiness-v2`. |
-| `pilot-readiness-v2` | **current** | Execution complete: all 41 rows closed and `ops/check_go_no_go.py` exits 0 against the evidence directory, every S-line GO on the final capture. Only the F1-F4 audits and the owner's authorization remain. |
+| `axorim-pivot-r1` | **delivered** (merged 2026-10-15) | Started 2026-09-27. 29 todos in five waves plus a final verification wave; `AXR1-001` recorded the pivot. Release `00f1d41`, followed by backup fix `71225ef` on 2026-10-21; the regional MVP is now current. Pilot-authorization carry-forward remains OD-02. |
+| `pilot-readiness-v2` | **historical** (authorized for `a962173` only) | All 41 execution rows recorded closed; F1-F4 recorded complete in the v2 plan. `pilot_start_authorized=2026-09-26` covers `a962173` (tag `v0.2.0-rc1`), not `71225ef` or the regional MVP. AXRM-002's read-only checker exits 1 for S1, S2, S3, S18, S20; OG-02 remains open pending the owner's OD-02 carry-forward-or-re-run decision. |
 | `pilot-readiness-v1` | **superseded** | Replaced by `pilot-readiness-v2` on 2026-09-21. Its checkbox states are frozen and its evidence is kept, never rewritten; v2's legacy reconciliation ledger classifies every v1 row (13 verified-complete, 5 repo-complete with operator evidence open, 12 partial, 8 open-valid, 2 superseded, 2 invalid-premise, plus the four F-rows that never ran). |
 | `resend-smtp-pilot-provider-amendment` | **superseded** | Superseded by owner decision D-Q1: Resend is used through the existing provider-neutral SMTP settings, so the amendment's new email machinery is unneeded. Its branch `chore/pilot-resend-smtp-round3h` is frozen, unpushed, and never to be merged. |
 | `post-ui-ux-residual-hardening` | **closed** | All 24 todos checked. Its four pull requests merged; `main` is byte-identical to the final reviewed head. Its unfixed leftovers are written up in `docs/residual-risks.md`. |
@@ -1276,20 +1281,34 @@ dns_flip_completed_no_later_than_utc=2026-09-22T14:36:59Z
 rollback_invoked=no
 cutover_status=closed
 old_host_state=stopped-intact
-old_host_termination_not_before=v0.2.0-rc1 tag date + 7 days (tag not yet created)
+old_host_termination_not_before=2026-10-03T15:48:06Z (v0.2.0-rc1 tag 2026-09-26T15:48:06Z + 7 days; owner action, not executed by AXRM-002)
 
 `freeze_sha` is the merged row-27 commit, backfilled from `.evidence/PILOT2-404E-happy.txt`
 and repeated in `.evidence/PILOT2-404-operator.txt`. The `window_utc` and
 `rollback_deadline` lines are the plan as first recorded. The owner then moved the
 cutover forward a day, and the `executed_*` lines are what ran
 (`.evidence/PILOT2-404-operator.txt`, `.evidence/PILOT2-404O2-operator.txt`). The OCI
-host was stopped with its disk intact on 2026-09-23 (`.evidence/PILOT2-401-operator.txt`);
-its termination date gets fixed once the `v0.2.0-rc1` tag exists.
+host was recorded stopped with its disk intact on 2026-09-23
+(`.evidence/PILOT2-401-operator.txt`); this is historical, not a current host probe.
+Tag `v0.2.0-rc1` now exists at `a962173`, with tagger time
+2026-09-26T12:48:06-03:00 (15:48:06 UTC);
+`/home/samarone/Documents/app_mei-pilot2/.evidence/PILOT2-505-operator.txt:1-3`
+records `retention_window_start=2026-09-26`. The seven-day minimum has elapsed,
+but does not prove termination, wiping or credential rotation happened. Those
+remain owner/operator actions under v2 row 38 Part 2; AXRM-002 neither executed
+them nor changed the old host. `ops/RELEASES.md` remains the frozen preparation
+template, not evidence that the tag is still absent.
 
 The authoritative 12-step cutover table, with its as-executed record, is the ordered
 state machine under "Cutover: data freeze, restore, and DNS flip" in `ops/README.md`.
 
 ## Suite baseline
+
+AXRM-002 is documentation-only. Before the change at `014123f`, the named
+non-database suites passed: `uv run pytest tests/scope/ -q` **33 passed** and
+`uv run pytest tests/ops/ -q` **27 passed**. Evidence:
+`.evidence/AXRM-002-gates.txt`. No tests or implementation changed; the historical
+full-suite figures below are not a new full-suite run for this reconciliation.
 
 The full test suite is the gate at every pull-request head and at the final
 implementation head. The current default-suite baseline is **5148 passing** (41 skipped, 168 deselected), measured at `AXR1-034` code `133793b`, the **5137** below plus **11** cases. The reviewed head `f3a8afd` adds only the driver CPU-limit repair with its one test (static clean, targeted 304 passed) and the docs-only placement on `AXR1-054`. Isolation (**721 passed, 41 skipped**), CNPJ (**29 passed**), build with a clean static diff, lint, format, Mypy, migration drift and browser (**168 passed**) passed at `133793b`. Evidence: `.evidence/AXR1-034-final-gates-r1.txt`, `AXR1-034-static-r3.txt`, `AXR1-034-targeted-r3.txt`.
