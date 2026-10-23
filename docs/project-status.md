@@ -444,7 +444,12 @@ forbidden certificate move (`vencendo`/`vencida` -> `ativa`, `vencida` ->
 `vencendo`) and its drift work item, and hit the authority routes over HTTP as each
 role of the six-role matrix (staff refused at the view gate with its recorded
 refusal before any upload; client roles and the platform admin refused with no
-rows; owner and ops reach the service).
+rows; owner and ops reach the service). At `da114a5` the default suite passes **5650,
+45 skipped**, isolation **796 passed, 45 skipped**, CNPJ **29** and browser **191**; the
+83 AXRM-008 tests pass in each of three runs, and a bytecode-isolated mutation run
+kills all 64 mutants (the 47 worker and the review's 17). Evidence:
+`.evidence/AXRM-008-rv1-red.txt`, `AXRM-008-rv1-green-flaky.txt`,
+`AXRM-008-rv1-mutations.txt`, `AXRM-008-rv1-gates.txt`.
 
 ## Axorim pivot
 
