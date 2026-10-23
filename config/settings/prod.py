@@ -1,7 +1,7 @@
 """Production settings: TLS-terminated, host-only cookies, Sentry on."""
 
 import logging
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import sentry_sdk
@@ -16,24 +16,23 @@ from sentry_sdk.types import Event, Hint
 
 from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
-from apps.integrations.privacy import provider_field, scrub_provider_text
+from apps.integrations.privacy import (
+    collect_credentials,
+    credential_pair,
+    provider_field,
+    redact_structure,
+    scrub_provider_text,
+    scrub_text,
+)
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING, env
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 type SentryValue = (
     str | int | float | bool | dict[str, SentryValue] | list[SentryValue] | None
 )
-type LogValue = (
-    str
-    | int
-    | float
-    | bool
-    | dict[str, LogValue]
-    | tuple[LogValue, ...]
-    | list[LogValue]
-    | None
-)
-
 SENTRY_REDACTION_MARKER: Final = "[Filtered]"
 SENTRY_DSN_ERROR: Final = (
     "SENTRY_DSN is set but is not a DSN URL; unset it or provide the project DSN"
@@ -131,6 +130,9 @@ def _scrub_sentry_urls(value: SentryValue, credentials: set[str]) -> SentryValue
                 scrubbed[key] = _scrub_sentry_urls(item, credentials)
         return scrubbed
     if isinstance(value, list):
+        if credential_pair(value):
+            collect_credentials(value[1], credentials)
+            return [value[0], SENTRY_REDACTION_MARKER]
         return [_scrub_sentry_urls(item, credentials) for item in value]
     if isinstance(value, str):
         redacted, found = _redact_credential_url(value)
@@ -189,61 +191,52 @@ def _request_credentials(record: logging.LogRecord) -> set[str]:
     return set(parameters.values())
 
 
-def _replace_log_credentials(value: LogValue, credentials: set[str]) -> LogValue:
-    if isinstance(value, dict):
-        return {
-            key: (
-                SENTRY_REDACTION_MARKER
-                if provider_field(key)
-                else _replace_log_credentials(item, credentials)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, tuple):
-        return tuple(_replace_log_credentials(item, credentials) for item in value)
-    if isinstance(value, list):
-        return [_replace_log_credentials(item, credentials) for item in value]
-    if isinstance(value, str):
-        for credential in credentials:
-            value = value.replace(credential, SENTRY_REDACTION_MARKER)
-        value = scrub_provider_text(value)
-    return value
+def _exception_chain(exception: BaseException | None) -> list[BaseException]:
+    chain: list[BaseException] = []
+    pending = [exception]
+    while pending:
+        current = pending.pop()
+        if current is None or any(current is seen for seen in chain):
+            continue
+        chain.append(current)
+        pending.extend((current.__cause__, current.__context__))
+    return chain
 
 
 class CredentialURLLogFilter(logging.Filter):
-    """Remove registered URL credentials before console record serialization."""
+    """Remove provider and URL credentials before console record serialization."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         credentials = _request_credentials(record) | set(sensitive_values.get())
-        # Interpolate before redacting: a token-shaped value may be the `%s`
-        # placeholder itself, and removing it early breaks logging's formatting.
-        rendered = record.getMessage()
+        # Redact arguments while field names and header pairs still exist; the
+        # message template itself is interpolated only afterwards.
+        if record.args:
+            record.args = cast(
+                "tuple[object, ...] | Mapping[str, object]",
+                redact_structure(record.args, credentials),
+            )
+        if not isinstance(record.msg, str):
+            record.msg = redact_structure(record.msg, credentials)
+        try:
+            rendered = record.getMessage()
+        except (TypeError, ValueError, KeyError):
+            rendered = f"{record.msg} {record.args!r}"
         record.args = ()
-        record.msg = _replace_log_credentials(
-            rendered,
-            credentials,
-        )
+        record.msg = scrub_text(rendered, credentials)
         for name in record.__dict__:
             if provider_field(name):
                 record.__dict__[name] = SENTRY_REDACTION_MARKER
-        if record.exc_text is not None:
-            record.exc_text = cast(
-                "str",
-                _replace_log_credentials(record.exc_text, credentials),
-            )
+        if record.stack_info is not None:
+            record.stack_info = scrub_text(record.stack_info, credentials)
         if record.exc_info is not None:
-            exception = record.exc_info[1]
-            if exception is not None:
+            for exception in _exception_chain(record.exc_info[1]):
                 exception.args = cast(
-                    "tuple[Any, ...]",
-                    _replace_log_credentials(
-                        cast("LogValue", exception.args),
-                        credentials,
-                    ),
+                    "tuple[Any, ...]", redact_structure(exception.args, credentials)
                 )
-            record.exc_text = scrub_provider_text(
-                logging.Formatter().formatException(record.exc_info)
-            )
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        if record.exc_text is not None:
+            # The whole rendered chain, including causes and contexts.
+            record.exc_text = scrub_text(record.exc_text, credentials)
         return True
 
 

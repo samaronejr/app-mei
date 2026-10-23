@@ -37,12 +37,24 @@ def decode_json(data: bytes) -> JSONValue:
 class OperacaoNaoPermitidaError(Exception):
     """A request does not match the closed provider operation register."""
 
-    def __init__(self) -> None:
-        """Expose only the catalog refusal code."""
-        super().__init__("operacao_nao_permitida")
+    def __init__(self, code: str = "operacao_nao_permitida") -> None:
+        """Expose only a symbolic refusal code."""
+        self.code = code
+        super().__init__(code)
 
 
 OperacaoNaoPermitida = OperacaoNaoPermitidaError
+
+
+class EnvioNaoAutorizadoError(OperacaoNaoPermitidaError):
+    """No issued AXRM-009 dispatch opened the wire for this exact operation."""
+
+    def __init__(self) -> None:
+        """Refused before any connection, so nothing was sent."""
+        super().__init__("envio_nao_autorizado")
+
+
+EnvioNaoAutorizado = EnvioNaoAutorizadoError
 
 
 class TransportFailureError(Exception):

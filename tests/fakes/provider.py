@@ -1,4 +1,8 @@
-"""Scripted loopback HTTP peers with event-held replies, never timing sleeps."""
+"""Scripted loopback HTTP peers with event-held replies.
+
+Only `Reply.gap` waits for wall-clock time; it exists for tests whose behaviour
+under test is an elapsed-time budget.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +14,25 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Self
 
+from apps.integrations.call_dispatch import _wire_window
+
 if TYPE_CHECKING:
     from types import TracebackType
+
+    from apps.integrations.transport import ProviderTransport
+    from apps.integrations.transport_types import ProviderRequest, ProviderResponse
+
+# Wire-level tests have no database call row. They open the same single-send
+# window that transmit() opens for an issued dispatch; production code reaches
+# it only through transmit() (tests/integrations/test_transport_binding.py).
+wire_window = _wire_window
+
+
+def permitted_send(
+    client: ProviderTransport, operation: str, request: ProviderRequest
+) -> ProviderResponse:
+    with wire_window(client.provider, client.environment, operation):
+        return client.send(operation, request)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +44,10 @@ class Reply:
     reset: bool = False
     declared_length: bool = True
     chunks: tuple[bytes, ...] = ()
+    # Seconds between consecutive chunks; then keep the connection open (without
+    # completing the declared body) until the peer closes.
+    gap: float = 0.0
+    hold_open: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,9 +97,13 @@ class _Handler(BaseHTTPRequestHandler):
             if reply.declared_length:
                 self.send_header("Content-Length", str(len(reply.body)))
             self.end_headers()
-            for part in reply.chunks or (reply.body,):
+            for index, part in enumerate(reply.chunks or (reply.body,)):
+                if index and reply.gap:
+                    peer.release.wait(timeout=reply.gap)
                 self.wfile.write(part)
                 self.wfile.flush()
+            if reply.hold_open:
+                peer.release.wait(timeout=10)
         except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
             # Expected when the client rejects headers/size or times out.
             return

@@ -256,6 +256,27 @@ after each isolated campaign. Evidence: `AXRM-011-red.txt`,
 `AXRM-011-baseline.txt`. Assets and browser gates are not applicable: this todo
 changes no UI, template, CSS, JavaScript or browser test.
 
+`AXRM-011` review fix (gate review attempt 1, needs-fix at `5721789`). Provider
+transmission is now bound to the AXRM-009 protocol in code: `begin_io()` records the
+dispatch it authorized, `transmit()` accepts only that exact dispatch once and opens
+a single-send window for its provider, environment and operation, and
+`ProviderTransport.send()` (and the broker client) refuse with
+`envio_nao_autorizado` before any connection otherwise. This closes the reviewed
+bypass: a direct production `FC-CIE` call with providers paused now opens no
+connection. The production console filter redacts log arguments, non-string
+messages and header-style pairs before interpolation and scrubs the whole rendered
+exception chain with active and collected credential values; the Sentry hook
+redacts header pairs. The body read budget now bounds every blocking read instead
+of checking only between reads. The rework adds **35 tests** (the transport
+selection collects **179**; the default suite **5805**, browser **189**). Existing
+test edits: the injected-clock trickle test is replaced by a real elapsed-time test
+plus a between-reads budget witness; the misnamed base64/exception-chain test is
+renamed to what it checks, with real chain tests added; wire-level tests send
+through `tests.fakes.provider.permitted_send`; broker client tests open a SERPRO
+window. Evidence: `AXRM-011-rework-red.txt` (21 assertion failures),
+`AXRM-011-rework-red-db.txt`, `AXRM-011-rework-mutations-*.txt`,
+`AXRM-011-rework-failure.txt` and the committed-HEAD `AXRM-011-gates.txt`.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),

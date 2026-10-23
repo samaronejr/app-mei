@@ -1,8 +1,12 @@
 """The single dispatch-start commit, followed by independent storage and wire I/O."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from http.client import HTTPException
 from typing import Protocol
+from uuid import UUID
 
 from django.utils import timezone
 
@@ -23,6 +27,7 @@ from apps.integrations.call_contracts import (
 from apps.integrations.call_models import CallState, ProviderCall, ProviderEffectBarrier
 from apps.integrations.call_state import admit, current_epoch, lock_controls, uncertain
 from apps.integrations.journal_schema import JournalRecord
+from apps.integrations.transport_types import EnvioNaoAutorizado
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +37,53 @@ class Dispatch:
     claim: Claim
     receipt: JournalRecord
     journaled: bool
+
+
+@dataclass(slots=True)
+class _WirePermit:
+    provider: str
+    environment: str
+    operation: str
+    used: bool = False
+
+
+# Dispatches that begin_io() authorized and journaled in this process and that
+# transmit() has not consumed yet. Only an exact issued dispatch opens the wire.
+_ISSUED: dict[tuple[UUID, int, UUID], Dispatch] = {}
+_WIRE: ContextVar[_WirePermit | None] = ContextVar("provider_wire", default=None)
+
+
+def _issued_key(ticket: Claim) -> tuple[UUID, int, UUID]:
+    return (ticket.call_id, ticket.fence, ticket.owner)
+
+
+@contextmanager
+def _wire_window(provider: str, environment: str, operation: str) -> Iterator[None]:
+    token = _WIRE.set(_WirePermit(provider, environment, operation))
+    try:
+        yield
+    finally:
+        _WIRE.reset(token)
+
+
+def open_wire(provider: str, environment: str, operation: str) -> None:
+    """Consume the one transmission the current dispatch allows, or refuse."""
+    permit = _WIRE.get()
+    if (
+        permit is None
+        or permit.used
+        or (permit.provider, permit.environment, permit.operation)
+        != (provider, environment, operation)
+    ):
+        raise EnvioNaoAutorizado
+    permit.used = True
+
+
+def require_dispatch(provider: str) -> None:
+    """Per-call credentials exist only for a dispatch of the same provider."""
+    permit = _WIRE.get()
+    if permit is None or permit.provider != provider:
+        raise EnvioNaoAutorizado
 
 
 class Adapter(Protocol):
@@ -135,6 +187,7 @@ def begin_io(ticket: Claim) -> Dispatch:
     dispatch = prepared
     if dispatch.journaled:
         provider_journal.append(dispatch.receipt)
+    _ISSUED[_issued_key(dispatch.claim)] = dispatch
     return dispatch
 
 
@@ -148,9 +201,23 @@ def record_result(dispatch: Dispatch, result: CallResult) -> None:
 
 
 def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:
-    """One network transmission; all transport ambiguity remains uncertain."""
+    """One network transmission; all transport ambiguity remains uncertain.
+
+    Only a dispatch issued by begin_io() is accepted, once. While the adapter
+    runs, the transport may send exactly that call's provider, environment and
+    operation a single time; nothing else can open the provider wire.
+    """
     assert_no_transaction()
+    key = _issued_key(dispatch.claim)
+    issued = _ISSUED.pop(key, None)
+    if issued is None:
+        raise StaleClaimError
+    if issued != dispatch:
+        _ISSUED[key] = issued
+        raise StaleClaimError
+    receipt = issued.receipt
     try:
-        return adapter.send(dispatch)
+        with _wire_window(receipt.provider, receipt.environment, receipt.operation):
+            return adapter.send(dispatch)
     except (OSError, HTTPException):
         return CallResult(CallState.UNCERTAIN, None, "connection_lost", "desconhecido")

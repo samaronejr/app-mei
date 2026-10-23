@@ -1,15 +1,16 @@
 """Private bounded wire primitive shared only by provider and broker clients."""
 
+import socket
 from contextlib import closing
 from dataclasses import dataclass
 from http import HTTPStatus
 from time import monotonic
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from requests import Request, Response
 from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException, SSLError, Timeout
-from urllib3.exceptions import HTTPError
+from urllib3.exceptions import HTTPError, ReadTimeoutError
 
 from apps.delivery.privacy import delivery_secrets
 from apps.integrations.transport_types import ProviderResponse, TransportFailure
@@ -36,7 +37,21 @@ class WireLimits:
     ca_file: str = ""
 
 
-def _consume(response: Response, limits: WireLimits) -> ProviderResponse:
+def _body_socket(raw: "BaseHTTPResponse") -> socket.socket | None:
+    """Find the live socket behind a streamed body, or None once it is exhausted.
+
+    http.client drops `HTTPConnection.sock` for close-delimited replies, while
+    the response's buffered reader still owns the socket (pinned: CPython 3.13,
+    urllib3 2.7). An exhausted body has released both.
+    """
+    sock = getattr(raw.connection, "sock", None)
+    if sock is None:
+        reader = getattr(getattr(raw, "_fp", None), "fp", None)
+        sock = getattr(getattr(reader, "raw", None), "_sock", None)
+    return cast("socket.socket | None", sock)
+
+
+def _check_declared(response: Response, limits: WireLimits) -> None:
     if response.headers.get("Content-Encoding", "identity").lower() != "identity":
         msg = "codificacao_nao_permitida"
         raise TransportFailure(msg, response.status_code)
@@ -48,16 +63,30 @@ def _consume(response: Response, limits: WireLimits) -> ProviderResponse:
         if int(length) > limits.size:
             msg = "resposta_excede_limite"
             raise TransportFailure(msg, response.status_code)
+
+
+def _consume(response: Response, limits: WireLimits) -> ProviderResponse:
+    _check_declared(response, limits)
     # read1 performs at most one buffered socket read. Unlike read(chunk_size),
     # a peer dripping bytes cannot hold us until a whole chunk has accumulated.
     raw: BaseHTTPResponse = response.raw
+    sock = _body_socket(raw)
+    if sock is None and not raw.closed:
+        msg = "conexao_interrompida"
+        raise TransportFailure(msg, response.status_code)
     deadline = monotonic() + limits.read
     data = bytearray()
     while True:
-        part = raw.read1(min(65536, limits.size + 1 - len(data)), decode_content=False)
-        if monotonic() > deadline:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
             msg = "tempo_limite"
             raise TransportFailure(msg)
+        # Each blocking read may wait only for what is left of the body budget,
+        # so a slow drip cannot extend it by one socket timeout per byte.
+        # A complete body closes the socket (fileno -1); that read cannot block.
+        if sock is not None and sock.fileno() != -1:
+            sock.settimeout(min(limits.read, remaining))
+        part = raw.read1(min(65536, limits.size + 1 - len(data)), decode_content=False)
         if not part:
             break
         data.extend(part)
@@ -111,7 +140,7 @@ def _exchange(
         except SSLError:
             msg = "tls_invalido"
             raise TransportFailure(msg) from None
-        except Timeout:
+        except (Timeout, ReadTimeoutError, TimeoutError):
             msg = "tempo_limite"
             raise TransportFailure(msg) from None
         except (RequestException, HTTPError, OSError):

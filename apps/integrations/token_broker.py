@@ -11,6 +11,7 @@ from typing import Final
 from requests import Request
 
 from apps.core.tasks import assert_no_transaction
+from apps.integrations.call_dispatch import require_dispatch
 from apps.integrations.transport_types import TransportFailure
 from apps.integrations.transport_wire import WireLimits, _exchange
 
@@ -37,6 +38,7 @@ class TokenBrokerClient:
     def tokens(self, firm_cnpj: str, *, refresh: bool = False) -> BrokerTokens:
         """Request a fresh broker view for this call, failing closed on bad replies."""
         assert_no_transaction()
+        require_dispatch("serpro")
         if not self.secret or re.fullmatch(r"[A-Z0-9]{12}[0-9]{2}", firm_cnpj) is None:
             msg = "broker_configuracao_invalida"
             raise TransportFailure(msg)

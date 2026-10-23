@@ -8,7 +8,7 @@ import pytest
 from apps.integrations.transport import ProviderTransport, _pdf_location
 from apps.integrations.transport_types import ProviderRequest, TransportFailure
 from tests.fakes.focus import FakeFocus
-from tests.fakes.provider import Reply
+from tests.fakes.provider import Reply, permitted_send
 from tests.fakes.serpro import FakeSerpro
 from tests.integrations.test_transport import KEY, serpro_request
 from tests.integrations.transport_tls import HOST, route_storage_host, tls_context
@@ -28,8 +28,10 @@ def test_tls_rejects_untrusted_certificate_even_with_environment_override(
     monkeypatch.setenv("CURL_CA_BUNDLE", ca)
     with FakeFocus((Reply(),), tls=context) as peer:
         with pytest.raises(TransportFailure, match="tls_invalido"):
-            ProviderTransport("focus", "fake", peer.origin).send(
-                "FC-NFE", ProviderRequest()
+            permitted_send(
+                ProviderTransport("focus", "fake", peer.origin),
+                "FC-NFE",
+                ProviderRequest(),
             )
         assert not peer.requests
 
@@ -37,8 +39,10 @@ def test_tls_rejects_untrusted_certificate_even_with_environment_override(
 def test_verified_tls_positive_control(tmp_path: Path) -> None:
     context, ca = tls_context(tmp_path)
     with FakeFocus((Reply(),), tls=context) as peer:
-        response = ProviderTransport("focus", "fake", peer.origin, ca).send(
-            "FC-NFE", ProviderRequest()
+        response = permitted_send(
+            ProviderTransport("focus", "fake", peer.origin, ca),
+            "FC-NFE",
+            ProviderRequest(),
         )
         assert response.status == 200
         assert len(peer.requests) == 1
@@ -90,9 +94,9 @@ def test_focus_pdf_one_hop_drops_all_credentials(
             with pytest.raises(
                 TransportFailure, match="redirecionamento_nao_permitido"
             ):
-                client.send("FC-PDF", request)
+                permitted_send(client, "FC-PDF", request)
         else:
-            result = client.send("FC-PDF", request)
+            result = permitted_send(client, "FC-PDF", request)
             assert result.body == b"%PDF-synthetic"
             assert "synthetic-signature" not in repr(result)
         assert len(source.requests) == len(target.requests) == 1
@@ -136,8 +140,10 @@ def test_socket_receives_split_operation_timeouts(
 
     monkeypatch.setattr(socket.socket, "settimeout", observe)
     with FakeSerpro((Reply(),)) as peer:
-        ProviderTransport("serpro", "fake", peer.origin).send(
-            operation, serpro_request(service, system)
+        permitted_send(
+            ProviderTransport("serpro", "fake", peer.origin),
+            operation,
+            serpro_request(service, system),
         )
     assert 5.0 in seen
     assert read_timeout in seen

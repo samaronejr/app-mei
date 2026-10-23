@@ -8,6 +8,7 @@ from requests import Request
 
 from apps.core.tasks import assert_no_transaction
 from apps.integrations.allowlist import resolve
+from apps.integrations.call_dispatch import open_wire
 from apps.integrations.transport_types import (
     Environment,
     OperacaoNaoPermitida,
@@ -75,7 +76,7 @@ def _pdf_location(value: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ProviderTransport:
-    """An adapter invokes this only inside its authorized AXRM-009 send phase.
+    """Sends only inside the AXRM-009 dispatch that transmit() opened for it.
 
     Fake endpoints must be explicit loopback origins. Real origins cannot be
     overridden; a custom CA bundle adds trust roots, never disables verification.
@@ -107,6 +108,7 @@ class ProviderTransport:
         assert_no_transaction()
         route, path = resolve(self.provider, operation, request)
         origin = self._origin()
+        open_wire(self.provider, self.environment, operation)
         limits = WireLimits(
             PDF_LIMIT if route.media == "pdf" else XML_LIMIT,
             SITFIS_TIMEOUT if operation == "SP-SIT-R" else READ_TIMEOUT,

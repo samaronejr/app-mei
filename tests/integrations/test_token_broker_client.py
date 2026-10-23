@@ -9,7 +9,7 @@ import pytest
 from apps.integrations import token_broker
 from apps.integrations.token_broker import TokenBrokerClient
 from apps.integrations.transport_types import TransportFailure
-from tests.fakes.provider import Reply
+from tests.fakes.provider import Reply, wire_window
 from tests.fakes.serpro import FakeSerpro
 
 TOKENS = (
@@ -23,8 +23,9 @@ def test_broker_client_signs_exact_body_and_does_not_cache(
     with FakeSerpro((Reply(body=TOKENS), Reply(body=TOKENS))) as peer:
         monkeypatch.setattr(token_broker, "BROKER_URL", peer.origin + "/token")
         client = TokenBrokerClient("synthetic-hmac-secret")
-        first = client.tokens("ABCDEF12345678")
-        second = client.tokens("ABCDEF12345678", refresh=True)
+        with wire_window("serpro", "producao", "SP-PAG"):
+            first = client.tokens("ABCDEF12345678")
+            second = client.tokens("ABCDEF12345678", refresh=True)
         assert first == second
         assert len(peer.requests) == 2
         for request in peer.requests:
@@ -54,7 +55,10 @@ def test_broker_reply_is_strictly_validated(
 ) -> None:
     with FakeSerpro((Reply(body=body),)) as peer:
         monkeypatch.setattr(token_broker, "BROKER_URL", peer.origin + "/token")
-        with pytest.raises(TransportFailure):
+        with (
+            wire_window("serpro", "producao", "SP-PAG"),
+            pytest.raises(TransportFailure),
+        ):
             TokenBrokerClient("synthetic-secret").tokens("00000000000000")
         assert len(peer.requests) == 1
 
@@ -65,6 +69,9 @@ def test_broker_failure_is_not_retried(
 ) -> None:
     with FakeSerpro((Reply(status=status, body=TOKENS),)) as peer:
         monkeypatch.setattr(token_broker, "BROKER_URL", peer.origin + "/token")
-        with pytest.raises(TransportFailure):
+        with (
+            wire_window("serpro", "producao", "SP-PAG"),
+            pytest.raises(TransportFailure),
+        ):
             TokenBrokerClient("synthetic-secret").tokens("00000000000000")
         assert len(peer.requests) == 1
