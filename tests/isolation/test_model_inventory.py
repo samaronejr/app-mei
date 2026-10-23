@@ -99,6 +99,7 @@ SWEEP_EXEMPTIONS: Final[dict[str, str]] = {
     "clients.OnboardingItemTemplate": "Shared national onboarding reference checklist.",
     "fiscal.Municipality": "Shared municipality reference data.",
     "fiscal.MunicipalityCapability": "Shared municipal fiscal capability reference.",
+    "fiscal.MunicipalitySeedRow": "Registry seed ownership ledger; no tenant data.",
     "obligations.FiscalParameter": "Shared national fiscal reference data.",
     "obligations.Holiday": "Shared statutory holiday reference data.",
     "obligations.ObligationType": "Shared statutory obligation reference data.",

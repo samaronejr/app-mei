@@ -18,9 +18,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from django.apps import apps as global_apps
 from django.db import IntegrityError, connection, transaction
 
+from apps.clients.models import ClientCompany
 from apps.core.rls import is_exempt_from_tenant_policy
+from apps.core.tenancy import tenant_context
 from apps.fiscal import capabilities
 from apps.fiscal import models as models_module
 from apps.fiscal.capabilities import (
@@ -36,6 +39,7 @@ from apps.fiscal.models import (
     Municipality,
     MunicipalityCapability,
 )
+from tests.ui.factories import make_firm
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -47,6 +51,24 @@ seed_module = importlib.import_module("apps.fiscal.migrations.0002_seed_capitals
 SAO_PAULO = "3550308"
 CURITIBA = "4106902"
 UNSEEDED = "3509502"  # Campinas/SP: a real municipality, deliberately not seeded.
+RIO_METRO = (
+    ("3304557", "Rio de Janeiro", "RJ"),
+    ("3303302", "Niterói", "RJ"),
+    ("3304904", "São Gonçalo", "RJ"),
+    ("3301702", "Duque de Caxias", "RJ"),
+    ("3303500", "Nova Iguaçu", "RJ"),
+    ("3300456", "Belford Roxo", "RJ"),
+    ("3305109", "São João de Meriti", "RJ"),
+    ("3303203", "Nilópolis", "RJ"),
+    ("3302858", "Mesquita", "RJ"),
+    ("3304144", "Queimados", "RJ"),
+    ("3302270", "Japeri", "RJ"),
+    ("3302502", "Magé", "RJ"),
+    ("3301850", "Guapimirim", "RJ"),
+    ("3302007", "Itaguaí", "RJ"),
+    ("3305554", "Seropédica", "RJ"),
+    ("3303609", "Paracambi", "RJ"),
+)
 
 # The first two digits of an IBGE municipality code are the state's own IBGE code.
 # Listed here so a transcription error in the seed shows up as a mismatch rather than
@@ -253,6 +275,90 @@ def test_the_seed_does_not_claim_capabilities_nobody_verified() -> None:
         assert capability.requires_certificate is True
         assert capability.verified_on is None
         assert "not been verified" in capability.notes
+
+
+def test_all_sixteen_rio_metro_municipalities_have_the_ibge_names() -> None:
+    actual = {
+        code: (name, uf)
+        for code, name, uf in Municipality.objects.filter(
+            ibge_code__in=[code for code, _name, _uf in RIO_METRO],
+        ).values_list("ibge_code", "name", "uf")
+    }
+    assert actual == {code: (name, uf) for code, name, uf in RIO_METRO}
+
+
+def test_rio_metro_seed_does_not_mark_capabilities_verified() -> None:
+    capabilities_for_region = MunicipalityCapability.objects.filter(
+        municipality_id__in=[code for code, _name, _uf in RIO_METRO],
+    )
+    assert list(capabilities_for_region.values_list("municipality_id", flat=True)) == [
+        "3304557",
+    ]
+    assert all(capability.verified_on is None for capability in capabilities_for_region)
+
+
+def test_reversing_rio_metro_seed_refuses_a_referenced_municipality() -> None:
+    firm = make_firm("rio-metro-reverse", client_count=1)
+    client = firm.clients[0]
+    with tenant_context(firm.tenant.id):
+        ClientCompany.objects.filter(pk=client.pk).update(
+            municipality_ibge_code="3303302",
+        )
+    migration_module = importlib.import_module(
+        "apps.fiscal.migrations.0003_seed_rio_metro",
+    )
+
+    with connection.cursor() as cursor:
+        cursor.execute("RESET ROLE")
+    try:
+        with pytest.raises(RuntimeError, match="references"):
+            migration_module.unseed(global_apps, None)
+        assert Municipality.objects.filter(ibge_code="3303302").exists()
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("SET ROLE app_runtime")
+
+
+def test_rio_metro_seed_round_trip_keeps_capitals_and_unrelated_rows() -> None:
+    migration = importlib.import_module("apps.fiscal.migrations.0003_seed_rio_metro")
+    Municipality.objects.create(ibge_code=UNSEEDED, name="Campinas", uf="SP")
+    before = Municipality.objects.count()
+    migration.seed(global_apps, None)
+    assert Municipality.objects.count() == before
+    migration.unseed(global_apps, None)
+    assert Municipality.objects.filter(ibge_code=UNSEEDED).exists()
+    assert Municipality.objects.filter(ibge_code="3304557").exists()
+    assert not Municipality.objects.filter(ibge_code="3303302").exists()
+    migration.seed(global_apps, None)
+    assert Municipality.objects.count() == before
+
+
+def test_rio_metro_reverse_keeps_a_metro_row_that_predates_the_seed() -> None:
+    """Rollback ownership: the reverse removes only the rows the forward inserted."""
+    migration = importlib.import_module("apps.fiscal.migrations.0003_seed_rio_metro")
+    # Return the registry to its pre-0003 state, then register Niteroi by hand.
+    migration.unseed(global_apps, None)
+    assert not Municipality.objects.filter(ibge_code="3303302").exists()
+    Municipality.objects.create(ibge_code="3303302", name="Niteroi", uf="RJ")
+
+    migration.seed(global_apps, None)
+    migration.unseed(global_apps, None)
+
+    assert Municipality.objects.filter(ibge_code="3303302").exists()
+    assert not Municipality.objects.filter(ibge_code="3304904").exists()
+    assert Municipality.objects.filter(ibge_code="3304557").exists()
+
+    migration.seed(global_apps, None)
+    migration.unseed(global_apps, None)
+    assert Municipality.objects.filter(ibge_code="3303302").exists()
+
+
+def test_rio_metro_reverse_refuses_related_registry_records() -> None:
+    migration = importlib.import_module("apps.fiscal.migrations.0003_seed_rio_metro")
+    MunicipalityCapability.objects.create(municipality_id="3303302")
+    with pytest.raises(RuntimeError, match="references"):
+        migration.unseed(global_apps, None)
+    assert MunicipalityCapability.objects.filter(municipality_id="3303302").exists()
 
 
 # ================================================================================

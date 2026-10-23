@@ -22,6 +22,7 @@ from apps.cycles.models import Exception as CycleException
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.workspace import parse_period
 from apps.cycles.workspace_queries import read_workspace
+from apps.fiscal.models import Municipality
 
 # AXR1-047: the flag the setup route is gated on, written as a literal for the
 # reason `cycle_views` writes `"bulk_r1"` and `clients.views` writes `"cycles_r1"`
@@ -68,6 +69,11 @@ def client_workspace(
         "cycles/workspace.html",
         {
             "client": workspace.client,
+            "municipality": Municipality.objects.filter(
+                ibge_code=workspace.client.municipality_ibge_code,
+            ).first()
+            if workspace.client.municipality_ibge_code
+            else None,
             "period": period,
             "cycle_context": workspace.context,
             "cycles": workspace.cycles,

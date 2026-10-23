@@ -127,8 +127,12 @@ EXPORT_URL_NAMES = frozenset(
     }
 )
 
-# Row 4. The fiscal app is a municipal registry, full stop.
-FISCAL_MODEL_NAMES = frozenset({"Municipality", "MunicipalityCapability"})
+# Row 4. The fiscal app is a municipal registry, full stop. AXRM-006 adds the
+# registry's seed-ownership ledger (which rows a data migration inserted), which is
+# registry bookkeeping and not an invoice or NFS-e workflow.
+FISCAL_MODEL_NAMES = frozenset(
+    {"Municipality", "MunicipalityCapability", "MunicipalitySeedRow"},
+)
 
 # Row 10, AXR1-023: the plan's own todo-23 block commissions the owner-facing
 # support-grant pages under `/configuracoes/suporte/` ("The owner approves in

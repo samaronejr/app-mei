@@ -55,6 +55,9 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         # rediscover the same municipal variance independently. Created in T-035.
         "fiscal_municipality",
         "fiscal_municipalitycapability",
+        # Which registry rows a data migration inserted, so its reverse deletes only
+        # those. Migration bookkeeping about the shared registry; no tenant content.
+        "fiscal_municipalityseedrow",
         "obligations_fiscalparameter",
         "obligations_obligationtype",
         # When the DAS falls due is a fact about Resolução CGSN nº 140/2018, not

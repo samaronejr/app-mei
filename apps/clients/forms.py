@@ -22,6 +22,7 @@ from apps.clients.models import (
 )
 from apps.fiscal.mei import MEICategory
 from apps.fiscal.models import UF
+from apps.fiscal.municipalities import validate_municipality_code
 from apps.fiscal.validators import normalize_document, validate_cnpj, validate_cpf
 
 STATUS_CHOICES = [
@@ -85,6 +86,7 @@ class ClientIdentityForm(forms.Form):
         regex=r"^\d{7}$",
         required=False,
         max_length=7,
+        strip=True,
         error_messages={"invalid": _("Informe os 7 dígitos do código IBGE.")},
     )
     main_cnae = forms.CharField(label=_("CNAE principal"), max_length=9, required=False)
@@ -103,6 +105,12 @@ class ClientIdentityForm(forms.Form):
             except ValidationError as error:
                 raise ValidationError(document_messages(error, "CPF")) from error
         return cpf
+
+    def clean_municipality_ibge_code(self) -> str:
+        """Refuse a well-formed code that is not in the municipality registry."""
+        code: str = self.cleaned_data.get("municipality_ibge_code", "")
+        validate_municipality_code(code)
+        return code
 
     def clean_main_cnae(self) -> str:
         """Accept the masked form (47.51-2/01) and store the seven digits."""

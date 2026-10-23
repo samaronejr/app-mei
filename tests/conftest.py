@@ -68,6 +68,9 @@ PORTAL_DENIED_TABLES = (
     "delivery_deliveryeffect",
     "delivery_automationpause",
     "delivery_tenantnoticepolicy",
+    # AXRM-006: the registry seed ledger is platform migration bookkeeping with no
+    # tenant content. Mirrors `-- PORTAL_NONE: fiscal_municipalityseedrow`.
+    "fiscal_municipalityseedrow",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -330,6 +333,8 @@ def _seeded_municipalities(request: pytest.FixtureRequest) -> None:
         return
     migration = importlib.import_module("apps.fiscal.migrations.0002_seed_capitals")
     migration.seed_from_global_registry()
+    regional = importlib.import_module("apps.fiscal.migrations.0003_seed_rio_metro")
+    regional.seed_from_global_registry()
 
 
 @pytest.fixture(autouse=True)
