@@ -98,7 +98,7 @@ The scripted peers in `tests/fakes/serpro.py` and `tests/fakes/focus.py` use
 ephemeral ports and per-instance request logs. `Reply` supplies status, body,
 headers, chunks, reset and event-held latency; `gap` and `hold_open` exist only
 for tests whose behaviour under test is elapsed time. Wire-level tests that have
-no call row use `tests.fakes.provider.permitted_send`, which opens the same
+no call row use `permitted_send` in `tests/fakes/provider.py`, which opens the same
 single-send window as `transmit()`; a static test asserts that no application
 module other than `call_dispatch` touches that window. TLS tests generate a temporary test
 certificate; DNS maps only the documented storage host to a local test server.

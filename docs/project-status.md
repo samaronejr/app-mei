@@ -272,7 +272,7 @@ selection collects **179**; the default suite **5805**, browser **189**). Existi
 test edits: the injected-clock trickle test is replaced by a real elapsed-time test
 plus a between-reads budget witness; the misnamed base64/exception-chain test is
 renamed to what it checks, with real chain tests added; wire-level tests send
-through `tests.fakes.provider.permitted_send`; broker client tests open a SERPRO
+through `permitted_send` in `tests/fakes/provider.py`; broker client tests open a SERPRO
 window. Evidence: `AXRM-011-rework-red.txt` (21 assertion failures),
 `AXRM-011-rework-red-db.txt`, `AXRM-011-rework-mutations-*.txt`,
 `AXRM-011-rework-failure.txt` and the committed-HEAD `AXRM-011-gates.txt`.
