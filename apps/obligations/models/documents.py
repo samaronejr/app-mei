@@ -137,8 +137,9 @@ class Document(TenantScopedModel):
             # — which is exactly the cross-client disclosure the portal exists to
             # prevent, delivered through a constraint violation.
             models.UniqueConstraint(
-                fields=["tenant", "client", "sha256", "portal_visible"],
+                fields=["tenant", "client", "sha256", "portal_visible", "obligation"],
                 name="document_tenant_client_sha256_uniq",
+                nulls_distinct=False,
             ),
             models.CheckConstraint(
                 condition=(

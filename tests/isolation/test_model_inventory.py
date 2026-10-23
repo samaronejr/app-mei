@@ -62,7 +62,8 @@ SWEEP_LABELS: Final = frozenset(
         "delivery.TenantNoticePolicy",
         "integrations.ClientProviderLink",
         "integrations.ProviderConnection",
-        # AXRM-012 subject/evidence visibility: test_portal_reference_visibility.py.
+        # AXRM-012 subject, evidence and supersedes-chain visibility:
+        # test_portal_reference_visibility.py.
         "obligations.SourceObservation",
         "tenants.AccountExport",
         "tenants.AccountExportAttempt",

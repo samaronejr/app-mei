@@ -31,6 +31,17 @@ FOLDED_POLICIES = tuple(
 )
 
 
+def _chain_function() -> bool:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT to_regprocedure('public.obligations_observation_chain(uuid)') "
+            "IS NOT NULL"
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    return bool(row[0])
+
+
 def _folded_policies() -> int:
     with connection.cursor() as cursor:
         cursor.execute(
@@ -110,6 +121,7 @@ def test_populated_two_tenant_legacy_rows_reverse_and_reapply_without_changes() 
                 assert {row[0] for row in obligations} == set(obligation_ids)
                 assert all(row[1] is True for row in obligations)
             assert _folded_policies() == len(FOLDED_POLICIES)
+            assert _chain_function()
             MigrationExecutor(connection).migrate([PREVIOUS])
             with connection.cursor() as cursor:
                 cursor.execute("SELECT id FROM obligations_document")
@@ -119,8 +131,10 @@ def test_populated_two_tenant_legacy_rows_reverse_and_reapply_without_changes() 
                     "'document_portal_client_upload()'::regprocedure)"
                 )
                 assert "portal_visible" not in cursor.fetchone()[0]
-            # The reverse restores each pre-existing client-only predicate.
+            # The reverse restores each pre-existing client-only predicate and drops
+            # only the chain function it added.
             assert _folded_policies() == 0
+            assert not _chain_function()
         # Then every original survives and the final schema is restored below.
     finally:
         MigrationExecutor(connection).migrate(leaves)
@@ -204,6 +218,58 @@ def test_reverse_refuses_before_undoing_any_isolation_control(
                 "AND policyname = 'obligations_document_portal_client_isolation'"
             )
             assert "portal_visible" in cursor.fetchone()[0]
+    finally:
+        MigrationExecutor(connection).migrate(leaves)
+        with connection.cursor() as cursor:
+            cursor.execute("SET ROLE app_runtime")
+
+
+def test_reverse_refuses_while_one_clients_bytes_sit_in_two_visible_originals(
+    setup: PortalSetup,
+) -> None:
+    # Given no private original and no private obligation, but one client's bytes in
+    # two visible originals that differ only by their obligation binding: the widened
+    # hash key admits them, the original (tenant, client, sha256) key would not.
+    with tenant_context(setup.graph.tenant.pk):
+        obligation = Obligation.objects.create(
+            tenant=setup.graph.tenant,
+            client=setup.graph.client,
+            obligation_type_id="DAS",
+            competence_month=date(2030, 1, 1),
+            nominal_due_date=date(2030, 2, 20),
+            resolved_due_date=date(2030, 2, 20),
+        )
+        for bound in (None, obligation):
+            Document.objects.create(
+                tenant=setup.graph.tenant,
+                client=setup.graph.client,
+                obligation=bound,
+                uploaded_by=setup.graph.actor,
+                client_upload=False,
+                portal_visible=True,
+                acquisition_origin="upload_equipe",
+                sha256="b" * 64,
+                byte_size=10,
+                content_type="application/pdf",
+                original_filename="split.pdf",
+            )
+    executor = MigrationExecutor(connection)
+    leaves = executor.loader.graph.leaf_nodes()
+    with connection.cursor() as cursor:
+        cursor.execute("RESET ROLE")
+    try:
+        # When the real migration executor attempts a reverse.
+        with pytest.raises(DatabaseError, match=r"AXRM-012.*forward-repair"):
+            executor.migrate([PREVIOUS])
+        # Then it refused before removing any control: the obligation fold and the
+        # chain function are still in place.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT qual FROM pg_policies WHERE tablename = 'obligations_document' "
+                "AND policyname = 'obligations_document_portal_client_isolation'"
+            )
+            assert "obligation_id IS NULL" in cursor.fetchone()[0]
+        assert _chain_function()
     finally:
         MigrationExecutor(connection).migrate(leaves)
         with connection.cursor() as cursor:

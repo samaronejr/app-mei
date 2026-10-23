@@ -11,6 +11,20 @@ from django.db import migrations, models
 CLIENT = "NULLIF(current_setting('app.client_id', true), '')::uuid"
 ORIGINAL = f"client_id = {CLIENT}"
 VISIBLE = f"client_id = CASE WHEN portal_visible THEN {CLIENT} END"
+# A document is also private while the obligation it is bound to is (review 2): any
+# firm-side writer may bind one, so the policy decides it, not the vault's write-time
+# refusal. The subquery runs as app_portal under the obligation's own policy, and
+# intakes, links and observations inherit it through their document subqueries.
+# WITH CHECK keeps the row's own flag, as before.
+DOCUMENT_OBLIGATION = (
+    "EXISTS (SELECT 1 FROM obligations_obligation obligation "
+    "WHERE obligation.id = obligations_document.obligation_id)"
+)
+DOCUMENT_VISIBLE = (
+    "client_id = CASE WHEN (obligations_document.portal_visible AND "
+    f"(obligations_document.obligation_id IS NULL OR {DOCUMENT_OBLIGATION})) "
+    f"THEN {CLIENT} END"
+)
 # Quarantine metadata has no flag of its own: an intake row is READABLE exactly when
 # its parent document is. The subquery runs as app_portal, so the document's tenant,
 # client and portal_visible policies decide it; no second flag can drift. WITH CHECK
@@ -49,19 +63,54 @@ LINK_REQUEST = (
 LINK_VISIBLE = (
     f"client_id = CASE WHEN ({LINK_DOCUMENT} AND {LINK_REQUEST}) THEN {CLIENT} END"
 )
-OBSERVATION_SUBJECT = (
-    "EXISTS (SELECT 1 FROM obligations_obligation obligation "
-    "WHERE obligation.id = obligations_sourceobservation.subject_ref_id)"
+# An observation is readable only while its whole claim chain is: every row joined to
+# it by `supersedes`, in either direction, needs a visible subject and, when it cites
+# one, a visible evidence link. Ancestors, so a successor never exposes a hidden
+# parent; descendants, because the portal elects the current claim from the rows it
+# can see (apps/obligations/presentation.py current_observation), so a hidden
+# successor would otherwise re-elect the claim it superseded. A policy cannot read its
+# own table (infinite recursion), so a SECURITY DEFINER function walks the chain, on
+# the cycles 0014 pattern: ambient tenant and client checks, fully qualified names, an
+# empty search_path, EXECUTE for app_portal only. It returns just each member's
+# subject and evidence-link ids, and the policy checks every one of them under
+# app_portal's own policies, so the function itself decides no visibility.
+CHAIN_FUNCTION = """
+CREATE FUNCTION public.obligations_observation_chain(observation uuid)
+RETURNS TABLE (subject_ref_id uuid, evidence_link_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+    WITH RECURSIVE claim (id, supersedes_id) AS (
+        SELECT o.id, o.supersedes_id FROM public.obligations_sourceobservation o
+        WHERE o.id = observation
+          AND o.tenant_id::text = current_setting('app.tenant_id', true)
+          AND o.client_id::text = current_setting('app.client_id', true)
+        UNION
+        SELECT o.id, o.supersedes_id FROM public.obligations_sourceobservation o
+        JOIN claim c ON o.supersedes_id = c.id OR o.id = c.supersedes_id
+        WHERE o.tenant_id::text = current_setting('app.tenant_id', true)
+          AND o.client_id::text = current_setting('app.client_id', true)
+    )
+    SELECT o.subject_ref_id, o.evidence_link_id
+    FROM claim c JOIN public.obligations_sourceobservation o ON o.id = c.id
+$$;
+REVOKE ALL ON FUNCTION public.obligations_observation_chain(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.obligations_observation_chain(uuid) TO app_portal;
+"""
+DROP_CHAIN_FUNCTION = "DROP FUNCTION public.obligations_observation_chain(uuid);"
+MEMBER_SUBJECT_HIDDEN = (
+    "NOT EXISTS (SELECT 1 FROM obligations_obligation obligation "
+    "WHERE obligation.id = chain_row.subject_ref_id)"
 )
-OBSERVATION_LINK = (
-    "EXISTS (SELECT 1 FROM cycles_evidencelink link "
-    "WHERE link.id = obligations_sourceobservation.evidence_link_id)"
+MEMBER_LINK_HIDDEN = (
+    "(chain_row.evidence_link_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "
+    "cycles_evidencelink link WHERE link.id = chain_row.evidence_link_id))"
 )
-OBSERVATION_VISIBLE = (
-    f"client_id = CASE WHEN ({OBSERVATION_SUBJECT} AND "
-    f"(obligations_sourceobservation.evidence_link_id IS NULL OR {OBSERVATION_LINK})) "
-    f"THEN {CLIENT} END"
+CHAIN_MEMBERS = (
+    "SELECT 1 FROM public.obligations_observation_chain("
+    "obligations_sourceobservation.id) chain_row"
 )
+MEMBER_HIDDEN = f"{MEMBER_SUBJECT_HIDDEN} OR {MEMBER_LINK_HIDDEN}"
+OBSERVATION_CHAIN = f"NOT EXISTS ({CHAIN_MEMBERS} WHERE {MEMBER_HIDDEN})"
+OBSERVATION_VISIBLE = f"client_id = CASE WHEN {OBSERVATION_CHAIN} THEN {CLIENT} END"
 TABLES = (
     "obligations_document",
     "obligations_obligation",
@@ -81,7 +130,7 @@ def _policies(*sides: tuple[str, str]) -> str:
 
 
 POLICIES = _policies(
-    (VISIBLE, VISIBLE),
+    (DOCUMENT_VISIBLE, VISIBLE),
     (VISIBLE, VISIBLE),
     (INTAKE_VISIBLE, ORIGINAL),
     (REQUEST_VISIBLE, ORIGINAL),
@@ -139,6 +188,14 @@ BEGIN
     )
        OR EXISTS (SELECT 1 FROM obligations_obligation WHERE NOT portal_visible) THEN
         RAISE EXCEPTION 'AXRM-012 is forward-repair-only while private originals or obligations exist';
+    END IF;
+    -- The widened hash key also admits one client's bytes in two visible originals
+    -- that differ only by their obligation; the original key would reject them.
+    IF EXISTS (
+        SELECT 1 FROM obligations_document
+        GROUP BY tenant_id, client_id, sha256 HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'AXRM-012 is forward-repair-only while one client holds the same bytes in more than one original';
     END IF;
 END
 $$;
@@ -205,8 +262,9 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="document",
             constraint=models.UniqueConstraint(
-                fields=("tenant", "client", "sha256", "portal_visible"),
+                fields=("tenant", "client", "sha256", "portal_visible", "obligation"),
                 name="document_tenant_client_sha256_uniq",
+                nulls_distinct=False,
             ),
         ),
         migrations.AddConstraint(
@@ -229,6 +287,7 @@ class Migration(migrations.Migration):
                 name="document_provider_receipt_required",
             ),
         ),
+        migrations.RunSQL(CHAIN_FUNCTION, DROP_CHAIN_FUNCTION),
         migrations.RunSQL(POLICIES, OLD_POLICIES),
         migrations.RunSQL(TRIGGER, OLD_TRIGGER),
         # Last forwards, FIRST backwards: refuse before removing any control.

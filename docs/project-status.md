@@ -348,6 +348,26 @@ and the refused reverse once a provider-origin row exists. Evidence:
 `AXRM-012-adversarial.txt`, `AXRM-012-rv1-reference-audit.txt`,
 `AXRM-012-rv1-collection-delta.txt`, `AXRM-012-rv1-migration-cli-classification.txt`.
 
+Review fix 2 (`AXRM-012` attempt 2, independent review reject): a document whose own
+flag was visible stayed readable, listable and downloadable, with its intake, while a
+firm-side writer had bound it to a private obligation. `obligations.0023` now folds the
+bound obligation into the document's USING comparison (`obligation_id IS NULL` or a
+visible obligation), and intakes, links and observations inherit it through their
+existing document subqueries. The relational class was enumerated from the model graph
+and matches the reviewer's live catalog query: eight portal-readable foreign keys reach
+a private-capable row, each is now folded, and a catalog test fails when a new one
+appears unregistered. The one self-reference, `sourceobservation.supersedes_id`, cannot
+be folded by a subquery on its own table, so a claim chain is readable only while every
+member's subject and evidence link are: a SECURITY DEFINER function on the cycles `0014`
+pattern (ambient tenant and client checks, empty search_path, EXECUTE for `app_portal`
+only) lists the chain's members, and the policy checks each under the portal's own
+policies. Hiding the whole chain also keeps a superseded claim from becoming the
+portal's current claim when its successor is private. The document hash key now includes
+the bound obligation (nulls not distinct), so a client upload of bytes held in an
+obligation-private document is a separate visible row instead of a collision, and the
+reverse also refuses while that wider key holds rows the original key would reject.
+Visible-parent and null-parent rows read as before.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

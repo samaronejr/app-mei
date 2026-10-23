@@ -144,8 +144,10 @@ PORTAL_TABLES = (
     # AXRM-012: visibility/provenance are readable only on visible rows. Provider
     # originals (and their receipt refs) are private; INSERT is pinned to a human
     # upload_portal with portal_visible=True and no receipt by the database trigger.
+    # AXRM-012 review 2: SELECT also requires the bound obligation (if any) visible.
     "obligations_document",
-    # AXRM-012: SELECT also requires a visible subject and a visible evidence link.
+    # AXRM-012: SELECT also requires every supersedes-chain member's subject and
+    # evidence link visible (obligations_observation_chain, EXECUTE for app_portal).
     "obligations_sourceobservation",
 )
 
