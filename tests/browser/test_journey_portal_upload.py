@@ -150,7 +150,7 @@ def test_portal_upload_progress_abort_retry_and_recebido(
     expect(progress).to_be_visible()
     expect(portal.page.get_by_text("Enviando…", exact=False).first).to_be_visible()
     expect(progress).not_to_have_attribute("value", "0", timeout=15000)
-    portal.screenshot("AXR1-011-portal-enviando")
+    portal.screenshot("AXR1-011-portal-enviando", mid_request=True)
 
     portal.page.get_by_role("button", name="Cancelar envio").click()
     expect(portal.page.locator("#arquivo-estado")).to_contain_text("Envio cancelado")

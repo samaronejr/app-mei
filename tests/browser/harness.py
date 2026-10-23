@@ -6,7 +6,9 @@ conftest holds only the wiring that has to be fixtures.
 
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, TypedDict
 from urllib.parse import parse_qs, urlsplit
@@ -16,6 +18,7 @@ from allauth.mfa.models import Authenticator
 from axe_playwright_python.sync_playwright import Axe
 from django.conf import settings
 from django.test import Client
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, Response, ViewportSize
 
 from apps.accounts.models import User
@@ -53,6 +56,16 @@ BLOCKING_IMPACTS: Final = frozenset({"serious", "critical"})
 # Where screenshots go when a run asks for them. Unset, nothing is written: a
 # test that always wrote files would litter every developer's tree.
 SCREENSHOT_DIR_ENV: Final = "BROWSER_SCREENSHOT_DIR"
+
+# The one capture failure that is retried (T90/AXRM-003): Chromium refusing to hand
+# back a frame for a page that has finished loading, recorded repeatedly in the
+# header-fit matrix under gate load right after "fonts loaded". Nothing else is
+# retried -- not an assertion, not a timeout, not any other protocol error.
+CAPTURE_PROTOCOL_ERROR: Final = (
+    "Protocol error (Page.captureScreenshot): Unable to capture screenshot"
+)
+# A stable element every rendered page has; the capture waits for it to be laid out.
+CAPTURE_READY_SELECTOR: Final = "body"
 
 
 class AxeViolationsError(AssertionError):
@@ -207,6 +220,27 @@ def axe_check(page: Page) -> list[dict[str, Any]]:
     return violations
 
 
+def capture_retrying_protocol_error(
+    capture: Callable[[], object], failure_artifact: Path, state: str
+) -> None:
+    """Run `capture`; on `CAPTURE_PROTOCOL_ERROR` only, keep the failure and retry once.
+
+    The first failure is written to `failure_artifact` (error text plus `state`) so a
+    passing run still shows that the retry was needed. Any other exception, and a
+    second protocol error, propagates unchanged.
+    """
+    try:
+        capture()
+    except PlaywrightError as error:
+        if CAPTURE_PROTOCOL_ERROR not in error.message:
+            raise
+        failure_artifact.write_text(
+            f"at={datetime.now(tz=UTC).isoformat()}\n{state}\n{error.message}\n",
+            encoding="utf-8",
+        )
+        capture()
+
+
 def assert_policed_roles() -> None:
     """Fail if any live request so far ran outside `POLICED_ROLES`, or none ran.
 
@@ -293,20 +327,36 @@ class BrowserPage:
         """No console error and no uncaught exception: CSP refusals land here."""
         assert self.console_errors == [], self.console_errors
 
-    def screenshot(self, name: str) -> Path | None:
-        """Save a full-page screenshot when `BROWSER_SCREENSHOT_DIR` is set."""
+    def screenshot(self, name: str, *, mid_request: bool = False) -> Path | None:
+        """Save a full-page screenshot when `BROWSER_SCREENSHOT_DIR` is set.
+
+        A step that captures a request deliberately held in flight (an upload under
+        throttling, a held route) passes `mid_request=True`: `networkidle` cannot fire
+        while that request is open, so only the caller's own state wait applies.
+        """
         directory = os.environ.get(SCREENSHOT_DIR_ENV)
         if not directory:
             return None
         path = Path(directory) / f"{name}-{self.viewport}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Hiding the caret leaves empty inline styles that HTMX history re-parses.
-        self.page.screenshot(path=str(path), full_page=True, caret="initial")
+        # Capture only once the page has settled and its body is laid out.
+        if not mid_request:
+            self.page.wait_for_load_state("networkidle")
+        self.page.locator(CAPTURE_READY_SELECTOR).wait_for(state="visible")
+        capture_retrying_protocol_error(
+            # Hiding the caret leaves empty inline styles that HTMX history re-parses.
+            lambda: self.page.screenshot(
+                path=str(path), full_page=True, caret="initial"
+            ),
+            path.with_name(f"{path.stem}.capture-error.txt"),
+            f"url={self.page.url} viewport={self.page.viewport_size}",
+        )
         return path
 
 
 __all__ = [
     "BLOCKING_IMPACTS",
+    "CAPTURE_PROTOCOL_ERROR",
     "DESKTOP",
     "MOBILE",
     "VIEWPORTS",
@@ -316,5 +366,6 @@ __all__ = [
     "PolicedRoleError",
     "assert_policed_roles",
     "axe_check",
+    "capture_retrying_protocol_error",
     "mfa_session_cookie",
 ]

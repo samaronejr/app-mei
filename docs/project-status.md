@@ -85,6 +85,25 @@ Progress: `AXRM-001` (the regional records) lands with the commit that adds this
 section. `AXRM-002` reconciles the historical v2 authorization with the deployed
 release and prepares OD-02; OG-02 remains open.
 
+`AXRM-003` (CI headroom, promotes R1 T83/T90): R1's single test job used 65m51s of
+its 75-minute ceiling (run 38638197711: suite 53m52s, isolation 10m01s). The default
+suite now runs as two parallel required jobs under the same ceiling: `test` (name
+unchanged, the check branch protection requires) selects `tests/cycles`,
+`tests/delivery` and `tests/integrations` and keeps lint, types, checks, migrations,
+the isolation step and the CNPJ pack; `test-rest` ignores exactly those directories.
+Both carry the same services, env, source-identity, role-bootstrap and RLS-bypass
+steps, and `deploy-pilot` needs both. Pull requests into `axrm/**` now run CI.
+Collected at this commit: 5292 default tests (1186 + 4106, node-id sets disjoint and
+equal to the single-job selection plus this todo's 9 shape tests) and 177 browser
+tests. `tests/ops/test_ci_workflow_shape.py` pins the complement, the shared guards,
+the deploy needs and the ceiling. Browser screenshots now wait for `networkidle` (skipped only for
+the three captures of a request deliberately held in flight, which pass
+`mid_request=True`) and a laid-out `body`, and retry only Chromium's `Page.captureScreenshot` "Unable to capture
+screenshot" protocol error, once, keeping the first failure as a
+`*.capture-error.txt` artifact beside the screenshots. Recovery: revert to the single
+job. Adding the `test-rest` check to main's required status checks is an owner
+setting, still open.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
