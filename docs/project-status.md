@@ -250,6 +250,10 @@ journal attempts fails recovery rather than losing earlier billed usage.
 The admission tenant lock permits the audit foreign key's `KEY SHARE`: a
 concurrent link revocation commits, then the waiting admission is refused,
 without deadlocking the existing writer.
+A current-fence reply that arrives after its lease expired (or after another
+claim quarantined the call) is kept as a metered `late` attempt and the call
+stays `incerta`; reconciliation then applies the journaled result and settles
+that attempt exactly once (`AXRM-009-late-reply-red.txt`: 2 failed before the fix).
 Evidence: `.evidence/AXRM-009-red-assert.txt`, `AXRM-009-happy.txt`,
 `AXRM-009-failure.txt`, `AXRM-009-failure-mutation*.txt`,
 `AXRM-009-schema.txt`, `AXRM-009-gates.txt`, `AXRM-009-review.txt`.

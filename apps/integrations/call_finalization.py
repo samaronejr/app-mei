@@ -32,24 +32,37 @@ def finalize(ticket: Claim, result: CallResult) -> bool:
             and call.execution_epoch == ticket.execution_epoch
             and current_epoch() == ticket.execution_epoch
         )
-        attempt = ProviderCallAttempt(
+        late = ProviderCallAttempt(
             attempt_id=ticket.owner,
             attempt_number=call.attempts,
             fence=ticket.fence,
-            observation="result" if current else "late",
+            observation="late",
             reserved_microbrl=call.reserved_microbrl,
             occurred_at=call.dispatch_started_at or now,
         )
         if not current:
-            observe(call, attempt, result)
+            observe(call, late, result)
             return False
+        # A "result" observation exists exactly when settle() ran for the attempt.
+        # A transmitted reply that cannot finalize stays a metered late receipt;
+        # restore replay applies and settles its journaled result once.
         if call.state != CallState.STARTED:
+            if (
+                call.dispatch_started_at is not None
+                and not ProviderCallAttempt.objects.filter(
+                    call=call, attempt_id=ticket.owner, observation="result"
+                ).exists()
+            ):
+                observe(call, late, result)
+                meter(call, ticket.owner, result, late.occurred_at)
             return False
         if call.lease_until is None or call.lease_until <= now:
-            observe(call, attempt, result)
-            meter(call, ticket.owner, result, attempt.occurred_at)
+            observe(call, late, result)
+            meter(call, ticket.owner, result, late.occurred_at)
             uncertain(call)
             return False
+        attempt = late
+        attempt.observation = "result"
         if result.state == CallState.RETRY:
             if call.operation_class != "read":
                 result = replace(result, state=CallState.UNCERTAIN)

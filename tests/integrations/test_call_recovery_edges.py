@@ -66,6 +66,47 @@ def test_expired_finalize_does_not_advertise_success(
     assert peer.requests == [ticket.owner.hex]
 
 
+@pytest.mark.parametrize("quarantine", ["another_claim", "own_finalize"])
+def test_reply_after_quarantine_stays_late_until_reconcile_settles_it_once(
+    provider_link: ClientProviderLink, quarantine: str
+) -> None:
+    # Given a started billed attempt whose lease expired while its reply was in flight.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    with tenant_context(provider_link.tenant_id):
+        ProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() - timedelta(seconds=1)
+        )
+    if quarantine == "another_claim":
+        assert claim(provider_link.tenant_id, row.pk) is None
+    reply = CallResult(CallState.SUCCESS, 200, "ok", "sim")
+    record_result(dispatch, reply)
+    policy = call_contracts.operation_for("SP-DAS").policy
+    assert isinstance(policy, SyntheticPolicy)
+    # When the original worker reports its current-fence reply.
+    assert not finalize(ticket, reply)
+    # Then the reply is kept and metered as late, but not settled or applied.
+    assert reload_call(provider_link, row.pk).state == CallState.UNCERTAIN
+    with tenant_context(provider_link.tenant_id):
+        assert list(
+            ProviderCallAttempt.objects.filter(call_id=row.pk).values_list(
+                "observation", "outcome"
+            )
+        ) == [("late", CallState.SUCCESS)]
+        assert UsageRecord.objects.filter(source_event=ticket.owner).count() == 1
+    assert policy.settled == []
+    # When reconciliation reads the independent result receipt.
+    with override_settings(PROVIDERS_PAUSED=True):
+        call_command("reconcile_provider_operations", restore_ref=str(uuid4()))
+    # Then the journaled result is applied and settled exactly once.
+    assert reload_call(provider_link, row.pk).state == CallState.SUCCESS
+    assert policy.settled == ["sim"]
+    with tenant_context(provider_link.tenant_id):
+        assert UsageRecord.objects.filter(source_event=ticket.owner).count() == 1
+
+
 @pytest.mark.parametrize("billing_class", ["nao_faturada", "incluido_no_plano"])
 def test_unbilled_read_keeps_fencing_but_skips_journal_and_reservation(
     provider_link: ClientProviderLink,
