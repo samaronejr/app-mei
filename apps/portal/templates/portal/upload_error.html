@@ -18,6 +18,11 @@ who gives up. It carries its own token, because a form re-rendered without one a
 
 The colour is not the message either: the notice carries a pt-BR sentence, and the glyph
 beside it is decorative and marked so.
+
+AXRM-005 (T85): `reason` is the view's machine reason. Under `scan_required` a refused
+type says so instead of falling through to the missing-file sentence, and a refusal
+because scanning is switched off says that -- with no retry form, since a retry would
+be refused the same way. Without the flag every reason renders the R1 bytes.
 {% endcomment %}
 
 {% block heading %}{% translate "Não foi possível enviar" %}{% endblock %}
@@ -28,13 +33,17 @@ beside it is decorative and marked so.
     <span>
       {% if reason == 'oversized' %}
         {% blocktranslate with limite=max_size_label %}O arquivo é maior que o limite de {{ limite }}. Envie um menor.{% endblocktranslate %}
+      {% elif reason == 'scanner_off' %}
+        {% translate "Envio temporariamente indisponível: a verificação antivírus está desligada." %} {% translate "Nenhum arquivo foi guardado. Tente de novo mais tarde." %}
+      {% elif reason == 'type_refused' and scan_required %}
+        {% translate "Este arquivo não foi aceito. Envie um PDF, XML, PNG ou JPEG que não seja o arquivo recusado." %}
       {% else %}
         {% translate "Nenhum arquivo foi escolhido. Escolha um arquivo e envie de novo." %}
       {% endif %}
     </span>
   </div>
 
-  {% include "portal/partials/upload_form.html" %}
+  {% if reason != 'scanner_off' %}{% include "portal/partials/upload_form.html" %}{% endif %}
 
   <p class="mt-6 text-sm">
     <a class="link" href="{% url 'portal-documents' %}">{% translate "Voltar aos documentos" %}</a>

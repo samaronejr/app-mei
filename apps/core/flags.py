@@ -59,6 +59,10 @@ FEATURES: Final[frozenset[str]] = frozenset(
         "import_r1",
         # T22: firm settings, account lifecycle and private usage reporting.
         "firm_settings_r1",
+        # AXRM-005 (regional MVP): intake requires the integrated malware scanner --
+        # uploads are refused while CLAMAV_ENABLED is off and unscanned files are
+        # never handed to staff. Requires `cycles_r1`; inert without it.
+        "scan_required",
     }
 )
 

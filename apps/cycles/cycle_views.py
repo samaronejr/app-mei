@@ -46,6 +46,7 @@ from apps.cycles.models import (
     TaskState,
 )
 from apps.cycles.models import Exception as CycleException
+from apps.cycles.scanning import scan_required
 from apps.cycles.services.cycle import (
     TASK_TRANSITIONS,
     add_note,
@@ -360,6 +361,7 @@ def _render_detail(
                 request, reads, selected_exception, error
             ),
             "error": error,
+            "scan_required": scan_required(cycle.tenant_id),
             **_requests_context(reads),
         },
         status=status,

@@ -434,6 +434,17 @@ services:
     # No published port: only worker reaches clamd, over the compose network (3310).
     expose:
       - "3310"
+    # AXRM-005: the pinned image's own probe, /usr/local/bin/clamdcheck.sh (`PING` to
+    # localhost:3310 must answer `PONG`), run against this digest locally in
+    # .evidence/AXRM-005-clamav-healthcheck.txt. clamd answers only once its signature
+    # database is loaded, so the start period is the image's own six minutes. Health
+    # gates OG-R1 and `up --wait`; it is never part of the web container's /readyz.
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 360s
     # clamd holds the whole signature database in memory (~1.2 GiB with the official
     # databases); the limit is the budget OD-11 sizes the upsize for.
     mem_limit: 1536m

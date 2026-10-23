@@ -13,6 +13,11 @@ The portfolio decides first: the document's client must be in the actor's book, 
   each such download appends a `document.unscanned_downloaded` event to every linked
   cycle. The portal never re-serves intake files that are not `verificado`.
 
+AXRM-005: a firm carrying `scan_required` does not accept that fallback. Both
+unscanned cases answer 403 with the refusal page, GET and POST alike -- no dialog,
+no `confirmar` path, no event -- so the only bytes staff receive are ones the
+scanner cleared.
+
 Every served response goes through `apps.cycles.serving.document_response`.
 """
 
@@ -40,12 +45,18 @@ from apps.cycles.evidence import (
     EvidenceLink,
 )
 from apps.cycles.records import CycleEvent
+from apps.cycles.scanning import scan_required
 from apps.cycles.services.cycle import require_enabled
 from apps.cycles.serving import document_response
 from apps.obligations.models import Document
 
 DOCUMENTS_CAPABILITY: Final = "documents.transfer"
 CONFIRM_FIELD: Final = "confirmar"
+UNSCANNED_REFUSED: Final = (
+    "Este arquivo não passou pela verificação antivírus. Este escritório exige a "
+    "verificação, então o arquivo fica guardado e não é entregue. Peça ao cliente "
+    "que envie de novo quando a verificação estiver ligada."
+)
 
 
 def _serve(document: Document, key: str) -> HttpResponse:
@@ -115,7 +126,10 @@ def staff_document_download(request: AuthenticatedRequest, pk: UUID) -> HttpResp
             "Arquivo recusado na verificação. Ele fica guardado e não é entregue.",
         )
     # Unscanned (verificacao_indisponivel, or a vault upload without an intake):
-    # the warning first; the bytes only after its POST.
+    # refused outright under required scanning; otherwise the warning first and the
+    # bytes only after its POST.
+    if scan_required(document.tenant_id):
+        return forbidden_page(request, UNSCANNED_REFUSED)
     if request.method == "POST" and request.POST.get(CONFIRM_FIELD) == "1":
         _record_unscanned_download(request, document, intake)
         return _serve(document, intake.object_key if intake else document.storage_key)

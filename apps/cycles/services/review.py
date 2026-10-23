@@ -11,6 +11,10 @@ What it writes: a `Review` (firm-only), one `staff` `ExtractedField` per correct
 (decision, pt-BR reason, time), the request's state, and -- on an accepted clean
 file -- the intake's `vinculado`. It never writes into the `Document` or its bytes,
 and it never moves a document to another client.
+
+AXRM-005: for a firm carrying `scan_required`, a file the scanner never cleared
+(`verificacao_indisponivel`, or a legacy upload with no intake) is not reviewed at
+all -- `UnscannedReviewRefused`, raised under the locks and before any write.
 """
 
 from dataclasses import dataclass
@@ -26,7 +30,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.cycles import receipt_observations
 from apps.cycles.capabilities import CYCLES_REVIEW
-from apps.cycles.errors import IllegalTransition
+from apps.cycles.errors import IllegalTransition, UnscannedReviewRefused
 from apps.cycles.evidence import (
     CLIENT_REASON_MAX_LENGTH,
     REVIEWABLE_STATES,
@@ -42,6 +46,7 @@ from apps.cycles.evidence import (
 )
 from apps.cycles.extraction import FIELD_LABELS, is_cnpj_field
 from apps.cycles.records import CycleEvent
+from apps.cycles.scanning import scan_required
 from apps.cycles.services.approvals import _lock_scope
 from apps.cycles.services.cycle import (
     OPEN_STATES,
@@ -55,6 +60,11 @@ VALUE_MAX: Final = 255
 OVERRIDE_MAX: Final = 2000
 CLOSED_REQUESTS: Final = frozenset(
     {RequestState.DRAFT, RequestState.WAIVED, RequestState.REPLACED}
+)
+UNSCANNED_REVIEW_REFUSAL: Final = (
+    "Este arquivo não passou pela verificação antivírus e não pode ser revisado: "
+    "este escritório exige a verificação. Peça ao cliente que envie de novo quando "
+    "a verificação estiver ligada."
 )
 
 
@@ -176,6 +186,16 @@ def _reviewable_intake(
     return intake
 
 
+def _unless_unscanned(
+    intake: DocumentIntake | None, tenant_id: UUID
+) -> DocumentIntake | None:
+    """Pass the intake through, or refuse a never-cleared file under scan_required."""
+    unscanned = intake is None or intake.state == IntakeState.SCAN_UNAVAILABLE
+    if unscanned and scan_required(tenant_id):
+        raise UnscannedReviewRefused(UNSCANNED_REVIEW_REFUSAL)
+    return intake
+
+
 def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
     actor: User,
     link_id: UUID,
@@ -223,7 +243,7 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
         if link.review_decision:
             msg = "Este arquivo já foi revisado."
             raise IllegalTransition(msg)
-        intake = _reviewable_intake(link, lock=True)
+        intake = _unless_unscanned(_reviewable_intake(link, lock=True), cycle.tenant_id)
         accepting = decision == ReviewDecision.ACCEPTED
         is_divergent = intake is not None and intake.state == IntakeState.DIVERGENT
         if accepting and is_divergent and not (third_party and override):

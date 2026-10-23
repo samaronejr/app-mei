@@ -35,7 +35,13 @@ from apps.cycles.extraction.service import (
 )
 from apps.cycles.models import PlaybookVersion, VersionState
 from apps.cycles.openers import evaluate_tenant_exceptions
-from apps.cycles.scanning import due_intakes, scan_intake, scanner_from_settings
+from apps.cycles.scanner_status import check_scanner
+from apps.cycles.scanning import (
+    clamd_from_settings,
+    due_intakes,
+    scan_intake,
+    scanner_from_settings,
+)
 from apps.cycles.services.cycle import open_cycle
 from apps.cycles.targeting import AppliesTo, matching_clients
 from apps.obligations.models import SchedulerHeartbeat
@@ -205,6 +211,17 @@ def scan_quarantine(self: PlatformTask) -> int:
             scan_tenant_quarantine(str(tid), vault_only=not flagged).values()
         )
     return scanned
+
+
+@shared_task(base=PlatformTask)
+def ping_scanner() -> str:
+    """Beat (AXRM-005): clamd PING + VERSION onto the `scanner` heartbeat.
+
+    Platform-wide and tenant-free: one sidecar serves every firm. No transaction is
+    open around the socket I/O. The result is shown on the Automações page and is
+    never a readiness input.
+    """
+    return check_scanner(clamd_from_settings(), now=timezone.now())
 
 
 @shared_task(

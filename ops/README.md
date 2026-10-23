@@ -1282,6 +1282,62 @@ lifecycle rule of OG-04. None of these gates is closed by the code change.
 quarantine key until verified) and descends into `quarantine/` when listing the
 bucket, so a leftover quarantine copy is reported as an orphan.
 
+### Required scanning per firm (`scan_required`, AXRM-005, gate OG-R1)
+
+The regional MVP does not accept the unscanned fallback for real uploads. A firm
+carrying the `scan_required` flag (it binds only together with `cycles_r1`) gets:
+
+- **Uploads refused while scanning is off.** With `CLAMAV_ENABLED=False` every portal
+  upload of that firm (request and vault) answers 400 "Envio temporariamente
+  indisponível: a verificação antivírus está desligada." before a byte is stored:
+  no `Document`, intake, link or quarantine object.
+- **No unscanned file reaches staff.** A `verificacao_indisponivel` file, or an older
+  client upload with no intake, answers the 403 refusal page on GET and POST alike;
+  the warning dialog and its `confirmar` download do not exist for that firm. Exports
+  keep excluding unscanned originals as before.
+- **A scanner outage fails closed.** With scanning on but clamd down, uploads wait in
+  quarantine and are retried as above; nothing is served until a clean verdict.
+
+The flag is off by default for every firm and production settings do not change:
+`CLAMAV_ENABLED` still defaults to False and the `CLAMD_*` defaults are untouched.
+Recovery is the flag off (R1 behaviour returns), never a weaker quarantine.
+
+**Scanner status.** Beat runs `ping_scanner` every five minutes: clamd `PING` then
+`VERSION` over the same socket the scans use. The Automações page shows it as
+"Verificador antivírus": last attempt, last success, the signature database version,
+and `clamav_desativado` (scanning switched off) or `scanner_indisponivel` (no answer;
+the last success and its version are kept). It is deliberately not part of `/readyz`.
+
+**Compose health.** The `clamav` service now carries a healthcheck: the pinned image's
+own `/usr/local/bin/clamdcheck.sh` (`PING` must answer `PONG`), 30 s interval, six
+minute start period (signature load), memory limit unchanged. Verified against the
+pinned digest in `.evidence/AXRM-005-clamav-healthcheck.txt`.
+
+**OG-R1, executed by the operator on the host (not closed by this change):**
+
+1. Upsize decision in place (OD-R2 if the sidecar does not fit), then
+   `CLAMAV_ENABLED=True` in `.env.prod` and
+   `COMPOSE_PROFILES=clamav docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --wait`;
+   `docker inspect --format '{{.State.Health.Status}}' <clamav container>` is `healthy`.
+2. Create a synthetic tenant with one client and one client member, and give it
+   `cycles_r1` and `scan_required`. Never point the next command at a real firm: it
+   writes two documents into that client's vault.
+3. `docker compose -f docker-compose.prod.yml --env-file .env.prod exec worker
+   python manage.py scanner_selfcheck --tenant <synthetic slug>` must print
+   `eicar: rejeitado_malware malware:<signature> PASS`, `limpo: verificado PASS` and
+   `RESULT PASS`. It refuses a tenant without the flag, a host with scanning off and
+   an unreachable clamd before writing anything. The EICAR test file stays retained
+   in quarantine and is never served.
+4. Capacity: 100 synthetic uploads per minute for ten minutes, recording `free -m`,
+   `docker stats --no-stream` for the sidecar and scan latency, and two successive
+   freshclam updates from `docker compose logs clamav`.
+5. Record everything in `.evidence/AXRM-OG-R1-operator.txt`; only then enable
+   `scan_required` for the pilot firm.
+
+Local reference run (engineering, not OG-R1): the pinned image held about 950 MiB
+with its bundled databases, and the selfcheck against it is in
+`.evidence/AXRM-005-happy.txt`.
+
 ## Operator runsheets: procedures and as-executed records
 
 These runsheets were written before the pilot host migration and then executed during

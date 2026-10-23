@@ -109,6 +109,7 @@ def test_the_flag_registry_holds_exactly_the_r1_surfaces() -> None:
                 "bulk_r1",
                 "import_r1",
                 "firm_settings_r1",
+                "scan_required",
             }
         )
         == FEATURES

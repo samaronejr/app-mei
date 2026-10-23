@@ -14,7 +14,8 @@ a field, and every action is also an ordinary button or link.
 <header class="ui-panel p-4">
   <p class="text-sm text-ink-600">{{ link.client.legal_name }} · {{ link.client.cnpj|cnpj_mask }}</p>
   <h2 class="mt-1 font-semibold">{{ evidence_request.title }}</h2>
-  <p class="mt-1 text-sm">Arquivo: <strong class="break-all">{{ document.original_filename }}</strong> · enviado em {{ link.created_at|data_hora }}</p>
+  <p class="mt-1 text-sm">Arquivo: <strong class="break-all">{{ document.original_filename }}</strong> · enviado em {{ link.created_at|data_hora }}</p>{% if scan_required %}
+  <p class="mt-1 text-sm" data-intake-state="{{ intake.state|default:'' }}">Situação do arquivo: {{ intake_label }}</p>{% endif %}
   <nav class="mt-3 flex flex-wrap gap-4" aria-label="Navegação entre documentos"><a class="ui-link" href="{{ queue_url }}">Voltar para a fila</a>{% if next_link %}<a class="ui-link" href="{% url 'document-review' next_link.pk %}" data-shortcut="n" id="proximo-documento">Próximo documento</a>{% endif %}</nav>
 </header>
 {% if error %}<div role="alert" class="ui-panel p-4" data-error>{{ error }}</div>{% endif %}
@@ -23,6 +24,7 @@ a field, and every action is also an ordinary button or link.
   <h2 id="original-title" class="ui-panel-heading">Original</h2>
   {% if inline_image %}<img class="mt-3 max-h-[28rem] max-w-full rounded border border-ink-200" src="{% url 'document-preview' link.pk %}" alt="Prévia de {{ document.original_filename }}">
   {% elif clean %}<p class="mt-2"><a class="ui-link" href="{% url 'document-preview' link.pk %}" target="_blank" rel="noopener noreferrer">Abrir o original em nova aba</a></p>
+  {% elif scan_required %}<p class="mt-2">Este arquivo não passou pela verificação antivírus. Este escritório exige a verificação: o arquivo fica guardado e não é entregue.</p>
   {% else %}<p class="mt-2">Este arquivo não passou pela verificação antivírus. <a class="ui-link" href="{% url 'staff-document-download' document.pk %}">Baixar com aviso de risco</a></p>{% endif %}
 </section>
 {% if decided %}
@@ -45,12 +47,12 @@ a field, and every action is also an ordinary button or link.
       <th scope="row" class="text-left font-medium">{{ row.label }}</th>
       <td data-label="Sugerido" data-suggested>{{ row.suggested|default:"—" }}</td>
       <td data-label="Origem" class="text-sm text-ink-600">{% if row.suggested_origin %}{{ row.suggested_origin }}{% if row.source_span %} <span class="text-ink-500">({{ row.source_span }})</span>{% endif %}{% else %}Não lido{% endif %}{% if row.reviewed_by %}<br>{{ row.reviewed_by }}{% endif %}</td>
-      <td data-label="Revisado">{% if decided %}{{ row.reviewed|default:"—" }}{% else %}<label class="visually-hidden" for="{{ field_prefix }}{{ row.name }}">{{ row.label }} revisado</label><input class="ui-field-input" id="{{ field_prefix }}{{ row.name }}" name="{{ field_prefix }}{{ row.name }}" value="{{ row.reviewed }}" maxlength="255" autocomplete="off">{% endif %}</td>
+      <td data-label="Revisado">{% if decided or review_blocked %}{{ row.reviewed|default:"—" }}{% else %}<label class="visually-hidden" for="{{ field_prefix }}{{ row.name }}">{{ row.label }} revisado</label><input class="ui-field-input" id="{{ field_prefix }}{{ row.name }}" name="{{ field_prefix }}{{ row.name }}" value="{{ row.reviewed }}" maxlength="255" autocomplete="off">{% endif %}</td>
     </tr>{% empty %}<tr><td colspan="4">Nenhum campo lido.</td></tr>{% endfor %}</tbody>
   </table>
   </div>
 </section>
-{% if not decided %}
+{% if not decided and not review_blocked %}
 {% if payment_eligible %}<fieldset class="ui-panel p-4" data-receipt-review>
   <legend class="ui-panel-heading">Comprovante de pagamento</legend>
   <label class="mt-2 flex min-h-11 cursor-pointer items-center gap-3" for="payment_relevant"><input type="checkbox" id="payment_relevant" name="payment_relevant" value="1"><span>Este documento informa o pagamento desta obrigação</span></label>

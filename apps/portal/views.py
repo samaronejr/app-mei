@@ -58,10 +58,12 @@ from apps.cycles.evidence import PORTAL_SERVABLE_STATES
 from apps.cycles.intake import (
     UploadMissing,
     UploadRejected,
+    UploadScannerOff,
     UploadTooLarge,
     vault_upload,
 )
 from apps.cycles.models import ServiceCycle
+from apps.cycles.scanning import scan_required
 from apps.cycles.serving import document_response
 from apps.cycles.workspace import portal_projection
 from apps.obligations.models import (
@@ -94,17 +96,22 @@ DOCUMENTS_PAGE_SIZE: Final = 12
 KIB: Final = 1024
 MIB: Final = KIB * KIB
 
+# The machine reasons `portal/upload_error.html` branches on (T85, AXRM-005).
 MISSING_FILE: Final = "missing"
 OVERSIZED: Final = "oversized"
+TYPE_REFUSED: Final = "type_refused"
+SCANNER_OFF: Final = "scanner_off"
+REFUSAL_REASONS: Final[dict[type[Exception], str]] = {
+    UploadTooLarge: OVERSIZED,
+    UploadMissing: MISSING_FILE,
+    UploadRejected: TYPE_REFUSED,
+    UploadScannerOff: SCANNER_OFF,
+}
 
 # Success AND what it means. "Enviado com sucesso" tells a MEI owner the byte transfer
 # worked, which is not what she was asking; she sent the file so that somebody would act
 # on it, and this is the sentence that answers the question she actually had.
 UPLOAD_CONFIRMATION = _("Documento enviado. Sua contadora já pode vê-lo.")
-VAULT_REJECTED: Final = (
-    "Este arquivo não foi aceito. Envie um PDF, XML, PNG ou JPEG que não seja o "
-    "arquivo recusado."
-)
 
 
 class PortalVaultRequest(PortalHttpRequest):
@@ -558,7 +565,7 @@ def _documents_page(
         return paginator.page(1)
 
 
-def _served() -> Q:
+def _served(*, strict: bool = False) -> Q:
     """Match the documents the portal may serve; everything else fails closed.
 
     Quarantine rule (T12, T13): a client upload -- through a request or through this
@@ -572,10 +579,20 @@ def _served() -> Q:
     upload (`client_upload=False`, which the portal role cannot INSERT) keeps the
     vault's old semantics without an intake. RLS still confines every row to the
     client; this only narrows further.
+
+    `strict` (AXRM-005, a firm carrying `scan_required`): only bytes the scanner
+    cleared are served; the firm-upload exemption above does not apply.
     """
-    return Q(intakes__state__in=PORTAL_SERVABLE_STATES) | Q(
-        client_upload=False, intakes__isnull=True
-    )
+    scanned = Q(intakes__state__in=PORTAL_SERVABLE_STATES)
+    if strict:
+        return scanned
+    return scanned | Q(client_upload=False, intakes__isnull=True)
+
+
+def _strict(request: PortalVaultRequest) -> bool:
+    """Whether this firm requires scanned bytes, answered from the portal stash."""
+    tenant = request.tenant
+    return tenant is not None and scan_required(tenant.pk)
 
 
 @require_http_methods(["GET"])
@@ -615,7 +632,9 @@ def portal_documents(request: PortalVaultRequest) -> HttpResponse:
     needs one figure this model does not store, and computing it here keeps the template
     rendering values instead of deriving them.
     """
-    rows = Document.objects.filter(_served()).order_by("-created_at", "pk")
+    rows = Document.objects.filter(_served(strict=_strict(request))).order_by(
+        "-created_at", "pk"
+    )
     page = _documents_page(rows, request)
     # T45: the R1 ink for this page and the layout around it, answered from the portal
     # stash without a query exactly as on `portal_payments`. Unflagged tenants keep
@@ -697,6 +716,10 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
     T63: `cycles_r1` rides along exactly as on `portal_documents`, answered from the
     portal stash without a query, so the layout and the retry form keep the vault's R1
     ink on the 400 as on the 200. Unflagged tenants keep their bytes.
+
+    AXRM-005 (T85): `reason` is a machine reason. Under `scan_required` (also answered
+    from the stash) a refused type gets its own sentence instead of the missing-file
+    one; a firm without the flag keeps its R1 bytes for every reason.
     """
     tenant = request.tenant
     cycles_r1 = tenant is not None and tenant_has(tenant.pk, "cycles_r1")
@@ -707,6 +730,7 @@ def _upload_refused(request: PortalVaultRequest, reason: str) -> HttpResponse:
             "reason": reason,
             "max_size_label": _size_label(settings.PORTAL_UPLOAD_MAX_BYTES),
             "cycles_r1": cycles_r1,
+            "scan_required": tenant is not None and scan_required(tenant.pk),
         },
         status=HTTPStatus.BAD_REQUEST,
     )
@@ -760,12 +784,8 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
             client=request.client,
             obligation_id=request.POST.get("obligation") or None,
         )
-    except UploadTooLarge:
-        return _upload_refused(request, OVERSIZED)
-    except UploadMissing:
-        return _upload_refused(request, MISSING_FILE)
-    except UploadRejected:
-        return _upload_refused(request, VAULT_REJECTED)
+    except (UploadTooLarge, UploadMissing, UploadRejected, UploadScannerOff) as refused:
+        return _upload_refused(request, REFUSAL_REASONS[type(refused)])
     # Back to the vault rather than to the landing page; the file joins the list once
     # the scanner has said clean. The confirmation is queued rather
     # than rendered here: this response is a redirect, and a message written into the
@@ -779,7 +799,7 @@ def document_upload(request: PortalVaultRequest) -> HttpResponse:
 @login_required
 @require_can(VAULT_CAPABILITY)
 def document_download(
-    request: PortalVaultRequest,  # noqa: ARG001 - the decorators read it
+    request: PortalVaultRequest,
     storage_key: str,
 ) -> HttpResponse:
     """Return one document's bytes, authorised against the row before storage is asked.
@@ -796,7 +816,8 @@ def document_download(
     both GUCs are gone, yielding nothing.
     """
     document = get_object_or_404(
-        Document.objects.filter(_served()), storage_key=storage_key
+        Document.objects.filter(_served(strict=_strict(request))),
+        storage_key=storage_key,
     )
 
     try:

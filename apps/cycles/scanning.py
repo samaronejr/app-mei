@@ -20,6 +20,11 @@ A rejected original is never deleted: it stays under `quarantine/` and is never
 served. A scanner that stays down is retried with backoff until 24 h after the
 upload, then the intake becomes `verificacao_indisponivel` and a
 `verificacao_indisponivel` exception opens on every linked cycle.
+
+AXRM-005: a firm carrying `scan_required` (with `cycles_r1`) does not accept that
+fallback. While `CLAMAV_ENABLED` is off its uploads are refused before a byte is
+stored (`apps.cycles.intake`), and staff never download a file the scanner did not
+clear (`apps.cycles.document_views`).
 """
 
 import hashlib
@@ -39,6 +44,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.core.flags import tenant_has
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import (
@@ -59,6 +65,14 @@ REPLY_MAX_BYTES: Final = 4096
 CHUNK_BYTES: Final = 64 * 1024
 DISABLED_REASON: Final = "clamav_desativado"
 DEADLINE_REASON: Final = "scanner_indisponivel_24h"
+SCAN_REQUIRED_FLAG: Final = "scan_required"
+
+
+def scan_required(tenant_id: UUID) -> bool:
+    """Whether the firm requires the integrated scanner; binds only with `cycles_r1`."""
+    return tenant_has(tenant_id, "cycles_r1") and tenant_has(
+        tenant_id, SCAN_REQUIRED_FLAG
+    )
 
 
 class ByteStream(Protocol):
@@ -135,6 +149,12 @@ class ClamdScanner:
             data += part
         return data.split(b"\0", 1)[0].decode("utf-8", "replace").strip()
 
+    def ping(self) -> None:
+        """`PING` must answer `PONG`; anything else is an unavailable scanner."""
+        if self._command(b"PING") != "PONG":
+            msg = "clamd PING did not answer PONG"
+            raise ScannerUnavailable(msg)
+
     def version(self) -> tuple[str, str]:
         """`ClamAV 1.4.1/27421/<date>` -> (engine, signature database version)."""
         reply = self._command(b"VERSION")
@@ -194,6 +214,11 @@ class FakeScanner:
 
 def scanner_from_settings() -> Scanner | None:
     """Build the configured scanner, or None while `CLAMAV_ENABLED` is off."""
+    return clamd_from_settings()
+
+
+def clamd_from_settings() -> ClamdScanner | None:
+    """Build the configured clamd adapter itself (status checks need PING/VERSION)."""
     if not settings.CLAMAV_ENABLED:
         return None
     return ClamdScanner(

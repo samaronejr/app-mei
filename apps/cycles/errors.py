@@ -72,3 +72,12 @@ class IllegalTransition(PlaybookError):  # noqa: N818
     publishable again, a draft cannot retire. Named to match the
     `IllegalTransition` the cycle state machines in T9 raise.
     """
+
+
+class UnscannedReviewRefused(IllegalTransition):
+    """AXRM-005 (A15 RS-12): a file the scanner never cleared is not reviewed.
+
+    Raised by `record_review` for a firm carrying `scan_required` when the intake is
+    `verificacao_indisponivel` or missing, before any row is written. A subclass of
+    `IllegalTransition`, so every caller already answers it as a 409.
+    """

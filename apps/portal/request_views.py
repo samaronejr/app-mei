@@ -44,6 +44,7 @@ from apps.cycles.evidence import (
 from apps.cycles.intake import (
     UploadMissing,
     UploadRejected,
+    UploadScannerOff,
     UploadTooLarge,
     intake_upload,
 )
@@ -123,6 +124,11 @@ class DeclinedFile:
 REJECTED_MESSAGE: Final = (
     "Este arquivo não foi aceito. Envie um PDF, XML, PNG ou JPEG que não seja "
     "o arquivo recusado."
+)
+# AXRM-005: a firm requiring the integrated scanner refuses while it is switched off.
+SCANNER_OFF_MESSAGE: Final = (
+    "Envio temporariamente indisponível: a verificação antivírus está desligada. "
+    "Nenhum arquivo foi guardado. Tente de novo mais tarde."
 )
 
 
@@ -324,6 +330,8 @@ def request_upload(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
         return _refused(request, pk, "Escolha um arquivo antes de enviar.")
     except UploadRejected:
         return _refused(request, pk, REJECTED_MESSAGE)
+    except UploadScannerOff:
+        return _refused(request, pk, SCANNER_OFF_MESSAGE)
     notice = (
         "Este arquivo já tinha sido enviado para esta solicitação. Nada mudou."
         if result.already_linked
