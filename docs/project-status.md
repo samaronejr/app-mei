@@ -293,7 +293,7 @@ Baseline reused with code-identity proof: default **5582 passed, 44 skipped**;
 isolation **777 passed, 44 skipped**; CNPJ **29 passed**; browser **189 passed**.
 Evidence is in `.evidence/AXRM-010-baseline.txt`.
 
-STD-GATES on the clean committed head `5bc93da` (`AXRM-010-gates.txt`, every
+STD-GATES on the clean committed head `5bc93da` (`AXRM-010-gates-5bc93da.txt`, every
 command exit 0): Ruff, format, Mypy and migration drift clean; default
 **5662 passed, 46 skipped** (+80 against the baseline); isolation **793 passed,
 46 skipped** (+16); CNPJ pack **29 passed**; browser **191 passed** (+2). The two
@@ -306,6 +306,23 @@ assertion failures, 1 non-regression pass), `AXRM-010-red-guards.txt`; QA
 `AXRM-010-happy.txt`, `AXRM-010-failure.txt`, `AXRM-010-failure-*.txt` (cap,
 reservation, release and billed-error mutations each fail their witness),
 `AXRM-010-adversarial.txt`, `AXRM-010-usage-{desktop,mobile}.png`.
+
+Review attempt 1 (needs-fix at `532ae93`): restore reconciliation quarantined a
+pending read retry and moved its already released reservation back into
+uncertain exposure (a 503 read retry plus reconcile: uncertain 0 to 240000).
+Fixed in `eff8e1a`: a `known` or `released` attempt is final; only reserved or
+uncertain attempts settle, and a reservation rebuilt from the journal takes its
+outcome once. Red `AXRM-010-rv1-red.txt` (the reviewer's repro, 1 failed); new
+tests also pin the known-guard path (a billed read retry), price overflow, an
+unmapped SERPRO billing class and inactive firms in the platform cap. All 24
+mutations are killed (the reviewer's 19, one reintroducing the blocker, and the
+worker's 4; `AXRM-010-rv1-mutations.log`), each run with an empty bytecode cache
+after a same-size, same-second edit reused stale `.pyc`
+(`AXRM-010-rv1-stalepyc-proof.txt`). STD-GATES on the clean committed head
+`eff8e1a` (`AXRM-010-gates.txt`, every command exit 0, Node v24.13.1): Ruff,
+format, Mypy, migration drift and `npm ci`/build with `static/` unchanged;
+default **5670 passed, 46 skipped** (+88 against the baseline); isolation
+**793 passed, 46 skipped**; CNPJ **29 passed**; browser **191 passed**.
 Provider qualification (PQ-FOCUS-4), the OD-R1 ceilings and owner activation
 gates remain open.
 
