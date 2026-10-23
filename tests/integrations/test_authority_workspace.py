@@ -1,10 +1,12 @@
 """The existing client workspace owns authority actions; the portal never does."""
 
+import re
 from datetime import date
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
@@ -151,3 +153,84 @@ def test_certificate_upload_is_refused_before_a_document_is_stored(
     assert response.status_code == 422
     with tenant_context(firm.tenant.pk):
         assert Document.objects.count() == before
+
+
+def _authority_row(html: str, service: str) -> str:
+    match = re.search(
+        rf'data-authority-service="{service}".*?</li>', html, flags=re.DOTALL
+    )
+    assert match, f"no {service} row"
+    return match.group(0)
+
+
+def test_a_lapsed_pending_authority_offers_renewal_not_an_expired_verification(
+    firm: Firm,
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.integrations.authority import authority_for  # noqa: PLC0415
+    from apps.integrations.models import AuthorityRecord  # noqa: PLC0415
+    from tests.integrations.test_authority import authority_api  # noqa: PLC0415
+
+    settings.CLAMAV_ENABLED = True
+    api = authority_api()
+    company = firm.clients[0]
+    declared_on, lapses_on, viewed_on = (
+        date(2026, 11, 10),
+        date(2026, 11, 15),
+        date(2026, 11, 30),
+    )
+    with tenant_context(firm.tenant.pk):
+        api.declare_authority(
+            firm.owner,
+            company.pk,
+            service="sitfis",
+            code="00002",
+            valid_from=declared_on,
+            expected_version=0,
+            today=declared_on,
+        )
+        api.revoke_authority(
+            firm.owner,
+            company.pk,
+            service="sitfis",
+            expected_version=1,
+            today=declared_on,
+        )
+        api.declare_authority(
+            firm.owner,
+            company.pk,
+            service="sitfis",
+            code="00002",
+            valid_from=declared_on,
+            valid_to=lapses_on,
+            expected_version=2,
+            today=declared_on,
+        )
+    monkeypatch.setattr(timezone, "localdate", lambda *_args, **_kwargs: viewed_on)
+    browser = firm.as_owner()
+
+    row = _authority_row(browser.get(_url(firm)).content.decode(), "sitfis")
+    assert "Vencida sem verificação" in row
+    assert "autoridades/sitfis/declarar/" in row
+    assert 'name="expected_version" value="3"' in row
+    assert "autoridades/sitfis/verificar/" not in row
+
+    response = browser.post(
+        f"{_url(firm)}autoridades/sitfis/declarar/",
+        {"expected_version": 3, "code": "00002", "valid_from": viewed_on.isoformat()},
+    )
+    assert response.status_code == 302
+    with tenant_context(firm.tenant.pk):
+        renewed = AuthorityRecord.objects.filter(
+            client=company, service="sitfis"
+        ).latest("version")
+        assert (renewed.version, renewed.status, renewed.verified_by_id) == (
+            4,
+            "verificacao_pendente",
+            None,
+        )
+        assert authority_for(company, "SP-SIT-P", today=viewed_on).state == "unknown"
+    row = _authority_row(browser.get(_url(firm)).content.decode(), "sitfis")
+    assert "autoridades/sitfis/verificar/" in row
+    assert "autoridades/sitfis/declarar/" not in row

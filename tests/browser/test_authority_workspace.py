@@ -1,7 +1,10 @@
 """AXRM-008's staff journey, real forms and private evidence at both widths."""
 
 from collections.abc import Callable
+from datetime import date
 
+import pytest
+from django.utils import timezone
 from playwright.sync_api import expect
 from pytest_django.fixtures import SettingsWrapper
 
@@ -56,3 +59,62 @@ def test_declare_verify_and_revoke_authority(
 
     with tenant_context(live.firm.tenant.pk):
         assert authority_for(company, "SP-PAG").state == "missing"
+
+
+def test_a_lapsed_pending_authority_is_renewed_from_the_workspace(
+    live_firm: Callable[..., LiveFirm],
+    open_page: Callable[[LiveFirm, User | None], BrowserPage],
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apps.integrations.authority import (  # noqa: PLC0415
+        authority_for,
+        declare_authority,
+        revoke_authority,
+    )
+
+    settings.CLAMAV_ENABLED = True
+    live = live_firm("browser-lapsed", features=FLAGS)
+    company = add_client(live.firm, legal_name="Cliente lapsado", base="112223330002")
+    owner = live.firm.owner
+    declared_on, viewed_on = date(2026, 11, 10), date(2026, 11, 30)
+    with tenant_context(live.firm.tenant.pk):
+        declare_authority(
+            owner,
+            company.pk,
+            service="sitfis",
+            code="00002",
+            valid_from=declared_on,
+            expected_version=0,
+            today=declared_on,
+        )
+        revoke_authority(
+            owner, company.pk, service="sitfis", expected_version=1, today=declared_on
+        )
+        declare_authority(
+            owner,
+            company.pk,
+            service="sitfis",
+            code="00002",
+            valid_from=declared_on,
+            valid_to=date(2026, 11, 15),
+            expected_version=2,
+            today=declared_on,
+        )
+    monkeypatch.setattr(timezone, "localdate", lambda *_args, **_kwargs: viewed_on)
+    opened = open_page(live, None)
+    opened.goto(live.url(f"/clientes/{company.pk}/"))
+    row = opened.page.locator('[data-authority-service="sitfis"]')
+    expect(row.get_by_text("Vencida sem verificação", exact=True)).to_be_visible()
+    expect(row.get_by_role("button", name="Verificar autorização")).to_have_count(0)
+    opened.screenshot("AXRM-008-lapsed-renewal-form")
+    row.get_by_label("Válida desde").fill(viewed_on.isoformat())
+    row.get_by_role("button", name="Registrar declaração").click()
+    expect(row.get_by_text("Verificação pendente", exact=True)).to_be_visible()
+    expect(row.get_by_role("button", name="Verificar autorização")).to_be_visible()
+    expect(row.get_by_role("button", name="Registrar declaração")).to_have_count(0)
+    opened.screenshot("AXRM-008-lapsed-renewed-pending")
+    axe_check(opened.page)
+    opened.assert_clean_console()
+    with tenant_context(live.firm.tenant.pk):
+        assert authority_for(company, "SP-SIT-P", today=viewed_on).state == "unknown"

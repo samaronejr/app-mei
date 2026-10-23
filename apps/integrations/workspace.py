@@ -27,6 +27,7 @@ from apps.integrations.authority import (
     Admission,
     certificate_decision,
     evaluate_record,
+    validity_lapsed,
 )
 from apps.integrations.models import (
     AUTHORITY_CATALOG,
@@ -164,6 +165,17 @@ def _status(  # noqa: PLR0911 - one return per displayed state
     if record is None:
         return Badge.UNKNOWN, "Sem registro", "Nenhuma autorização registrada."
     decision = evaluate_record(record, today)
+    if record.status == AuthorityStatus.VERIFICACAO_PENDENTE and validity_lapsed(
+        record, today
+    ):
+        return (
+            Badge.DANGER,
+            "Vencida sem verificação",
+            (
+                f"A declaração pendente venceu em {_date(record.valid_to)} sem "
+                "verificação. Registre a autorização vigente."
+            ),
+        )
     if record.status == AuthorityStatus.VERIFICACAO_PENDENTE:
         return Badge.PENDING, "Verificação pendente", _validity(record)
     if decision.state is Admission.EXPIRED:
@@ -205,14 +217,19 @@ def _row(
         )
     badge, status_label, detail = _status(record, today)
     decision = evaluate_record(record, today)
-    declarable = (
-        record is None
-        or record.status in _DECLARABLE_AFTER
-        or decision.state is Admission.EXPIRED
-    )
-    verifiable = record is not None and (
-        record.status == AuthorityStatus.VERIFICACAO_PENDENTE
-        or (record.status == AuthorityStatus.ATIVA and record.verified_by_id is None)
+    # The declaration service's own date rule: a revision whose validity ended
+    # (active or still pending) is renewed by a new declaration, never verified.
+    lapsed = record is not None and validity_lapsed(record, today)
+    declarable = record is None or record.status in _DECLARABLE_AFTER or lapsed
+    verifiable = (
+        record is not None
+        and not lapsed
+        and (
+            record.status == AuthorityStatus.VERIFICACAO_PENDENTE
+            or (
+                record.status == AuthorityStatus.ATIVA and record.verified_by_id is None
+            )
+        )
     )
     return AuthorityRow(
         service=service,
@@ -224,7 +241,7 @@ def _row(
         record=record,
         version=record.version if record else 0,
         may_declare=declarable,
-        may_verify=verifiable and decision.state is not Admission.EXPIRED,
+        may_verify=verifiable,
         may_revoke=decision.usable,
         not_required=False,
     )

@@ -212,6 +212,11 @@ def evaluate_record(  # noqa: PLR0911 - one return per A7.3 outcome
     return AuthorityDecision(Admission.USABLE, AuthorityStatus.ATIVA, record)
 
 
+def validity_lapsed(record: AuthorityRecord, today: dt.date) -> bool:
+    """Whether a revision's own validity ended before `today` (any status)."""
+    return record.valid_to is not None and record.valid_to < today
+
+
 def service_decision(
     client_id: UUID, service: str, *, today: dt.date | None = None
 ) -> AuthorityDecision:
@@ -513,7 +518,7 @@ def declare_authority(  # noqa: PLR0913 - the rendered form's fields plus the cl
         # A revision whose validity ended -- active or still pending verification --
         # can be declared again; otherwise a pending declaration that lapsed before
         # anyone verified it could never be verified, revoked or replaced.
-        lapsed = head is not None and head.valid_to is not None and head.valid_to < on
+        lapsed = head is not None and validity_lapsed(head, on)
         if head is None or head.status == AuthorityStatus.DESCONHECIDA:
             status = AuthorityStatus.ATIVA
         elif head.status in _NEEDS_REVERIFICATION or lapsed:

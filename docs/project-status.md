@@ -451,6 +451,20 @@ kills all 64 mutants (the 47 worker and the review's 17). Evidence:
 `.evidence/AXRM-008-rv1-red.txt`, `AXRM-008-rv1-green-flaky.txt`,
 `AXRM-008-rv1-mutations.txt`, `AXRM-008-rv1-gates.txt`.
 
+Review fix 2 (`AXRM-008` attempt 3, independent review needs-fix), placed on the final
+`AXRM-012` head `c42a9bf`: the only rebase conflict was this file, and every registry
+and count in the auto-merged `ops/sql/roles.sql`, `tests/conftest.py` and isolation
+inventories registers both todos' tables exactly once (tenant tables 72 = 69 + 3). A
+lapsed pending authority now shows "Vencida sem verificação" with the renewal form
+instead of a verification action that answered 409; the workspace uses the
+declaration service's own date rule, and the replacement still waits for
+verification. Client owners, client collaborators and the platform admin were
+refused by the tenant middleware before any view ran, so no refusal was recorded;
+when that refusal targets a `require_can` view the middleware now records the same
+durable `DENIED` event the view would have, for the resolved firm, and still admits
+nothing. Every denied role of the six-role matrix writes exactly one refusal per
+request, and a gated page reached without a seat still refuses without client data.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

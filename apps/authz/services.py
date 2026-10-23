@@ -348,7 +348,7 @@ def require_can(
             **kwargs: _P.kwargs,
         ) -> _ResponseT:
             if not can(request.user, action):
-                _record_refusal(request, action)
+                record_refusal(request, action)
                 msg = f"This account may not {action}."
                 raise PermissionDenied(msg)
             return view(request, *args, **kwargs)
@@ -363,14 +363,36 @@ def require_can(
     return decorate
 
 
-def _record_refusal(request: HttpRequest, action: str) -> None:
+def record_refusal(
+    request: HttpRequest, action: str, *, tenant_id: UUID | None = None
+) -> None:
+    """Persist one capability refusal as a `PlatformEvent` (survives the rollback).
+
+    `tenant_id` is for callers that refuse before a tenant is attached to the
+    request -- the tenant middleware turning away an account with no firm seat.
+    """
     tenant = getattr(request, "tenant", None)
     record_platform_event(
         action=AuditAction.DENIED,
         origin=Origin(actor=request.user, subject=action),
-        tenant_id=tenant.pk if tenant is not None else None,
+        tenant_id=tenant_id or (tenant.pk if tenant is not None else None),
         metadata={"capability": action, "path": request.path},
     )
+
+
+def capability_gate(view: Callable[..., object]) -> str | None:
+    """Return the `require_can` capability guarding a resolved view, if any.
+
+    Follows the `functools.wraps` chain, because `require_can` usually sits under
+    other decorators (`require_http_methods`, `login_required`, `require_tenant`).
+    """
+    current: Callable[..., Any] | None = view
+    while current is not None:
+        action: str | None = PORTAL_CAPABILITY_GATES.get(current)
+        if action is not None:
+            return action
+        current = getattr(current, "__wrapped__", None)
+    return None
 
 
 def role_of(user: User, tenant_id: UUID | None = None) -> str | None:

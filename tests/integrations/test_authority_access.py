@@ -10,6 +10,7 @@ from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, PlatformEvent
+from apps.authz.models import GrantLevel, RoleGrant
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import Membership, TenantRole
 from tests.integrations.test_authority import authority_api
@@ -66,20 +67,38 @@ def _ops(firm: Firm) -> Client:
     return firm.sign_in(ops)
 
 
-def _post_all(browser: Client, firm: Firm) -> list[int]:
+def _refusals(firm: Firm) -> int:
+    return PlatformEvent.objects.filter(
+        action=AuditAction.DENIED,
+        tenant_id=firm.tenant.pk,
+        metadata__capability=CAPABILITY,
+    ).count()
+
+
+def _post_all(browser: Client, firm: Firm) -> list[tuple[int, int]]:
+    """POST declare, verify and revoke; return (status, refusals written) each."""
     base = f"/clientes/{firm.clients[0].pk}/autoridades/sitfis"
-    declared = browser.post(
-        f"{base}/declarar/",
-        {
-            "expected_version": 0,
-            "code": "00002",
-            "valid_from": "2026-01-01",
-            "evidence": SimpleUploadedFile("procuracao.pdf", PDF, "application/pdf"),
-        },
+    requests = (
+        (
+            f"{base}/declarar/",
+            {
+                "expected_version": 0,
+                "code": "00002",
+                "valid_from": "2026-01-01",
+                "evidence": SimpleUploadedFile(
+                    "procuracao.pdf", PDF, "application/pdf"
+                ),
+            },
+        ),
+        (f"{base}/verificar/", {"expected_version": 0}),
+        (f"{base}/revogar/", {"expected_version": 0}),
     )
-    verified = browser.post(f"{base}/verificar/", {"expected_version": 0})
-    revoked = browser.post(f"{base}/revogar/", {"expected_version": 0})
-    return [declared.status_code, verified.status_code, revoked.status_code]
+    outcomes = []
+    for path, data in requests:
+        before = _refusals(firm)
+        response = browser.post(path, data)
+        outcomes.append((response.status_code, _refusals(firm) - before))
+    return outcomes
 
 
 def _rows(firm: Firm) -> tuple[int, int]:
@@ -90,14 +109,6 @@ def _rows(firm: Firm) -> tuple[int, int]:
         )
 
 
-def _refusals(firm: Firm) -> int:
-    return PlatformEvent.objects.filter(
-        action=AuditAction.DENIED,
-        tenant_id=firm.tenant.pk,
-        metadata__capability=CAPABILITY,
-    ).count()
-
-
 def test_staff_accountant_is_refused_at_the_view_gate_before_any_upload(
     settings: SettingsWrapper,
 ) -> None:
@@ -105,11 +116,11 @@ def test_staff_accountant_is_refused_at_the_view_gate_before_any_upload(
     settings.CLAMAV_ENABLED = True
     firm = _firm("access-staff")
     browser = _staff(firm)
-    assert _post_all(browser, firm) == [403, 403, 403]
+    # Exactly one durable refusal per request. Only the view's require_can records
+    # it; the service re-check alone would answer 403 too, but silently and after
+    # reading the evidence upload.
+    assert _post_all(browser, firm) == [(403, 1), (403, 1), (403, 1)]
     assert _rows(firm) == (0, 0)
-    # Only the view's require_can records the refusal; the service re-check alone
-    # would answer 403 too, but silently and after reading the evidence upload.
-    assert _refusals(firm) == 3
 
 
 @pytest.mark.parametrize(
@@ -128,8 +139,47 @@ def test_roles_without_the_capability_cannot_write_authority(
     authority_api()
     settings.CLAMAV_ENABLED = True
     firm = _firm(f"access-{label.replace('_', '-')}")
-    statuses = _post_all(session(firm), firm)
-    assert all(status in {403, 404} for status in statuses), (label, statuses)
+    browser = session(firm)
+    outcomes = _post_all(browser, firm)
+    # Refused before any view runs (no firm seat), yet each refusal is on record:
+    # exactly one DENIED event per request.
+    assert outcomes == [(403, 1), (403, 1), (403, 1)], (label, outcomes)
+    assert _rows(firm) == (0, 0)
+    # Recording the refusal admits nothing: a require_can view reached without a
+    # seat still refuses, shows no client data and records its own capability.
+    before = PlatformEvent.objects.filter(
+        action=AuditAction.DENIED, metadata__capability="clients.view_assigned"
+    ).count()
+    page = browser.get(f"/clientes/{firm.clients[0].pk}/")
+    assert page.status_code == 403
+    assert firm.clients[0].legal_name.encode() not in page.content
+    assert (
+        PlatformEvent.objects.filter(
+            action=AuditAction.DENIED,
+            tenant_id=firm.tenant.pk,
+            metadata__capability="clients.view_assigned",
+        ).count()
+        == before + 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "session"), [("owner", Firm.as_owner), ("ops", _ops)]
+)
+def test_firm_roles_whose_grant_is_withdrawn_are_refused_on_record(
+    settings: SettingsWrapper,
+    label: str,
+    session: Callable[[Firm], Client],
+) -> None:
+    authority_api()
+    settings.CLAMAV_ENABLED = True
+    firm = _firm(f"access-none-{label}")
+    browser = session(firm)
+    RoleGrant.objects.filter(
+        role__in=[TenantRole.OWNER, TenantRole.OPERATIONS_ADMIN],
+        capability__slug=CAPABILITY,
+    ).update(level=GrantLevel.NONE)
+    assert _post_all(browser, firm) == [(403, 1), (403, 1), (403, 1)]
     assert _rows(firm) == (0, 0)
 
 
