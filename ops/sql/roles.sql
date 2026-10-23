@@ -190,6 +190,9 @@ $$;
 -- T24: hidden AI observations and synthetic evaluation metrics have no portal grant.
 -- Message contents, SMTP receipts and operational controls are firm-private.
 -- PORTAL_NONE: fiscal_municipalityseedrow
+-- PORTAL_NONE: authz_capabilityseedrow
+-- AXRM-007: the regional capability seed's ledger (what authz.0009 created or
+-- changed); platform migration bookkeeping, no tenant content, no portal grant.
 -- AXRM-006: migration bookkeeping about the shared municipality registry (which
 -- rows fiscal.0003 inserted); no tenant content and no portal grant.
 -- PORTAL_NONE: integrations_providerconnection

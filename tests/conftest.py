@@ -71,6 +71,9 @@ PORTAL_DENIED_TABLES = (
     # AXRM-006: the registry seed ledger is platform migration bookkeeping with no
     # tenant content. Mirrors `-- PORTAL_NONE: fiscal_municipalityseedrow`.
     "fiscal_municipalityseedrow",
+    # AXRM-007: the regional capability seed's ledger, platform bookkeeping.
+    # Mirrors `-- PORTAL_NONE: authz_capabilityseedrow`.
+    "authz_capabilityseedrow",
     # AXRM-007: provider connections and client provider links are firm-side
     # configuration (ADR-0008, INV-R10); each table also carries DenyPortalAccess
     # from integrations.0001. Mirrors the `-- PORTAL_NONE: integrations_*` lines.

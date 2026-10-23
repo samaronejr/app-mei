@@ -14,6 +14,7 @@ NONE_TABLES = (
     "authz_usercapabilitygrant",
     "clients_clientcontact",
     "fiscal_municipalityseedrow",
+    "authz_capabilityseedrow",
     "integrations_providerconnection",
     "integrations_clientproviderlink",
 )
