@@ -111,6 +111,8 @@ class Obligation(TenantScopedModel):
         max_length=255,
         blank=True,
     )
+    # Municipal writers opt out; existing obligations keep their portal behavior.
+    portal_visible = models.BooleanField(default=True, db_default=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
     updated_at = models.DateTimeField(_("updated at"), auto_now=True)
 

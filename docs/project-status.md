@@ -228,6 +228,7 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |
 | `AXRM-007` | New `apps/integrations` with `ProviderConnection` (tenant) and `ClientProviderLink` (client): tenant RLS, portal NONE (`DenyPortalAccess`, `-- PORTAL_NONE:` in `ops/sql/roles.sql`, `PORTAL_DENIED_TABLES`), composite (tenant, parent) foreign keys, version-checked locked transitions for the link's three A7.3 state fields, a capture start month that a database trigger keeps immutable, and a `secret_ref` that holds a secret *name* only (validator plus CHECK). Flags `federal_checks`, `document_capture` and `municipal_work`, each inert without `cycles_r1` and `scan_required` (INV-R13). Closed provider settings (`PROVIDERS_PAUSED=True`, environments `fake`, no real-data approval, no cap) and the `integrations.E001`/`E002` startup checks. Five A7.6 capabilities (matrix 36 rows / 216 cells, seeded by `authz.0009`). A read-only "Conexões fiscais" panel on `/configuracoes/` for holders of `fiscal.connections.manage` while a regional flag is on. | Tables ship empty, flags off, providers paused. `integrations.0001` reverses while both tables are empty and refuses (with a test) once a row exists: recovery is then flags off with the tables kept (forward repair). `authz.0009` records what it created or changed in the platform ledger `authz_capabilityseedrow`; its reverse deletes only the capabilities and role cells it created, puts back any label or level it changed, and refuses (forward repair) while a firm holds a user grant on a capability it created. |
+| `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows retain visibility. Reverse refuses provider-origin documents, private documents (including visible/private hash pairs), and private obligations; retained new data requires forward repair. |
 
 The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
 at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**
@@ -270,6 +271,26 @@ were not rerun. As `app_migrator` on a fresh lane, `authz.0009` again restores 3
 four capabilities 0009 created, and the reverse refuses once a firm is granted one of
 those. Evidence: `.evidence/AXRM-007-red-b1.txt`, `AXRM-007-red-b1-fresh.txt`,
 `AXRM-007-migration-b1.txt`, `AXRM-007-b1-*.log`, `AXRM-007-gates.txt`.
+
+`AXRM-012` adds `portal_visible` to documents and obligations without changing the
+legacy database default or existing rows. Both portal policy clauses require the
+client identity and visibility, and `roles.sql` reasserts that predicate on an
+upgraded schema. No portal grants or view filters are added. Document hash
+uniqueness includes visibility so a client can upload bytes already held privately.
+Origins distinguish portal and staff uploads from provider capture and federal
+acquisition; only provider origins can omit a human uploader, and provider receipts
+are required. The portal INSERT trigger refuses forged origins, private rows,
+missing human attribution and receipt metadata.
+
+The shared intake path retains the existing cap, byte sniffing, quarantine, scan
+sweep and compensation behavior. `ingest_system_document` creates a private
+original and intake with no fabricated actor or client submission; `staff_upload`
+is portfolio-scoped and defaults to private evidence. This follows the assignment's
+private-staff invariant rather than the plan's proposed True staff keyword default;
+existing portal uploads and legacy row defaults stay True. Visibility remains an
+explicit decision for later approved publication, not a permanent provider-origin
+ban. Migration reversal refuses provider data even after that later decision, and
+also refuses to expose private staff or municipal rows by dropping their predicate.
 
 ## Axorim pivot
 

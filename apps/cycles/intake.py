@@ -34,58 +34,51 @@ read, so no bytes, `Document`, intake or link exist. Without the flag the R1 fal
 stands: the file is stored and later becomes `verificacao_indisponivel`.
 """
 
-import hashlib
 from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
 import sentry_sdk
 from django.conf import settings
-from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError, transaction
 from django.http import Http404
 
 from apps.accounts.models import User
+from apps.authz.objects import load_visible_client
 from apps.clients.models import ClientCompany
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
-    REJECTED_STATES,
-    DocumentIntake,
     EvidenceLink,
     EvidenceRequest,
-    IntakeState,
     LinkOrigin,
-    quarantine_key,
+)
+from apps.cycles.intake_documents import (
+    DocumentSource,
+    UploadMissing,
+    UploadRejected,
+    UploadTooLarge,
+    constraint_name,
+    document_for,
+    read_capped,
 )
 from apps.cycles.records import CycleEvent
 from apps.cycles.scanning import scan_required
-from apps.cycles.sniffing import sniff
-from apps.obligations.models import Document
+from apps.obligations.models import AcquisitionOrigin, Document
 from apps.tenants.models import Tenant
 
-CHUNK_BYTES: Final = 64 * 1024
-SHA256_CONSTRAINT: Final = "document_tenant_client_sha256_uniq"
+__all__ = [
+    "IntakeResult",
+    "UploadMissing",
+    "UploadRejected",
+    "UploadScannerOff",
+    "UploadTooLarge",
+    "intake_upload",
+    "staff_upload",
+    "vault_upload",
+]
+
 LINK_CONSTRAINT: Final = "evidencelink_request_document_uniq"
-
-
-def _constraint(error: IntegrityError) -> str | None:
-    cause = error.__cause__
-    diag = getattr(cause, "diag", None)
-    return getattr(diag, "constraint_name", None)
-
-
-class UploadTooLarge(Exception):  # noqa: N818 - domain vocabulary
-    """The file exceeds the portal upload cap; nothing was read or written."""
-
-
-class UploadMissing(Exception):  # noqa: N818 - domain vocabulary
-    """No file arrived with the request."""
-
-
-class UploadRejected(Exception):  # noqa: N818 - domain vocabulary
-    """The bytes are not an accepted type (or match a refused document); not linked."""
 
 
 class UploadScannerOff(Exception):  # noqa: N818 - domain vocabulary
@@ -107,121 +100,6 @@ class IntakeResult:
     already_linked: bool
 
 
-def _read_capped(upload: UploadedFile) -> tuple[bytes, str]:
-    """Hash while reading, refusing past the cap before buffering more than it."""
-    cap = settings.PORTAL_UPLOAD_MAX_BYTES
-    if upload.size is None or upload.size > cap:
-        raise UploadTooLarge
-    digest = hashlib.sha256()
-    parts: list[bytes] = []
-    total = 0
-    for chunk in upload.chunks(CHUNK_BYTES):
-        total += len(chunk)
-        if total > cap:
-            raise UploadTooLarge
-        digest.update(chunk)
-        parts.append(chunk)
-    if total == 0:
-        raise UploadMissing
-    return b"".join(parts), digest.hexdigest()
-
-
-def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
-    *,
-    tenant: Tenant,
-    client: ClientCompany,
-    actor: User,
-    upload: UploadedFile,
-    payload: bytes,
-    digest: str,
-    obligation_id: UUID | str | None = None,
-) -> tuple[Document, DocumentIntake]:
-    sniffed = sniff(payload)
-    document = Document(
-        tenant=tenant,
-        client=client,
-        obligation_id=obligation_id,
-        sha256=digest,
-        original_filename=(upload.name or "documento")[:255],
-        # The sniffed type, never the declared one; a refused file has no type.
-        content_type=sniffed or "application/octet-stream",
-        byte_size=len(payload),
-        uploaded_by=actor,
-    )
-    held = quarantine_key(tenant.pk, client.pk, document.storage_key)
-    saved = default_storage.save(held, ContentFile(payload))
-    if saved != held:
-        _discard(saved)
-        msg = "storage changed the requested quarantine key"
-        raise RuntimeError(msg)
-    try:
-        with transaction.atomic():
-            document.save(force_insert=True)
-            intake = DocumentIntake.objects.create(
-                tenant=tenant,
-                client=client,
-                document=document,
-                state=IntakeState.QUARANTINED if sniffed else IntakeState.REJECTED_TYPE,
-                reason="" if sniffed else "tipo_nao_aceito",
-                sniffed_type=sniffed or "",
-                quarantine_key=held,
-            )
-    except Exception:
-        _discard(saved)
-        raise
-    return document, intake
-
-
-def _discard(name: str) -> None:
-    try:
-        default_storage.delete(name)  # PILOT-205-COMPENSATING-DELETE
-    except Exception as error:  # noqa: BLE001 - never mask the root failure
-        sentry_sdk.capture_exception(error)
-
-
-def _document_for(  # noqa: PLR0913 - keyword-only: every value is verified context
-    *,
-    tenant: Tenant,
-    client: ClientCompany,
-    actor: User,
-    upload: UploadedFile,
-    payload: bytes,
-    digest: str,
-    obligation_id: UUID | str | None = None,
-) -> tuple[Document, bool]:
-    """Return (document, relinked), or raise `UploadRejected` for refused bytes."""
-    document = Document.objects.filter(sha256=digest).first()
-    if document is None:
-        try:
-            document, intake = _store(
-                tenant=tenant,
-                client=client,
-                actor=actor,
-                upload=upload,
-                payload=payload,
-                digest=digest,
-                obligation_id=obligation_id,
-            )
-        except IntegrityError as error:
-            if _constraint(error) != SHA256_CONSTRAINT:
-                raise
-            # The same bytes stored by a concurrent upload of this client: reuse it.
-            document = Document.objects.get(sha256=digest)
-        else:
-            if intake.state == IntakeState.REJECTED_TYPE:
-                # Committed with the caller's transaction: the refused original and
-                # its intake are the record. No link, no submission event.
-                raise UploadRejected
-            return document, False
-    if document.purged_at is not None:
-        raise UploadRejected
-    if DocumentIntake.objects.filter(
-        document=document, state__in=REJECTED_STATES
-    ).exists():
-        raise UploadRejected
-    return document, True
-
-
 def intake_upload(
     actor: User,
     request_id: UUID,
@@ -239,11 +117,11 @@ def intake_upload(
     _require_scanner(tenant)
     if upload is None:
         raise UploadMissing
-    payload, digest = _read_capped(upload)
-    document, relinked = _document_for(
+    payload, digest = read_capped(upload)
+    document, relinked = document_for(
         tenant=tenant,
         client=client,
-        actor=actor,
+        source=DocumentSource(actor=actor),
         upload=upload,
         payload=payload,
         digest=digest,
@@ -263,9 +141,9 @@ def intake_upload(
                 submitted_by=actor,
             )
     except IntegrityError as error:
-        if _constraint(error) == "evidencelink_retained_original":
+        if constraint_name(error) == "evidencelink_retained_original":
             raise UploadRejected from error
-        if _constraint(error) != LINK_CONSTRAINT:
+        if constraint_name(error) != LINK_CONSTRAINT:
             raise
         # A concurrent submission of the same bytes won the unique key; that is the
         # same outcome as "already sent", not an error.
@@ -335,13 +213,45 @@ def vault_upload(
     _require_scanner(tenant)
     if upload is None:
         raise UploadMissing
-    payload, digest = _read_capped(upload)
-    return _document_for(
+    payload, digest = read_capped(upload)
+    return document_for(
         tenant=tenant,
         client=client,
-        actor=actor,
+        source=DocumentSource(actor=actor),
         upload=upload,
         payload=payload,
         digest=digest,
         obligation_id=obligation_id,
+    )
+
+
+def staff_upload(  # noqa: PLR0913 - human context plus the plan's two source keywords
+    actor: User,
+    upload: UploadedFile | None,
+    *,
+    tenant: Tenant,
+    client: ClientCompany,
+    portal_visible: bool = False,
+    acquisition_origin: str = AcquisitionOrigin.UPLOAD_STAFF,
+) -> tuple[Document, bool]:
+    """Quarantine firm-only evidence with its human actor, never a client submission."""
+    visible_client = load_visible_client(actor, client.pk, tenant_id=tenant.pk)
+    _require_scanner(tenant)
+    if upload is None:
+        raise UploadMissing
+    if acquisition_origin != AcquisitionOrigin.UPLOAD_STAFF:
+        raise UploadRejected
+    payload, digest = read_capped(upload)
+    return document_for(
+        tenant=tenant,
+        client=visible_client,
+        source=DocumentSource(
+            actor=actor,
+            portal_visible=portal_visible,
+            client_upload=False,
+            origin=acquisition_origin,
+        ),
+        upload=upload,
+        payload=payload,
+        digest=digest,
     )

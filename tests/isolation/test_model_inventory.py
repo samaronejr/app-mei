@@ -138,7 +138,10 @@ SWEEP_EXEMPTIONS: Final[dict[str, str]] = {
     ),
     "obligations.Document": (
         "Pre-R1 vault metadata; tests/isolation/test_document_client_paired_fk.py "
-        "and test_portal_write_refusal.py exercise real portal writes and composites."
+        "and test_portal_write_refusal.py exercise real portal writes and composites. "
+        "AXRM-012 visibility/provenance columns and nullable provider actor: "
+        "test_portal_visibility_predicate.py and "
+        "tests/obligations/test_system_ingest.py."
     ),
     "obligations.MonthlyRevenue": (
         "Pre-R1 revenue; tests/isolation/test_portal_client_isolation.py "
@@ -146,7 +149,8 @@ SWEEP_EXEMPTIONS: Final[dict[str, str]] = {
     ),
     "obligations.Obligation": (
         "Pre-R1 obligation; tests/isolation/test_portal_client_isolation.py and "
-        "test_portal_write_refusal.py; structural RLS remains required."
+        "test_portal_write_refusal.py; AXRM-012 portal_visible is exercised by "
+        "test_portal_visibility_predicate.py; structural RLS remains required."
     ),
 }
 

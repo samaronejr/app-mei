@@ -133,8 +133,12 @@ PORTAL_TABLES = (
     "cycles_documentintake",
     # T14: client-visible exceptions only (the policy adds client_visible).
     "cycles_exception",
+    # AXRM-012: all columns SELECT only for this client AND portal_visible.
     "obligations_obligation",
     "obligations_monthlyrevenue",
+    # AXRM-012: visibility/provenance are readable only on visible rows. Provider
+    # originals (and their receipt refs) are private; INSERT is pinned to a human
+    # upload_portal with portal_visible=True and no receipt by the database trigger.
     "obligations_document",
     "obligations_sourceobservation",
 )

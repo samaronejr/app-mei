@@ -281,8 +281,14 @@ BEGIN
         -- client_message is rendered. Internal instructions/evidence are in the
         -- portal-denied cycles_exceptioninternal companion, not this table.
         'cycles_exception',
+        -- AXRM-012: SELECT only when client_id = app.client_id AND portal_visible.
+        -- All obligation columns remain readable on those rows; no new write grant.
         'obligations_obligation',
         'obligations_monthlyrevenue',
+        -- AXRM-012: same visibility predicate. The new visibility/provenance columns
+        -- are readable only on visible rows; provider receipts stay on private rows.
+        -- INSERT remains human upload_portal, portal_visible=true, no receipt, as
+        -- enforced by document_portal_client_upload (obligations.0023).
         'obligations_document',
         -- S8.2: the payments page labels paid rows from the newest payment
         -- observation. SELECT only; the append-only trigger and the missing
@@ -292,6 +298,33 @@ BEGIN
     LOOP
         IF to_regclass('public.' || portal_table) IS NOT NULL THEN
             EXECUTE format('GRANT SELECT ON public.%I TO app_portal', portal_table);
+        END IF;
+    END LOOP;
+END
+$$;
+
+-- AXRM-012 mirror of obligations.0023. A cold bootstrap has no tables/columns yet.
+-- Re-applying roles.sql to an upgraded schema must retain BOTH restrictive sides,
+-- not restore the old client-only policy. No grants or role sets change here.
+DO $$
+DECLARE
+    visible_table text;
+BEGIN
+    FOREACH visible_table IN ARRAY ARRAY[
+        'obligations_document', 'obligations_obligation'
+    ]
+    LOOP
+        IF EXISTS (
+            SELECT 1 FROM pg_attribute
+            WHERE attrelid = to_regclass('public.' || visible_table)
+              AND attname = 'portal_visible' AND NOT attisdropped
+        ) THEN
+            EXECUTE format(
+                'ALTER POLICY %I ON %I '
+                'USING (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND portal_visible) '
+                'WITH CHECK (client_id = NULLIF(current_setting(''app.client_id'', true), '''')::uuid AND portal_visible)',
+                visible_table || '_portal_client_isolation', visible_table
+            );
         END IF;
     END LOOP;
 END
