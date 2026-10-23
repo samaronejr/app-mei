@@ -61,7 +61,8 @@ PERIOD = dt.date(2026, 9, 1)
 # created whole, plus the pivot's additions to the pre-existing client and
 # obligation apps. Explicit by name — a model added to any of these apps without
 # updating this list fails `test_the_explicit_list_matches_the_registry`.
-AXORIM_APP_LABELS = ("cycles", "delivery", "briefing", "automation")
+# AXRM-007 adds the regional provider app whole (ADR-0008).
+AXORIM_APP_LABELS = ("cycles", "delivery", "briefing", "automation", "integrations")
 NEW_CLIENT_MODELS = (
     "ClientContact",
     "Engagement",
@@ -994,6 +995,11 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
         ),
         ("delivery_outboundmessage", "proposal_id", "outbound_proposal_scope_fk"),
         ("delivery_outboundmessage", "retry_of_id", "outbound_retry_client_fk"),
+        (
+            "integrations_clientproviderlink",
+            "connection_id",
+            "clientproviderlink_connection_pair_fk",
+        ),
         (
             "obligations_document",
             "obligation_id",

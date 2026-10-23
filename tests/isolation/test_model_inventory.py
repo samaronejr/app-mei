@@ -55,6 +55,8 @@ SWEEP_LABELS: Final = frozenset(
         "delivery.DeliveryEffect",
         "delivery.OutboundMessage",
         "delivery.TenantNoticePolicy",
+        "integrations.ClientProviderLink",
+        "integrations.ProviderConnection",
         "obligations.SourceObservation",
         "tenants.AccountExport",
         "tenants.AccountExportAttempt",

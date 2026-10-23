@@ -79,6 +79,11 @@ The following matrix is the recommended starting authorization model.
 | Grant support access | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Acknowledge publications | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
 | Export and cancel firm account, view estimated costs | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Manage fiscal provider connections | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Manage client fiscal authority | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Run federal fiscal checks | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Author municipal rules | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ |
+| Review municipal rules | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
 
 A robust implementation should enforce this matrix **both at the application layer and at the data layer**, using tenant scoping and row-level policies. PostgreSQL’s row security is particularly relevant because it can restrict which rows a role may read or write, which is highly aligned with a multi-tenant accounting product. citeturn19search2turn19search11
 

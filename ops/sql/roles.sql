@@ -192,6 +192,11 @@ $$;
 -- PORTAL_NONE: fiscal_municipalityseedrow
 -- AXRM-006: migration bookkeeping about the shared municipality registry (which
 -- rows fiscal.0003 inserted); no tenant content and no portal grant.
+-- PORTAL_NONE: integrations_providerconnection
+-- PORTAL_NONE: integrations_clientproviderlink
+-- AXRM-007: provider connections and client provider links are firm-side provider
+-- configuration (ADR-0008); no portal grant, and each table carries DenyPortalAccess
+-- from integrations.0001, so a grant added by mistake would still read nothing.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
 -- PORTAL_NONE: tenants_notificationpreference

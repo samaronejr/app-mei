@@ -223,6 +223,32 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 `.evidence/AXRM-006-red-fix3.txt`, `AXRM-006-mutation-fix3.txt`,
 `AXRM-006-fix3-*.log`, `AXRM-006-fix3-static.txt`.
 
+### Wave 1: provider foundation
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-007` | New `apps/integrations` with `ProviderConnection` (tenant) and `ClientProviderLink` (client): tenant RLS, portal NONE (`DenyPortalAccess`, `-- PORTAL_NONE:` in `ops/sql/roles.sql`, `PORTAL_DENIED_TABLES`), composite (tenant, parent) foreign keys, version-checked locked transitions for the link's three A7.3 state fields, a capture start month that a database trigger keeps immutable, and a `secret_ref` that holds a secret *name* only (validator plus CHECK). Flags `federal_checks`, `document_capture` and `municipal_work`, each inert without `cycles_r1` and `scan_required` (INV-R13). Closed provider settings (`PROVIDERS_PAUSED=True`, environments `fake`, no real-data approval, no cap) and the `integrations.E001`/`E002` startup checks. Five A7.6 capabilities (matrix 36 rows / 216 cells, seeded by `authz.0009`). A read-only "Conexões fiscais" panel on `/configuracoes/` for holders of `fiscal.connections.manage` while a regional flag is on. | Tables ship empty, flags off, providers paused. `integrations.0001` reverses while both tables are empty and refuses (with a test) once a row exists: recovery is then flags off with the tables kept (forward repair). `authz.0009` reverses by removing only its five capabilities and their grants. |
+
+The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
+at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**
+(1227 + 4105), isolation **724 passed, 41 skipped**, CNPJ **29**. At the `AXRM-007` code,
+under the gate lock, the default suite passes **5459, 44 skipped** (`test` 1294,
+`test-rest` 4165), isolation **739 passed, 44 skipped** (the three new skips are schema
+facts: `ProviderConnection` has no parent foreign key and `ClientProviderLink`'s
+composites are tenant-paired, so the client-swap probe does not apply), CNPJ **29** and
+browser **189** (four new panel cases). The targeted selection (349 tests) passed in
+each of three runs. Lint, format, Mypy, migration drift, system checks and the static
+rebuild are clean. On a populated lane database `integrations.0001` reverses while
+empty, refuses once a row exists and keeps its rows, and `authz.0009` restores the
+matrix to 31 rows / 186 cells and back to 36 / 216; a raw `UPDATE` cannot move a set
+capture start month. Removing `DenyPortalAccess` fails the portal-decision meta-test;
+a secret value in `secret_ref` is refused by the validator and the database. Existing
+tests changed only as registrations (matrix counts and published rows, flag registry,
+isolation inventories, portal NONE lists, stash slug count, R1 rollback slug set,
+scope pins). Evidence: `.evidence/AXRM-007-red.txt`, `AXRM-007-baseline.txt`,
+`AXRM-007-gates.txt`, `AXRM-007-migration.txt`, `AXRM-007-happy.txt`,
+`AXRM-007-failure.txt`, `AXRM-007-adversarial.txt`, `AXRM-007-teardown.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

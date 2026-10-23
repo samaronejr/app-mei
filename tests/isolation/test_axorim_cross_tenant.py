@@ -137,7 +137,7 @@ def test_the_enumeration_covers_every_axorim_model_and_nothing_else() -> None:
     labels = {m._meta.label for m in MODELS}
     expected = {
         m._meta.label
-        for app in ("cycles", "delivery", "briefing", "automation")
+        for app in ("cycles", "delivery", "briefing", "automation", "integrations")
         for m in django_apps.get_app_config(app).get_models()
     }
     expected |= {

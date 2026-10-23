@@ -14,6 +14,8 @@ NONE_TABLES = (
     "authz_usercapabilitygrant",
     "clients_clientcontact",
     "fiscal_municipalityseedrow",
+    "integrations_providerconnection",
+    "integrations_clientproviderlink",
 )
 
 # Tables that predate the explicit portal-decision rule (plan A7.1) and are on no

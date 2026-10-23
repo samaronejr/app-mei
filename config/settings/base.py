@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     "apps.cycles",
     "apps.delivery",
     "apps.fiscal",
+    "apps.integrations",
     "apps.lgpd",
     "apps.obligations",
     "apps.audit",
@@ -696,6 +697,24 @@ CLAMAV_ENABLED = env.bool("CLAMAV_ENABLED", default=False)
 CLAMD_HOST = env.str("CLAMD_HOST", default="clamav")
 CLAMD_PORT = env.int("CLAMD_PORT", default=3310)
 CLAMD_TIMEOUT_SECONDS = env.float("CLAMD_TIMEOUT_SECONDS", default=30.0)
+
+# AXRM-007 (plan A11, ADR-0008): provider kill switches and environments, every
+# default closed. PROVIDERS_PAUSED is the global switch (like DELIVERY_PAUSED);
+# SERPRO_PAUSED/FOCUS_PAUSED stand one provider down. Environments are one of
+# fake | trial | homologacao | producao; producao is refused unless the owner's
+# PROVIDER_REAL_DATA_APPROVED is True (integrations.E001 refuses the unpaused,
+# unapproved combination at startup; the claim path refuses it independently).
+# PROVIDER_GLOBAL_MONTHLY_CAP_BRL is a JSON object {provider: "R$ cap"}; a provider
+# missing from it has no cap, which means billable calls are refused, never free.
+PROVIDERS_PAUSED = env.bool("PROVIDERS_PAUSED", default=True)
+SERPRO_PAUSED = env.bool("SERPRO_PAUSED", default=False)
+FOCUS_PAUSED = env.bool("FOCUS_PAUSED", default=False)
+SERPRO_ENVIRONMENT = env.str("SERPRO_ENVIRONMENT", default="fake")
+FOCUS_ENVIRONMENT = env.str("FOCUS_ENVIRONMENT", default="fake")
+PROVIDER_REAL_DATA_APPROVED = env.bool("PROVIDER_REAL_DATA_APPROVED", default=False)
+PROVIDER_GLOBAL_MONTHLY_CAP_BRL = env.json(
+    "PROVIDER_GLOBAL_MONTHLY_CAP_BRL", default={}
+)
 
 # Closed until the operator verifies the real SMTP route and journal storage.
 DELIVERY_PAUSED = env.bool("DELIVERY_PAUSED", default=True)
