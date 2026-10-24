@@ -5,12 +5,18 @@ from pathlib import Path
 
 import pytest
 
+from apps.integrations import transport
 from apps.integrations.transport import ProviderTransport, _pdf_location
 from apps.integrations.transport_types import ProviderRequest, TransportFailure
 from tests.fakes.focus import FakeFocus
 from tests.fakes.provider import Reply, permitted_send
 from tests.fakes.serpro import FakeSerpro
-from tests.integrations.test_transport import KEY, serpro_request
+from tests.integrations.test_transport import (
+    KEY,
+    HeaderDrip,
+    serpro_request,
+    timed_header_drip,
+)
 from tests.integrations.transport_tls import HOST, route_storage_host, tls_context
 
 
@@ -46,6 +52,21 @@ def test_verified_tls_positive_control(tmp_path: Path) -> None:
         )
         assert response.status == 200
         assert len(peer.requests) == 1
+
+
+def test_tls_header_drip_stops_at_the_read_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given verified TLS, a 1 s read budget and a peer that drips one
+    # response-header byte every 0.25 s for 10 s.
+    context, ca = tls_context(tmp_path)
+    monkeypatch.setattr(transport, "READ_TIMEOUT", 1.0)
+    with HeaderDrip(gap=0.25, count=40, tls=context) as peer:
+        # When the reply is read.
+        code, elapsed = timed_header_drip(peer, ca)
+    # Then the TLS exchange stops at the budget too.
+    assert code == "tempo_limite"
+    assert elapsed < 4.0
 
 
 @pytest.mark.parametrize("second_status", [200, 302])

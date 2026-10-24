@@ -2,6 +2,7 @@
 
 import json
 import socket
+import ssl
 import threading
 import time
 from pathlib import Path
@@ -311,9 +312,15 @@ def test_production_budget_stops_the_reviewed_real_drip() -> None:
 class HeaderDrip:
     """A raw peer that sends a status line, then one header byte per `gap`."""
 
-    def __init__(self, gap: float, count: int) -> None:
-        self._listener = socket.create_server(("127.0.0.1", 0))
-        self.origin = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+    def __init__(
+        self, gap: float, count: int, tls: ssl.SSLContext | None = None
+    ) -> None:
+        listener = socket.create_server(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        self._listener = (
+            listener if tls is None else tls.wrap_socket(listener, server_side=True)
+        )
+        self.origin = f"{'https' if tls else 'http'}://127.0.0.1:{port}"
         self._gap = gap
         self._count = count
         self._stop = threading.Event()
@@ -343,12 +350,14 @@ class HeaderDrip:
             return
 
 
-def timed_header_drip(peer: HeaderDrip) -> tuple[str, float]:
+def timed_header_drip(peer: HeaderDrip, ca_file: str = "") -> tuple[str, float]:
     started = time.monotonic()
     code = "ok"
     try:
         permitted_send(
-            ProviderTransport("focus", "fake", peer.origin), "FC-NFE", ProviderRequest()
+            ProviderTransport("focus", "fake", peer.origin, ca_file),
+            "FC-NFE",
+            ProviderRequest(),
         )
     except TransportFailure as error:
         code = error.code
@@ -387,6 +396,7 @@ def test_exhausted_budget_stops_before_the_next_read(
     monkeypatch.setattr(transport_wire, "monotonic", lambda: next(readings, 31.0))
     partial = Reply(body=b"x" * 8, chunks=(b"xx",), hold_open=True)
     # When the body is read.
+    started = time.monotonic()
     with (
         FakeFocus((partial,)) as peer,
         pytest.raises(TransportFailure) as caught,
@@ -396,8 +406,10 @@ def test_exhausted_budget_stops_before_the_next_read(
             "FC-NFE",
             ProviderRequest(),
         )
-    # Then the read stops as a timeout instead of waiting again.
+    # Then the read stops as a timeout instead of waiting again (a blocked read
+    # would wait for the 30 s watchdog).
     assert caught.value.code == "tempo_limite"
+    assert time.monotonic() - started < 10.0
 
 
 def test_compressed_body_is_refused_before_decompression() -> None:
