@@ -138,3 +138,22 @@ def test_uncertain_call_without_any_owner_stays_quarantined_without_an_issue(
     row = quarantine(provider_link, request("orphan"))
     assert claim(provider_link.tenant_id, row.pk) is None
     assert uncertainty_issues(provider_link) == []
+
+
+def test_claim_alone_quarantines_an_expired_lease_with_owned_work(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given a claimed call whose worker died before ever reaching dispatch.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request("crashed"))
+    assert claim(provider_link.tenant_id, row.pk) is not None
+    with tenant_context(provider_link.tenant_id):
+        ProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() - timedelta(seconds=1)
+        )
+    # When only a later claim sweep finds it (no dispatch attempt follows).
+    assert claim(provider_link.tenant_id, row.pk) is None
+    # Then the sweep itself quarantines it and opens the owned work item.
+    assert reload_call(provider_link, row.pk).state == CallState.UNCERTAIN
+    assert uncertainty_issues(provider_link) == [
+        ("SP-DAS", IssueState.ABERTA, [str(row.pk)])
+    ]

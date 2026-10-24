@@ -346,3 +346,37 @@ def test_firm_receipt_carrying_a_client_id_is_refused(
     # When the journal is read, then the whole inventory fails closed.
     with pytest.raises(JournalError):
         provider_journal.read_firm(termo.tenant_id)
+
+
+def test_firm_claim_alone_quarantines_an_expired_lease(
+    termo: FirmAuthorization,
+) -> None:
+    # Given a claimed submission whose worker died before dispatch.
+    row = reserve(termo)
+    assert firm_claim(termo.tenant_id, row.pk) is not None
+    with tenant_context(termo.tenant_id):
+        FirmProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() - timedelta(seconds=1)
+        )
+    # When only a later claim sweep finds it, then the sweep quarantines it.
+    assert firm_claim(termo.tenant_id, row.pk) is None
+    assert reload(termo, row.pk).state == CallState.UNCERTAIN
+
+
+def test_extra_client_key_is_refused_even_at_the_receipts_own_path(
+    termo: FirmAuthorization,
+) -> None:
+    # Given a firm receipt copy stored at the exact path its own fields name,
+    # so only the closed schema can notice the smuggled client identity.
+    row = reserve(termo)
+    ticket = firm_claim(termo.tenant_id, row.pk)
+    assert ticket is not None
+    firm_begin_io(ticket)
+    (record,) = provider_journal.read_firm(termo.tenant_id)
+    copy = replace(record, attempt_id=uuid4())
+    data = json.loads(copy.encode())
+    data["client_id"] = str(uuid4())
+    default_storage.save(copy.path, ContentFile(json.dumps(data).encode()))
+    # When the journal is read, then the whole inventory fails closed.
+    with pytest.raises(JournalError):
+        provider_journal.read_firm(termo.tenant_id)

@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from django.core.management import call_command
-from django.db import connection
+from django.db import connection, transaction
 from django.test import override_settings
 from django.utils import timezone
 
@@ -418,3 +418,32 @@ def test_focus_read_requests_are_not_metered_as_documents(
     # Then no per-request document usage exists.
     with tenant_context(provider_link.tenant_id):
         assert not UsageRecord.objects.filter(metric="focus_documentos").exists()
+
+
+def test_unjournaled_dispatch_start_refuses_a_caller_transaction(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given a claimed unbilled read: no journal write guards its dispatch start.
+    call_contracts.register_operation(
+        Operation(
+            code="SYN-UNBILLED",
+            provider="serpro",
+            revision="v1",
+            operation_class="read",
+            feature="federal_checks",
+            billing_class="nao_faturada",
+            policy=SyntheticPolicy(),
+        )
+    )
+    read = replace(request("unbilled"), operation="SYN-UNBILLED")
+    row = reserve(provider_link.tenant_id, provider_link.pk, read)
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    # When a caller tries to start dispatch inside its own transaction.
+    with (
+        pytest.raises(RuntimeError, match="inside a database transaction"),
+        transaction.atomic(),
+    ):
+        begin_io(ticket)
+    # Then the dispatch start never became a (rollback-able) nested write.
+    assert reload_call(provider_link, row.pk).state == CallState.CLAIMED
