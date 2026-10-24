@@ -73,6 +73,40 @@ def test_expired_finalize_does_not_advertise_success(
     assert peer.requests == [ticket.owner.hex]
 
 
+def test_late_billed_reply_after_start_only_replay_confirms_usage_once(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given a start-only receipt that restore replay quarantined as estimated usage.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    with override_settings(PROVIDERS_PAUSED=True):
+        call_command("reconcile_provider_operations", restore_ref=str(uuid4()))
+    assert reload_call(provider_link, row.pk).state == CallState.UNCERTAIN
+
+    def usage() -> list[tuple[str, int]]:
+        with tenant_context(provider_link.tenant_id):
+            return sorted(
+                UsageRecord.objects.filter(metric="serpro_emissao").values_list(
+                    "kind", "quantity"
+                )
+            )
+
+    assert usage() == [(UsageKind.ESTIMATED, 1)]
+    # When the original worker's billed reply arrives under the superseded epoch.
+    reply = CallResult(CallState.SUCCESS, 200, "ok", "sim")
+    record_result(dispatch, reply)
+    assert not finalize(ticket, reply)
+    # Then usage is confirmed at once, by one correction of the estimate.
+    assert usage() == [(UsageKind.CONFIRMED, 1), (UsageKind.ESTIMATED, 1)]
+    # And the next replay applies the reply without metering it again.
+    with override_settings(PROVIDERS_PAUSED=True):
+        call_command("reconcile_provider_operations", restore_ref=str(uuid4()))
+    assert reload_call(provider_link, row.pk).state == CallState.SUCCESS
+    assert usage() == [(UsageKind.CONFIRMED, 1), (UsageKind.ESTIMATED, 1)]
+
+
 @pytest.mark.parametrize("quarantine", ["another_claim", "own_finalize"])
 def test_reply_after_quarantine_stays_late_until_reconcile_settles_it_once(
     provider_link: ClientProviderLink, quarantine: str
@@ -312,3 +346,18 @@ def test_late_result_corrects_estimated_usage_without_rewriting_it(
         correction = UsageRecord.objects.get(correction_of=original)
         assert correction.quantity == 0
         assert correction.kind == UsageKind.CONFIRMED
+
+
+def test_finalize_never_schedules_a_retry_for_an_effect(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given a started issuance whose adapter reports a retryable failure.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    begin_io(ticket)
+    # When finalize receives the retry hint directly (no perform-side conversion).
+    finalize(ticket, CallResult(CallState.RETRY, 503, "temporary", "nao"))
+    # Then the effect is uncertain and no further transmission slot opens.
+    assert reload_call(provider_link, row.pk).state == CallState.UNCERTAIN
+    assert claim(provider_link.tenant_id, row.pk) is None

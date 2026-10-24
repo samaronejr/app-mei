@@ -18,6 +18,29 @@ from apps.integrations.call_observations import meter, observe
 from apps.integrations.call_state import current_epoch, uncertain
 
 
+def _transmitted_without_result(call: ProviderCall, ticket: Claim) -> bool:
+    """Whether this attempt was transmitted and still has no settled result."""
+    receipts = ProviderCallAttempt.objects.filter(call=call, attempt_id=ticket.owner)
+    started = (
+        call.x_request_tag == ticket.owner
+        or receipts.exclude(observation="late").exists()
+    )
+    return started and not receipts.filter(observation="result").exists()
+
+
+def _record_superseded(
+    call: ProviderCall, late: ProviderCallAttempt, ticket: Claim, result: CallResult
+) -> None:
+    """Keep a reply under a superseded claim; confirm its usage at once.
+
+    After a replay advanced the epoch, the original worker's reply cannot
+    finalize, but a transmitted attempt's billing is known now (review 5b).
+    """
+    observe(call, late, result)
+    if _transmitted_without_result(call, ticket):
+        meter(call, ticket.owner, result, late.occurred_at)
+
+
 def finalize(ticket: Claim, result: CallResult) -> bool:
     """Keep stale replies as observations without rewriting a newer outcome."""
     assert_no_transaction()
@@ -41,7 +64,7 @@ def finalize(ticket: Claim, result: CallResult) -> bool:
             occurred_at=call.dispatch_started_at or now,
         )
         if not current:
-            observe(call, late, result)
+            _record_superseded(call, late, ticket, result)
             return False
         # A "result" observation exists exactly when settle() ran for the attempt.
         # A transmitted reply that cannot finalize stays a metered late receipt;
