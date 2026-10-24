@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
-from apps.integrations.models import ProviderOperationCode
+from apps.integrations.models import ISSUE_SERVICE_LENGTH
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -176,7 +176,7 @@ def register_operation(operation: Operation) -> None:
     if (
         operation.code in EXCLUDED_CALL_ROWS
         or operation.code in _OPERATIONS
-        or operation.code not in ProviderOperationCode.values
+        or len(operation.code) > ISSUE_SERVICE_LENGTH
     ):
         message = "Operation cannot be registered as a client provider call."
         raise ValueError(message)

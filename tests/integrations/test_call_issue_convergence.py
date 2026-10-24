@@ -109,12 +109,13 @@ def test_each_operation_keeps_its_own_uncertainty_issue(
     ]
 
 
-def test_only_a6_operation_codes_can_become_client_calls(
+def test_operation_codes_must_fit_the_uncertainty_issue_service(
     provider_link: ClientProviderLink,
 ) -> None:
-    # Given an operation code outside the A6 register (and the issue vocabulary).
+    # Given a code longer than the uncertainty issue's service column (16), which
+    # would otherwise fail the quarantine write inside finalize.
     unknown = Operation(
-        code="SP-NOVA-OPERACAO",
+        code="SP-OPERACAO-LONGA",
         provider="serpro",
         revision="v1",
         operation_class="read",

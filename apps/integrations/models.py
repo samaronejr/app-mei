@@ -36,6 +36,7 @@ from apps.integrations.validators import (
 )
 
 __all__ = [
+    "ISSUE_SERVICE_LENGTH",
     "AuthorityKind",
     "AuthorityRecord",
     "AuthorityService",
@@ -570,6 +571,8 @@ class ProviderOperationCode(models.TextChoices):
 # An issue's service is an authority service (todo 8) or, for an uncertain
 # provider call, the exact A6 operation, so SITFIS request and emission stay apart.
 IssueService: Final = [*AuthorityService.choices, *ProviderOperationCode.choices]
+# A client call's operation code is stored as its uncertainty issue's service.
+ISSUE_SERVICE_LENGTH: Final = 16
 
 
 class IssueState(models.TextChoices):
@@ -598,7 +601,7 @@ class IntegrationIssue(TenantScopedModel):
     )
     reason = models.CharField(max_length=40, choices=IssueReason.choices)
     service = models.CharField(
-        max_length=16, choices=IssueService, blank=True, default=""
+        max_length=ISSUE_SERVICE_LENGTH, choices=IssueService, blank=True, default=""
     )
     link = models.ForeignKey(
         ClientProviderLink,

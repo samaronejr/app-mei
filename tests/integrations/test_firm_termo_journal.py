@@ -1,6 +1,7 @@
 """SP-TERMO: a client-less, fenced and replayable firm submission (todo 9, A7.4)."""
 
 import json
+from dataclasses import replace
 from datetime import timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -228,7 +229,7 @@ def test_stale_fence_or_expired_lease_never_transmits(
     ticket = firm_claim(termo.tenant_id, row.pk)
     assert ticket is not None
     with pytest.raises(StaleClaimError):
-        firm_begin_io(type(ticket)(**{**ticket.__dict__, "fence": ticket.fence - 1}))
+        firm_begin_io(replace(ticket, fence=ticket.fence - 1))
     # When the worker's lease expires before dispatch.
     with tenant_context(termo.tenant_id):
         FirmProviderCall.objects.filter(pk=row.pk).update(
