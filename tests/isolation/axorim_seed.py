@@ -1071,6 +1071,21 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "firmauthorization_document_pair_fk",
         ),
         (
+            "integrations_firmprovidercall",
+            "authorization_id",
+            "firmprovidercall_authorization_pair_fk",
+        ),
+        (
+            "integrations_firmprovidercall",
+            "connection_id",
+            "firmprovidercall_connection_pair_fk",
+        ),
+        (
+            "integrations_firmprovidercallattempt",
+            "call_id",
+            "firmprovidercallattempt_call_pair_fk",
+        ),
+        (
             "integrations_integrationissue",
             "link_id",
             "integrationissue_link_client_fk",

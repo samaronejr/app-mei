@@ -12,7 +12,12 @@ from django.test import override_settings
 from django.utils import timezone
 
 from apps.core.tenancy import tenant_context
-from apps.integrations import call_contracts, call_protocol, provider_journal
+from apps.integrations import (
+    call_contracts,
+    call_protocol,
+    firm_calls,
+    provider_journal,
+)
 from apps.integrations.call_contracts import CallResult, Operation, StaleClaimError
 from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
 from apps.integrations.call_protocol import (
@@ -49,7 +54,9 @@ def test_expired_finalize_does_not_advertise_success(
     assert ticket is not None
 
     class ExpiringPeer(ProviderPeer):
-        def send(self, dispatch: call_protocol.Dispatch) -> CallResult:
+        def send(
+            self, dispatch: call_protocol.Dispatch | firm_calls.FirmDispatch
+        ) -> CallResult:
             result = super().send(dispatch)
             with tenant_context(provider_link.tenant_id):
                 ProviderCall.objects.filter(pk=row.pk).update(

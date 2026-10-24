@@ -63,6 +63,8 @@ SWEEP_LABELS: Final = frozenset(
         "integrations.AuthorityRecord",
         "integrations.ClientProviderLink",
         "integrations.FirmAuthorization",
+        "integrations.FirmProviderCall",
+        "integrations.FirmProviderCallAttempt",
         "integrations.IntegrationIssue",
         "integrations.ProviderConnection",
         "integrations.ProviderCall",

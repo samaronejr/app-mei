@@ -53,8 +53,9 @@ That checklist remains OPEN until the operator performs and records the drill.
 
 Keep `PROVIDERS_PAUSED=true` in every process and stop all provider dispatch
 workers before restoring. The pause is independent of `DELIVERY_PAUSED`.
-Preserve the latest complete `provider-journal/` **and** `provider-epochs/`
-prefixes, including objects newer than the database backup. Neither prefix may
+Preserve the latest complete `provider-journal/`, `provider-journal-firm/`
+(firm-level SP-TERMO receipts, which carry no client) **and** `provider-epochs/`
+prefixes, including objects newer than the database backup. No prefix may
 be restored backwards or pruned to make replay succeed. Their retention and
 versioning are operator evidence, not a property proved by local filesystem tests.
 
@@ -72,7 +73,11 @@ usage separately, rebuilds issuance/registration/configuration barriers, and nev
 provider request. A missing tenant/client/link, malformed receipt or conflicting
 identity is a failed recovery: keep providers paused and repair the restore.
 Repeat reconciliation after an interrupted recovery; already restored receipts
-are not counted or billed twice.
+are not counted or billed twice. Firm termo submissions are rebuilt the same way
+(one submission per signed termo, never retransmitted); a start without a result
+leaves the submission `incerta`. They have no client, so no client work item is
+opened: review `incerta` termo submissions directly until todo 13 adds the firm's
+owned work item.
 
 Review `chamada_provedor_incerta` work items before unpausing. An intent without
 a result stays `incerta`, as does an expired lease; neither can be reclaimed.

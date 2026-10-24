@@ -11,17 +11,26 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 
 from apps.core.tasks import assert_no_transaction
-from apps.integrations.journal_schema import JournalError, JournalRecord, decode
+from apps.integrations.journal_schema import (
+    FIRM_PREFIX,
+    FirmJournalRecord,
+    JournalError,
+    JournalRecord,
+    decode,
+    decode_firm,
+)
 
 if TYPE_CHECKING:
     from apps.cycles.effects.manifest import JSONValue
 
 __all__ = [
+    "FirmJournalRecord",
     "JournalError",
     "JournalRecord",
     "append",
     "epoch_floor",
     "read",
+    "read_firm",
     "record_epoch",
     "tenant_ids",
 ]
@@ -58,23 +67,24 @@ def _save(path: str, raw: bytes) -> None:
         raise JournalError
 
 
-def append(record: JournalRecord) -> str:
+def append(record: JournalRecord | FirmJournalRecord) -> str:
     """Persist one validated immutable start or result before proceeding."""
     assert_no_transaction()
     raw = record.encode()
     try:
-        decode(raw, record.tenant_id)
+        if isinstance(record, FirmJournalRecord):
+            decode_firm(raw, record.tenant_id)
+        else:
+            decode(raw, record.tenant_id)
         _save(record.path, raw)
     except (OSError, BotoCoreError, ClientError, ValueError, TypeError, KeyError):
         raise JournalError from None
     return record.path
 
 
-def tenant_ids() -> set[UUID]:
-    """Expose orphan tenant scopes rather than claiming incomplete replay succeeded."""
-    assert_no_transaction()
+def _prefix_tenants(prefix: str) -> set[UUID]:
     try:
-        directories, files = default_storage.listdir("provider-journal")
+        directories, files = default_storage.listdir(prefix)
         if files:
             raise JournalError
         return {UUID(name) for name in directories}
@@ -84,6 +94,12 @@ def tenant_ids() -> set[UUID]:
         raise JournalError from None
 
 
+def tenant_ids() -> set[UUID]:
+    """Expose orphan tenant scopes of client and firm receipts alike."""
+    assert_no_transaction()
+    return _prefix_tenants("provider-journal") | _prefix_tenants(FIRM_PREFIX)
+
+
 def read(tenant_id: UUID) -> list[JournalRecord]:
     """Read outside transactions; malformed objects fail the whole inventory."""
     assert_no_transaction()
@@ -91,6 +107,21 @@ def read(tenant_id: UUID) -> list[JournalRecord]:
         records = []
         for path in _paths(f"provider-journal/{tenant_id}"):
             record = decode(_bytes(path), tenant_id)
+            if record.path != path:
+                raise JournalError
+            records.append(record)
+    except (OSError, BotoCoreError, ClientError, ValueError, TypeError, KeyError):
+        raise JournalError from None
+    return records
+
+
+def read_firm(tenant_id: UUID) -> list[FirmJournalRecord]:
+    """Read firm receipts outside transactions; one malformed object fails all."""
+    assert_no_transaction()
+    try:
+        records = []
+        for path in _paths(f"{FIRM_PREFIX}/{tenant_id}"):
+            record = decode_firm(_bytes(path), tenant_id)
             if record.path != path:
                 raise JournalError
             records.append(record)

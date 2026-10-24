@@ -26,6 +26,8 @@ SCOPED = (
     "ProviderCallAttempt",
     "ProviderEffectBarrier",
 )
+# SP-TERMO is firm-level: tenant-scoped, client-less, portal NONE (AXRM-008 handoff).
+FIRM = ("FirmProviderCall", "FirmProviderCallAttempt")
 EPOCH_FUNCTIONS = """
 CREATE FUNCTION integrations_current_provider_epoch() RETURNS bigint
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
@@ -70,7 +72,7 @@ def refuse_populated_reverse(
     apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor
 ) -> None:
     """Keep operational receipts once populated; reverse only our empty schema."""
-    for name in SCOPED:
+    for name in (*SCOPED, *FIRM):
         model = apps.get_model("integrations", name)
         # CROSS_TENANT_OK: rollback must refuse if any firm's protocol rows exist.
         if model._base_manager.exists():
@@ -494,6 +496,218 @@ class Migration(migrations.Migration):
                 name="providerbarrier_effect_uniq",
             ),
         ),
+        migrations.CreateModel(
+            name="FirmProviderCall",
+            fields=[
+                (
+                    "id",
+                    models.UUIDField(
+                        default=apps.core.identifiers.uuid7,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                ("operation", models.CharField(max_length=24)),
+                ("operation_revision", models.CharField(max_length=32)),
+                (
+                    "operation_class",
+                    models.CharField(default="registration", max_length=16),
+                ),
+                ("provider", models.CharField(max_length=16)),
+                ("environment", models.CharField(max_length=16)),
+                ("request_key", models.CharField(max_length=64)),
+                ("request_digest", models.CharField(max_length=64)),
+                (
+                    "state",
+                    models.CharField(
+                        choices=[
+                            ("na_fila", "Na fila"),
+                            ("reservada", "Reservada"),
+                            ("reivindicada", "Reivindicada"),
+                            ("despacho_iniciado", "Despacho iniciado"),
+                            ("sucesso", "Sucesso"),
+                            ("aguardando_resultado", "Aguardando resultado"),
+                            ("aguardar_nova_tentativa", "Aguardar nova tentativa"),
+                            ("falhou", "Falhou"),
+                            ("negada", "Negada"),
+                            ("incerta", "Incerta"),
+                            ("reconciliada", "Reconciliada"),
+                            ("bloqueada_cota", "Bloqueada por cota"),
+                            ("bloqueada_autoridade", "Bloqueada por autoridade"),
+                            ("pausada", "Pausada"),
+                            ("cancelada", "Cancelada"),
+                        ],
+                        default="na_fila",
+                        max_length=32,
+                    ),
+                ),
+                ("version", models.PositiveIntegerField(default=1)),
+                ("fence", models.PositiveBigIntegerField(default=0)),
+                ("lease_owner", models.UUIDField(null=True)),
+                ("lease_until", models.DateTimeField(null=True)),
+                ("execution_epoch", models.PositiveBigIntegerField(default=1)),
+                ("attempts", models.PositiveIntegerField(default=0)),
+                ("dispatch_started_at", models.DateTimeField(null=True)),
+                ("finalized_at", models.DateTimeField(null=True)),
+                ("connection_version", models.PositiveIntegerField(default=1)),
+                ("http_status", models.PositiveSmallIntegerField(null=True)),
+                ("provider_code", models.CharField(blank=True, max_length=64)),
+                ("response_digest", models.CharField(blank=True, max_length=64)),
+                ("x_request_tag", models.UUIDField(null=True)),
+                ("created_at", models.DateTimeField(default=django.utils.timezone.now)),
+                ("updated_at", models.DateTimeField(default=django.utils.timezone.now)),
+            ],
+            options={
+                "abstract": False,
+                "base_manager_name": "all_objects",
+                "default_manager_name": "objects",
+            },
+            managers=[
+                ("all_objects", django.db.models.manager.Manager()),
+                ("objects", django.db.models.manager.Manager()),
+            ],
+        ),
+        migrations.CreateModel(
+            name="FirmProviderCallAttempt",
+            fields=[
+                (
+                    "id",
+                    models.UUIDField(
+                        default=apps.core.identifiers.uuid7,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
+                ("attempt_id", models.UUIDField()),
+                ("attempt_number", models.PositiveIntegerField(default=1)),
+                ("fence", models.PositiveBigIntegerField(default=0)),
+                ("outcome", models.CharField(max_length=32)),
+                ("observation", models.CharField(default="result", max_length=24)),
+                ("http_status", models.PositiveSmallIntegerField(null=True)),
+                ("provider_code", models.CharField(blank=True, max_length=64)),
+                ("response_digest", models.CharField(blank=True, max_length=64)),
+                (
+                    "occurred_at",
+                    models.DateTimeField(default=django.utils.timezone.now),
+                ),
+            ],
+            options={
+                "abstract": False,
+                "base_manager_name": "all_objects",
+                "default_manager_name": "objects",
+            },
+            managers=[
+                ("all_objects", django.db.models.manager.Manager()),
+                ("objects", django.db.models.manager.Manager()),
+            ],
+        ),
+        migrations.AddConstraint(
+            model_name="firmauthorization",
+            constraint=models.UniqueConstraint(
+                fields=("tenant", "id"), name="firmauthorization_tenant_id_uniq"
+            ),
+        ),
+        migrations.AddField(
+            model_name="firmprovidercall",
+            name="authorization",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="+",
+                to="integrations.firmauthorization",
+            ),
+        ),
+        migrations.AddField(
+            model_name="firmprovidercall",
+            name="connection",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="+",
+                to="integrations.providerconnection",
+            ),
+        ),
+        migrations.AddField(
+            model_name="firmprovidercall",
+            name="tenant",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.PROTECT,
+                to="tenants.tenant",
+                verbose_name="tenant",
+            ),
+        ),
+        migrations.AddField(
+            model_name="firmprovidercallattempt",
+            name="call",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="+",
+                to="integrations.firmprovidercall",
+            ),
+        ),
+        migrations.AddField(
+            model_name="firmprovidercallattempt",
+            name="tenant",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.PROTECT,
+                to="tenants.tenant",
+                verbose_name="tenant",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="firmprovidercall",
+            constraint=models.UniqueConstraint(
+                fields=("tenant", "id"), name="firmprovidercall_tenant_id_uniq"
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="firmprovidercall",
+            constraint=models.UniqueConstraint(
+                fields=("tenant", "request_key"), name="firmprovidercall_request_uniq"
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="firmprovidercall",
+            constraint=models.UniqueConstraint(
+                fields=("tenant", "authorization"),
+                name="firmprovidercall_authorization_uniq",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="firmprovidercall",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    (
+                        "state__in",
+                        [
+                            "na_fila",
+                            "reservada",
+                            "reivindicada",
+                            "despacho_iniciado",
+                            "sucesso",
+                            "aguardando_resultado",
+                            "aguardar_nova_tentativa",
+                            "falhou",
+                            "negada",
+                            "incerta",
+                            "reconciliada",
+                            "bloqueada_cota",
+                            "bloqueada_autoridade",
+                            "pausada",
+                            "cancelada",
+                        ],
+                    )
+                ),
+                name="firmprovidercall_known_state",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="firmprovidercallattempt",
+            constraint=models.UniqueConstraint(
+                fields=("tenant", "call", "attempt_id", "observation"),
+                name="firmattempt_observation_uniq",
+            ),
+        ),
         *[EnableRLS(name) for name in SCOPED],
         *[EnablePortalClientRLS(name) for name in SCOPED],
         *[DenyPortalAccess(name) for name in SCOPED],
@@ -530,18 +744,42 @@ class Migration(migrations.Migration):
             parent_table="integrations_providercall",
             constraint="providercall_retry_fk",
         ),
+        *[EnableRLS(name) for name in FIRM],
+        *[DenyPortalAccess(name) for name in FIRM],
+        add_tenant_composite_fk(
+            table="integrations_firmprovidercall",
+            column="authorization_id",
+            parent_table="integrations_firmauthorization",
+            constraint="firmprovidercall_authorization_pair_fk",
+        ),
+        add_tenant_composite_fk(
+            table="integrations_firmprovidercall",
+            column="connection_id",
+            parent_table="integrations_providerconnection",
+            constraint="firmprovidercall_connection_pair_fk",
+        ),
+        add_tenant_composite_fk(
+            table="integrations_firmprovidercallattempt",
+            column="call_id",
+            parent_table="integrations_firmprovidercall",
+            constraint="firmprovidercallattempt_call_pair_fk",
+        ),
         migrations.RunSQL(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON integrations_providercall, "
-            "integrations_providercallattempt, integrations_providereffectbarrier "
+            "integrations_providercallattempt, integrations_providereffectbarrier, "
+            "integrations_firmprovidercall, integrations_firmprovidercallattempt "
             "TO app_runtime;",
             "REVOKE ALL ON integrations_providercall, "
-            "integrations_providercallattempt, integrations_providereffectbarrier "
+            "integrations_providercallattempt, integrations_providereffectbarrier, "
+            "integrations_firmprovidercall, integrations_firmprovidercallattempt "
             "FROM app_runtime;",
         ),
         # audit.0001 owns the shared reject function. Reuse only the per-table
         # operations, so reversing this migration never drops another table's guard.
         *make_append_only(
-            "integrations_providercallattempt", "integrations_providereffectbarrier"
+            "integrations_providercallattempt",
+            "integrations_providereffectbarrier",
+            "integrations_firmprovidercallattempt",
         )[1:],
         migrations.RunSQL(EPOCH_FUNCTIONS, DROP_EPOCH_FUNCTIONS),
         migrations.RunPython(migrations.RunPython.noop, refuse_populated_reverse),

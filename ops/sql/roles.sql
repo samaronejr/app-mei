@@ -201,6 +201,8 @@ $$;
 -- PORTAL_NONE: integrations_providercallattempt
 -- PORTAL_NONE: integrations_providereffectbarrier
 -- PORTAL_NONE: integrations_providerexecutionepoch
+-- PORTAL_NONE: integrations_firmprovidercall
+-- PORTAL_NONE: integrations_firmprovidercallattempt
 -- AXRM-007: provider connections and client provider links are firm-side provider
 -- configuration (ADR-0008); no portal grant, and each table carries DenyPortalAccess
 -- from integrations.0001, so a grant added by mistake would still read nothing.
@@ -250,7 +252,8 @@ BEGIN
         'delivery_deliveryattempt', 'delivery_deliveryeffect', 'cycles_approval',
         'cycles_actionexecution', 'cycles_clientacknowledgement',
         'cycles_evidenceindex', 'cycles_completiongeneration', 'tenants_usagerecord',
-        'integrations_providercallattempt', 'integrations_providereffectbarrier'
+        'integrations_providercallattempt', 'integrations_providereffectbarrier',
+        'integrations_firmprovidercallattempt'
     ]
     LOOP
         IF to_regclass('public.' || receipt_table) IS NOT NULL THEN

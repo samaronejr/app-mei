@@ -75,8 +75,9 @@ RUNTIME_ROLE = "app_runtime"
 # AXRM-008 adds integrations_firmauthorization (tenant, deny-all) and the client-paired
 # integrations_authorityrecord and integrations_integrationissue (both policies): 72.
 # AXRM-009 adds three client-scoped private protocol tables (it reuses AXRM-008's
-# integrations_integrationissue): 72 + 3 = 75.
-EXPECTED_TENANT_TABLE_COUNT = 75
+# integrations_integrationissue) and the two client-less SP-TERMO tables (tenant,
+# deny-all): 72 + 3 + 2 = 77.
+EXPECTED_TENANT_TABLE_COUNT = 77
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -598,6 +599,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "integrations_providercall",
         "integrations_providercallattempt",
         "integrations_providereffectbarrier",
+        "integrations_firmprovidercall",
+        "integrations_firmprovidercallattempt",
     },
 )
 

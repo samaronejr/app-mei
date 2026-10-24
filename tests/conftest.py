@@ -89,6 +89,9 @@ PORTAL_DENIED_TABLES = (
     "integrations_providercallattempt",
     "integrations_providereffectbarrier",
     "integrations_providerexecutionepoch",
+    # AXRM-009: the client-less SP-TERMO submission and its attempt receipts.
+    "integrations_firmprovidercall",
+    "integrations_firmprovidercallattempt",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -118,6 +121,7 @@ APPEND_ONLY_TABLES = (
     "delivery_deliveryeffect",
     "integrations_providercallattempt",
     "integrations_providereffectbarrier",
+    "integrations_firmprovidercallattempt",
     "tenants_usagerecord",
     # AXRM-008: authority revisions and firm termo records are append-only.
     "integrations_authorityrecord",

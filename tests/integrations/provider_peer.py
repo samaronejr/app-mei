@@ -17,6 +17,7 @@ from apps.integrations.call_models import CallState
 
 if TYPE_CHECKING:
     from apps.integrations.call_protocol import Dispatch
+    from apps.integrations.firm_calls import FirmDispatch
 
 
 class ProviderPeer:
@@ -61,7 +62,7 @@ class ProviderPeer:
         self.thread.join(timeout=3)
         assert not self.thread.is_alive()
 
-    def send(self, dispatch: Dispatch) -> CallResult:
+    def send(self, dispatch: Dispatch | FirmDispatch) -> CallResult:
         """The real wire receives exactly one request, outside a DB transaction."""
         assert not connection.in_atomic_block
         with closing(

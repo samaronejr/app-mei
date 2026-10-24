@@ -5,6 +5,7 @@ from typing import ClassVar
 from django.db import models
 from django.utils import timezone
 
+from apps.core.models import TenantScopedModel
 from apps.cycles.records import ClientRecord
 
 
@@ -148,6 +149,93 @@ class ProviderEffectBarrier(ClientRecord):
             models.UniqueConstraint(
                 fields=("tenant", "client", "provider", "business_effect_key"),
                 name="providerbarrier_effect_uniq",
+            ),
+        ]
+
+
+class FirmProviderCall(TenantScopedModel):
+    """One firm-level SP-TERMO submission: fenced like ProviderCall, without client.
+
+    The termo authorizes the contratante for the whole firm (A6 SP-TERMO), so no
+    client is fabricated for it. One submission per signed termo and per request key.
+    """
+
+    authorization = models.ForeignKey(
+        "integrations.FirmAuthorization", on_delete=models.PROTECT, related_name="+"
+    )
+    connection = models.ForeignKey(
+        "integrations.ProviderConnection", on_delete=models.PROTECT, related_name="+"
+    )
+    operation = models.CharField(max_length=24)
+    operation_revision = models.CharField(max_length=32)
+    operation_class = models.CharField(max_length=16, default="registration")
+    provider = models.CharField(max_length=16)
+    environment = models.CharField(max_length=16)
+    request_key = models.CharField(max_length=64)
+    request_digest = models.CharField(max_length=64)
+    state = models.CharField(
+        max_length=32, choices=CallState.choices, default=CallState.QUEUED
+    )
+    version = models.PositiveIntegerField(default=1)
+    fence = models.PositiveBigIntegerField(default=0)
+    lease_owner = models.UUIDField(null=True)
+    lease_until = models.DateTimeField(null=True)
+    execution_epoch = models.PositiveBigIntegerField(default=1)
+    attempts = models.PositiveIntegerField(default=0)
+    dispatch_started_at = models.DateTimeField(null=True)
+    finalized_at = models.DateTimeField(null=True)
+    connection_version = models.PositiveIntegerField(default=1)
+    http_status = models.PositiveSmallIntegerField(null=True)
+    provider_code = models.CharField(max_length=64, blank=True)
+    response_digest = models.CharField(max_length=64, blank=True)
+    x_request_tag = models.UUIDField(null=True)
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(TenantScopedModel.Meta):
+        """Idempotent per request and per signed termo; anchored for its attempts."""
+
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=("tenant", "id"), name="firmprovidercall_tenant_id_uniq"
+            ),
+            models.UniqueConstraint(
+                fields=("tenant", "request_key"), name="firmprovidercall_request_uniq"
+            ),
+            models.UniqueConstraint(
+                fields=("tenant", "authorization"),
+                name="firmprovidercall_authorization_uniq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(state__in=CallState.values),
+                name="firmprovidercall_known_state",
+            ),
+        ]
+
+
+class FirmProviderCallAttempt(TenantScopedModel):
+    """Append-only result association of one firm submission attempt."""
+
+    call = models.ForeignKey(
+        FirmProviderCall, on_delete=models.PROTECT, related_name="+"
+    )
+    attempt_id = models.UUIDField()
+    attempt_number = models.PositiveIntegerField(default=1)
+    fence = models.PositiveBigIntegerField(default=0)
+    outcome = models.CharField(max_length=32)
+    observation = models.CharField(max_length=24, default="result")
+    http_status = models.PositiveSmallIntegerField(null=True)
+    provider_code = models.CharField(max_length=64, blank=True)
+    response_digest = models.CharField(max_length=64, blank=True)
+    occurred_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(TenantScopedModel.Meta):
+        """Replaying the same observation never records it twice."""
+
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=("tenant", "call", "attempt_id", "observation"),
+                name="firmattempt_observation_uniq",
             ),
         ]
 

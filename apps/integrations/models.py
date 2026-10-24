@@ -21,6 +21,8 @@ from django.utils import timezone
 
 from apps.core.models import TenantScopedModel
 from apps.integrations.call_models import (
+    FirmProviderCall,
+    FirmProviderCallAttempt,
     ProviderCall,
     ProviderCallAttempt,
     ProviderEffectBarrier,
@@ -46,6 +48,8 @@ __all__ = [
     "FirmAuthorization",
     "FirmAuthorizationKind",
     "FirmAuthorizationStatus",
+    "FirmProviderCall",
+    "FirmProviderCallAttempt",
     "IntegrationIssue",
     "IssueReason",
     "IssueService",
@@ -515,6 +519,12 @@ class FirmAuthorization(TenantScopedModel):
                 fields=["tenant", "kind", "submitted_at"],
                 name="firmauthorization_scope_idx",
             )
+        ]
+        # AXRM-009: the referent of the firm submission's tenant-paired FK.
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=("tenant", "id"), name="firmauthorization_tenant_id_uniq"
+            ),
         ]
 
     def __str__(self) -> str:

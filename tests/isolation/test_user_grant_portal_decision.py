@@ -24,6 +24,8 @@ NONE_TABLES = (
     "integrations_providercallattempt",
     "integrations_providereffectbarrier",
     "integrations_providerexecutionepoch",
+    "integrations_firmprovidercall",
+    "integrations_firmprovidercallattempt",
 )
 
 # Tables that predate the explicit portal-decision rule (plan A7.1) and are on no
