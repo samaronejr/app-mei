@@ -486,6 +486,20 @@ def _deliveryeffect_swap_parent(
     return {"message": message}
 
 
+def _authority_swap_parent(
+    model: type[models.Model], ctx: SeedContext, row: models.Model
+) -> dict[str, object]:
+    document = seed_model(django_apps.get_model("obligations", "Document"), ctx)
+    return {"evidence_document": document}
+
+
+def _issue_swap_parent(
+    model: type[models.Model], ctx: SeedContext, row: models.Model
+) -> dict[str, object]:
+    link = seed_model(django_apps.get_model("integrations", "ClientProviderLink"), ctx)
+    return {"link": link}
+
+
 _SWAP_INSERT_PROBES: dict[
     str,
     Callable[
@@ -496,6 +510,10 @@ _SWAP_INSERT_PROBES: dict[
     "automation_agentrun": _agentrun_swap_parent,
     "clients_taxprofile": _taxprofile_swap_parent,
     "delivery_deliveryeffect": _deliveryeffect_swap_parent,
+    # AXRM-008: both client-paired parents are nullable, so the seeded row holds
+    # NULLs and only a clone born with alpha's parent on the sibling client probes.
+    "integrations_authorityrecord": _authority_swap_parent,
+    "integrations_integrationissue": _issue_swap_parent,
 }
 
 
@@ -615,6 +633,10 @@ class _ParentProbe:
         overrides: dict[str, object] = {column: beta_parent.pk}
         if model._meta.db_table == "cycles_evidencerequest":
             overrides["kind"] = "comprovante"
+        if model._meta.db_table == "integrations_authorityrecord":
+            # AXRM-008: a clone of the seeded root would hit the one-root unique
+            # (23505) first; another catalog service is a fresh root.
+            overrides.update(service="pagtoweb", code="00004")
         with (
             tenant_context(self.alpha.tenant.id),
             client_context(self.alpha.client.id),

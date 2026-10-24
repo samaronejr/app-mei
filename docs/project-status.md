@@ -229,6 +229,7 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | --- | --- | --- |
 | `AXRM-007` | New `apps/integrations` with `ProviderConnection` (tenant) and `ClientProviderLink` (client): tenant RLS, portal NONE (`DenyPortalAccess`, `-- PORTAL_NONE:` in `ops/sql/roles.sql`, `PORTAL_DENIED_TABLES`), composite (tenant, parent) foreign keys, version-checked locked transitions for the link's three A7.3 state fields, a capture start month that a database trigger keeps immutable, and a `secret_ref` that holds a secret *name* only (validator plus CHECK). Flags `federal_checks`, `document_capture` and `municipal_work`, each inert without `cycles_r1` and `scan_required` (INV-R13). Closed provider settings (`PROVIDERS_PAUSED=True`, environments `fake`, no real-data approval, no cap) and the `integrations.E001`/`E002` startup checks. Five A7.6 capabilities (matrix 36 rows / 216 cells, seeded by `authz.0009`). A read-only "Conexões fiscais" panel on `/configuracoes/` for holders of `fiscal.connections.manage` while a regional flag is on. | Tables ship empty, flags off, providers paused. `integrations.0001` reverses while both tables are empty and refuses (with a test) once a row exists: recovery is then flags off with the tables kept (forward repair). `authz.0009` records what it created or changed in the platform ledger `authz_capabilityseedrow`; its reverse deletes only the capabilities and role cells it created, puts back any label or level it changed, and refuses (forward repair) while a firm holds a user grant on a capability it created. |
 | `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses, and quarantine metadata, requests, links and observations follow the obligation or document they reference; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows keep their visibility. Reverse restores the previous policies and trigger body, and refuses while provider-origin documents, private documents (including visible/private hash pairs) or private obligations exist; retained new data requires forward repair. |
+| `AXRM-008` | Client authority as append-only revisions (`AuthorityRecord`: procurações 00002/00004, PGMEI catalogued `nao_exigida`, client authorizations for NF-e/NFS-e capture and Ciência), the firm termo record (`FirmAuthorization`, submitted by todo 13) and owned provider problems (`IntegrationIssue` when the client has no open cycle, the registered cycle exception when it does). `authority_for(client, operation)` answers usable / missing / expired / unknown with a reason, fails closed for any operation outside the implemented A6 set, derives expiry from the injected date and, for capture, also requires a current, matching, non-divergent provider-held certificate. Declare, verify and revoke lock the client, re-check `fiscal.authority.manage` and the rendered chain version, and append a successor; a provider 403 appends `ausente_detectada`; `record_certificate_status` stores provider-reported certificate metadata only and marks a foreign CNPJ or unexpected generation `divergente`. Openers `autorizacao_ausente`, `certificado_provedor_vencendo` (30/7/1-day review dates), `certificado_provedor_vencido` and `credencial_divergente`. Workspace section "Autorizações e certificados" (firm-only, flag-gated, private evidence through the scanned staff intake; certificate files refused). | Apply `integrations.0002_authority_records` with `federal_checks` and `document_capture` off: nothing is drawn or evaluated. Recovery is flags off; authority rows are append-only evidence, so the reverse runs only while all three tables are empty and refuses afterwards (forward repair). The reverse never drops the shared `audit_reject_mutation()` function. |
 
 The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
 at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**
@@ -384,6 +385,93 @@ Evidence: `.evidence/AXRM-012-gates.txt`, `AXRM-012-rv2-red-smoke.txt`,
 `AXRM-012-mutations.txt`, `AXRM-012-failure.txt`, `AXRM-012-invariants.txt`,
 `AXRM-012-happy.txt`, `AXRM-012-adversarial.txt`, `AXRM-012-rv2-reference-audit.txt`,
 `AXRM-012-rv2-collection-delta.txt`.
+
+`AXRM-008` records each client's authority as append-only `AuthorityRecord`
+revisions (trigger for every role, SELECT/INSERT for the runtime role): a successor's
+composite foreign key repeats (tenant, client, service), versions are unique per
+service with version 1 the root, and every row names a person or the refusing provider
+call. Catalog CHECKs bind each service to its kind and code (SITFIS 00002, PAGTOWEB
+00004, PGMEI `nao_exigida`, client authorizations for capture and Ciência). A human
+declaration is shown as declared, never verified; a named verifier makes it
+"Verificada por ... em ..." with the `manual` badge, never `confirmed`. After a
+revocation, expiry or provider-detected absence a new declaration waits in
+`verificacao_pendente`. `authority_for` is the single admission answer for todo 9:
+operations outside the implemented A6 set are `unknown`, expiry comes from the injected
+date, and capture also requires a current, matching, non-divergent certificate on every
+active Focus link. Problems become owned work: the registered cycle exception when the
+client has an open cycle, otherwise one active `IntegrationIssue` per reason and
+service (partial unique); a usable verification or a healthy certificate report
+resolves the matching issue, never a source observation. `FirmAuthorization` carries
+exactly the plan's fields for todo 13's termo; its tenant-paired document key needs a
+new `(tenant_id, id)` anchor on `obligations_document`, exempted in the client-column
+uniqueness meta-test with the `invite_tenant_id_uniq` argument. The credential state
+machine gains the provider-sync moves `ausente -> divergente` and
+`confirmacao_pendente|rotacao_pendente -> vencendo|vencida`.
+
+The pre-change baseline for `AXRM-008` is the `AXRM-012` rv1 measurement at `5ab4c32`
+(this branch's base, code-identical): default **5523 passed, 44 skipped** (1294 +
+4229), isolation **770 passed, 44 skipped**, CNPJ **29**. Before implementation the 46
+new acceptance cases failed on assertions. The 62 new tests pass in each of three runs,
+and 46 of 46 deliberate breaks (every service guard, view guard, sweep filter, opener
+hook, migration trigger, foreign key, CHECK and unique) fail a named test. Existing
+tests changed only as registrations (portal NONE lists, append-only list, isolation
+inventories and seeder, the tenant-table count 69 -> 72, the credential-route
+exemption, scope pins for the received NF-e/NFS-e capture labels, the client-column
+uniqueness exemption and the regional read-budget world, which now renders every
+authority row inside the unchanged 25-query budget). At the `AXRM-008` code
+(`b52657e`), under the gate lock, the default suite passes **5629, 45 skipped** (+106 tests; the one new skip is a schema fact: `FirmAuthorization`
+has no client column, so the client-swap probe does not apply), isolation **796
+passed, 45 skipped**, CNPJ **29** and browser **191** (two new journey cases at
+1440x900 and 390x844). Lint, format, Mypy, migration drift and the static rebuild are
+clean. Evidence:
+`.evidence/AXRM-008-red.txt`, `AXRM-008-baseline.txt`, `AXRM-008-flaky.txt`,
+`AXRM-008-mutations.txt`, `AXRM-008-happy.txt`, `AXRM-008-failure.txt`,
+`AXRM-008-adversarial.txt`, `AXRM-008-gates.txt`, `AXRM-008-teardown.txt`,
+`AXRM-008-screens/`.
+
+Review fix (`AXRM-008` attempt 1, independent review needs-fix): three guards had no
+test that failed without them -- the declaration transition guard, the reported
+credential transition guard and the view-level `require_can`. Checking the
+declaration guard against A7.3 found a real gap as well: a pending declaration whose
+validity lapsed before anyone verified it could be neither verified, revoked nor
+declared again. A revision whose validity ended (active or pending) now accepts a
+new declaration, which is again pending and unusable until verified; every other
+re-declaration over a current or pending revision is still refused with no row and
+no event. The credential guard's unreachable error branch is removed (every state
+but `divergente` may move to `divergente`). New tests re-declare over pending,
+active, expiring and revoked revisions with and without a verifier, report each
+forbidden certificate move (`vencendo`/`vencida` -> `ativa`, `vencida` ->
+`vencendo`) and its drift work item, and hit the authority routes over HTTP as each
+role of the six-role matrix (staff refused at the view gate with its recorded
+refusal before any upload; client roles and the platform admin refused with no
+rows; owner and ops reach the service). At `da114a5` the default suite passes **5650,
+45 skipped**, isolation **796 passed, 45 skipped**, CNPJ **29** and browser **191**; the
+83 AXRM-008 tests pass in each of three runs, and a bytecode-isolated mutation run
+kills all 64 mutants (the 47 worker and the review's 17). Evidence:
+`.evidence/AXRM-008-rv1-red.txt`, `AXRM-008-rv1-green-flaky.txt`,
+`AXRM-008-rv1-mutations.txt`, `AXRM-008-rv1-gates.txt`.
+
+Review fix 2 (`AXRM-008` attempt 3, independent review needs-fix), placed on the final
+`AXRM-012` head `c42a9bf`: the only rebase conflict was this file, and every registry
+and count in the auto-merged `ops/sql/roles.sql`, `tests/conftest.py` and isolation
+inventories registers both todos' tables exactly once (tenant tables 72 = 69 + 3). A
+lapsed pending authority now shows "Vencida sem verificação" with the renewal form
+instead of a verification action that answered 409; the workspace uses the
+declaration service's own date rule, and the replacement still waits for
+verification. Client owners, client collaborators and the platform admin were
+refused by the tenant middleware before any view ran, so no refusal was recorded;
+when that refusal targets a `require_can` view the middleware now records the same
+durable `DENIED` event the view would have, for the resolved firm, and still admits
+nothing. Every denied role of the six-role matrix writes exactly one refusal per
+request, and a gated page reached without a seat still refuses without client data. At
+`c931570` the default suite passes **5666, 45 skipped** (group 1: 1380; group 2: 4286
+passed, 45 skipped), isolation **808 passed, 45 skipped**, `tests/portal` **319**, CNPJ
+**29**, browser **193** and the migration round trip **15**; static checks and the
+static rebuild are clean, and a bytecode-isolated run kills all 70 mutants (53 worker,
+six of them for the new guards, and the review's 17). Evidence:
+`.evidence/AXRM-008-rv2-red.txt`, `AXRM-008-rv2-green-flaky.txt`,
+`AXRM-008-rv2-registry-check.txt`, `AXRM-008-rv2-mutations.txt`,
+`AXRM-008-rv2-gates.txt`, `AXRM-008-rv2-screens/`.
 
 ## Axorim pivot
 

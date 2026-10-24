@@ -200,6 +200,25 @@ $$;
 -- AXRM-007: provider connections and client provider links are firm-side provider
 -- configuration (ADR-0008); no portal grant, and each table carries DenyPortalAccess
 -- from integrations.0001, so a grant added by mistake would still read nothing.
+-- PORTAL_NONE: integrations_authorityrecord
+-- PORTAL_NONE: integrations_firmauthorization
+-- PORTAL_NONE: integrations_integrationissue
+-- AXRM-008: client authority records, the firm's termo record and owned provider
+-- problems are firm-side (INV-R10); each carries DenyPortalAccess from
+-- integrations.0002 (the two client-scoped tables also the client-anchored policy).
+-- Re-applying bootstrap must not hand UPDATE/DELETE back on the two append-only ones.
+DO $$
+BEGIN
+    IF to_regclass('public.integrations_authorityrecord') IS NOT NULL THEN
+        REVOKE ALL ON integrations_authorityrecord FROM app_runtime;
+        GRANT SELECT, INSERT ON integrations_authorityrecord TO app_runtime;
+    END IF;
+    IF to_regclass('public.integrations_firmauthorization') IS NOT NULL THEN
+        REVOKE ALL ON integrations_firmauthorization FROM app_runtime;
+        GRANT SELECT, INSERT ON integrations_firmauthorization TO app_runtime;
+    END IF;
+END
+$$;
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
 -- PORTAL_NONE: tenants_notificationpreference

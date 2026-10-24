@@ -60,7 +60,10 @@ SWEEP_LABELS: Final = frozenset(
         "delivery.DeliveryEffect",
         "delivery.OutboundMessage",
         "delivery.TenantNoticePolicy",
+        "integrations.AuthorityRecord",
         "integrations.ClientProviderLink",
+        "integrations.FirmAuthorization",
+        "integrations.IntegrationIssue",
         "integrations.ProviderConnection",
         # AXRM-012 subject, evidence and supersedes-chain visibility:
         # test_portal_reference_visibility.py.

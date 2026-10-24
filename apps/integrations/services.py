@@ -67,9 +67,18 @@ LINK_TRANSITIONS: Final[Mapping[LinkMachine, Mapping[str, frozenset[str]]]] = {
         LinkStatus.REVOGADA: frozenset(),
     },
     LinkMachine.CREDENTIAL: {
-        CredentialState.AUSENTE: frozenset({CredentialState.CONFIRMACAO_PENDENTE}),
+        # AXRM-008: a provider report can show drift at first sight, and a
+        # certificate confirmed (or rotated in) may already be near or past expiry.
+        CredentialState.AUSENTE: frozenset(
+            {CredentialState.CONFIRMACAO_PENDENTE, CredentialState.DIVERGENTE}
+        ),
         CredentialState.CONFIRMACAO_PENDENTE: frozenset(
-            {CredentialState.ATIVA, CredentialState.DIVERGENTE}
+            {
+                CredentialState.ATIVA,
+                CredentialState.VENCENDO,
+                CredentialState.VENCIDA,
+                CredentialState.DIVERGENTE,
+            }
         ),
         CredentialState.ATIVA: frozenset(
             {
@@ -90,7 +99,12 @@ LINK_TRANSITIONS: Final[Mapping[LinkMachine, Mapping[str, frozenset[str]]]] = {
             {CredentialState.ROTACAO_PENDENTE, CredentialState.DIVERGENTE}
         ),
         CredentialState.ROTACAO_PENDENTE: frozenset(
-            {CredentialState.ATIVA, CredentialState.DIVERGENTE}
+            {
+                CredentialState.ATIVA,
+                CredentialState.VENCENDO,
+                CredentialState.VENCIDA,
+                CredentialState.DIVERGENTE,
+            }
         ),
         CredentialState.DIVERGENTE: frozenset({CredentialState.CONFIRMACAO_PENDENTE}),
     },

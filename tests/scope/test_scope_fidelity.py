@@ -63,6 +63,11 @@ NFSE_ALLOWED_FILES = frozenset(
         # never issuing: the audit actions and the capability matrix stay at zero.
         "apps/integrations/models.py",
         "apps/integrations/migrations/0001_initial.py",
+        # AXRM-008: the client's authorization to READ received NFS-e (capture
+        # authority service `captura_nfse`, operation FC-NFS); no issuance anywhere.
+        "apps/integrations/authority.py",
+        "apps/integrations/migrations/0002_authority_records.py",
+        "apps/integrations/workspace.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -107,6 +112,10 @@ NFE_READ_ONLY_FILES = frozenset(
         # transmitting or managing NF-e stays out of scope.
         "apps/integrations/models.py",
         "apps/integrations/migrations/0001_initial.py",
+        # AXRM-008: the client's authorization to READ received NF-e (operation
+        # FC-NFE, service label "Captura de NF-e recebidas"); no issuance anywhere.
+        "apps/integrations/authority.py",
+        "apps/integrations/migrations/0002_authority_records.py",
     },
 )
 

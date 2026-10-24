@@ -95,6 +95,9 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "firm-suporte-approve",
         "firm-suporte-revoke",
         "firm-suporte-trilha",
+        # AXRM-008: a client id resolved through the portfolio plus a catalog
+        # service slug and an action verb; never bearer credentials.
+        "client-authority-action",
         "admin:*",
     },
 )

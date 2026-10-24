@@ -32,6 +32,7 @@ from django.http import HttpRequest, StreamingHttpResponse
 from django.http.response import HttpResponseBase
 from django.urls import Resolver404, resolve
 
+from apps.authz.services import capability_gate, record_refusal
 from apps.authz.support import (
     SupportContext,
     current_support,
@@ -218,6 +219,12 @@ class TenantMiddleware:
                 and match.func is logout
             ):
                 return None
+            # AXRM-008: a capability-gated view would have recorded this refusal
+            # itself; it never runs for an account without a seat, so record the
+            # same durable DENIED event here. Nothing is admitted by this.
+            gate = capability_gate(match.func) if match is not None else None
+            if gate is not None:
+                record_refusal(request, gate, tenant_id=resolved.pk)
             msg = "This account has no active membership for this firm."
             raise PermissionDenied(msg)
         return resolved
