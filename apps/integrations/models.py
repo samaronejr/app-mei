@@ -20,6 +20,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import TenantScopedModel
+from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_models import (
     FirmProviderCall,
     FirmProviderCallAttempt,
@@ -57,6 +58,7 @@ __all__ = [
     "IssueState",
     "LinkStatus",
     "Provider",
+    "ProviderBudget",
     "ProviderCall",
     "ProviderCallAttempt",
     "ProviderConnection",
@@ -64,6 +66,7 @@ __all__ = [
     "ProviderEnvironment",
     "ProviderExecutionEpoch",
     "ProviderOperationCode",
+    "ProviderReservation",
 ]
 
 
@@ -551,6 +554,9 @@ class IssueReason(models.TextChoices):
         "chamada_provedor_incerta",
         "Chamada ao provedor com resultado incerto",
     )
+    # AXRM-010: provider spend reached 80% / 100% of the monthly ceiling.
+    COTA_PROVEDOR_PROXIMA = "cota_provedor_proxima", "Cota do provedor próxima"
+    COTA_PROVEDOR_ESGOTADA = "cota_provedor_esgotada", "Cota do provedor esgotada"
 
 
 class ProviderOperationCode(models.TextChoices):

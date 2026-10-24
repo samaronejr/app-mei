@@ -15,6 +15,7 @@ from apps.tenants.models import (
     FirmMessageKind,
     FirmMessageState,
     FirmOutboundMessage,
+    Tenant,
     UsageKind,
     UsageMetric,
     UsageRecord,
@@ -270,3 +271,53 @@ def test_email_coverage_uses_corrected_readings_and_month_boundary() -> None:
         assert email.measured_days == 1
         assert email.covered_through == original.period
         assert email.partial
+
+
+@pytest.mark.parametrize(
+    ("metric", "kind"),
+    [
+        (UsageMetric.SERPRO_CONSULTA, UsageKind.CONFIRMED),
+        (UsageMetric.SERPRO_EMISSAO, UsageKind.CONFIRMED),
+        (UsageMetric.FOCUS_DOCUMENTOS, UsageKind.ESTIMATED),
+        (UsageMetric.FOCUS_EVENTOS, UsageKind.ESTIMATED),
+    ],
+)
+def test_provider_usage_distinguishes_missing_from_measured_zero(
+    settings: SettingsWrapper, metric: str, kind: str
+) -> None:
+    # Given an enabled firm without a provider measurement.
+    firm = enabled_firm("provider-usage")
+    Tenant.objects.filter(pk=firm.tenant.pk).update(
+        features=[
+            *firm.tenant.features,
+            "scan_required",
+            "federal_checks",
+            "document_capture",
+        ]
+    )
+    settings.USAGE_UNIT_PRICES_BRL = {metric: "0.24"}
+    with tenant_context(firm.tenant.pk):
+        missing = next(
+            line
+            for line in cost_estimate(firm.owner, firm.tenant.pk, on=TODAY).lines
+            if line.metric == metric
+        )
+        assert missing.quantity is None
+        assert missing.cost is None
+        # When an explicit zero reading arrives.
+        UsageRecord.objects.create(
+            tenant=firm.tenant,
+            metric=metric,
+            period=TODAY,
+            quantity=0,
+            kind=kind,
+            source_event=uuid4(),
+        )
+        measured = next(
+            line
+            for line in cost_estimate(firm.owner, firm.tenant.pk, on=TODAY).lines
+            if line.metric == metric
+        )
+        # Then zero is a known amount, not missing data.
+        assert measured.quantity == 0
+        assert measured.cost == Decimal(0)

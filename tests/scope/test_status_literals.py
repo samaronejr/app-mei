@@ -145,6 +145,11 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         '.select_related("client", "engagement__responsible", "owner")',
     ): "AXR1-014: ORM cycle owner relation for the sweep's owner chain.",
     LiteralPin(
+        "apps/integrations/budget_alerts.py",
+        "owner",
+        '.select_related("owner", "engagement__responsible")',
+    ): "AXRM-010: ORM cycle owner relation for the quota exception owner chain.",
+    LiteralPin(
         "apps/cycles/records.py",
         "blocked",
         'BLOCKED = "blocked", "Bloqueada"',

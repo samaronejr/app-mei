@@ -9,6 +9,9 @@ from django.utils import timezone
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.integrations import provider_journal
+from apps.integrations.budget_alerts import refused
+from apps.integrations.budget_pricing import BudgetDeniedError
+from apps.integrations.budget_settlement import billing_result, release
 from apps.integrations.call_contracts import (
     AdmissionDeniedError,
     CallResult,
@@ -77,9 +80,17 @@ def _prepare(ticket: Claim) -> Dispatch | AdmissionDeniedError | StaleClaimError
     try:
         admit(call, tenant, operation)
     except AdmissionDeniedError as error:
-        call.state = (
-            CallState.PAUSED if str(error) == CallState.PAUSED else CallState.AUTHORITY
-        )
+        release(call)
+        if isinstance(error, BudgetDeniedError):
+            call.state = CallState.QUOTA
+            call.provider_code = error.reason
+            refused(call)
+        else:
+            call.state = (
+                CallState.PAUSED
+                if str(error) == CallState.PAUSED
+                else CallState.AUTHORITY
+            )
         call.version += 1
         call.save()
         return error
@@ -131,7 +142,9 @@ def record_result(dispatch: Dispatch, result: CallResult) -> None:
     """Durably record the reply before the fenced database finalization."""
     assert_no_transaction()
     if dispatch.journaled:
-        provider_journal.append(replace(dispatch.receipt, result=result))
+        provider_journal.append(
+            replace(dispatch.receipt, result=billing_result(dispatch.receipt, result))
+        )
 
 
 def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:

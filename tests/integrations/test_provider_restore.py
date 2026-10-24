@@ -201,7 +201,8 @@ def restore_before_call() -> None:
         cursor.execute("RESET ROLE")
         try:
             cursor.execute(
-                "TRUNCATE integrations_providereffectbarrier, "
+                "TRUNCATE integrations_providerreservation, "
+                "integrations_providereffectbarrier, "
                 "integrations_providercallattempt, "
                 "integrations_providercall, tenants_usagerecord"
             )
