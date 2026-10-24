@@ -11,6 +11,7 @@ from django.http import Http404
 
 from apps.accounts.models import User
 from apps.authz.firm_account import require_account_owner
+from apps.core.flags import tenant_has
 from apps.core.tenancy import current_tenant_id, tenant_context
 from apps.delivery.models import DeliveryEffect, MessageState
 from apps.obligations.models import Document
@@ -119,6 +120,14 @@ def cost_estimate(actor: User, tenant_id: UUID, *, on: date) -> CostEstimate:
     )
     lines = []
     for metric in UsageMetric:
+        feature = {
+            UsageMetric.SERPRO_CONSULTA: "federal_checks",
+            UsageMetric.SERPRO_EMISSAO: "federal_checks",
+            UsageMetric.FOCUS_DOCUMENTOS: "document_capture",
+            UsageMetric.FOCUS_EVENTOS: "document_capture",
+        }.get(metric)
+        if feature is not None and not tenant_has(tenant_id, feature):
+            continue
         readings = current.filter(metric=metric)
         covered_through = None
         measured_days = None

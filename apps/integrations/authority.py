@@ -290,7 +290,8 @@ def authority_for(
     return decision
 
 
-def _client_owner(client: ClientCompany) -> User | None:
+def client_owner(client: ClientCompany) -> User | None:
+    """Return the engagement's responsible, else the firm fallback owner (or None)."""
     engagement = (
         Engagement.objects.filter(client_id=client.pk, responsible__isnull=False)
         .select_related("responsible")
@@ -350,7 +351,7 @@ def raise_problem(client: ClientCompany, problem: Problem) -> None:
         state__in=ACTIVE_ISSUE_STATES,
     ).exists():
         return
-    owner = _client_owner(client)
+    owner = client_owner(client)
     if owner is None:
         return
     issue = IntegrationIssue.objects.create(

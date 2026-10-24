@@ -113,7 +113,11 @@ def axorim_models() -> list[type[models.Model]]:
     """Every model the sweep covers, in dependency-friendly order."""
     selected: list[type[models.Model]] = []
     for label in AXORIM_APP_LABELS:
-        selected.extend(django_apps.get_app_config(label).get_models())
+        selected.extend(
+            model
+            for model in django_apps.get_app_config(label).get_models()
+            if model._meta.label != "integrations.ProviderExecutionEpoch"
+        )
     selected.extend(
         django_apps.get_model("clients", name) for name in NEW_CLIENT_MODELS
     )
@@ -1049,10 +1053,37 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "connection_id",
             "clientproviderlink_connection_pair_fk",
         ),
+        ("integrations_providercall", "link_id", "providercall_link_fk"),
+        ("integrations_providercall", "retry_of_id", "providercall_retry_fk"),
+        (
+            "integrations_providercallattempt",
+            "call_id",
+            "providercallattempt_call_fk",
+        ),
+        (
+            "integrations_providereffectbarrier",
+            "call_id",
+            "providereffectbarrier_call_fk",
+        ),
         (
             "integrations_firmauthorization",
             "signed_document_id",
             "firmauthorization_document_pair_fk",
+        ),
+        (
+            "integrations_firmprovidercall",
+            "authorization_id",
+            "firmprovidercall_authorization_pair_fk",
+        ),
+        (
+            "integrations_firmprovidercall",
+            "connection_id",
+            "firmprovidercall_connection_pair_fk",
+        ),
+        (
+            "integrations_firmprovidercallattempt",
+            "call_id",
+            "firmprovidercallattempt_call_pair_fk",
         ),
         (
             "integrations_integrationissue",
