@@ -1,8 +1,11 @@
 """Wire-level acceptance: no real providers and no database required."""
 
 import json
+import socket
+import threading
 import time
 from pathlib import Path
+from typing import Self
 
 import pytest
 
@@ -265,11 +268,11 @@ def test_slow_peer_has_a_finite_socket_timeout(monkeypatch: pytest.MonkeyPatch) 
 def test_body_budget_bounds_every_blocking_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given a 2 s body budget and a peer that drips one byte, waits 1.2 s, drips
-    # another byte and then holds the connection open with the body incomplete.
+    # Given a 1 s body budget and a peer that drips one byte every 0.8 s, four
+    # times, and then holds the connection open with the body incomplete.
     # Elapsed time is the behaviour under test, so this test measures it.
-    monkeypatch.setattr(transport, "READ_TIMEOUT", 2.0)
-    drip = Reply(body=b"x" * 8, chunks=(b"x", b"x"), gap=1.2, hold_open=True)
+    monkeypatch.setattr(transport, "READ_TIMEOUT", 1.0)
+    drip = Reply(body=b"x" * 8, chunks=(b"x",) * 4, gap=0.8, hold_open=True)
     with FakeFocus((drip,)) as peer:
         # When the body is read.
         started = time.monotonic()
@@ -280,10 +283,10 @@ def test_body_budget_bounds_every_blocking_read(
                 ProviderRequest(),
             )
         elapsed = time.monotonic() - started
-    # Then the read stops at the budget (about 2.0 s), not one full socket
-    # timeout after the last byte (about 3.2 s).
+    # Then the read stops at the budget (about 1.0 s), not one full socket
+    # timeout after the last byte (about 3.4 s); the bound leaves 1.5 s headroom.
     assert caught.value.code == "tempo_limite"
-    assert elapsed < 2.8
+    assert elapsed < 2.5
 
 
 def test_production_budget_stops_the_reviewed_real_drip() -> None:
@@ -302,6 +305,76 @@ def test_production_budget_stops_the_reviewed_real_drip() -> None:
         elapsed = time.monotonic() - started
     # Then it aborts at the budget plus a small margin (it took 40 s before).
     assert caught.value.code == "tempo_limite"
+    assert 29.0 <= elapsed <= 31.0
+
+
+class HeaderDrip:
+    """A raw peer that sends a status line, then one header byte per `gap`."""
+
+    def __init__(self, gap: float, count: int) -> None:
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.origin = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+        self._gap = gap
+        self._count = count
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self) -> Self:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._listener.close()
+        self._thread.join(5)
+
+    def _serve(self) -> None:
+        try:
+            conn, _ = self._listener.accept()
+            with conn:
+                conn.recv(65536)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nX-Pad: ")
+                for _ in range(self._count):
+                    if self._stop.wait(self._gap):
+                        return
+                    conn.sendall(b"a")
+                conn.sendall(b"\r\nContent-Length: 2\r\n\r\n{}")
+        except OSError:
+            return
+
+
+def timed_header_drip(peer: HeaderDrip) -> tuple[str, float]:
+    started = time.monotonic()
+    code = "ok"
+    try:
+        permitted_send(
+            ProviderTransport("focus", "fake", peer.origin), "FC-NFE", ProviderRequest()
+        )
+    except TransportFailure as error:
+        code = error.code
+    return code, time.monotonic() - started
+
+
+def test_header_drip_stops_at_the_read_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given a 1 s read budget and a peer that drips one response-header byte
+    # every 0.25 s for 10 s (each byte would reset a per-receive timeout).
+    monkeypatch.setattr(transport, "READ_TIMEOUT", 1.0)
+    with HeaderDrip(gap=0.25, count=40) as peer:
+        # When the reply is read.
+        code, elapsed = timed_header_drip(peer)
+    # Then the exchange stops at the budget (about 1 s), not after the drip.
+    assert code == "tempo_limite"
+    assert elapsed < 4.0
+
+
+def test_production_budget_stops_a_real_header_drip() -> None:
+    # Given the unmodified 30 s read budget and a real peer that drips one
+    # response-header byte per second for 60 s (review 2 finding B2: 60.007 s).
+    with HeaderDrip(gap=1.0, count=60) as peer:
+        # When the reply is read.
+        code, elapsed = timed_header_drip(peer)
+    # Then it aborts at the budget plus a small margin.
+    assert code == "tempo_limite"
     assert 29.0 <= elapsed <= 31.0
 
 
