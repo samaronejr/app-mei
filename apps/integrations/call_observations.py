@@ -52,7 +52,6 @@ def meter(
         ("serpro", "emissao"): "serpro_emissao",
     }.get((call.provider, call.billing_class)) or {
         ("focus", "registration"): "focus_eventos",
-        ("focus", "read"): "focus_documentos",
     }.get((call.provider, call.operation_class))
     if metric is None:
         return

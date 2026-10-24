@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import timedelta
+from hashlib import sha256
 from typing import Literal
 from uuid import uuid4
 
@@ -18,7 +19,12 @@ from apps.integrations import (
     firm_calls,
     provider_journal,
 )
-from apps.integrations.call_contracts import CallResult, Operation, StaleClaimError
+from apps.integrations.call_contracts import (
+    CallRequest,
+    CallResult,
+    Operation,
+    StaleClaimError,
+)
 from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
 from apps.integrations.call_protocol import (
     begin_io,
@@ -29,9 +35,9 @@ from apps.integrations.call_protocol import (
     reserve,
 )
 from apps.integrations.call_state import current_epoch
-from apps.integrations.models import ClientProviderLink
+from apps.integrations.models import ClientProviderLink, ProviderConnection
 from apps.integrations.provider_journal import JournalError
-from apps.tenants.models import UsageKind, UsageRecord
+from apps.tenants.models import Tenant, UsageKind, UsageRecord
 from tests.integrations.provider_peer import ProviderPeer
 from tests.integrations.test_call_protocol import (
     SyntheticPolicy,
@@ -361,3 +367,54 @@ def test_finalize_never_schedules_a_retry_for_an_effect(
     # Then the effect is uncertain and no further transmission slot opens.
     assert reload_call(provider_link, row.pk).state == CallState.UNCERTAIN
     assert claim(provider_link.tenant_id, row.pk) is None
+
+
+def test_focus_read_requests_are_not_metered_as_documents(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given a Focus binding and a registered Focus read (documents are metered
+    # monthly from captured revisions by AXRM-010, never per request).
+    Tenant.objects.filter(pk=provider_link.tenant_id).update(
+        features=["cycles_r1", "scan_required", "federal_checks", "document_capture"]
+    )
+    with tenant_context(provider_link.tenant_id):
+        focus = ProviderConnection.objects.create(
+            tenant_id=provider_link.tenant_id,
+            provider="focus",
+            environment="fake",
+            status="ativa",
+        )
+        link = ClientProviderLink.objects.create(
+            tenant_id=provider_link.tenant_id,
+            client_id=provider_link.client_id,
+            connection=focus,
+            provider_company_ref="synthetic-focus-company",
+            status="ativa",
+            credential_state="ativa",
+        )
+    call_contracts.register_operation(
+        Operation(
+            code="FC-NFE",
+            provider="focus",
+            revision="v1",
+            operation_class="read",
+            feature="document_capture",
+            billing_class="incluido_no_plano",
+            policy=SyntheticPolicy(),
+        )
+    )
+    focus_read = CallRequest(
+        operation="FC-NFE",
+        request_key=sha256(b"focus-page").hexdigest(),
+        request_digest=sha256(b"focus-page-body").hexdigest(),
+        business_effect_key=sha256(b"focus-page").hexdigest(),
+    )
+    row = reserve(provider_link.tenant_id, link.pk, focus_read)
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    # When the read succeeds.
+    with ProviderPeer() as peer:
+        assert perform(ticket, peer).state == CallState.SUCCESS
+    # Then no per-request document usage exists.
+    with tenant_context(provider_link.tenant_id):
+        assert not UsageRecord.objects.filter(metric="focus_documentos").exists()
