@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
+from apps.integrations.models import ProviderOperationCode
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -171,7 +173,11 @@ EXCLUDED_CALL_ROWS: Final = frozenset({"SP-AUTH", "SP-TERMO"})
 
 def register_operation(operation: Operation) -> None:
     """Register a client operation; auth and the firm-level termo have no call row."""
-    if operation.code in EXCLUDED_CALL_ROWS or operation.code in _OPERATIONS:
+    if (
+        operation.code in EXCLUDED_CALL_ROWS
+        or operation.code in _OPERATIONS
+        or operation.code not in ProviderOperationCode.values
+    ):
         message = "Operation cannot be registered as a client provider call."
         raise ValueError(message)
     _OPERATIONS[operation.code] = operation

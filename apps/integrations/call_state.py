@@ -3,18 +3,19 @@
 from uuid import UUID
 
 from django.conf import settings
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 
+from apps.audit.services import ObjectRef, record_event
 from apps.core.flags import tenant_row_has
 from apps.integrations.authority import client_owner
 from apps.integrations.call_contracts import AdmissionDeniedError, Operation
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.models import (
+    ACTIVE_ISSUE_STATES,
     ClientProviderLink,
     IntegrationIssue,
     IssueReason,
-    IssueState,
     ProviderConnection,
 )
 from apps.tenants.models import Tenant
@@ -78,21 +79,52 @@ def uncertain(call: ProviderCall) -> None:
     call.version += 1
     call.updated_at = timezone.now()
     call.save()
-    # AXRM-008's owner policy: the engagement's responsible, else the firm fallback.
-    owner = client_owner(call.client)
-    if owner is None:
-        return
-    key = {
-        "client_id": call.client_id,
-        "reason": IssueReason.CHAMADA_PROVEDOR_INCERTA,
-        "service": call.operation,
-    }
-    if not IntegrationIssue.objects.filter(**key, state=IssueState.ABERTA).exists():
-        IntegrationIssue.objects.create(
-            tenant_id=call.tenant_id,
-            link_id=call.link_id,
-            owner=owner,
-            review_on=timezone.localdate(),
-            evidence_refs=[str(call.pk)],
-            **key,
-        )
+    _own_uncertainty(call)
+
+
+def _own_uncertainty(call: ProviderCall) -> None:
+    """Converge on AXRM-008's one active issue per client, reason and operation.
+
+    An issue already being handled (`em_tratamento`) absorbs the call, and every
+    uncertain call stays discoverable in `evidence_refs`. Without any owner the call
+    stays quarantined but no unowned issue is opened (AXRM-008's rule).
+    """
+    active = IntegrationIssue.objects.select_for_update().filter(
+        client_id=call.client_id,
+        reason=IssueReason.CHAMADA_PROVEDOR_INCERTA,
+        service=call.operation,
+        state__in=ACTIVE_ISSUE_STATES,
+    )
+    issue = active.first()
+    if issue is None:
+        owner = client_owner(call.client)
+        if owner is None:
+            return
+        try:
+            with transaction.atomic():
+                issue = IntegrationIssue.objects.create(
+                    tenant_id=call.tenant_id,
+                    client_id=call.client_id,
+                    reason=IssueReason.CHAMADA_PROVEDOR_INCERTA,
+                    service=call.operation,
+                    link_id=call.link_id,
+                    owner=owner,
+                    review_on=timezone.localdate(),
+                    evidence_refs=[str(call.pk)],
+                )
+        except IntegrityError:
+            # A concurrent opener committed the active row first: join it.
+            issue = active.get()
+        else:
+            record_event(
+                action="integrations.issue_opened",
+                tenant_id=call.tenant_id,
+                obj=ObjectRef("IntegrationIssue", str(issue.pk)),
+                metadata={"reason": issue.reason, "service": issue.service},
+            )
+            return
+    if str(call.pk) not in issue.evidence_refs:
+        issue.evidence_refs = [*issue.evidence_refs, str(call.pk)]
+        issue.version += 1
+        issue.updated_at = timezone.now()
+        issue.save(update_fields=["evidence_refs", "version", "updated_at"])
