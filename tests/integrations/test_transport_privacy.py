@@ -143,6 +143,12 @@ def captured_events(emit: Callable[[], None]) -> list[Any]:
         f"Bearer {CANARY}",
         f"{{'body': '{CANARY}'}}",
         f'"GET /synthetic.pdf?X-Amz-Signature={CANARY} HTTP/1.1" 200',
+        [(b"X-Access-Token", CANARY.encode())],
+        [(b"Authorization", CANARY.encode())],
+        [(b"Authorization", f"Basic {CANARY}".encode())],
+        [(b"jwt_token", CANARY.encode())],
+        {b"jwt_token": CANARY.encode()},
+        f"{[(b'Authorization', CANARY.encode())]}",
     ],
     ids=[
         "header-pair-list",
@@ -155,6 +161,12 @@ def captured_events(emit: Callable[[], None]) -> list[Any]:
         "bare-bearer",
         "rendered-body-field",
         "logged-signed-query",
+        "bytes-pair-x-token",
+        "bytes-pair-authorization",
+        "bytes-pair-basic",
+        "bytes-pair-jwt",
+        "bytes-key-mapping",
+        "rendered-bytes-pair",
     ],
 )
 def test_structured_credentials_are_absent_from_console_output(
@@ -168,6 +180,29 @@ def test_structured_credentials_are_absent_from_console_output(
     # Then the credential is absent and the diagnostic itself survives.
     assert CANARY not in output
     assert "provider diagnostic" in output
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        ("Authorization", f"Basic abc {CANARY}"),
+        ("X-Access-Token", f"abc,{CANARY}"),
+        ("jwt_token", f"a;{CANARY}"),
+    ],
+    ids=["space", "comma", "semicolon"],
+)
+def test_header_pair_value_with_separators_is_redacted_whole(
+    pair: tuple[str, str],
+) -> None:
+    # Given a header pair whose value has a separator that text patterns stop at.
+    # When the production console handler formats it.
+    output = production_console(
+        lambda logger: logger.warning("provider diagnostic %s", [pair])
+    )
+    # Then the whole value is replaced by one intact marker.
+    assert CANARY not in output
+    assert f"('{pair[0]}', '[Filtered]')" in output
+    assert "[Filtered]]" not in output
 
 
 def upstream_rejection() -> None:

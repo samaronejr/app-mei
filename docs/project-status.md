@@ -291,6 +291,21 @@ selection collects **187** tests; the default suite **5813**, browser **189**. A
 exception-note case witnesses the rendered-chain scrub, which argument redaction
 alone no longer exercises.
 
+`AXRM-011` review-2 fix (attempt 3). B1: `transmit()` now rechecks, outside any
+transaction, that the claim still owns the started call (same fence, owner and
+epoch, lease not expired) before opening the wire; an expired lease, with or without
+another worker's reclaim, raises `StaleClaimError` with zero bytes sent. B2: one
+read budget covers response headers and body from the established connection; an
+exchange watchdog shuts the socket down when it is spent, replacing the per-read
+socket timeout and the private-socket lookup. B3: bytes names and values in
+header pairs and mappings are redacted, and the text rule skips a `b` prefix and
+no longer re-captures a marker (`[Filtered]]`). B4: a header-pair witness with
+space, comma and semicolon values kills the pair-redaction mutant. The body-budget
+timing test now has 1.5 s headroom. Existing test edits: that test's budget and
+drip, and the added bytes cases. The transport selection collects **200** tests;
+the default suite **5826**, browser **189**. Evidence: `AXRM-011-fix3-red-pure.txt`,
+`AXRM-011-fix3-b2-red.txt` and `AXRM-011-fix3-*.txt`.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),

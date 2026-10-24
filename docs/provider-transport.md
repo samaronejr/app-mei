@@ -6,7 +6,9 @@ enable a feature or unpause a provider.
 
 Transmission is bound to the AXRM-009 protocol in code. `begin_io()` records the
 dispatch it authorized and journaled; `transmit()` accepts only that exact,
-unconsumed dispatch (anything else raises `StaleClaimError`) and, while its
+unconsumed dispatch, and only while its claim still owns the started call (same
+fence, owner and epoch, lease not expired); anything else raises
+`StaleClaimError` with nothing sent, and the dispatch stays consumed. While its
 adapter runs, opens a window for that call's provider, environment and operation.
 `send()` consumes the window before any connection: no window, a window for
 another call, or a second send in the same window raises `EnvioNaoAutorizado`
@@ -36,11 +38,14 @@ origins are fixed. The explicit `fake` environment accepts only an ephemeral
 `127.0.0.1` HTTP/HTTPS origin, with no credentials, query or path.
 
 Each request has a 5-second connect timeout and 30-second read timeout
-(60 seconds for `SP-SIT-R`). The body has the same elapsed budget: before each
-single socket read the socket timeout is lowered to what remains, so a peer
-dripping bytes cannot extend the read by one socket timeout per byte. A real-wire
-regression sends bytes at 0, 20 and 40 s against the unmodified 30 s budget and
-requires `tempo_limite` between 29 and 31 s (before the fix it took 40 s). JSON/XML responses are limited to 5 MiB; direct PDF
+(60 seconds for `SP-SIT-R`). The read timeout is one elapsed budget for the whole
+reply, headers and body, counted from the established connection: a per-exchange
+watchdog shuts the socket down when it is spent, so a peer dripping header or body
+bytes cannot extend the read by one socket timeout per byte, and every outcome
+after that point is `tempo_limite`. Real-wire regressions against the unmodified
+30 s budget (body bytes at 0, 20 and 40 s; one header byte per second for 60 s)
+require `tempo_limite` between 29 and 31 s (before the fixes they took 40 s and
+60 s). JSON/XML responses are limited to 5 MiB; direct PDF
 responses to 10 MiB. Compressed responses are refused before decompression.
 Provider adapters own format/schema validation and storage after this byte limit.
 No request or response body is logged.
@@ -56,7 +61,8 @@ SERPRO 304 is returned as a protocol status rather than treated as a redirect.
 The production console filter redacts log arguments (and non-string messages)
 while their structure still exists: values under provider field names
 (`Authorization`, `jwt_token`, `X-*Token*`, `body`, `data`, `payload`, ...)
-and header-style `(name, value)` pairs become `[Filtered]`, and those values are
+and header-style `(name, value)` pairs, with str or bytes names and values, become
+`[Filtered]`, and those values are
 remembered. Only then is the message interpolated; the rendered text, stack and
 the entire exception chain (causes, contexts and notes, re-rendered from
 redacted arguments) are scrubbed again with the active credential values registered for
