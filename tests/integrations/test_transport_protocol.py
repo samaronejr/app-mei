@@ -1,12 +1,15 @@
 """Wire outcomes finalize the claimed call; only an issued dispatch opens the wire."""
 
 from dataclasses import dataclass, replace
+from datetime import timedelta
 
 import pytest
+from django.utils import timezone
 
 from apps.core.tenancy import tenant_context
 from apps.integrations.call_contracts import CallResult, StaleClaimError
 from apps.integrations.call_dispatch import Dispatch, record_result, transmit
+from apps.integrations.call_models import ProviderCall
 from apps.integrations.call_protocol import begin_io, claim, finalize, reserve
 from apps.integrations.models import ClientProviderLink
 from apps.integrations.transport import ProviderTransport
@@ -136,3 +139,49 @@ def test_transport_refuses_io_inside_transaction(
                 "SP-DAS", serpro_request("GERARDASPDF21", "PGMEI")
             )
         assert not peer.requests
+
+
+def test_expired_lease_after_begin_io_sends_nothing(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given an issued dispatch whose lease then expires, and another worker
+    # that finds it and marks the in-flight call uncertain (review 2, B1).
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    with tenant_context(provider_link.tenant_id):
+        ProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() - timedelta(seconds=1)
+        )
+    assert claim(provider_link.tenant_id, row.pk) is None
+    assert reload_call(provider_link, row.pk).state == "incerta"
+    with FakeSerpro((Reply(), Reply())) as peer:
+        # When the original process transmits the dispatch.
+        with pytest.raises(StaleClaimError):
+            transmit(dispatch, _Probe(peer.origin))
+        # Then no byte reached the provider, and the dispatch stays consumed.
+        with pytest.raises(StaleClaimError):
+            transmit(dispatch, _Probe(peer.origin))
+        assert peer.requests == []
+
+
+def test_expired_lease_without_a_reclaim_sends_nothing(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given an issued dispatch whose lease expired while the call is still STARTED.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    with tenant_context(provider_link.tenant_id):
+        ProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() - timedelta(seconds=1)
+        )
+    assert reload_call(provider_link, row.pk).state == "despacho_iniciado"
+    with FakeSerpro((Reply(),)) as peer:
+        # When it is transmitted.
+        with pytest.raises(StaleClaimError):
+            transmit(dispatch, _Probe(peer.origin))
+        # Then nothing was sent.
+        assert peer.requests == []

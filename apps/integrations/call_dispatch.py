@@ -200,12 +200,31 @@ def record_result(dispatch: Dispatch, result: CallResult) -> None:
         )
 
 
+def _claim_holds(ticket: Claim) -> bool:
+    """Report whether the ticket still owns the started call under a live lease."""
+    with tenant_context(ticket.tenant_id):
+        return (
+            current_epoch() == ticket.execution_epoch
+            and ProviderCall.objects.filter(
+                pk=ticket.call_id,
+                client_id=ticket.client_id,
+                state=CallState.STARTED,
+                fence=ticket.fence,
+                lease_owner=ticket.owner,
+                execution_epoch=ticket.execution_epoch,
+                lease_until__gt=timezone.now(),
+            ).exists()
+        )
+
+
 def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:
     """One network transmission; all transport ambiguity remains uncertain.
 
-    Only a dispatch issued by begin_io() is accepted, once. While the adapter
-    runs, the transport may send exactly that call's provider, environment and
-    operation a single time; nothing else can open the provider wire.
+    Only a dispatch issued by begin_io() is accepted, once, and only while its
+    claim still owns the started call: a lease that expired after begin_io()
+    (and a call another worker has since marked uncertain) sends nothing. While
+    the adapter runs, the transport may send exactly that call's provider,
+    environment and operation a single time; nothing else can open the wire.
     """
     assert_no_transaction()
     key = _issued_key(dispatch.claim)
@@ -214,6 +233,9 @@ def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:
         raise StaleClaimError
     if issued != dispatch:
         _ISSUED[key] = issued
+        raise StaleClaimError
+    # Popped first, so a stale dispatch can never be transmitted later either.
+    if not _claim_holds(issued.claim):
         raise StaleClaimError
     receipt = issued.receipt
     try:
