@@ -1,10 +1,14 @@
 """Accounting survives dispatch refusal, repeated replay and a month boundary."""
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
+from django.db import connections
 from django.test import override_settings
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
@@ -18,13 +22,15 @@ from apps.integrations.call_protocol import (
     Dispatch,
     begin_io,
     claim,
+    finalize,
     perform,
+    record_result,
     reserve,
 )
 from apps.integrations.firm_calls import FirmDispatch
 from apps.integrations.models import ClientProviderLink
 from apps.integrations.provider_replay import reconcile
-from apps.tenants.models import UsageRecord
+from apps.tenants.models import UsageKind, UsageRecord
 from tests.integrations.provider_peer import ProviderPeer
 from tests.integrations.test_budget_caps import budget_link, paid_request, provider_link
 
@@ -212,3 +218,60 @@ def test_stale_pre_send_lease_releases_but_never_resends(
     # Then no paid work was transmitted and no reservation leaks forever.
     with tenant_context(budget_link.tenant_id):
         assert ProviderBudget.objects.get().reserved == 0
+
+
+def consulta_usage(link: ClientProviderLink) -> list[tuple[str, int]]:
+    with tenant_context(link.tenant_id):
+        return sorted(
+            UsageRecord.objects.filter(metric="serpro_consulta").values_list(
+                "kind", "quantity"
+            )
+        )
+
+
+def test_late_billed_reply_racing_reconciles_confirms_budget_usage_once(
+    budget_link: ClientProviderLink, settings: SettingsWrapper
+) -> None:
+    # Given a paid read whose start alone was journaled, quarantined by a replay.
+    call = reserve(budget_link.tenant_id, budget_link.pk, paid_request())
+    ticket = claim(budget_link.tenant_id, call.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    settings.PROVIDERS_PAUSED = True
+    reconcile(uuid4())
+    assert balances(budget_link) == ((0, 240_000, 0), ["uncertain"])
+    assert consulta_usage(budget_link) == [(UsageKind.ESTIMATED, 1)]
+    # When the original worker's billed reply races two late finalizes and two
+    # reconciles in four PostgreSQL sessions, followed by two more reconciles.
+    reply = CallResult(CallState.SUCCESS, 200, "ok", "sim")
+    record_result(dispatch, reply)
+    barrier = Barrier(4, timeout=10)
+
+    def race(step: Callable[[], object]) -> object:
+        try:
+            barrier.wait()
+            return step()
+        finally:
+            connections.close_all()
+
+    steps: list[Callable[[], object]] = [
+        lambda: finalize(ticket, reply),
+        lambda: finalize(ticket, reply),
+        lambda: reconcile(uuid4()),
+        lambda: reconcile(uuid4()),
+    ]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(race, step) for step in steps]
+        outcomes = [future.result(timeout=30) for future in futures]
+    reconcile(uuid4())
+    reconcile(uuid4())
+    # Then the superseded replies never finalize, and the attempt is metered and
+    # settled exactly once under 010's call-keyed budget usage.
+    assert outcomes[:2] == [False, False]
+    assert consulta_usage(budget_link) == [
+        (UsageKind.CONFIRMED, 1),
+        (UsageKind.ESTIMATED, 1),
+    ]
+    assert balances(budget_link) == ((240_000, 0, 0), ["known"])
+    with tenant_context(budget_link.tenant_id):
+        assert ProviderCall.objects.get().state == CallState.SUCCESS

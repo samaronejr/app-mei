@@ -15,6 +15,7 @@ from apps.integrations import call_contracts
 from apps.integrations.budget import BudgetPolicy
 from apps.integrations.budget_models import ProviderBudget
 from apps.integrations.call_contracts import AdmissionDeniedError
+from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
 from apps.integrations.models import (
     ClientProviderLink,
@@ -243,3 +244,51 @@ def test_platform_cap_counts_inactive_firms_exposure(
     # Then deactivation does not erase spend already counted platform-wide.
     with tenant_context(budget_link.tenant_id):
         assert ProviderBudget.objects.get().reserved == 0
+
+
+def test_concurrent_refusals_converge_on_one_owned_quota_issue(
+    budget_link: ClientProviderLink,
+) -> None:
+    # Given a monthly cap below a single unit.
+    with tenant_context(budget_link.tenant_id):
+        ProviderBudget.objects.update(cap_microbrl=100_000)
+    barrier = Barrier(2, timeout=10)
+
+    def attempt(key: str) -> str:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET ROLE app_runtime")
+                cursor.execute("SET statement_timeout = '10s'")
+            barrier.wait()
+            try:
+                reserve(budget_link.tenant_id, budget_link.pk, paid_request(key))
+            except AdmissionDeniedError as error:
+                return str(error)
+            return "reserved"
+        finally:
+            connections.close_all()
+
+    # When two sessions are refused at the same time.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(attempt, "one")
+        second = pool.submit(attempt, "two")
+        results = [first.result(timeout=15), second.result(timeout=15)]
+    # Then both refusals join AXRM-008's single owned issue for the operation.
+    assert results == ["cota_esgotada", "cota_esgotada"]
+    with tenant_context(budget_link.tenant_id):
+        refused = {
+            str(pk)
+            for pk in ProviderCall.objects.filter(state=CallState.QUOTA).values_list(
+                "pk", flat=True
+            )
+        }
+        issues = list(
+            IntegrationIssue.objects.filter(
+                reason="cota_provedor_esgotada", state__in=("aberta", "em_tratamento")
+            )
+        )
+        assert len(refused) == 2
+        assert len(issues) == 1
+        assert issues[0].service == "SP-PAG"
+        assert issues[0].owner_id is not None
+        assert set(issues[0].evidence_refs) == refused

@@ -89,8 +89,9 @@ Pause providers before recovery. Reconcile independent receipts before resuming
 calls; do not refund unknown outcomes or retry ambiguous effects. Usage remains
 append-only, and missing restoration configuration fails closed.
 
-Migration `integrations.0003` adds only the two private budget tables and their
-policies/foreign keys. Reversal is allowed only while both are empty, and removes
+Migration `integrations.0004` (after AXRM-009's `0003_call_protocol`) adds only
+the two private budget tables with their policies and foreign keys, plus the quota
+reasons on AXRM-008's `IntegrationIssue` (choices only, no SQL). Reversal is allowed only while both are empty, and removes
 only those objects. Populated balances require forward repair with tables kept.
 No shared append-only function, existing usage metric, or provider-call table is
 removed by its reverse.
