@@ -323,6 +323,23 @@ after a same-size, same-second edit reused stale `.pyc`
 format, Mypy, migration drift and `npm ci`/build with `static/` unchanged;
 default **5670 passed, 46 skipped** (+88 against the baseline); isolation
 **793 passed, 46 skipped**; CNPJ **29 passed**; browser **191 passed**.
+`AXRM-010` placement on `AXRM-009` (`66df74b`): the budget migration is now
+integrations `0004_provider_budgets` (after `0003_call_protocol`), with a choices-only
+AlterField adding `cota_provedor_proxima` and `cota_provedor_esgotada` to AXRM-008's
+`IntegrationIssue`; quota work joins the one active issue per client, reason and A6
+operation (blank service for Focus document overage) through the same lock, savepoint
+and join as call-uncertainty issues, owned by AXRM-008's client owner. New tests prove
+a billed late reply racing two late finalizes and two reconciles is metered and
+settled once under the call-keyed budget usage, and that concurrent refusals converge
+on one owned issue. Registries list each 007-010 table once; tenant tables 77 + 2 = 79.
+Gates at the placed head `309e350` (`AXRM-010-place-gates.txt`, every command exit 0,
+Node v24.13.1): Ruff, format, Mypy, migration drift and `npm ci`/build with `static/`
+unchanged; default **5924 passed, 49 skipped** (1532 + 4392); isolation **868
+passed, 49 skipped**; portal **319**; CNPJ **29**; browser **195**. 24 of 24
+bytecode-isolated mutations killed; the populated two-tenant `0004` round trip
+refuses a populated reverse and removes only its own 15 objects when emptied.
+Evidence: `.evidence/AXRM-010-place-*.txt`, `AXRM-010-place-registry-check.txt`,
+`AXRM-010-place-range-diff.txt`.
 Provider qualification (PQ-FOCUS-4), the OD-R1 ceilings and owner activation
 gates remain open.
 
