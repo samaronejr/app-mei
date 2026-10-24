@@ -300,10 +300,11 @@ exchange watchdog shuts the socket down when it is spent, replacing the per-read
 socket timeout and the private-socket lookup. B3: bytes names and values in
 header pairs and mappings are redacted, and the text rule skips a `b` prefix and
 no longer re-captures a marker (`[Filtered]]`). B4: a header-pair witness with
-space, comma and semicolon values kills the pair-redaction mutant. The body-budget
+space, comma and semicolon values (str and bytes) kills the pair-redaction mutant,
+and each condition of the B1 recheck has its own refusing case. The body-budget
 timing test now has 1.5 s headroom. Existing test edits: that test's budget and
-drip, and the added bytes cases. The transport selection collects **200** tests;
-the default suite **5826**, browser **189**. Evidence: `AXRM-011-fix3-red-pure.txt`,
+drip, and the added bytes cases. The transport selection collects **210** tests;
+the default suite **5836**, browser **189**. Evidence: `AXRM-011-fix3-red-pure.txt`,
 `AXRM-011-fix3-b2-red.txt` and `AXRM-011-fix3-*.txt`.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:

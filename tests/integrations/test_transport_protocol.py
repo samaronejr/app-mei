@@ -2,14 +2,16 @@
 
 from dataclasses import dataclass, replace
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from django.utils import timezone
 
 from apps.core.tenancy import tenant_context
+from apps.integrations import call_dispatch
 from apps.integrations.call_contracts import CallResult, StaleClaimError
 from apps.integrations.call_dispatch import Dispatch, record_result, transmit
-from apps.integrations.call_models import ProviderCall
+from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import begin_io, claim, finalize, reserve
 from apps.integrations.models import ClientProviderLink
 from apps.integrations.transport import ProviderTransport
@@ -166,19 +168,39 @@ def test_expired_lease_after_begin_io_sends_nothing(
         assert peer.requests == []
 
 
-def test_expired_lease_without_a_reclaim_sends_nothing(
-    provider_link: ClientProviderLink,
+@pytest.mark.parametrize(
+    "change",
+    [
+        "lease_until",
+        "state",
+        "fence",
+        "lease_owner",
+        "execution_epoch",
+        "platform_epoch",
+    ],
+)
+def test_dispatch_whose_claim_no_longer_holds_sends_nothing(
+    provider_link: ClientProviderLink, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
-    # Given an issued dispatch whose lease expired while the call is still STARTED.
+    # Given an issued dispatch, after which one condition of its claim stops
+    # holding (expired lease, another state, fence, owner or epoch).
     row = reserve(provider_link.tenant_id, provider_link.pk, request())
     ticket = claim(provider_link.tenant_id, row.pk)
     assert ticket is not None
     dispatch = begin_io(ticket)
-    with tenant_context(provider_link.tenant_id):
-        ProviderCall.objects.filter(pk=row.pk).update(
-            lease_until=timezone.now() - timedelta(seconds=1)
-        )
-    assert reload_call(provider_link, row.pk).state == "despacho_iniciado"
+    if change == "platform_epoch":
+        later = ticket.execution_epoch + 1
+        monkeypatch.setattr(call_dispatch, "current_epoch", lambda: later)
+    else:
+        value = {
+            "lease_until": timezone.now() - timedelta(seconds=1),
+            "state": CallState.UNCERTAIN,
+            "fence": ticket.fence + 1,
+            "lease_owner": uuid4(),
+            "execution_epoch": ticket.execution_epoch + 1,
+        }[change]
+        with tenant_context(provider_link.tenant_id):
+            ProviderCall.objects.filter(pk=row.pk).update(**{change: value})
     with FakeSerpro((Reply(),)) as peer:
         # When it is transmitted.
         with pytest.raises(StaleClaimError):

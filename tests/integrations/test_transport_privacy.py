@@ -148,6 +148,7 @@ def captured_events(emit: Callable[[], None]) -> list[Any]:
         [(b"Authorization", f"Basic {CANARY}".encode())],
         [(b"jwt_token", CANARY.encode())],
         {b"jwt_token": CANARY.encode()},
+        {b"jwt_token": f"a;{CANARY}".encode()},
         f"{[(b'Authorization', CANARY.encode())]}",
     ],
     ids=[
@@ -166,6 +167,7 @@ def captured_events(emit: Callable[[], None]) -> list[Any]:
         "bytes-pair-basic",
         "bytes-pair-jwt",
         "bytes-key-mapping",
+        "bytes-key-mapping-separator",
         "rendered-bytes-pair",
     ],
 )
@@ -188,11 +190,13 @@ def test_structured_credentials_are_absent_from_console_output(
         ("Authorization", f"Basic abc {CANARY}"),
         ("X-Access-Token", f"abc,{CANARY}"),
         ("jwt_token", f"a;{CANARY}"),
+        (b"Authorization", f"Basic abc {CANARY}".encode()),
+        (b"X-Access-Token", f"abc,{CANARY}".encode()),
     ],
-    ids=["space", "comma", "semicolon"],
+    ids=["space", "comma", "semicolon", "bytes-space", "bytes-comma"],
 )
 def test_header_pair_value_with_separators_is_redacted_whole(
-    pair: tuple[str, str],
+    pair: tuple[str | bytes, str | bytes],
 ) -> None:
     # Given a header pair whose value has a separator that text patterns stop at.
     # When the production console handler formats it.
@@ -201,8 +205,24 @@ def test_header_pair_value_with_separators_is_redacted_whole(
     )
     # Then the whole value is replaced by one intact marker.
     assert CANARY not in output
-    assert f"('{pair[0]}', '[Filtered]')" in output
+    assert f"({pair[0]!r}, '[Filtered]')" in output
     assert "[Filtered]]" not in output
+
+
+@pytest.mark.parametrize("value", [CANARY, CANARY.encode()], ids=["str", "bytes"])
+def test_pair_value_is_removed_where_it_appears_again(value: str | bytes) -> None:
+    # Given a header pair whose value also appears, unlabelled, in another argument.
+    # When the production console handler formats the diagnostic.
+    output = production_console(
+        lambda logger: logger.warning(
+            "provider diagnostic %s then %s",
+            [("Authorization", value)],
+            f"echo {CANARY}",
+        )
+    )
+    # Then the remembered value is removed from both places.
+    assert CANARY not in output
+    assert "echo [Filtered]" in output
 
 
 def upstream_rejection() -> None:
