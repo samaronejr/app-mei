@@ -4,7 +4,11 @@ Django discovers models through this package, so every concrete model must be
 imported below or its table is never created.
 """
 
-from apps.obligations.models.documents import Document, new_storage_key
+from apps.obligations.models.documents import (
+    AcquisitionOrigin,
+    Document,
+    new_storage_key,
+)
 from apps.obligations.models.observations import (
     ObservationKind,
     ObservationSourceKind,
@@ -27,6 +31,7 @@ from apps.obligations.models.reference import (
 from apps.obligations.models.revenue import MonthlyRevenue
 
 __all__ = [
+    "AcquisitionOrigin",
     "Document",
     "FiscalParameter",
     "Holiday",
