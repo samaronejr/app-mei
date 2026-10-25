@@ -10,6 +10,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,12 @@ from pytest_django.fixtures import SettingsWrapper
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.cycles.completion_sources import source_subjects
-from apps.integrations.models import ProviderEnvironment
+from apps.integrations.call_models import ProviderCall
+from apps.integrations.models import (
+    ClientProviderLink,
+    ProviderConnection,
+    ProviderEnvironment,
+)
 from apps.obligations.coverage import coverage_for
 from apps.obligations.federal import (
     ConsultationCall,
@@ -101,7 +107,59 @@ def _call(environment: str = "producao", ref: str = "call-1") -> ConsultationCal
         consulted_at=timezone.now().replace(microsecond=0),
         environment=environment,
         provider_ref=ref,
+        scope_digest=sha256(b"synthetic federal range").hexdigest(),
     )
+
+
+def _persisted_provider_call(
+    client: ClientCompany,
+    environment: str = "producao",
+    ref: str = "call-1",
+    *,
+    state: str = "sucesso",
+    finalized: bool = True,
+) -> ProviderCall:
+    """Seed the actual scoped protocol row, not a caller's assertion of provenance."""
+    provider, _ = ProviderConnection.objects.get_or_create(
+        tenant_id=client.tenant_id,
+        provider="serpro",
+        environment=environment,
+        defaults={"status": "ativa"},
+    )
+    link, _ = ClientProviderLink.objects.get_or_create(
+        tenant_id=client.tenant_id,
+        client=client,
+        connection=provider,
+        defaults={"provider_company_ref": str(client.pk), "status": "ativa"},
+    )
+    row, _ = ProviderCall.objects.get_or_create(
+        tenant_id=client.tenant_id,
+        client=client,
+        request_key=sha256(ref.encode()).hexdigest(),
+        defaults={
+            "link": link,
+            "operation": "SP-PAG",
+            "operation_revision": "v1",
+            "operation_class": "read",
+            "provider": "serpro",
+            "environment": environment,
+            "request_digest": sha256(b"synthetic federal range").hexdigest(),
+            "business_effect_key": sha256(ref.encode()).hexdigest(),
+            "state": state,
+            "finalized_at": timezone.now() if finalized else None,
+            "billing_class": "consulta",
+            "billed": "nao",
+        },
+    )
+    return row
+
+
+def _finalized_call(
+    client: ClientCompany, environment: str = "producao", ref: str = "call-1"
+) -> ConsultationCall:
+    row = _persisted_provider_call(client, environment, ref)
+    assert row.finalized_at is not None
+    return replace(_call(environment, str(row.pk)), consulted_at=row.finalized_at)
 
 
 def _payment_observations(subject: Obligation) -> list[SourceObservation]:
@@ -133,7 +191,7 @@ def test_production_das_writes_the_payment_and_one_verified_official_observation
     with tenant_context(federal_case.graph.tenant.pk):
         subject = _das(federal_case.graph.client)
         assert _coverage_state(federal_case) == "unknown"
-        call = _call()
+        call = _finalized_call(federal_case.graph.client)
         record = payment_from_provider(
             _provider_item(), matched_obligation_id=subject.pk
         )
@@ -189,7 +247,9 @@ def test_non_production_or_unapproved_results_are_recorded_but_never_verify(
 
         # When it is recorded
         consultation = record_payment_consultation(
-            federal_case.graph.client, _call(environment), [record]
+            federal_case.graph.client,
+            _finalized_call(federal_case.graph.client, environment),
+            [record],
         )
 
         # Then the records exist, no observation was written, coverage is unchanged
@@ -209,7 +269,7 @@ def test_an_empty_result_is_a_nada_localizado_receipt_and_no_observation(
 
         # When it is recorded
         consultation = record_payment_consultation(
-            federal_case.graph.client, _call(), []
+            federal_case.graph.client, _finalized_call(federal_case.graph.client), []
         )
 
         # Then it is a receipt only: nothing was found, nothing is claimed
@@ -229,14 +289,14 @@ def test_a_failed_call_is_a_receipt_and_cannot_carry_payments(
             with pytest.raises(ValidationError):
                 record_payment_consultation(
                     federal_case.graph.client,
-                    _call(),
+                    _call(ref=""),
                     payments,
                     failure=failure,
                 )
         assert _counts() == (0, 0, 0)
 
         consultation = record_payment_consultation(
-            federal_case.graph.client, _call(), failure="sem_procuracao"
+            federal_case.graph.client, _call(ref=""), failure="sem_procuracao"
         )
         assert consultation.outcome == FederalConsultationOutcome.SEM_PROCURACAO
         assert FederalPayment.objects.count() == 0
@@ -252,11 +312,15 @@ def test_a_replayed_call_returns_its_receipt_without_new_rows(
             _provider_item(), matched_obligation_id=subject.pk
         )
         first = record_payment_consultation(
-            federal_case.graph.client, _call(), [record]
+            federal_case.graph.client,
+            _finalized_call(federal_case.graph.client),
+            [record],
         )
 
         again = record_payment_consultation(
-            federal_case.graph.client, _call(), [record]
+            federal_case.graph.client,
+            _finalized_call(federal_case.graph.client),
+            [record],
         )
 
         assert again.pk == first.pk
@@ -272,12 +336,18 @@ def test_a_later_consultation_that_disagrees_with_a_known_document_writes_nothin
         record = payment_from_provider(
             _provider_item(), matched_obligation_id=subject.pk
         )
-        record_payment_consultation(federal_case.graph.client, _call(), [record])
+        record_payment_consultation(
+            federal_case.graph.client,
+            _finalized_call(federal_case.graph.client),
+            [record],
+        )
         changed = replace(record, valor_total=Decimal("80.00"))
 
         with pytest.raises(FederalRecordConflictError):
             record_payment_consultation(
-                federal_case.graph.client, _call(ref="call-2"), [changed]
+                federal_case.graph.client,
+                _finalized_call(federal_case.graph.client, ref="call-2"),
+                [changed],
             )
 
         assert _counts() == (1, 1, 1)
@@ -294,7 +364,11 @@ def test_a_match_must_answer_the_obligation_competence(
         )
 
         with pytest.raises(ValidationError):
-            record_payment_consultation(federal_case.graph.client, _call(), [record])
+            record_payment_consultation(
+                federal_case.graph.client,
+                _finalized_call(federal_case.graph.client),
+                [record],
+            )
 
         assert _counts() == (0, 0, 0)
 
@@ -305,7 +379,9 @@ def test_document_numbers_are_unique_per_client_not_per_firm(
     graph = federal_case.graph
     with tenant_context(graph.tenant.pk):
         record = payment_from_provider(_provider_item())
-        record_payment_consultation(graph.client, _call(), [record])
+        record_payment_consultation(
+            graph.client, _finalized_call(graph.client), [record]
+        )
         consultation = FederalConsultation.objects.get()
         fields = {
             "tenant_id": graph.tenant.pk,
@@ -324,7 +400,9 @@ def test_document_numbers_are_unique_per_client_not_per_firm(
         assert "federalpayment_document_uniq" in str(refused.value)
 
         sibling = federal_case.other_client
-        sibling_receipt = record_payment_consultation(sibling, _call(ref="call-s"))
+        sibling_receipt = record_payment_consultation(
+            sibling, _finalized_call(sibling, ref="call-s")
+        )
         FederalPayment.objects.create(
             client=sibling, consultation=sibling_receipt, **fields
         )
@@ -338,7 +416,7 @@ def test_federal_payments_are_append_only_for_every_role_including_the_owner(
     with tenant_context(federal_case.graph.tenant.pk):
         record_payment_consultation(
             federal_case.graph.client,
-            _call(),
+            _finalized_call(federal_case.graph.client),
             [payment_from_provider(_provider_item())],
         )
         payment = FederalPayment.objects.get()
@@ -457,7 +535,7 @@ def test_source_subjects_include_obligations_with_federal_observations(
         )
         record_payment_consultation(
             sibling,
-            _call(ref="call-s"),
+            _finalized_call(sibling, ref="call-s"),
             [
                 payment_from_provider(
                     _provider_item(), matched_obligation_id=sibling_das.pk
@@ -466,7 +544,7 @@ def test_source_subjects_include_obligations_with_federal_observations(
         )
         record_payment_consultation(
             graph.client,
-            _call(ref="call-oct"),
+            _finalized_call(graph.client, ref="call-oct"),
             [
                 payment_from_provider(
                     _provider_item(numero="07202610000999", periodo="202610"),
@@ -496,7 +574,7 @@ def test_source_subjects_include_obligations_with_federal_observations(
         )
         record_payment_consultation(
             graph.client,
-            _call("trial", ref="call-trial"),
+            _finalized_call(graph.client, "trial", ref="call-trial"),
             [
                 payment_from_provider(
                     _provider_item(numero="07202609000777"),
@@ -511,7 +589,7 @@ def test_source_subjects_include_obligations_with_federal_observations(
         # When this client's own September consultation verifies its DAS
         record_payment_consultation(
             graph.client,
-            _call(),
+            _finalized_call(graph.client),
             [payment_from_provider(_provider_item(), matched_obligation_id=subject.pk)],
         )
 
@@ -585,6 +663,7 @@ def test_a_situation_report_caps_attempts_and_keeps_its_document_firm_only(
             tenant=graph.tenant,
             client=graph.client,
             kind="situacao_fiscal",
+            scope_digest="a" * 64,
             consulted_at=datetime(2026, 10, 1, 9, tzinfo=UTC),
             outcome="encontrado",
             environment="fake",
@@ -624,6 +703,7 @@ def test_a_consultation_range_follows_its_kind(federal_case: PortalSetup) -> Non
             "consulted_at": datetime(2026, 10, 1, 9, tzinfo=UTC),
             "outcome": "nada_localizado",
             "environment": "fake",
+            "scope_digest": "a" * 64,
         }
         for kind, start, end in (
             ("pagamentos", None, None),

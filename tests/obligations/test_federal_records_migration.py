@@ -66,6 +66,7 @@ def _consultation(tenant: Tenant, client: ClientCompany) -> FederalConsultation:
             tenant=tenant,
             client=client,
             kind="pagamentos",
+            scope_digest="a" * 64,
             range_start=date(2026, 9, 1),
             range_end=date(2026, 10, 31),
             consulted_at=datetime(2026, 10, 25, 9, tzinfo=UTC),

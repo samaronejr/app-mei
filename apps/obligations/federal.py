@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from re import fullmatch
 from typing import Final
 from uuid import UUID
 
@@ -29,6 +30,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from apps.clients.models import ClientCompany
+from apps.integrations.call_models import CallState, ProviderCall
 from apps.obligations.models import (
     FederalConsultation,
     FederalConsultationKind,
@@ -81,13 +83,19 @@ class PaymentRecord:
 
 @dataclass(frozen=True, slots=True)
 class ConsultationCall:
-    """The finalized call a payments consultation answers."""
+    """The call and canonical request-scope digest a consultation answers.
+
+    `scope_digest` is the protocol's request_digest, computed by the caller from
+    the canonical query. A refused-before-dispatch receipt supplies the digest
+    of that same query even though it has no provider_ref.
+    """
 
     range_start: date
     range_end: date
     consulted_at: datetime
     environment: str
     provider_ref: str
+    scope_digest: str
 
 
 def amount(value: object) -> Decimal:
@@ -171,12 +179,49 @@ def payment_from_provider(
     )
 
 
-def verifies(environment: str) -> bool:
+def verifies(call: ProviderCall) -> bool:
     """Whether a call's results may become official facts (INV-R4)."""
     return (
-        environment == FederalEnvironment.PRODUCAO
+        call.environment == FederalEnvironment.PRODUCAO
+        and call.state == CallState.SUCCESS
+        and call.finalized_at is not None
         and settings.PROVIDER_REAL_DATA_APPROVED is True
     )
+
+
+def _resolve_call(
+    client: ClientCompany, call: ConsultationCall, *, failure: str | None
+) -> ProviderCall | None:
+    """Lock the actual protocol receipt before any client/domain locks or writes."""
+    if not call.provider_ref:
+        if failure is None:
+            msg = "Uma consulta concluída exige a chamada do provedor."
+            raise ValidationError(msg)
+        return None
+    persisted = (
+        ProviderCall.objects.select_for_update(no_key=True)
+        .filter(pk=call.provider_ref, client_id=client.pk)
+        .first()
+    )
+    if persisted is None:
+        msg = "Chamada do provedor não encontrada para este cliente."
+        raise ValidationError(msg)
+    if (
+        persisted.environment != call.environment
+        or persisted.request_digest != call.scope_digest
+        or persisted.provider != "serpro"
+        or persisted.operation != "SP-PAG"
+        or persisted.operation_class != "read"
+    ):
+        msg = "Os dados da consulta divergem da chamada do provedor."
+        raise ValidationError(msg)
+    succeeded = (
+        persisted.state == CallState.SUCCESS and persisted.finalized_at is not None
+    )
+    if succeeded != (failure is None):
+        msg = "O resultado da consulta diverge da finalização da chamada."
+        raise ValidationError(msg)
+    return persisted
 
 
 def _same_payment(row: FederalPayment, record: PaymentRecord) -> bool:
@@ -266,12 +311,16 @@ def record_payment_consultation(
     if call.environment not in FederalEnvironment.values:
         msg = "Ambiente do provedor desconhecido."
         raise ValidationError(msg)
+    if fullmatch("[a-f0-9]{64}", call.scope_digest) is None:
+        msg = "O escopo da consulta exige um resumo SHA-256."
+        raise ValidationError(msg)
     outcome = failure or (
         FederalConsultationOutcome.ENCONTRADO
         if payments
         else FederalConsultationOutcome.NADA_LOCALIZADO
     )
     with transaction.atomic():
+        persisted = _resolve_call(client, call, failure=failure)
         locked = ClientCompany.objects.select_for_update(no_key=True).get(pk=client.pk)
         subjects = _check_matches(locked, payments)
         if call.provider_ref:
@@ -288,10 +337,17 @@ def record_payment_consultation(
             kind=FederalConsultationKind.PAGAMENTOS,
             range_start=call.range_start,
             range_end=call.range_end,
-            consulted_at=call.consulted_at,
+            scope_digest=call.scope_digest,
+            consulted_at=(
+                persisted.finalized_at
+                if persisted is not None and persisted.finalized_at is not None
+                else call.consulted_at
+            ),
             outcome=outcome,
             provider_ref=call.provider_ref,
-            environment=call.environment,
+            environment=persisted.environment
+            if persisted is not None
+            else call.environment,
         )
         on_file = {
             row.numero_documento: row
@@ -324,6 +380,10 @@ def record_payment_consultation(
             elif not _same_payment(payment, record):
                 msg = "O documento já registrado diverge do informado pela Receita."
                 raise FederalRecordConflictError(msg)
-            if record.matched_obligation_id is not None and verifies(call.environment):
+            if (
+                record.matched_obligation_id is not None
+                and persisted is not None
+                and verifies(persisted)
+            ):
                 _observe(consultation, payment, subjects[record.matched_obligation_id])
         return consultation

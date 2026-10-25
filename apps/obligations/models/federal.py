@@ -96,6 +96,8 @@ class FederalConsultation(TenantScopedModel):
         "clients.ClientCompany", on_delete=models.PROTECT, related_name="+"
     )
     kind = models.CharField(max_length=24, choices=FederalConsultationKind.choices)
+    # Canonical provider request digest; retained even for a pre-dispatch refusal.
+    scope_digest = models.CharField(max_length=64)
     # The arrecadacao window a payments consultation covered. A situation report is
     # an as-of answer, so both stay NULL for it.
     range_start = models.DateField(null=True, blank=True)
@@ -136,6 +138,10 @@ class FederalConsultation(TenantScopedModel):
             models.CheckConstraint(
                 condition=Q(environment__in=FederalEnvironment.values),
                 name="federalconsultation_known_environment",
+            ),
+            models.CheckConstraint(
+                condition=Q(scope_digest__regex="^[a-f0-9]{64}$"),
+                name="federalconsultation_scope_digest",
             ),
             models.CheckConstraint(
                 condition=(
@@ -264,6 +270,14 @@ class FiscalSituationReport(TenantScopedModel):
         null=True,
         blank=True,
         related_name="+",
+    )
+    # The composite FK includes this database-generated constant. It therefore
+    # enforces privacy in BOTH directions, under every role and concurrent writer,
+    # without a trigger's cross-table snapshot/RLS visibility race.
+    document_portal_visible = models.GeneratedField(
+        expression=models.Value(value=False),
+        output_field=models.BooleanField(),
+        db_persist=True,
     )
     state = models.CharField(
         max_length=24,
