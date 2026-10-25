@@ -79,7 +79,9 @@ RUNTIME_ROLE = "app_runtime"
 # deny-all): 72 + 3 + 2 = 77.
 # AXRM-010 adds the tenant budget (deny-all) and the client-paired private
 # reservation ledger: 77 + 2 = 79.
-EXPECTED_TENANT_TABLE_COUNT = 79
+# AXRM-014 adds three client-paired private federal tables (consultation receipts,
+# payment documents, fiscal-situation reports; both policies): 79 + 3 = 82.
+EXPECTED_TENANT_TABLE_COUNT = 82
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -107,6 +109,10 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "integrations_providercall",
         "integrations_providercallattempt",
         "integrations_providereffectbarrier",
+        # AXRM-014: federal consultation receipts, payments and SITFIS reports.
+        "obligations_federalconsultation",
+        "obligations_federalpayment",
+        "obligations_fiscalsituationreport",
     }
 )
 
@@ -607,6 +613,10 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "integrations_providereffectbarrier",
         "integrations_firmprovidercall",
         "integrations_firmprovidercallattempt",
+        # AXRM-014: federal records are portal NONE.
+        "obligations_federalconsultation",
+        "obligations_federalpayment",
+        "obligations_fiscalsituationreport",
     },
 )
 

@@ -70,7 +70,13 @@ NEW_CLIENT_MODELS = (
     "ImportRow",
     "TaxProfile",
 )
-NEW_OBLIGATION_MODELS = ("SourceObservation",)
+NEW_OBLIGATION_MODELS = (
+    "SourceObservation",
+    # AXRM-014: federal consultation receipts, payment documents, SITFIS reports.
+    "FederalConsultation",
+    "FederalPayment",
+    "FiscalSituationReport",
+)
 # AXR1-023: the support-grant ledger, tenant-scoped without a client column.
 NEW_TENANT_MODELS = (
     "SupportGrant",
@@ -94,6 +100,9 @@ CLIENT_PAIR_ONLY_MODELS = frozenset(
         "cycles_briefingfeedback",
         "cycles_contentpurgeclaim",
         "cycles_legalhold",
+        # AXRM-014: a consultation receipt's only parent is its (tenant, client)
+        # pair; its payments and reports carry the client-paired composites.
+        "obligations_federalconsultation",
     }
 )
 
@@ -178,6 +187,11 @@ _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
     },
     "integrations.ProviderBudget": {
         "window_start": PERIOD,
+    },
+    "obligations.FederalConsultation": {
+        # federalconsultation_range_by_kind: a payments receipt names its window.
+        "range_start": PERIOD,
+        "range_end": PERIOD,
     },
     "cycles.Exception": {
         "due_on": dt.date(2026, 10, 1),
@@ -1107,6 +1121,26 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "obligations_document",
             "obligation_id",
             "document_obligation_tenant_client_fk",
+        ),
+        (
+            "obligations_federalpayment",
+            "consultation_id",
+            "federalpayment_consultation_client_fk",
+        ),
+        (
+            "obligations_federalpayment",
+            "matched_obligation_id",
+            "federalpayment_obligation_client_fk",
+        ),
+        (
+            "obligations_fiscalsituationreport",
+            "consultation_id",
+            "sitfisreport_consultation_client_fk",
+        ),
+        (
+            "obligations_fiscalsituationreport",
+            "document_id",
+            "sitfisreport_document_client_fk",
         ),
         (
             "obligations_sourceobservation",

@@ -9,6 +9,16 @@ from apps.obligations.models.documents import (
     Document,
     new_storage_key,
 )
+from apps.obligations.models.federal import (
+    FederalConsultation,
+    FederalConsultationKind,
+    FederalConsultationOutcome,
+    FederalEnvironment,
+    FederalPayment,
+    FederalPaymentType,
+    FiscalReportState,
+    FiscalSituationReport,
+)
 from apps.obligations.models.observations import (
     ObservationKind,
     ObservationSourceKind,
@@ -33,7 +43,15 @@ from apps.obligations.models.revenue import MonthlyRevenue
 __all__ = [
     "AcquisitionOrigin",
     "Document",
+    "FederalConsultation",
+    "FederalConsultationKind",
+    "FederalConsultationOutcome",
+    "FederalEnvironment",
+    "FederalPayment",
+    "FederalPaymentType",
     "FiscalParameter",
+    "FiscalReportState",
+    "FiscalSituationReport",
     "Holiday",
     "MonthlyRevenue",
     "Obligation",
