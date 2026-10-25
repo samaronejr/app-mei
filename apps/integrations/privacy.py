@@ -20,15 +20,15 @@ PROVIDER_FIELDS: Final = frozenset(
 )
 # `name: value`, `name=value` and rendered pairs such as `('name', 'value')` or
 # `(b'name', b'value')`. A quoted value is redacted through its closing quote, so
-# separators inside it hide nothing. An already-redacted value (with or without
-# its quote and scheme) is never captured again: scrubbing is idempotent.
+# escaped delimiters and separators inside it hide nothing. Match an intact
+# marker as a whole too: replacing it with itself keeps scrubbing idempotent,
+# without trusting a marker prefix followed by more credential text.
 _FIELD_VALUE: Final = re.compile(
     r"""(?ix)(?:authorization|proxy-authorization|jwt_token|access_token|
     autenticar_procurador_token|x-[a-z0-9_-]*token[a-z0-9_-]*)
     ["']?\s*[:=,]\s*
-    (?!(?:b?["'])?(?:(?:Bearer|Basic)\s+)?\[Filtered\])
-    (?:b?(?P<quote>["'])(?:(?:Bearer|Basic)\s+)?(?P<quoted>(?:(?!(?P=quote)).)+)(?P=quote)
-    |(?:(?:Bearer|Basic)\s+)?(?P<bare>[^\s"',;}\])]+))"""
+    (?:b?(?P<quote>["'])(?:(?:Bearer|Basic)\s+)?(?P<quoted>(?:\\[\s\S]|(?!(?P=quote))[^\\])*)(?P=quote)
+    |(?:(?:Bearer|Basic)\s+)?(?P<bare>(?:\[Filtered\]|[^\s"',;}\])])+))"""
 )
 # How a client serializes a bytes field name: `b'Authorization'`.
 _BYTES_REPR: Final = re.compile(r"""\Ab(["'])(.*)\1\Z""", re.DOTALL)

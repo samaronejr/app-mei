@@ -334,6 +334,28 @@ selection (`test_transport*.py`, `test_token_broker_client.py`) collects **252**
 tests; the default suite **6225**, browser **195**. Evidence: `AXRM-011-fix4-privacy-red.txt`,
 `AXRM-011-fix4-blk45.txt`, `AXRM-011-fix4-placement.txt` and `AXRM-011-fix4-*.txt`.
 
+`AXRM-011` review-4 repair (owner-authorized attempt 5, 2026-10-25).
+The unpublished stack is placed on AXRM-014's reviewed head
+`e22065f53df8bdadd9a6b8ac0dcf603d52bdd1bf`, for eventual PR base
+`axrm/014-federal-records`. All 17 placement range-diff pairs are unchanged;
+there were no conflicts, and both tasks' status records remain. RV4-B3-1:
+a complete marker is consumed as a whole rather than trusting a marker prefix.
+RV4-B3-2: quoted credential values consume escaped delimiters, including str,
+bytes repr and JSON, while retaining subsequent diagnostic context. RV4-B3-3:
+Sentry collects nested credential leaves before replacing their labelled field,
+then removes echoes regardless of field order; direct short-string collection
+is retained. No transport, lease, budget or accepted short RLS transaction design
+changes. The original hostile matrix changes from **13 assertion failures,
+1 pass** to **14 passed**; the inherited token-shaped Sentry witness has
+**3 passed**. The existing privacy suite grows from **88** to **172** tests
+(**84 added**, three successful repetitions), and four isolated guard mutants
+are killed by named behavioral witnesses. The placed default suite collects
+**6475** tests and the browser suite **195**. Full placed-head stage exits are
+recorded in `.evidence/AXRM-011-fix5-gates.txt`; red, mutation, range-diff and
+sink evidence is retained under `AXRM-011-fix5-*`. Fresh independent review
+and PR delivery remain pending; provider qualification, operator and owner
+activation gates stay open.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),

@@ -125,6 +125,7 @@ def _scrub_sentry_urls(value: SentryValue, credentials: set[str]) -> SentryValue
         for key, item in value.items():
             # The SDK serializes a bytes key as "b'Authorization'".
             if field_name(key) in SENTRY_CREDENTIAL_FIELDS or provider_field(key):
+                collect_credentials(item, credentials)
                 if isinstance(item, str) and item:
                     credentials.add(item)
                 scrubbed[key] = SENTRY_REDACTION_MARKER

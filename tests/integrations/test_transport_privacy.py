@@ -634,3 +634,84 @@ def test_bytes_keyed_mapping_value_is_removed_where_it_appears_again(
     # Then the mapping value was collected and both occurrences are markers.
     assert CANARY not in output
     assert output.count(MARKER) == 2
+
+
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+@pytest.mark.parametrize("rendering", ["str", "bytes", "json"])
+@pytest.mark.parametrize("separator", [",", ";", " "])
+@pytest.mark.parametrize("prefix", [MARKER, "abc'\"", "abc\\'\"", "abc\\\\'\""])
+def test_quoted_credentials_have_escape_aware_boundaries(
+    sink: str, rendering: str, separator: str, prefix: str
+) -> None:
+    # Given a rendered credential containing markers, quotes or escaped slashes.
+    value = prefix + separator + CANARY
+    if rendering == "json":
+        headers = json.dumps({"X-Access-Token": value})
+    elif rendering == "bytes":
+        headers = repr([(b"X-Access-Token", value.encode())])
+    else:
+        headers = repr([("X-Access-Token", value)])
+    message = f"provider diagnostic headers={headers} outcome=refused"
+    # When the real sink consumes the already-rendered value.
+    if sink == "console":
+        output = production_console(lambda logger: logger.warning(message))
+    else:
+
+        def emit() -> None:
+            sentry_sdk.capture_message(message)
+
+        events = captured_events(emit)
+        assert len(events) == 1
+        output = json.dumps(events)
+    # Then the whole value is gone without consuming the following diagnostic.
+    assert CANARY not in output
+    assert "provider diagnostic" in output
+    assert "outcome=refused" in output
+    assert output.count(MARKER) == 1
+    assert scrub_provider_text(output) == output
+
+
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+@pytest.mark.parametrize("echo_first", [False, True])
+@pytest.mark.parametrize(
+    ("field", "token"),
+    [
+        (
+            "access_token",
+            "eyJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJydjAxMy1hY2Nlc3MifQ.n4a_xT19QMJ9bU8s",
+        ),
+        (
+            "jwt_token",
+            "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiJydjAxMy1qd3QifQ.N8oQjfcJ9C_tlT3b",
+        ),
+        ("autenticar_procurador_token", "701c5703-4bf3-4e7a-a88b-0dce8a001313"),
+    ],
+)
+def test_nested_credential_leaves_are_removed_from_unlabelled_echoes(
+    sink: str, echo_first: bool, field: str, token: str
+) -> None:
+    # Given the inherited token grammars in nested fields and unlabelled echoes.
+    headers = {field.encode(): {"level2": [token.encode(), {"value": token}]}}
+    pairs: list[tuple[str, object]] = [("headers", headers), ("echo", token)]
+    if echo_first:
+        pairs.reverse()
+    context = dict(pairs)
+    # When the production formatter or real Sentry client delivers the diagnostic.
+    if sink == "console":
+        output = production_console(
+            lambda logger: logger.warning("provider diagnostic %s", context)
+        )
+    else:
+
+        def emit() -> None:
+            for key, value in context.items():
+                sentry_sdk.set_extra(key, value)
+            sentry_sdk.capture_message("provider diagnostic")
+
+        events = captured_events(emit)
+        assert len(events) == 1
+        output = json.dumps(events)
+    # Then discovery precedes replacement across the whole diagnostic.
+    assert token not in output
+    assert "provider diagnostic" in output
+    assert MARKER in output
