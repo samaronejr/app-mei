@@ -28,6 +28,7 @@ from apps.integrations.call_contracts import (
     IntentConflictError,
     StaleClaimError,
 )
+from apps.integrations.call_dispatch import dispatch_window, issue_dispatch
 from apps.integrations.call_models import (
     CallState,
     FirmProviderCall,
@@ -307,6 +308,7 @@ def firm_begin_io(ticket: FirmClaim) -> FirmDispatch:
     if isinstance(prepared, (AdmissionDeniedError, StaleClaimError)):
         raise prepared
     provider_journal.append(prepared.receipt)
+    issue_dispatch(prepared)
     return prepared
 
 
@@ -373,7 +375,8 @@ def firm_perform(ticket: FirmClaim, adapter: FirmAdapter) -> CallResult:
     dispatch = firm_begin_io(ticket)
     assert_no_transaction()
     try:
-        result = adapter.send(dispatch)
+        with dispatch_window(dispatch):
+            result = adapter.send(dispatch)
     except (OSError, HTTPException):
         result = CallResult(
             CallState.UNCERTAIN, None, "connection_lost", "desconhecido"

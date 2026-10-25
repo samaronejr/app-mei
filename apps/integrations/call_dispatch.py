@@ -1,12 +1,12 @@
 """The single dispatch-start commit, followed by independent storage and wire I/O."""
 
-from collections.abc import Iterator
+from __future__ import annotations
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from http.client import HTTPException
-from typing import Protocol
-from uuid import UUID
+from typing import TYPE_CHECKING, Protocol
 
 from django.utils import timezone
 
@@ -15,7 +15,7 @@ from apps.core.tenancy import tenant_context
 from apps.integrations import provider_journal
 from apps.integrations.budget_alerts import refused
 from apps.integrations.budget_pricing import BudgetDeniedError
-from apps.integrations.budget_settlement import billing_result, release
+from apps.integrations.budget_settlement import billing_result, release, release_unsent
 from apps.integrations.call_contracts import (
     AdmissionDeniedError,
     CallResult,
@@ -24,10 +24,21 @@ from apps.integrations.call_contracts import (
     StaleClaimError,
     operation_for,
 )
-from apps.integrations.call_models import CallState, ProviderCall, ProviderEffectBarrier
+from apps.integrations.call_models import (
+    CallState,
+    FirmProviderCall,
+    ProviderCall,
+    ProviderEffectBarrier,
+)
 from apps.integrations.call_state import admit, current_epoch, lock_controls, uncertain
 from apps.integrations.journal_schema import JournalRecord
 from apps.integrations.transport_types import EnvioNaoAutorizado
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from uuid import UUID
+
+    from apps.integrations.firm_calls import FirmClaim, FirmDispatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,12 +60,17 @@ class _WirePermit:
 
 # Dispatches that begin_io() authorized and journaled in this process and that
 # transmit() has not consumed yet. Only an exact issued dispatch opens the wire.
-_ISSUED: dict[tuple[UUID, int, UUID], Dispatch] = {}
+_ISSUED: dict[tuple[UUID, int, UUID], Dispatch | FirmDispatch] = {}
 _WIRE: ContextVar[_WirePermit | None] = ContextVar("provider_wire", default=None)
 
 
-def _issued_key(ticket: Claim) -> tuple[UUID, int, UUID]:
+def _issued_key(ticket: Claim | FirmClaim) -> tuple[UUID, int, UUID]:
     return (ticket.call_id, ticket.fence, ticket.owner)
+
+
+def issue_dispatch(dispatch: Dispatch | FirmDispatch) -> None:
+    """Register an exact client or firm dispatch after its journal commit."""
+    _ISSUED[_issued_key(dispatch.claim)] = dispatch
 
 
 @contextmanager
@@ -187,7 +203,7 @@ def begin_io(ticket: Claim) -> Dispatch:
     dispatch = prepared
     if dispatch.journaled:
         provider_journal.append(dispatch.receipt)
-    _ISSUED[_issued_key(dispatch.claim)] = dispatch
+    issue_dispatch(dispatch)
     return dispatch
 
 
@@ -200,14 +216,18 @@ def record_result(dispatch: Dispatch, result: CallResult) -> None:
         )
 
 
-def _claim_holds(ticket: Claim) -> bool:
+def _claim_holds(ticket: Claim | FirmClaim) -> bool:
     """Report whether the ticket still owns the started call under a live lease."""
     with tenant_context(ticket.tenant_id):
+        calls = (
+            ProviderCall.objects.filter(client_id=ticket.client_id)
+            if isinstance(ticket, Claim)
+            else FirmProviderCall.objects.all()
+        )
         return (
             current_epoch() == ticket.execution_epoch
-            and ProviderCall.objects.filter(
+            and calls.filter(
                 pk=ticket.call_id,
-                client_id=ticket.client_id,
                 state=CallState.STARTED,
                 fence=ticket.fence,
                 lease_owner=ticket.owner,
@@ -217,15 +237,9 @@ def _claim_holds(ticket: Claim) -> bool:
         )
 
 
-def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:
-    """One network transmission; all transport ambiguity remains uncertain.
-
-    Only a dispatch issued by begin_io() is accepted, once, and only while its
-    claim still owns the started call: a lease that expired after begin_io()
-    (and a call another worker has since marked uncertain) sends nothing. While
-    the adapter runs, the transport may send exactly that call's provider,
-    environment and operation a single time; nothing else can open the wire.
-    """
+@contextmanager
+def dispatch_window(dispatch: Dispatch | FirmDispatch) -> Iterator[None]:
+    """Consume one journaled dispatch, recheck it, then authorize its wire phase."""
     assert_no_transaction()
     key = _issued_key(dispatch.claim)
     issued = _ISSUED.pop(key, None)
@@ -236,10 +250,19 @@ def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:
         raise StaleClaimError
     # Popped first, so a stale dispatch can never be transmitted later either.
     if not _claim_holds(issued.claim):
+        if isinstance(issued, Dispatch):
+            with tenant_context(issued.claim.tenant_id):
+                release_unsent(issued.receipt)
         raise StaleClaimError
     receipt = issued.receipt
+    with _wire_window(receipt.provider, receipt.environment, receipt.operation):
+        yield
+
+
+def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:
+    """Transmit one issued client dispatch; transport ambiguity stays uncertain."""
     try:
-        with _wire_window(receipt.provider, receipt.environment, receipt.operation):
+        with dispatch_window(dispatch):
             return adapter.send(dispatch)
     except (OSError, HTTPException):
         return CallResult(CallState.UNCERTAIN, None, "connection_lost", "desconhecido")

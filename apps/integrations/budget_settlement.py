@@ -106,6 +106,27 @@ def release(call: ProviderCall) -> None:
         _move(held, "released")
 
 
+def release_unsent(receipt: JournalRecord) -> None:
+    """Release only the issued attempt proven refused before its first byte.
+
+    A reconciler may already have quarantined this attempt. A settled bill or a
+    newer attempt's reservation must never be rewritten by this old dispatch.
+    """
+    lock_budget()
+    held = (
+        ProviderReservation.objects.select_for_update()
+        .filter(
+            call_id=receipt.call_id,
+            client_id=receipt.client_id,
+            attempt_number=receipt.attempt_number,
+            state__in=("reserved", "uncertain"),
+        )
+        .first()
+    )
+    if held is not None:
+        _move(held, "released")
+
+
 def quarantine(call: ProviderCall) -> None:
     """Release an unsent lease; retain maximum exposure after a started attempt."""
     if not isinstance(operation_for(call.operation).policy, BudgetPolicy):
