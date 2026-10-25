@@ -1,5 +1,6 @@
 """The hardened wire keeps the placed firm and budget protocols usable."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -10,7 +11,7 @@ from apps.core.tenancy import tenant_context
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_contracts import CallResult, StaleClaimError
 from apps.integrations.call_dispatch import Dispatch, transmit
-from apps.integrations.call_models import CallState, ProviderCall
+from apps.integrations.call_models import CallState, FirmProviderCall, ProviderCall
 from apps.integrations.call_protocol import begin_io, claim, reserve
 from apps.integrations.firm_calls import FirmDispatch, firm_claim, firm_perform
 from apps.integrations.models import ClientProviderLink, FirmAuthorization
@@ -40,8 +41,11 @@ __all__ = ["budget_link", "provider_link", "termo"]
 @dataclass(frozen=True, slots=True)
 class TermoSender:
     origin: str
+    before_wire: Callable[[], None] | None = None
 
     def send(self, dispatch: FirmDispatch) -> CallResult:
+        if self.before_wire is not None:
+            self.before_wire()
         reply = ProviderTransport("serpro", "fake", self.origin).send(
             "SP-TERMO", serpro_request("ENVIOXMLASSINADO81", "AUTENTICAPROCURADOR")
         )
@@ -51,8 +55,11 @@ class TermoSender:
 @dataclass(frozen=True, slots=True)
 class PaidSender:
     origin: str
+    before_wire: Callable[[], None] | None = None
 
     def send(self, dispatch: Dispatch) -> CallResult:
+        if self.before_wire is not None:
+            self.before_wire()
         reply = ProviderTransport("serpro", "fake", self.origin).send(
             "SP-PAG", serpro_request()
         )
@@ -114,3 +121,65 @@ def test_refused_transmit_releases_its_started_budget_reservation(
             0,
         )
         assert ProviderReservation.objects.get().state == "released"
+
+
+def lease_for_one_second(monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
+    """Freeze the clock; the returned hook moves it to the lease deadline."""
+    now = timezone.now()
+    clock = [now]
+    monkeypatch.setattr(timezone, "now", lambda: clock[0])
+
+    def expire() -> None:
+        clock[0] = now + timedelta(seconds=1)
+
+    return expire
+
+
+def test_lease_expiring_at_the_wire_releases_its_budget_reservation(
+    budget_link: ClientProviderLink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given a paid, started attempt whose lease holds at the transmit recheck.
+    row = reserve(budget_link.tenant_id, budget_link.pk, paid_request())
+    ticket = claim(budget_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    with tenant_context(budget_link.tenant_id):
+        ProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() + timedelta(seconds=1)
+        )
+    expire = lease_for_one_second(monkeypatch)
+    with FakeSerpro((Reply(),)) as peer:
+        # When the lease expires before the first byte.
+        with pytest.raises(StaleClaimError):
+            transmit(dispatch, PaidSender(peer.origin, expire))
+        assert peer.requests == []
+    # Then the unsent attempt's reservation returns to the budget.
+    with tenant_context(budget_link.tenant_id):
+        budget = ProviderBudget.objects.get()
+        assert (budget.reserved, budget.uncertain_exposure, budget.known_liability) == (
+            0,
+            0,
+            0,
+        )
+        assert ProviderReservation.objects.get().state == "released"
+
+
+def test_firm_lease_expiring_at_the_wire_sends_nothing(
+    termo: FirmAuthorization, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given a journaled firm SP-TERMO claim with a one-second lease.
+    row = reserve_termo(termo)
+    ticket = firm_claim(termo.tenant_id, row.pk)
+    assert ticket is not None
+    with tenant_context(termo.tenant_id):
+        FirmProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() + timedelta(seconds=1)
+        )
+    expire = lease_for_one_second(monkeypatch)
+    with FakeSerpro((Reply(),)) as peer:
+        # When the lease expires after the recheck, before the first byte.
+        with pytest.raises(StaleClaimError):
+            firm_perform(ticket, TermoSender(peer.origin, expire))
+        # Then nothing reached the provider; the started call awaits reconciliation.
+        assert peer.requests == []
+    assert reload(termo, row.pk).state == CallState.STARTED

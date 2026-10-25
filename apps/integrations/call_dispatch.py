@@ -36,6 +36,7 @@ from apps.integrations.transport_types import EnvioNaoAutorizado
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from datetime import datetime
     from uuid import UUID
 
     from apps.integrations.firm_calls import FirmClaim, FirmDispatch
@@ -55,7 +56,9 @@ class _WirePermit:
     provider: str
     environment: str
     operation: str
+    lease_until: datetime
     used: bool = False
+    expired: bool = False
 
 
 # Dispatches that begin_io() authorized and journaled in this process and that
@@ -74,16 +77,23 @@ def issue_dispatch(dispatch: Dispatch | FirmDispatch) -> None:
 
 
 @contextmanager
-def _wire_window(provider: str, environment: str, operation: str) -> Iterator[None]:
-    token = _WIRE.set(_WirePermit(provider, environment, operation))
+def _wire_window(
+    provider: str, environment: str, operation: str, lease_until: datetime
+) -> Iterator[_WirePermit]:
+    permit = _WirePermit(provider, environment, operation, lease_until)
+    token = _WIRE.set(permit)
     try:
-        yield
+        yield permit
     finally:
         _WIRE.reset(token)
 
 
 def open_wire(provider: str, environment: str, operation: str) -> None:
-    """Consume the one transmission the current dispatch allows, or refuse."""
+    """Consume the one transmission the current dispatch allows, or refuse.
+
+    The lease is the last check before the socket opens: a lease that expires
+    after the transmit recheck consumes the permit and sends nothing.
+    """
     permit = _WIRE.get()
     if (
         permit is None
@@ -93,6 +103,9 @@ def open_wire(provider: str, environment: str, operation: str) -> None:
     ):
         raise EnvioNaoAutorizado
     permit.used = True
+    if timezone.now() >= permit.lease_until:
+        permit.expired = True
+        raise StaleClaimError
 
 
 def require_dispatch(provider: str) -> None:
@@ -216,25 +229,40 @@ def record_result(dispatch: Dispatch, result: CallResult) -> None:
         )
 
 
-def _claim_holds(ticket: Claim | FirmClaim) -> bool:
-    """Report whether the ticket still owns the started call under a live lease."""
+def _live_lease(ticket: Claim | FirmClaim) -> datetime | None:
+    """Return the lease deadline while the ticket still owns the started call.
+
+    A short read-only tenant transaction (RLS needs its transaction-local tenant
+    setting), committed before any I/O: it takes only the shared execution-epoch
+    advisory lock, never a row lock, and nothing is held during the send.
+    """
     with tenant_context(ticket.tenant_id):
+        if current_epoch() != ticket.execution_epoch:
+            return None
         calls = (
             ProviderCall.objects.filter(client_id=ticket.client_id)
             if isinstance(ticket, Claim)
             else FirmProviderCall.objects.all()
         )
         return (
-            current_epoch() == ticket.execution_epoch
-            and calls.filter(
+            calls.filter(
                 pk=ticket.call_id,
                 state=CallState.STARTED,
                 fence=ticket.fence,
                 lease_owner=ticket.owner,
                 execution_epoch=ticket.execution_epoch,
                 lease_until__gt=timezone.now(),
-            ).exists()
+            )
+            .values_list("lease_until", flat=True)
+            .first()
         )
+
+
+def _release_unsent(issued: Dispatch | FirmDispatch) -> None:
+    """Return a refused client attempt's reservation; firm calls hold none."""
+    if isinstance(issued, Dispatch):
+        with tenant_context(issued.claim.tenant_id):
+            release_unsent(issued.receipt)
 
 
 @contextmanager
@@ -249,14 +277,20 @@ def dispatch_window(dispatch: Dispatch | FirmDispatch) -> Iterator[None]:
         _ISSUED[key] = issued
         raise StaleClaimError
     # Popped first, so a stale dispatch can never be transmitted later either.
-    if not _claim_holds(issued.claim):
-        if isinstance(issued, Dispatch):
-            with tenant_context(issued.claim.tenant_id):
-                release_unsent(issued.receipt)
+    lease_until = _live_lease(issued.claim)
+    if lease_until is None:
+        _release_unsent(issued)
         raise StaleClaimError
     receipt = issued.receipt
-    with _wire_window(receipt.provider, receipt.environment, receipt.operation):
-        yield
+    with _wire_window(
+        receipt.provider, receipt.environment, receipt.operation, lease_until
+    ) as permit:
+        try:
+            yield
+        finally:
+            # open_wire() refused the first byte: nothing was sent.
+            if permit.expired:
+                _release_unsent(issued)
 
 
 def transmit(dispatch: Dispatch, adapter: Adapter) -> CallResult:

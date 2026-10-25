@@ -605,3 +605,17 @@ def test_rendered_pair_value_is_redacted_to_its_closing_quote(
     assert CANARY not in output
     assert "abc" not in output.split("headers=", 1)[1]
     assert output.count(MARKER) == 1
+
+
+@pytest.mark.parametrize("key", ["recovery_code", "password1", "body"])
+def test_bytes_keyed_sentry_credential_field_is_redacted(key: str) -> None:
+    # Given a non-provider credential field under a bytes key.
+    def emit() -> None:
+        sentry_sdk.set_extra("form", {key.encode(): CANARY, b"unrelated": "kept"})
+        sentry_sdk.capture_message("form diagnostic")
+
+    # When a real client delivers it through the production hook.
+    encoded = json.dumps(captured_events(emit), default=str)
+    # Then the credential is gone and the unrelated field remains.
+    assert CANARY not in encoded
+    assert "kept" in encoded

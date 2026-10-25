@@ -1,11 +1,15 @@
 """Wire outcomes finalize the claimed call; only an issued dispatch opens the wire."""
 
-from dataclasses import dataclass, replace
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+from django.db import connection, connections
 from django.utils import timezone
+from psycopg.pq import TransactionStatus
 
 from apps.core.tenancy import tenant_context
 from apps.integrations import call_dispatch
@@ -206,4 +210,149 @@ def test_dispatch_whose_claim_no_longer_holds_sends_nothing(
         with pytest.raises(StaleClaimError):
             transmit(dispatch, _Probe(peer.origin))
         # Then nothing was sent.
+        assert peer.requests == []
+
+
+@dataclass(frozen=True, slots=True)
+class _Hooked:
+    origin: str
+    before_wire: Callable[[], None]
+
+    def send(self, dispatch: Dispatch) -> CallResult:
+        self.before_wire()
+        return _Probe(self.origin).send(dispatch)
+
+
+def test_lease_expiring_between_recheck_and_first_byte_sends_nothing(
+    provider_link: ClientProviderLink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given an issued dispatch whose lease holds at the transmit recheck.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    now = timezone.now()
+    with tenant_context(provider_link.tenant_id):
+        ProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=now + timedelta(seconds=1)
+        )
+    clock = [now]
+    monkeypatch.setattr(timezone, "now", lambda: clock[0])
+
+    def expire() -> None:
+        clock[0] = now + timedelta(seconds=1)
+
+    with FakeSerpro((Reply(), Reply())) as peer:
+        # When the lease expires after the recheck, before the first byte.
+        with pytest.raises(StaleClaimError):
+            transmit(dispatch, _Hooked(peer.origin, expire))
+        # Then no request left, and the consumed dispatch cannot retry.
+        with pytest.raises(StaleClaimError):
+            transmit(dispatch, _Probe(peer.origin))
+        assert peer.requests == []
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldState:
+    origin: str
+    seen: list[object] = field(default_factory=list)
+
+    def send(self, dispatch: Dispatch) -> CallResult:
+        raw = connection.connection
+        self.seen.append(
+            TransactionStatus.IDLE if raw is None else raw.info.transaction_status
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT locktype, mode FROM pg_locks WHERE pid = pg_backend_pid()"
+                " AND (locktype IN ('advisory', 'tuple', 'transactionid')"
+                " OR relation = 'integrations_providercall'::regclass)"
+            )
+            self.seen.append(cursor.fetchall())
+        return _Probe(self.origin).send(dispatch)
+
+
+def test_no_transaction_or_lock_is_held_while_the_adapter_sends(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given an issued dispatch whose recheck reads under the tenant scope.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    with FakeSerpro((Reply(),)) as peer:
+        adapter = _HeldState(peer.origin)
+        # When transmit rechecks the claim and hands over to the adapter.
+        transmit(dispatch, adapter)
+        assert len(peer.requests) == 1
+    # Then the recheck transaction committed first: the connection is idle and
+    # holds no advisory, row or call-table lock during the send.
+    assert adapter.seen == [TransactionStatus.IDLE, []]
+
+
+def test_concurrent_transmit_same_dispatch(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given one issued dispatch and two callers in their own threads.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    barrier = threading.Barrier(2, timeout=5)
+    results: list[str] = []
+    with FakeSerpro((Reply(), Reply())) as peer:
+
+        def invoke() -> None:
+            try:
+                barrier.wait()
+                try:
+                    transmit(dispatch, _Probe(peer.origin))
+                    results.append("sent")
+                except StaleClaimError:
+                    results.append("stale")
+            finally:
+                # Each thread owns its Django connection.
+                connections.close_all()
+
+        threads = [threading.Thread(target=invoke) for _ in range(2)]
+        # When both transmit at once.
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        # Then exactly one request leaves.
+        assert not any(thread.is_alive() for thread in threads)
+        assert sorted(results) == ["sent", "stale"]
+        assert len(peer.requests) == 1
+
+
+@dataclass(frozen=True, slots=True)
+class _Recorded:
+    origin: str
+    calls: list[str] = field(default_factory=list)
+
+    def send(self, dispatch: Dispatch) -> CallResult:
+        self.calls.append("send")
+        return _Probe(self.origin).send(dispatch)
+
+
+def test_stale_claim_never_reaches_the_adapter(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given an issued dispatch whose lease expired before transmit.
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    dispatch = begin_io(ticket)
+    with tenant_context(provider_link.tenant_id):
+        ProviderCall.objects.filter(pk=row.pk).update(
+            lease_until=timezone.now() - timedelta(seconds=1)
+        )
+    with FakeSerpro((Reply(),)) as peer:
+        adapter = _Recorded(peer.origin)
+        # When it is transmitted.
+        with pytest.raises(StaleClaimError):
+            transmit(dispatch, adapter)
+        # Then the recheck refuses before the adapter runs at all.
+        assert adapter.calls == []
         assert peer.requests == []

@@ -11,12 +11,16 @@ import ssl
 import threading
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Self
+
+from django.utils import timezone
 
 from apps.integrations.call_dispatch import _wire_window
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
     from types import TracebackType
 
     from apps.integrations.transport import ProviderTransport
@@ -25,7 +29,14 @@ if TYPE_CHECKING:
 # Wire-level tests have no database call row. They open the same single-send
 # window that transmit() opens for an issued dispatch; production code reaches
 # it only through transmit() (tests/integrations/test_transport_binding.py).
-wire_window = _wire_window
+# Their lease outlives any wire test; lease expiry is covered with a real claim.
+_TEST_LEASE = timedelta(hours=1)
+
+
+def wire_window(
+    provider: str, environment: str, operation: str
+) -> AbstractContextManager[object]:
+    return _wire_window(provider, environment, operation, timezone.now() + _TEST_LEASE)
 
 
 def permitted_send(
