@@ -37,6 +37,8 @@ NON_TENANT_TABLES: frozenset[str] = frozenset(
         # T24: platform-level metrics from committed synthetic data only.
         # No client text, tenant inputs or UI; portal NONE in roles.sql.
         "automation_evalrun",
+        # AXRM-009: platform singleton without tenant data; no portal grant.
+        "integrations_providerexecutionepoch",
         # The standard onboarding checklist. What a MEI must have in order is a
         # property of Brazilian tax practice, not of any one firm, so a
         # per-tenant copy would let one firm's list drift from another's. The
