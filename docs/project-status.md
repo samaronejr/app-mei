@@ -937,6 +937,43 @@ Downstream notes from the review remain assigned to their original todos:
 Repair evidence is retained separately under `.evidence/AXRM-014-fix1-*`.
 The committed repair head still requires full standard gates, manual/adversarial
 QA and cleanup before fresh independent review; no approval is claimed here.
+#### AXRM-013: SERPRO adapter and authorization
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-013` | Allowlisted SERPRO adapter, isolated memory-only mTLS token broker, externally signed termo intake and submission, and the fake/trial qualification registry and command. Client and firm calls use the existing claim, journal, fence and budget protocol; only a complete first 401 permits one fresh attempt. Firm uncertainty and missing procurador authority have owned client-less work (`FirmIntegrationIssue`), with explicit zero-price attempt reservations (`FirmProviderReservation`). Contratante PEM secrets mount only in the broker; tokens never enter persistent state. | Default environment remains `fake`, flags off and providers paused. Apply `integrations.0005` and `0006`; empty tables reverse, while populated work or reservation history refuses reversal and requires forward repair. Recovery is provider pause plus dropping the broker's process memory. OG-R2, OG-R3, OG-R5 and PQ-SERPRO-4 remain open; no real provider request or independent-review approval is claimed. |
+
+`AXRM-013` preserves the existing implementation and its evidence, rebased onto
+todo 11's docs-only final head `1a5564b`. Recovery adds explicit platform-query and
+firm-membership scope declarations and two witnesses for exhausted firm retries;
+the production retry predicates are unchanged. The initial tests-first run has
+**129 assertion failures, zero errors**. The queued baseline observed newly authored
+tests and stopped on their lint findings, so no pristine baseline suite total is
+claimed.
+
+The preserved full default runs record **1943 passed** in group A and **4421
+passed, 51 skipped, two failed source guards** in group B. Recovery passes all
+**35** scope guards and all **5** qualification cases; all **7** firm retry cases
+pass in each of three consecutive runs. Replacing the two failed guards and adding the two
+new witnesses gives **6368 passing cases covered, 51 skipped**. This combines the
+original complete runs with the verified delta; it is not a new full-suite
+invocation. Apart from this status document and the three scoped recovery files,
+all tracked inputs are byte-identical to `e51c43e`.
+Ruff, format and Mypy pass on the recovery code.
+
+Preserved unchanged gates: isolation **884 passed, 51 skipped**, portal **319**,
+CNPJ **29**, browser **195**, migration round trip **10**, system checks, migration
+drift, effective runtime-role check, npm build and static diff. Tenant tables grow
+from **79 to 81**, with each new model in the populated behavioral sweep, portal
+NONE registries and composite-parent inventory. All **32** original catalogue
+mutations are killed, plus two independent firm retry variants, with isolated
+bytecode and restored-source proof. Happy/failure API and command QA and all nine
+adversarial classifications are recorded; owned containers and new runtime
+directories are removed. Independent review is the next orchestrator step.
+Evidence: `.evidence/AXRM-013-recovery-gates.txt`,
+`AXRM-013-recovery-mutations.txt`, `AXRM-013-registry.txt`,
+`AXRM-013-happy.txt`, `AXRM-013-failure.txt`, `AXRM-013-adversarial.txt` and
+`AXRM-013-teardown.txt`.
 
 ## Axorim pivot
 

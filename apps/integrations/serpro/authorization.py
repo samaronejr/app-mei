@@ -100,6 +100,7 @@ def _prepare(
     actor: User, tenant_id: UUID, submission: TermoSubmission
 ) -> _PreparedTermo:
     with tenant_context(tenant_id):
+        # PLATFORM_QUERY_OK: lock the explicitly named tenant's feature entitlement.
         tenant = Tenant.objects.select_for_update(no_key=True).get(pk=tenant_id)
         _, document = _locked_document(actor, submission)
         if (

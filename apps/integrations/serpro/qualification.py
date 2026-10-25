@@ -141,13 +141,17 @@ class SyntheticTermo:
 
 def synthetic_termo(environment: Environment) -> SyntheticTermo:
     """Create newly named synthetic identities for one qualification run."""
+    # PLATFORM_QUERY_OK: the operator creates a fresh, explicitly synthetic firm.
     tenant = Tenant.objects.create(
         name="Qualificacao SERPRO sintetica",
         slug=f"pq-serpro-{uuid4().hex[:12]}",
         features=["cycles_r1", "scan_required", "federal_checks"],
     )
     actor = User.objects.create_user(email=f"pq-serpro-{uuid4().hex}@example.test")
-    Membership.objects.create(tenant=tenant, user=actor, role=TenantRole.OWNER)
+    # PLATFORM_QUERY_OK: create the firm-side owner of this new synthetic tenant.
+    Membership.objects.create(
+        tenant=tenant, user=actor, role=TenantRole.OWNER, client=None
+    )
     parties = Parties("12345678000195", "11222333000181", "11222333000181")
     today = timezone.localdate()
     draft = TermoDraft(
