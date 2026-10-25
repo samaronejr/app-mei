@@ -1143,6 +1143,16 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "sitfisreport_document_client_fk",
         ),
         (
+            "obligations_fiscalsituationreport",
+            "document_id",
+            "sitfisreport_document_private_fk",
+        ),
+        (
+            "obligations_fiscalsituationreport",
+            "document_portal_visible",
+            "sitfisreport_document_private_fk",
+        ),
+        (
             "obligations_sourceobservation",
             "evidence_link_id",
             "sourceobservation_evlink_client_fk",
