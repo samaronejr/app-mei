@@ -327,9 +327,11 @@ committed before any I/O; it takes only the shared execution-epoch advisory lock
 row lock, and a test proves the connection is idle with no advisory, row or
 call-table lock while the adapter sends. A stale claim never reaches the adapter, and
 one dispatch transmitted from two threads sends once. Existing test edit: the
-wire-test fake's window passes a one-hour lease. The transport selection
-(`test_transport*.py`, `test_token_broker_client.py`) collects **250** tests; the
-default suite **6223**, browser **195**. Evidence: `AXRM-011-fix4-privacy-red.txt`,
+wire-test fake's window passes a one-hour lease. A gate follow-up keeps the
+reconciliation vocabulary out of the budget release note (scope row 6) and witnesses
+that a bytes-keyed mapping value is removed where it appears again. The transport
+selection (`test_transport*.py`, `test_token_broker_client.py`) collects **252**
+tests; the default suite **6225**, browser **195**. Evidence: `AXRM-011-fix4-privacy-red.txt`,
 `AXRM-011-fix4-blk45.txt`, `AXRM-011-fix4-placement.txt` and `AXRM-011-fix4-*.txt`.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
