@@ -986,12 +986,20 @@ sessions and the malformed signed-termo submission. Final committed-head counts,
 isolated mutation results and cleanup receipts live in the
 `.evidence/AXRM-013-fix1-*` artifacts.
 
+The first repair gate campaign at `e6f0d5a` passed 1,947 default group-A cases;
+group B recorded 4,423 passed, 51 structural skips and one source-guard failure:
+the new ORM defaults key `"owner"` was mistaken for a tenant-role literal.
+The exact-source status-guard registration now identifies that field key; no
+assertion, budget or status policy is relaxed. The original failed gate log is
+preserved, and refreshed committed-head receipts are recorded separately.
+
 **Custody remains blocked on the parent. `AXRM-011` [~], `AXRM-013` [~]: inherited
 013-I1/I2/I3 are still open.** Marker-prefixed and escaped credentials can leak
 through the inherited telemetry code, and nested Sentry credentials can survive
 in an unlabelled echo. This round does not change `privacy.py` or
-`config/settings/prod.py`, authorize a fifth AXRM-011 repair, certify aggregate
-custody, restack onto todo 14 or close independent-review/operator gates.
+`config/settings/prod.py`, certify aggregate custody, restack onto todo 14 or
+close independent-review/operator gates. The owner's separately authorized
+AXRM-011 attempt 5 has not been absorbed or independently confirmed here.
 
 ## Axorim pivot
 
