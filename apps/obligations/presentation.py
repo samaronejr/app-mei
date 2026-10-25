@@ -19,6 +19,12 @@ from uuid import UUID
 
 from django.utils import timezone
 
+from apps.obligations.models.federal import (
+    FederalConsultationOutcome,
+    FederalEnvironment,
+)
+from apps.obligations.models.observations import ObservationVerificationStatus
+
 if TYPE_CHECKING:
     from apps.obligations.models import SourceObservation
 
@@ -27,6 +33,33 @@ MANUAL_SOURCES: Final = frozenset(
 )
 OFFICIAL_SOURCES: Final = frozenset({"official_api", "official_file_import"})
 OFFICIAL_FRESHNESS: Final = timedelta(days=7)
+
+# AXRM-014: the A7.7 states a federal consultation receipt may render as. A receipt
+# answers "what did the official source say on that day", so "nada localizado" is
+# never `verified` (absence proves nothing about the obligation), and only a
+# production call with the owner's real-data approval verifies anything (INV-R4).
+FEDERAL_UNCERTAIN: Final = "uncertain"
+FEDERAL_STATES: Final = frozenset(
+    {
+        ObservationVerificationStatus.VERIFIED,
+        ObservationVerificationStatus.UNKNOWN,
+        ObservationVerificationStatus.UNAUTHORIZED,
+        ObservationVerificationStatus.REFRESH_FAILED,
+        FEDERAL_UNCERTAIN,
+    }
+)
+_FEDERAL_OUTCOME_STATES: Final[dict[str, str]] = {
+    FederalConsultationOutcome.ENCONTRADO: ObservationVerificationStatus.VERIFIED,
+    FederalConsultationOutcome.NADA_LOCALIZADO: ObservationVerificationStatus.UNKNOWN,
+    FederalConsultationOutcome.SEM_PROCURACAO: (
+        ObservationVerificationStatus.UNAUTHORIZED
+    ),
+    FederalConsultationOutcome.FALHA: ObservationVerificationStatus.REFRESH_FAILED,
+    FederalConsultationOutcome.COTA_ESGOTADA: (
+        ObservationVerificationStatus.REFRESH_FAILED
+    ),
+    FederalConsultationOutcome.INCERTO: FEDERAL_UNCERTAIN,
+}
 
 # States the adapter may return. `manual` covers every people-sourced claim,
 # including a submitted receipt still awaiting review — informed but
@@ -109,3 +142,19 @@ def current_observation(
         key=lambda row: (row.observed_at, row.recorded_at, row.pk),
         default=None,
     )
+
+
+def federal_consultation_state(
+    outcome: str, environment: str, *, real_data_approved: bool
+) -> str:
+    """Classify one federal consultation receipt for rendering (A7.7, INV-R4).
+
+    Unknown outcomes fall to `unknown`; a non-production or unapproved call can
+    report a failure honestly but can never borrow `verified`.
+    """
+    state = _FEDERAL_OUTCOME_STATES.get(outcome, ObservationVerificationStatus.UNKNOWN)
+    if state == ObservationVerificationStatus.VERIFIED and not (
+        environment == FederalEnvironment.PRODUCAO and real_data_approved is True
+    ):
+        return str(ObservationVerificationStatus.UNKNOWN)
+    return str(state)

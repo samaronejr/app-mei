@@ -132,6 +132,12 @@ class Document(TenantScopedModel):
                 fields=["tenant", "client", "storage_key"],
                 name="document_tenant_client_storage_key_uniq",
             ),
+            # AXRM-014: the report's constant-False FK prevents later publication
+            # of its private original, including concurrent attachment/updates.
+            models.UniqueConstraint(
+                fields=["tenant", "client", "id", "portal_visible"],
+                name="document_client_visibility_uniq",
+            ),
             # Content-hash uniqueness is scoped to ONE client on purpose. Firm-wide, a
             # collision would prove that another client holds a byte-identical document
             # — which is exactly the cross-client disclosure the portal exists to

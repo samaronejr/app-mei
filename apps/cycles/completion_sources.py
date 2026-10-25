@@ -3,16 +3,28 @@
 from uuid import UUID
 
 from django.db import OperationalError
-from django.db.models import QuerySet
+from django.db.models import Exists, OuterRef, QuerySet
 from psycopg.errors import LockNotAvailable
 
 from apps.cycles.errors import VersionConflict
 from apps.cycles.models import ActionProposal, EvidenceRequest, ServiceCycle
-from apps.obligations.models import Obligation, SourceObservation
+from apps.obligations.models import (
+    FederalPayment,
+    Obligation,
+    ObservationKind,
+    ObservationSourceKind,
+    SourceObservation,
+)
 
 
 def source_subjects(cycle: ServiceCycle, selected: tuple[UUID, ...] = ()) -> set[UUID]:
-    """Collect only subjects bound to this client, period and cycle's own evidence."""
+    """Collect only subjects bound to this client, period and cycle's own evidence.
+
+    AXRM-014: an obligation also counts when this client's federal consultation
+    matched a payment to it and wrote the official observation for this period, so
+    the evidence index and approvals bind the official fact without an evidence
+    request naming the obligation.
+    """
     observations = set(selected)
     for inputs in ActionProposal.objects.filter(cycle=cycle).values_list(
         "input_spec", flat=True
@@ -27,6 +39,24 @@ def source_subjects(cycle: ServiceCycle, selected: tuple[UUID, ...] = ()) -> set
         SourceObservation.objects.filter(
             client_id=cycle.client_id, period=cycle.period_start, pk__in=observations
         ).values_list("subject_ref_id", flat=True)
+    )
+    subjects.update(
+        SourceObservation.objects.filter(
+            client_id=cycle.client_id,
+            period=cycle.period_start,
+            kind=ObservationKind.PAYMENT,
+            source_kind=ObservationSourceKind.OFFICIAL_API,
+        )
+        .filter(
+            Exists(
+                FederalPayment.objects.filter(
+                    client_id=OuterRef("client_id"),
+                    matched_obligation_id=OuterRef("subject_ref_id"),
+                    numero_documento=OuterRef("source_ref"),
+                )
+            )
+        )
+        .values_list("subject_ref_id", flat=True)
     )
     return subjects
 

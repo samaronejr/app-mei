@@ -148,6 +148,10 @@ def test_the_enumeration_covers_every_axorim_model_and_nothing_else() -> None:
         "clients.ImportRow",
         "clients.TaxProfile",
         "obligations.SourceObservation",
+        # AXRM-014's federal records.
+        "obligations.FederalConsultation",
+        "obligations.FederalPayment",
+        "obligations.FiscalSituationReport",
         # AXR1-023's support-grant ledger.
         "tenants.SupportGrant",
         "authz.UserCapabilityGrant",
@@ -646,6 +650,10 @@ class _ParentProbe:
             # AXRM-008: a clone of the seeded root would hit the one-root unique
             # (23505) first; another catalog service is a fresh root.
             overrides.update(service="pagtoweb", code="00004")
+        if model._meta.db_table == "obligations_federalpayment":
+            # AXRM-014: an unchanged clone would hit the per-client document-number
+            # unique (23505) before the composite could fire.
+            overrides["numero_documento"] = "clone-numero"
         with (
             tenant_context(self.alpha.tenant.id),
             client_context(self.alpha.client.id),
