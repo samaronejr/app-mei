@@ -19,13 +19,19 @@ PROVIDER_FIELDS: Final = frozenset(
     }
 )
 # `name: value`, `name=value` and rendered pairs such as `('name', 'value')` or
-# `(b'name', b'value')`. An already-redacted value is not captured again.
+# `(b'name', b'value')`. A quoted value is redacted through its closing quote, so
+# separators inside it hide nothing. An already-redacted value (with or without
+# its quote and scheme) is never captured again: scrubbing is idempotent.
 _FIELD_VALUE: Final = re.compile(
     r"""(?ix)(?:authorization|proxy-authorization|jwt_token|access_token|
     autenticar_procurador_token|x-[a-z0-9_-]*token[a-z0-9_-]*)
-    ["']?\s*[:=,]\s*(?:b?["'])?(?:Bearer\s+|Basic\s+)?
-    (?!\[Filtered\])([^\s"',;}\])]+)"""
+    ["']?\s*[:=,]\s*
+    (?!(?:b?["'])?(?:(?:Bearer|Basic)\s+)?\[Filtered\])
+    (?:b?(?P<quote>["'])(?:(?:Bearer|Basic)\s+)?(?P<quoted>(?:(?!(?P=quote)).)+)(?P=quote)
+    |(?:(?:Bearer|Basic)\s+)?(?P<bare>[^\s"',;}\])]+))"""
 )
+# How a client serializes a bytes field name: `b'Authorization'`.
+_BYTES_REPR: Final = re.compile(r"""\Ab(["'])(.*)\1\Z""", re.DOTALL)
 _BEARER: Final = re.compile(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]+)")
 # A quoted body field rendered from a mapping: `'body': 'value'`.
 _QUOTED_BODY: Final = re.compile(
@@ -47,18 +53,31 @@ _SIGNED_QUERY: Final = re.compile(
 _BASE64: Final = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{1025,}={0,2}")
 
 
+def field_name(name: str | bytes) -> str:
+    """Lowercase a field name given as bytes or as a serialized `b'...'` repr."""
+    text = name.decode("latin-1") if isinstance(name, bytes) else name
+    wrapped = _BYTES_REPR.match(text)
+    return (wrapped[2] if wrapped else text).lower()
+
+
 def provider_field(name: str | bytes) -> bool:
     """Recognize named tokens and all provider X-*Token* header variants."""
-    lowered = (name.decode("latin-1") if isinstance(name, bytes) else name).lower()
+    lowered = field_name(name)
     return lowered in PROVIDER_FIELDS or (
         lowered.startswith("x-") and "token" in lowered
     )
 
 
+def _redact_field(match: re.Match[str]) -> str:
+    group = "quoted" if match["quoted"] is not None else "bare"
+    start, end = (index - match.start() for index in match.span(group))
+    return match[0][:start] + MARKER + match[0][end:]
+
+
 def scrub_provider_text(value: str) -> str:
     """Remove credential-bearing text even without an attached Django request."""
     value = _SIGNED_URL.sub(MARKER, value)
-    value = _FIELD_VALUE.sub(lambda match: match[0].replace(match[1], MARKER), value)
+    value = _FIELD_VALUE.sub(_redact_field, value)
     value = _BEARER.sub(lambda match: match[0].replace(match[1], MARKER), value)
     value = _QUOTED_BODY.sub(rf"\1{MARKER}\3", value)
     value = _SIGNED_QUERY.sub(rf"\1{MARKER}", value)

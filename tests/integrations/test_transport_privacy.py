@@ -12,6 +12,7 @@ import pytest
 import sentry_sdk
 
 from apps.delivery.privacy import delivery_secrets
+from apps.integrations.privacy import MARKER, scrub_provider_text
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import ProviderRequest, TransportFailure
 from config.settings import prod
@@ -497,3 +498,110 @@ def test_reviewed_b2_chain_is_scrubbed_in_formatter_output() -> None:
     # Then the rendered chain has no credential.
     assert "ValueError" in output
     assert CANARY not in output
+
+
+FIELDS = ("Authorization", "jwt_token", "autenticar_procurador_token", "X-Access-Token")
+
+
+@pytest.mark.parametrize("field", FIELDS)
+@pytest.mark.parametrize("value", [CANARY, CANARY.encode()], ids=["str", "bytes"])
+def test_bytes_keyed_mapping_never_reaches_captured_sentry(
+    field: str, value: str | bytes
+) -> None:
+    # Given a credential under a bytes key, which the SDK serializes as "b'name'".
+    def emit() -> None:
+        sentry_sdk.set_extra("headers", {field.encode(): value})
+        sentry_sdk.set_extra("nested", {"a": {"b": {field.encode(): value}}})
+        sentry_sdk.capture_message("provider diagnostic")
+
+    # When a real client delivers it through the production before_send hook.
+    events = captured_events(emit)
+    # Then the event survives with intact markers and without the credential.
+    encoded = json.dumps(events, default=str)
+    assert len(events) == 1
+    assert CANARY not in encoded
+    assert MARKER in encoded
+    assert f"{MARKER}]" not in encoded
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "Basic"])
+def test_active_credential_renders_exactly_one_marker(scheme: str) -> None:
+    # Given one credential occurrence that is also registered as an active secret.
+    with delivery_secrets(CANARY):
+        # When value replacement and the text rules both process the message.
+        output = production_console(
+            lambda logger: logger.warning("Authorization: %s %s", scheme, CANARY)
+        )
+    # Then the one occurrence becomes exactly one marker after the scheme.
+    assert CANARY not in output
+    assert output.count(MARKER) == 1
+    assert f"Authorization: {scheme} {MARKER}" in output
+
+
+@pytest.mark.parametrize("field", FIELDS)
+def test_rendered_bytes_pair_renders_exactly_one_marker(field: str) -> None:
+    # Given an f-string that rendered a header pair with a bytes value.
+    message = f"headers={[(field, CANARY.encode())]!r}"
+    # When it reaches the production console as an argument (scrubbed as an
+    # argument, then again as the rendered message).
+    output = production_console(lambda logger: logger.warning("probe %s", message))
+    # Then the value keeps its b'' quotes around exactly one marker.
+    assert CANARY not in output
+    assert output.count(MARKER) == 1
+    assert f"('{field}', b'{MARKER}')" in output
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Authorization: Bearer {CANARY}",
+        f"Authorization: Basic {CANARY}",
+        f"headers={[('Authorization', CANARY.encode())]!r}",
+        f"headers={[(b'X-Access-Token', CANARY.encode())]!r}",
+        f"{{'jwt_token': '{CANARY}'}}",
+        f'{{"autenticar_procurador_token": "Bearer {CANARY}"}}',
+        f"jwt_token={CANARY}",
+    ],
+    ids=["bearer", "basic", "bytes-value", "bytes-pair", "mapping", "json", "assign"],
+)
+def test_scrubbing_scrubbed_text_changes_nothing(text: str) -> None:
+    # Given provider text scrubbed once.
+    once = scrub_provider_text(text)
+    # When it is scrubbed again, as layered filters do.
+    twice = scrub_provider_text(once)
+    # Then nothing changes and the credential became exactly one marker.
+    assert twice == once
+    assert CANARY not in once
+    assert once.count(MARKER) == 1
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        (b"X-Access-Token", f"abc,{CANARY}".encode()),
+        (b"jwt_token", f"a;{CANARY}".encode()),
+        (b"Authorization", f"Basic abc {CANARY}".encode()),
+        ("X-Access-Token", f"abc,{CANARY}"),
+        ("jwt_token", f"a;{CANARY}"),
+        ("Authorization", f"Basic abc {CANARY}"),
+    ],
+    ids=[
+        "comma",
+        "semicolon",
+        "basic-space",
+        "str-comma",
+        "str-semicolon",
+        "str-space",
+    ],
+)
+def test_rendered_pair_value_is_redacted_to_its_closing_quote(
+    pair: tuple[str | bytes, str | bytes],
+) -> None:
+    # Given an f-string pair whose quoted value contains a separator.
+    message = f"headers={[pair]!r}"
+    # When the text fallback, with no structure left, renders it.
+    output = production_console(lambda logger: logger.warning(message))
+    # Then no fragment after the separator survives, and one marker remains.
+    assert CANARY not in output
+    assert "abc" not in output.split("headers=", 1)[1]
+    assert output.count(MARKER) == 1

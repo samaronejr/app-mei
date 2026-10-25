@@ -19,6 +19,7 @@ from apps.delivery.privacy import sensitive_values
 from apps.integrations.privacy import (
     collect_credentials,
     credential_pair,
+    field_name,
     provider_field,
     redact_structure,
     scrub_provider_text,
@@ -122,7 +123,8 @@ def _scrub_sentry_urls(value: SentryValue, credentials: set[str]) -> SentryValue
     if isinstance(value, dict):
         scrubbed: dict[str, SentryValue] = {}
         for key, item in value.items():
-            if key.lower() in SENTRY_CREDENTIAL_FIELDS or provider_field(key):
+            # The SDK serializes a bytes key as "b'Authorization'".
+            if field_name(key) in SENTRY_CREDENTIAL_FIELDS or provider_field(key):
                 if isinstance(item, str) and item:
                     credentials.add(item)
                 scrubbed[key] = SENTRY_REDACTION_MARKER
