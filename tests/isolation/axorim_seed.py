@@ -205,6 +205,7 @@ _SPECIAL_SEEDERS: dict[str, str] = {
     "cycles.EvidenceLink": "_seed_evidence_link",
     "tenants.BillingAccount": "_seed_billing_account",
     "tenants.FirmOutboundMessage": "_seed_firm_notice",
+    "integrations.AuthorityRecord": "_seed_authority_record",
 }
 
 _SCALAR_BY_KIND: dict[str, object] = {
@@ -678,6 +679,25 @@ def _seed_firm_notice(model: type[models.Model], ctx: SeedContext) -> models.Mod
         )
 
 
+def _seed_authority_record(model: type[models.Model], ctx: SeedContext) -> models.Model:
+    """AXRM-008: a catalog-valid declaration (sitfis pairs with e-CAC code 00002).
+
+    The generic seeder fills `code` with a fresh string, which the catalog CHECK
+    refuses, and every authority row must name a person or a provider call.
+    """
+    with tenant_context(ctx.tenant.id), client_context(ctx.client.id):
+        return _manager(model).create(
+            tenant=ctx.tenant,
+            client=ctx.client,
+            kind="procuracao_ecac",
+            service="sitfis",
+            code="00002",
+            status="ativa",
+            valid_from=PERIOD,
+            declared_by=ctx.user,
+        )
+
+
 def _seed_purge_claim(model: type[models.Model], ctx: SeedContext) -> models.Model:
     """ContentPurgeClaim whose identity the purge trigger can verify.
 
@@ -1010,9 +1030,34 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
         ("delivery_outboundmessage", "proposal_id", "outbound_proposal_scope_fk"),
         ("delivery_outboundmessage", "retry_of_id", "outbound_retry_client_fk"),
         (
+            "integrations_authorityrecord",
+            "evidence_document_id",
+            "authorityrecord_evidence_client_fk",
+        ),
+        (
+            "integrations_authorityrecord",
+            "service",
+            "authorityrecord_supersedes_chain_fk",
+        ),
+        (
+            "integrations_authorityrecord",
+            "supersedes_id",
+            "authorityrecord_supersedes_chain_fk",
+        ),
+        (
             "integrations_clientproviderlink",
             "connection_id",
             "clientproviderlink_connection_pair_fk",
+        ),
+        (
+            "integrations_firmauthorization",
+            "signed_document_id",
+            "firmauthorization_document_pair_fk",
+        ),
+        (
+            "integrations_integrationissue",
+            "link_id",
+            "integrationissue_link_client_fk",
         ),
         (
             "obligations_document",

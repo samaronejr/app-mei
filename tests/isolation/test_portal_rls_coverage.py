@@ -72,7 +72,9 @@ RUNTIME_ROLE = "app_runtime"
 # T23 places after T28 on this stack and adds tenants_supportgrant: 65 + 1 = 66.
 # AXRM-007 adds integrations_providerconnection (tenant, deny-all) and the
 # client-paired integrations_clientproviderlink (both policies): 67 + 2 = 69.
-EXPECTED_TENANT_TABLE_COUNT = 69
+# AXRM-008 adds integrations_firmauthorization (tenant, deny-all) and the client-paired
+# integrations_authorityrecord and integrations_integrationissue (both policies): 72.
+EXPECTED_TENANT_TABLE_COUNT = 72
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -91,6 +93,9 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "automation_agentrun",
         # AXRM-007: provider configuration per client, firm-only (ADR-0008).
         "integrations_clientproviderlink",
+        # AXRM-008: client authority revisions and owned provider problems.
+        "integrations_authorityrecord",
+        "integrations_integrationissue",
     }
 )
 
@@ -579,6 +584,10 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         # AXRM-007: provider connections and client provider links are portal NONE.
         "integrations_providerconnection",
         "integrations_clientproviderlink",
+        # AXRM-008: authority, firm termo and provider problem rows are portal NONE.
+        "integrations_authorityrecord",
+        "integrations_firmauthorization",
+        "integrations_integrationissue",
     },
 )
 
