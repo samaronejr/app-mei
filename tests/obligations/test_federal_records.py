@@ -404,7 +404,9 @@ def test_json_numbers_become_exact_cents_through_str(
     assert str(converted) == str(expected)
 
 
-@pytest.mark.parametrize("raw", [76.555, -1, True, None, "abc", float("nan")])
+@pytest.mark.parametrize(
+    "raw", [76.555, -1, True, None, "abc", float("nan"), "1e400", "1e-400"]
+)
 def test_malformed_or_sub_cent_amounts_are_refused_never_rounded(raw: object) -> None:
     with pytest.raises(ValidationError):
         amount(raw)

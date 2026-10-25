@@ -105,10 +105,11 @@ def amount(value: object) -> Decimal:
     except InvalidOperation as error:
         msg = "Valor monetário inválido."
         raise ValidationError(msg) from error
+    # Range first: quantizing a huge finite value ("1e400") raises InvalidOperation.
     if (
         not parsed.is_finite()
-        or parsed != parsed.quantize(CENTS)
         or not Decimal(0) <= parsed <= MAX_AMOUNT
+        or parsed != parsed.quantize(CENTS)
     ):
         msg = "Valor monetário fora do formato de centavos."
         raise ValidationError(msg)
