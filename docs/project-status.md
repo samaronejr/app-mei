@@ -585,6 +585,39 @@ six of them for the new guards, and the review's 17). Evidence:
 `AXRM-008-rv2-registry-check.txt`, `AXRM-008-rv2-mutations.txt`,
 `AXRM-008-rv2-gates.txt`, `AXRM-008-rv2-screens/`.
 
+### Wave 2: federal checks
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-014` | Client-scoped, firm-only federal records in `obligations.0024`: `FederalConsultation` (receipt: kind, range, `consulted_at`, outcome `encontrado`/`nada_localizado`/`sem_procuracao`/`falha`/`cota_esgotada`/`incerto`, opaque `provider_ref`, environment), append-only `FederalPayment` (unique per client `numero_documento`, Decimal(14,2) amounts, consultation and nullable matched obligation) and `FiscalSituationReport` (A7.3 states, at most three emission attempts, firm-only document). `record_payment_consultation` writes "nada localizado" as a receipt only, converts JSON-number amounts through `str` and refuses sub-cent or out-of-range values, and writes a verified `official_api` payment observation only for a matched payment from `producao` with `PROVIDER_REAL_DATA_APPROVED`; `source_subjects` includes those obligations. | New tables start empty and no provider slice writes them yet (todos 15-18). Reverse while empty; once any row exists the reverse refuses (forward repair, flag `federal_checks` off). Observations stay append-only. |
+
+#### AXRM-014: federal consultation records
+
+Baseline at `80c134e` (`AXRM-014-baseline-r2.txt`; the first baseline log was
+overwritten by a duplicate unit launch and is not counted): default
+**5924 passed, 49 skipped** (1532 + 4392). Tests first: `AXRM-014-red.txt` at
+`80c134e` with only the new tests and registry edits (8 failed, 9 errors; every
+error is the missing module, models or tables). Assertion-level red per behavior
+is the mutation run: all 26 mutations are killed (`AXRM-014-mutations.txt`; 25
+fail on an assertion or `DID NOT RAISE`, the float-to-Decimal one on the guard's
+own `ValidationError`), each with a private bytecode prefix and a fresh test
+database, and the unmutated control passes. The malformed-input probe found
+`"1e400"` escaping as `InvalidOperation` at `41fe249`
+(`AXRM-014-adversarial-malformed-r1.txt`), fixed in `71065a7`.
+
+STD-GATES on the clean committed head `71065a7` (`AXRM-014-gates.txt`, every
+command exit 0, Node v24.13.1): Ruff, format, Mypy, system checks (dev, test,
+prod), migration drift, effective-role RLS check, `npm ci`/build with `static/`
+unchanged; default **6048 passed, 51 skipped** (1532 + 4516; +124 against the
+baseline); isolation **893 passed, 51 skipped**; portal **319 passed**; CNPJ
+**29 passed**; migration round trips **11 passed**; browser **195 passed**.
+Tenant tables 79 -> 82, each new table registered exactly once in every isolation
+registry (`AXRM-014-registry-check.txt`). QA: `AXRM-014-happy.txt` (production
+DAS -> payment, verified official observation, coverage `verified`),
+`AXRM-014-failure.txt` (trial -> records, no observation, coverage unchanged;
+empty -> `nada_localizado`), `AXRM-014-repeat-{1,2,3}.txt`,
+`AXRM-014-adversarial.txt`, `AXRM-014-teardown.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
