@@ -176,6 +176,9 @@ _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
         # (document_human_or_provider_origin); the generic seed stays a human upload.
         "uploaded_by": _SEEDED_PARENT,
     },
+    "integrations.ProviderBudget": {
+        "window_start": PERIOD,
+    },
     "cycles.Exception": {
         "due_on": dt.date(2026, 10, 1),
         # The portal predicate is client_visible-folded; a hidden row counts as
@@ -1054,6 +1057,16 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "clientproviderlink_connection_pair_fk",
         ),
         ("integrations_providercall", "link_id", "providercall_link_fk"),
+        (
+            "integrations_providerreservation",
+            "budget_id",
+            "providerreservation_budget_fk",
+        ),
+        (
+            "integrations_providerreservation",
+            "call_id",
+            "providerreservation_call_fk",
+        ),
         ("integrations_providercall", "retry_of_id", "providercall_retry_fk"),
         (
             "integrations_providercallattempt",

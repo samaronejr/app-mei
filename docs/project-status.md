@@ -231,6 +231,7 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | `AXRM-012` | Document and obligation portal visibility is enforced in both restrictive policy clauses, and quarantine metadata, requests, links and observations follow the obligation or document they reference; provider originals use actor-less quarantined intake with receipt provenance. | Apply `obligations.0023_document_portal_visibility` before captured or municipal rows exist. Existing rows keep their visibility. Reverse restores the previous policies and trigger body, and refuses while provider-origin documents, private documents (including visible/private hash pairs) or private obligations exist; retained new data requires forward repair. |
 | `AXRM-008` | Client authority as append-only revisions (`AuthorityRecord`: procurações 00002/00004, PGMEI catalogued `nao_exigida`, client authorizations for NF-e/NFS-e capture and Ciência), the firm termo record (`FirmAuthorization`, submitted by todo 13) and owned provider problems (`IntegrationIssue` when the client has no open cycle, the registered cycle exception when it does). `authority_for(client, operation)` answers usable / missing / expired / unknown with a reason, fails closed for any operation outside the implemented A6 set, derives expiry from the injected date and, for capture, also requires a current, matching, non-divergent provider-held certificate. Declare, verify and revoke lock the client, re-check `fiscal.authority.manage` and the rendered chain version, and append a successor; a provider 403 appends `ausente_detectada`; `record_certificate_status` stores provider-reported certificate metadata only and marks a foreign CNPJ or unexpected generation `divergente`. Openers `autorizacao_ausente`, `certificado_provedor_vencendo` (30/7/1-day review dates), `certificado_provedor_vencido` and `credencial_divergente`. Workspace section "Autorizações e certificados" (firm-only, flag-gated, private evidence through the scanned staff intake; certificate files refused). | Apply `integrations.0002_authority_records` with `federal_checks` and `document_capture` off: nothing is drawn or evaluated. Recovery is flags off; authority rows are append-only evidence, so the reverse runs only while all three tables are empty and refuses afterwards (forward repair). The reverse never drops the shared `audit_reject_mutation()` function. |
 | `AXRM-009` | Client-scoped provider calls, append-only attempt receipts and effect barriers, uncertainty work on AXRM-008's `IntegrationIssue`, a client-less SP-TERMO firm submission journal, and a platform execution epoch. Reservation and dispatch recheck live controls under locks; every external storage/network boundary is outside transactions. Issuance/registration barriers and per-attempt journal replay prevent repeated effects after crashes or restores. Provider usage metrics are added as a prerequisite for restoring individual billed attempts; pricing/caps remain the next todo's mandatory policy hook. | No operation is registered by default; flags stay off and providers paused. Preserve all independent journal prefixes (client, firm, epochs), then run `reconcile_provider_operations` under the global pause. Uncertain effects are not retried. Populated protocol/usage migrations refuse reversal; keep tables and repair forward. Operator, provider-qualification and owner gates stay open. |
+| `AXRM-010` | Monthly `ProviderBudget` (tenant) with integer micro-BRL cap, known liability, uncertain exposure and reservations, plus a client-private per-attempt `ProviderReservation` ledger. Reservation locks the budget and refuses (`cota_esgotada`, `cota_ausente`, `tarifa_ausente`) before any I/O against the tenant cap and the platform ceiling; claim and dispatch recheck the held reservation. SERPRO Consulta/Emissao 200/202/403 settle as billed, other statuses release, unknown outcomes stay uncertain until reconciliation. Focus included calls reserve zero only under `focus-plan (PQ-FOCUS-4 pendente)` and stay journaled; Focus documents are metered monthly from captured revisions (the per-call AXRM-009 mapping is removed), Ciencia as estimated `focus_eventos`. Owned `cota_provedor_proxima`/`cota_provedor_esgotada` work at 80%/100%; the owner usage panel shows measured, estimated and missing. | A missing budget row, cap or price disables spend. Recovery = pause the provider and reconcile; usage rows stay append-only. `integrations.0004` reverses only while both budget tables are empty and removes only them; populated balances refuse reversal (forward repair). PQ-FOCUS-4, OD-R1 ceilings and owner activation stay open. |
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
@@ -245,8 +246,9 @@ run on lane 009. STD-GATES on the clean committed head `2e2afc4`
 drift clean; default **5582 passed, 44 skipped** (+120 against the baseline);
 isolation **777 passed, 44 skipped** (+37); CNPJ pack **29 passed**; browser
 **189 passed**. No template, CSS or JavaScript changed.
-Configuration effects retain barriers even at zero reserved cost; included-plan
-reads skip reservation/journal but retain claim/fence. An incomplete sequence of
+Configuration effects retain barriers even at zero reserved cost. At AXRM-009,
+included-plan reads skipped reservation/journal but retained claim/fence; AXRM-010
+requires the independent journal for Focus reads too. An incomplete sequence of
 journal attempts fails recovery rather than losing earlier billed usage.
 The admission tenant lock permits the audit foreign key's `KEY SHARE`: a
 concurrent link revocation commits, then the waiting admission is refused,
@@ -276,6 +278,70 @@ code-identical `9ebda1b` (`git diff 9ebda1b fe2835b -- apps ops templates static
 is empty); 23 of 23 bytecode-isolated mutations killed by named tests. The
 pre-placement baseline at `1963c70` was not measured. Evidence:
 `.evidence/AXRM-009-place-*.txt`, `AXRM-009-place-registry-check.txt`.
+
+#### AXRM-010: provider spend
+
+Monthly tenant budgets and per-attempt reservations serialize tenant and platform
+caps, retain uncertain exposure, and count SERPRO billed errors. Focus document
+units come from captured revision identities per month, not read calls; Ciencia
+units are estimated separately. The owner usage panel distinguishes missing,
+measured and estimated values. Quota thresholds open owned private work.
+See [the integration contract](reference/provider-budgets.md) for configuration,
+the capture-producer interface and forward-repair recovery.
+
+Baseline reused with code-identity proof: default **5582 passed, 44 skipped**;
+isolation **777 passed, 44 skipped**; CNPJ **29 passed**; browser **189 passed**.
+Evidence is in `.evidence/AXRM-010-baseline.txt`.
+
+STD-GATES on the clean committed head `5bc93da` (`AXRM-010-gates-5bc93da.txt`, every
+command exit 0): Ruff, format, Mypy and migration drift clean; default
+**5662 passed, 46 skipped** (+80 against the baseline); isolation **793 passed,
+46 skipped** (+16); CNPJ pack **29 passed**; browser **191 passed** (+2). The two
+new skips are the existing per-table composite-key probes reporting that the
+tenant-scoped `integrations_providerbudget` has no client composite. No template,
+CSS or JavaScript changed. The first run at `c10406d` failed two static scope
+scans (banking vocabulary in a budget docstring; an unpinned ORM `"owner"`
+relation), fixed in `5bc93da`. Tests first: `AXRM-010-red-acceptance.txt` (33
+assertion failures, 1 non-regression pass), `AXRM-010-red-guards.txt`; QA
+`AXRM-010-happy.txt`, `AXRM-010-failure.txt`, `AXRM-010-failure-*.txt` (cap,
+reservation, release and billed-error mutations each fail their witness),
+`AXRM-010-adversarial.txt`, `AXRM-010-usage-{desktop,mobile}.png`.
+
+Review attempt 1 (needs-fix at `532ae93`): restore reconciliation quarantined a
+pending read retry and moved its already released reservation back into
+uncertain exposure (a 503 read retry plus reconcile: uncertain 0 to 240000).
+Fixed in `eff8e1a`: a `known` or `released` attempt is final; only reserved or
+uncertain attempts settle, and a reservation rebuilt from the journal takes its
+outcome once. Red `AXRM-010-rv1-red.txt` (the reviewer's repro, 1 failed); new
+tests also pin the known-guard path (a billed read retry), price overflow, an
+unmapped SERPRO billing class and inactive firms in the platform cap. All 24
+mutations are killed (the reviewer's 19, one reintroducing the blocker, and the
+worker's 4; `AXRM-010-rv1-mutations.log`), each run with an empty bytecode cache
+after a same-size, same-second edit reused stale `.pyc`
+(`AXRM-010-rv1-stalepyc-proof.txt`). STD-GATES on the clean committed head
+`eff8e1a` (`AXRM-010-gates.txt`, every command exit 0, Node v24.13.1): Ruff,
+format, Mypy, migration drift and `npm ci`/build with `static/` unchanged;
+default **5670 passed, 46 skipped** (+88 against the baseline); isolation
+**793 passed, 46 skipped**; CNPJ **29 passed**; browser **191 passed**.
+`AXRM-010` placement on `AXRM-009` (`66df74b`): the budget migration is now
+integrations `0004_provider_budgets` (after `0003_call_protocol`), with a choices-only
+AlterField adding `cota_provedor_proxima` and `cota_provedor_esgotada` to AXRM-008's
+`IntegrationIssue`; quota work joins the one active issue per client, reason and A6
+operation (blank service for Focus document overage) through the same lock, savepoint
+and join as call-uncertainty issues, owned by AXRM-008's client owner. New tests prove
+a billed late reply racing two late finalizes and two reconciles is metered and
+settled once under the call-keyed budget usage, and that concurrent refusals converge
+on one owned issue. Registries list each 007-010 table once; tenant tables 77 + 2 = 79.
+Gates at the placed head `309e350` (`AXRM-010-place-gates.txt`, every command exit 0,
+Node v24.13.1): Ruff, format, Mypy, migration drift and `npm ci`/build with `static/`
+unchanged; default **5924 passed, 49 skipped** (1532 + 4392); isolation **868
+passed, 49 skipped**; portal **319**; CNPJ **29**; browser **195**. 24 of 24
+bytecode-isolated mutations killed; the populated two-tenant `0004` round trip
+refuses a populated reverse and removes only its own 15 objects when emptied.
+Evidence: `.evidence/AXRM-010-place-*.txt`, `AXRM-010-place-registry-check.txt`,
+`AXRM-010-place-range-diff.txt`.
+Provider qualification (PQ-FOCUS-4), the OD-R1 ceilings and owner activation
+gates remain open.
 
 The pre-change baseline for `AXRM-007` is the independent `AXRM-006` rv4 measurement
 at `ecef4e0`, code-identical to `559bb5a`: default **5332 passed, 41 skipped**

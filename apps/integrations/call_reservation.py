@@ -7,6 +7,9 @@ from django.utils import timezone
 
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
+from apps.integrations.budget_alerts import refused
+from apps.integrations.budget_pricing import BudgetDeniedError
+from apps.integrations.budget_settlement import release
 from apps.integrations.call_contracts import (
     MAX_ATTEMPTS,
     CallRequest,
@@ -57,13 +60,23 @@ def reserve(tenant_id: UUID, link_id: UUID, request: CallRequest) -> ProviderCal
             credential_generation=link.credential_generation,
         )
         admit(call, tenant, operation)
-        if operation.journaled:
-            reservation = operation.policy.reserve(call)
-            call.reserved_microbrl = reservation.microbrl
-            call.tariff_revision = reservation.tariff_revision
-        call.state = CallState.RESERVED
         call.save()
-        return call
+        denial = None
+        try:
+            if operation.journaled:
+                reservation = operation.policy.reserve(call)
+                call.reserved_microbrl = reservation.microbrl
+                call.tariff_revision = reservation.tariff_revision
+            call.state = CallState.RESERVED
+        except BudgetDeniedError as error:
+            denial = error
+            call.state = CallState.QUOTA
+            call.provider_code = error.reason
+            refused(call)
+        call.save()
+    if denial is not None:
+        raise denial
+    return call
 
 
 def claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
@@ -92,11 +105,20 @@ def claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
         ):
             return None
         operation = operation_for(call.operation)
-        admit(call, tenant, operation)
-        if call.state == CallState.RETRY and operation.journaled:
-            reservation = operation.policy.reserve(call)
-            call.reserved_microbrl = reservation.microbrl
-            call.tariff_revision = reservation.tariff_revision
+        try:
+            admit(call, tenant, operation)
+            if call.state == CallState.RETRY and operation.journaled:
+                reservation = operation.policy.reserve(call)
+                call.reserved_microbrl = reservation.microbrl
+                call.tariff_revision = reservation.tariff_revision
+        except BudgetDeniedError as error:
+            release(call)
+            call.state = CallState.QUOTA
+            call.provider_code = error.reason
+            call.version += 1
+            call.save()
+            refused(call)
+            return None
         call.fence += 1
         call.lease_owner = uuid4()
         call.lease_until = now + timedelta(seconds=120)

@@ -16,6 +16,8 @@ NONE_TABLES = (
     "fiscal_municipalityseedrow",
     "authz_capabilityseedrow",
     "integrations_providerconnection",
+    "integrations_providerbudget",
+    "integrations_providerreservation",
     "integrations_clientproviderlink",
     "integrations_authorityrecord",
     "integrations_firmauthorization",

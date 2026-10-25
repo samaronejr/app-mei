@@ -117,6 +117,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_runti
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
 
 -- PORTAL_NONE: authz_usercapabilitygrant
+-- PORTAL_NONE: integrations_providerbudget
+-- PORTAL_NONE: integrations_providerreservation
 -- Firm-only reviewer authority: no portal grant. DenyPortalAccess supplies the
 -- restrictive false policy as well. Mirrored by PORTAL_DENIED_TABLES in tests/conftest.py.
 

@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
+from apps.integrations.budget_settlement import billing_result
 from apps.integrations.call_contracts import (
     MAX_ATTEMPTS,
     CallResult,
@@ -48,6 +49,7 @@ def finalize(ticket: Claim, result: CallResult) -> bool:
         call = ProviderCall.objects.select_for_update().get(
             pk=ticket.call_id, client_id=ticket.client_id
         )
+        result = billing_result(call, result)
         now = timezone.now()
         current = (
             call.fence == ticket.fence

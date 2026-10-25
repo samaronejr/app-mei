@@ -9,6 +9,7 @@ from django.utils import timezone
 from apps.audit.services import ObjectRef, record_event
 from apps.core.flags import tenant_row_has
 from apps.integrations.authority import client_owner
+from apps.integrations.budget_settlement import quarantine
 from apps.integrations.call_contracts import AdmissionDeniedError, Operation
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.models import (
@@ -75,6 +76,7 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
 
 def uncertain(call: ProviderCall) -> None:
     """Quarantine an ambiguous attempt; never release its maximum exposure."""
+    quarantine(call)
     call.state = CallState.UNCERTAIN
     call.version += 1
     call.updated_at = timezone.now()

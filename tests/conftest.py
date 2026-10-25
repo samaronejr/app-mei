@@ -78,6 +78,8 @@ PORTAL_DENIED_TABLES = (
     # configuration (ADR-0008, INV-R10); each table also carries DenyPortalAccess
     # from integrations.0001. Mirrors the `-- PORTAL_NONE: integrations_*` lines.
     "integrations_providerconnection",
+    "integrations_providerbudget",
+    "integrations_providerreservation",
     "integrations_clientproviderlink",
     # AXRM-008: client authority, the firm termo record and owned provider problems
     # are firm-side (INV-R10); DenyPortalAccess from integrations.0002. Mirrors the
