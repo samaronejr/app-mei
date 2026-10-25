@@ -11,8 +11,8 @@ from django.db.migrations.exceptions import IrreversibleError
 PRIVATE_DOCUMENT_FK = """
 ALTER TABLE obligations_fiscalsituationreport
     ADD CONSTRAINT sitfisreport_document_private_fk
-    FOREIGN KEY (client_id, document_id, document_portal_visible)
-    REFERENCES obligations_document (client_id, id, portal_visible);
+    FOREIGN KEY (tenant_id, client_id, document_id, document_portal_visible)
+    REFERENCES obligations_document (tenant_id, client_id, id, portal_visible);
 """
 DROP_PRIVATE_DOCUMENT_FK = """
 ALTER TABLE obligations_fiscalsituationreport
@@ -81,7 +81,7 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="document",
             constraint=models.UniqueConstraint(
-                fields=("client", "id", "portal_visible"),
+                fields=("tenant", "client", "id", "portal_visible"),
                 name="document_client_visibility_uniq",
             ),
         ),

@@ -135,7 +135,7 @@ class Document(TenantScopedModel):
             # AXRM-014: the report's constant-False FK prevents later publication
             # of its private original, including concurrent attachment/updates.
             models.UniqueConstraint(
-                fields=["client", "id", "portal_visible"],
+                fields=["tenant", "client", "id", "portal_visible"],
                 name="document_client_visibility_uniq",
             ),
             # Content-hash uniqueness is scoped to ONE client on purpose. Firm-wide, a
