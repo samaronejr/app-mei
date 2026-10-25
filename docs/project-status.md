@@ -291,8 +291,8 @@ selection collects **187** tests; the default suite **5813**, browser **189**. A
 exception-note case witnesses the rendered-chain scrub, which argument redaction
 alone no longer exercises.
 
-`AXRM-011` review-2 fix (attempt 3). B1: `transmit()` now rechecks, outside any
-transaction, that the claim still owns the started call (same fence, owner and
+`AXRM-011` review-2 fix (attempt 3). B1: `transmit()` now rechecks, before any
+I/O, that the claim still owns the started call (same fence, owner and
 epoch, lease not expired) before opening the wire; an expired lease, with or without
 another worker's reclaim, raises `StaleClaimError` with zero bytes sent. B2: one
 read budget covers response headers and body from the established connection; an
@@ -307,6 +307,30 @@ headroom. Existing test edits: that test's budget and drip, an elapsed bound on 
 injected-clock budget test, and the added bytes cases. The transport selection
 collects **211** tests; the default suite **5837**, browser **189**. Evidence: `AXRM-011-fix3-red-pure.txt`,
 `AXRM-011-fix3-b2-red.txt` and `AXRM-011-fix3-*.txt`.
+
+`AXRM-011` review-3 fix (attempt 4), placed on main `80c134e` (AXRM-007, 012, 008,
+009 and 010). Placement: the firm SP-TERMO path registers its journaled dispatch and
+sends through the same consumed, rechecked wire window as client dispatches; a client
+dispatch refused before its first byte releases its AXRM-010 attempt reservation
+(also after a reconciler quarantined it as uncertain), never a settled bill or a newer
+attempt. BLK-1: the Sentry scrubber normalizes field names (bytes, or the SDK's
+serialized `b'Authorization'`) before matching. BLK-2: the field rule never captures
+an existing marker with its quote or scheme, so scrubbing is idempotent and the
+marker renders once. BLK-3: a quoted rendered value is redacted through its closing
+quote, so text after a comma, semicolon or space inside it no longer survives.
+BLK-4: the recheck returns the call's `lease_until`, the wire permit carries it, and
+`open_wire()` consumes the permit and raises `StaleClaimError` once
+`now >= lease_until`, the last check before the socket opens; the firm call is left
+started for reconciliation. BLK-5 (corrected wording): the recheck is a short
+read-only tenant transaction, needed for the transaction-local RLS tenant setting,
+committed before any I/O; it takes only the shared execution-epoch advisory lock, no
+row lock, and a test proves the connection is idle with no advisory, row or
+call-table lock while the adapter sends. A stale claim never reaches the adapter, and
+one dispatch transmitted from two threads sends once. Existing test edit: the
+wire-test fake's window passes a one-hour lease. The transport selection
+(`test_transport*.py`, `test_token_broker_client.py`) collects **250** tests; the
+default suite **6223**, browser **195**. Evidence: `AXRM-011-fix4-privacy-red.txt`,
+`AXRM-011-fix4-blk45.txt`, `AXRM-011-fix4-placement.txt` and `AXRM-011-fix4-*.txt`.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
