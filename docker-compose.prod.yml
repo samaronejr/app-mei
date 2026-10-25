@@ -60,6 +60,12 @@ x-app-environment: &app-environment
   EMAIL_USE_SSL: "${EMAIL_USE_SSL:-False}"
   EMAIL_TIMEOUT: "${EMAIL_TIMEOUT:-10}"
   DELIVERY_PAUSED: "${DELIVERY_PAUSED:-True}"
+  PROVIDERS_PAUSED: "${PROVIDERS_PAUSED:-True}"
+  SERPRO_PAUSED: "${SERPRO_PAUSED:-True}"
+  SERPRO_ENVIRONMENT: "${SERPRO_ENVIRONMENT:-fake}"
+  PROVIDER_REAL_DATA_APPROVED: "${PROVIDER_REAL_DATA_APPROVED:-False}"
+  SERPRO_BROKER_SECRET: "${SERPRO_BROKER_SECRET:-}"
+  SERPRO_CONTRATANTE_CNPJ: "${SERPRO_CONTRATANTE_CNPJ:-}"
   # T12 malware scanning. False until OG-05 (memory headroom + freshclam verified on
   # the host) and OD-11 (host upsize): uploads then end in `verificacao_indisponivel`,
   # staff-download-only behind a warning. Turning it on needs BOTH this variable and
@@ -240,6 +246,9 @@ services:
 
   web:
     <<: *app-service
+    networks:
+      default:
+      serpro-private:
     # web is the single migrator: beat's DatabaseScheduler needs django_celery_beat's
     # tables before it starts, and Django takes no lock, so migrating from more than one
     # service would race. collectstatic must precede gunicorn because prod.py uses
@@ -297,6 +306,9 @@ services:
 
   worker:
     <<: *app-service
+    networks:
+      default:
+      serpro-private:
     # concurrency=1 and a child recycle: on 1 OCPU more concurrency buys nothing but
     # RAM, and max-tasks-per-child bounds leak accumulation on a box with no headroom.
     command:
@@ -416,6 +428,44 @@ services:
     mem_limit: 96m
     restart: unless-stopped
 
+  serpro-broker:
+    build:
+      context: ./ops/serpro-broker
+    image: app-mei-serpro-broker:prod
+    # Enable only after OG-R2/OG-R3 install the root-owned 0600 PEM files.
+    # The image itself boots without files in fake mode and cannot mint tokens.
+    profiles: ["serpro"]
+    environment:
+      SERPRO_ENVIRONMENT: "${SERPRO_ENVIRONMENT:-fake}"
+      SERPRO_BROKER_SECRET: "${SERPRO_BROKER_SECRET:-}"
+      SERPRO_CONSUMER_KEY: "${SERPRO_CONSUMER_KEY:-}"
+      SERPRO_CONSUMER_SECRET: "${SERPRO_CONSUMER_SECRET:-}"
+    secrets:
+      - source: serpro_contratante_cert
+        target: serpro_contratante_cert.pem
+      - source: serpro_contratante_key
+        target: serpro_contratante_key.pem
+      - source: serpro_contratante_key_pass
+        target: serpro_contratante_key_pass
+    # No ports or caddy-facing network. This bridge has NAT for outbound SAPI
+    # authentication; it is not an internal:true network that would block mTLS.
+    networks:
+      serpro-private:
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=2).status == 200"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   clamav:
     # Opt-in: without `--profile clamav` (or COMPOSE_PROFILES=clamav) Compose never
     # creates this service, so the pilot box keeps its current memory budget. Pinned
@@ -457,3 +507,15 @@ volumes:
   caddy_data:
   caddy_config:
   clamav_db:
+
+networks:
+  serpro-private:
+    driver: bridge
+
+secrets:
+  serpro_contratante_cert:
+    file: ${SERPRO_CONTRATANTE_CERT_FILE:-./ops/secrets/serpro_contratante_cert.pem}
+  serpro_contratante_key:
+    file: ${SERPRO_CONTRATANTE_KEY_FILE:-./ops/secrets/serpro_contratante_key.pem}
+  serpro_contratante_key_pass:
+    file: ${SERPRO_CONTRATANTE_KEY_PASS_FILE:-./ops/secrets/serpro_contratante_key_pass}

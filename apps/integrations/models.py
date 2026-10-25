@@ -29,6 +29,10 @@ from apps.integrations.call_models import (
     ProviderEffectBarrier,
     ProviderExecutionEpoch,
 )
+from apps.integrations.serpro.models import (
+    FirmIntegrationIssue,
+    FirmProviderReservation,
+)
 from apps.integrations.validators import (
     REF_MAX_LENGTH,
     REF_NAME_PATTERN,
@@ -50,8 +54,10 @@ __all__ = [
     "FirmAuthorization",
     "FirmAuthorizationKind",
     "FirmAuthorizationStatus",
+    "FirmIntegrationIssue",
     "FirmProviderCall",
     "FirmProviderCallAttempt",
+    "FirmProviderReservation",
     "IntegrationIssue",
     "IssueReason",
     "IssueService",
@@ -557,6 +563,14 @@ class IssueReason(models.TextChoices):
     # AXRM-010: provider spend reached 80% / 100% of the monthly ceiling.
     COTA_PROVEDOR_PROXIMA = "cota_provedor_proxima", "Cota do provedor próxima"
     COTA_PROVEDOR_ESGOTADA = "cota_provedor_esgotada", "Cota do provedor esgotada"
+    AUTENTICACAO_SERPRO_RECUSADA = (
+        "autenticacao_serpro_recusada",
+        "Autenticacao SERPRO recusada",
+    )
+    AUTORIZACAO_PROCURADOR_AUSENTE = (
+        "autorizacao_procurador_ausente",
+        "Autorizacao do procurador ausente",
+    )
 
 
 class ProviderOperationCode(models.TextChoices):

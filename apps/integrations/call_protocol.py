@@ -14,6 +14,7 @@ from apps.integrations.call_dispatch import (
 from apps.integrations.call_finalization import finalize
 from apps.integrations.call_models import CallState
 from apps.integrations.call_reservation import claim, reserve
+from apps.integrations.serpro.reauthentication import schedule_client_retry
 
 __all__ = [
     "Dispatch",
@@ -26,7 +27,7 @@ __all__ = [
 ]
 
 
-def perform(ticket: Claim, adapter: Adapter) -> CallResult:
+def _perform_once(ticket: Claim, adapter: Adapter) -> CallResult:
     """Start once, transmit once, journal before settling the fenced DB result."""
     dispatch = begin_io(ticket)
     result = billing_result(dispatch.receipt, transmit(dispatch, adapter))
@@ -38,4 +39,17 @@ def perform(ticket: Claim, adapter: Adapter) -> CallResult:
     record_result(dispatch, result)
     if not finalize(ticket, result):
         return CallResult(CallState.UNCERTAIN, None, "stale_finalize", "desconhecido")
+    return result
+
+
+def perform(ticket: Claim, adapter: Adapter) -> CallResult:
+    """Perform one send, with one fresh claim only after a definitive SERPRO 401."""
+    result = _perform_once(ticket, adapter)
+    if schedule_client_retry(ticket, result):
+        retry = claim(ticket.tenant_id, ticket.call_id)
+        if retry is not None:
+            result = _perform_once(retry, adapter)
+    from apps.integrations.serpro.work import own_client_result  # noqa: PLC0415
+
+    own_client_result(ticket)
     return result
