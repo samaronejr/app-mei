@@ -109,7 +109,7 @@ def release(call: ProviderCall) -> None:
 def release_unsent(receipt: JournalRecord) -> None:
     """Release only the issued attempt proven refused before its first byte.
 
-    A reconciler may already have quarantined this attempt. A settled bill or a
+    Another worker's claim may have quarantined this attempt. A settled bill or a
     newer attempt's reservation must never be rewritten by this old dispatch.
     """
     lock_budget()

@@ -619,3 +619,18 @@ def test_bytes_keyed_sentry_credential_field_is_redacted(key: str) -> None:
     # Then the credential is gone and the unrelated field remains.
     assert CANARY not in encoded
     assert "kept" in encoded
+
+
+@pytest.mark.parametrize("value", [CANARY, CANARY.encode()], ids=["str", "bytes"])
+def test_bytes_keyed_mapping_value_is_removed_where_it_appears_again(
+    value: str | bytes,
+) -> None:
+    # Given a bytes-keyed credential mapping and the same value elsewhere.
+    def emit(logger: logging.Logger) -> None:
+        logger.warning("headers=%s retry=%s", {b"Authorization": value}, CANARY)
+
+    # When the production console renders both arguments.
+    output = production_console(emit)
+    # Then the mapping value was collected and both occurrences are markers.
+    assert CANARY not in output
+    assert output.count(MARKER) == 2
