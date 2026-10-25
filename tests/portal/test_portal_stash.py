@@ -156,8 +156,9 @@ def test_rule_6_the_stash_holds_every_matrix_slug(firm: Firm) -> None:
     # owner-only `tenants.account` capability T22 seeded for firm account export,
     # cancellation and estimated cost. It is FULL for OWNER and NONE for every
     # other role including both client roles, so it is required in the stash for
-    # completeness yet can never gate or be granted to a portal user.
-    assert len(CAPABILITY_SLUGS) == 31
+    # completeness yet can never gate or be granted to a portal user. AXRM-007
+    # adds the five regional rows of plan A7.6 (NONE for both client roles): 36.
+    assert len(CAPABILITY_SLUGS) == 36
 
 
 def test_rule_4_the_stash_does_not_survive_the_response(firm: Firm) -> None:

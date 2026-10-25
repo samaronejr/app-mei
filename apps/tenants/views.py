@@ -14,6 +14,7 @@ from apps.authz.firm_account import can_manage_account
 from apps.authz.services import can, require_can
 from apps.clients.views import require_tenant
 from apps.core.flags import require_feature
+from apps.integrations.panel import fiscal_connections_panel
 from apps.tenants.account_state import read_only_reason
 from apps.tenants.forms import NotificationForm, ProfileForm
 from apps.tenants.models import NotificationPreference, Tenant
@@ -93,6 +94,7 @@ def settings_view(request: AuthenticatedRequest) -> HttpResponse:
             "may_account": can_manage_account(request.user, tenant.pk),
             "may_team": can(request.user, "users.create", tenant_id=tenant.pk),
             "read_only": read_only_reason(tenant),
+            "fiscal_connections": fiscal_connections_panel(request.user, tenant.pk),
         },
         status=status,
     )

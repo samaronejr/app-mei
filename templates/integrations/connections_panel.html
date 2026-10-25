@@ -1,0 +1,36 @@
+{% load i18n %}{% comment %}
+AXRM-007: read-only provider connections (plan A9 "Conexoes fiscais"). Rendered only
+when `fiscal_connections` is a list (a regional flag is on and the viewer holds
+fiscal.connections.manage). No form: management actions arrive with todo 34. The
+status badge never uses `confirmed` -- a connection is configuration, not evidence.
+{% endcomment %}<section class="card p-6 lg:col-span-2" aria-labelledby="conexoes-fiscais" data-fiscal-connections>
+  <h2 id="conexoes-fiscais" class="mb-3 text-lg font-semibold">{% translate "Conexões fiscais" %}</h2>
+  <p class="mb-5 text-sm text-ink-600">{% translate "Somente leitura. A equipe da plataforma configura as conexões com os provedores; enquanto uma conexão estiver pausada, nenhuma consulta é feita." %}</p>
+  {% if fiscal_connections %}
+    <div class="table-wrap" tabindex="0" role="region" aria-label="{% translate 'Conexões fiscais da firma' %}">
+      <table class="data-table row-stack">
+        <caption>{% translate "Conexões fiscais da firma" %}</caption>
+        <thead>
+          <tr>
+            <th scope="col">{% translate "Provedor" %}</th>
+            <th scope="col">{% translate "Ambiente" %}</th>
+            <th scope="col">{% translate "Situação" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in fiscal_connections %}
+            <tr>
+              <td data-label="{% translate 'Provedor' %}">{{ row.provider_label }}</td>
+              <td data-label="{% translate 'Ambiente' %}"><span class="badge {% if row.environment == 'producao' %}badge-warn{% else %}badge-neutral{% endif %}">{{ row.environment_label }}</span></td>
+              <td data-label="{% translate 'Situação' %}">{% include "partials/ui/status_badge.html" with state=row.state label=row.status_label only %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    {% translate "Nenhuma conexão fiscal configurada." as empty_title %}
+    {% translate "Quando a equipe da plataforma configurar uma conexão, ela aparece aqui com o ambiente e a situação." as empty_message %}
+    {% include "partials/ui/state_empty.html" with title=empty_title message=empty_message only %}
+  {% endif %}
+</section>

@@ -1,4 +1,4 @@
-"""All 186 cells, checked against the report rather than against what seeded them.
+"""All 216 cells, checked against the report rather than against what seeded them.
 
 The obvious version of this test compares the database to `apps.authz.matrix.MATRIX`
 and proves only that the seed ran. It would pass with a transcription error in every
@@ -27,11 +27,12 @@ HEADER_PREFIX: Final[str] = "| Capability | Platform admin |"
 
 # The plan pins the table to lines 51-80 and warns that counting the header and the
 # separator gives the wrong total. Both are asserted below rather than assumed.
-# T4 adds thirteen R1 rows; T22 adds the owner account capability.
+# T4 adds thirteen R1 rows; T22 adds the owner account capability; AXRM-007 adds the
+# five regional rows of plan A7.6 (36 rows / 216 cells).
 EXPECTED_FIRST_DATA_LINE: Final[int] = 51
-EXPECTED_LAST_DATA_LINE: Final[int] = 81
-EXPECTED_CAPABILITIES: Final[int] = 31
-EXPECTED_CELLS: Final[int] = 186
+EXPECTED_LAST_DATA_LINE: Final[int] = 86
+EXPECTED_CAPABILITIES: Final[int] = 36
+EXPECTED_CELLS: Final[int] = 216
 
 COLUMN_TO_ROLE: Final[dict[str, str]] = {
     "Platform admin": Role.PLATFORM_ADMIN,
@@ -109,7 +110,7 @@ def test_the_published_table_sits_where_the_plan_says_it_does() -> None:
 def test_the_parse_produces_one_hundred_and_eighty_cells() -> None:
     # Given the parsed table
     # When its cells are counted
-    # Then there are 31 x 6. A broken parse would make every assertion below vacuous.
+    # Then there are 36 x 6. A broken parse would make every assertion below vacuous.
     assert len(PUBLISHED) == EXPECTED_CELLS
     assert len({label for label, _role in PUBLISHED}) == EXPECTED_CAPABILITIES
 
@@ -150,22 +151,33 @@ def test_the_seed_covers_the_matrix_and_nothing_else() -> None:
 
 @pytest.mark.django_db(transaction=True)
 def test_seeding_a_second_time_changes_nothing() -> None:
-    # Given the matrix seeded once by the data migration's own function. It is run
-    # here rather than relied upon: a transactional test starts from truncated
-    # tables, so migration-created rows are not present at this point. Seeding
-    # explicitly makes the test assert idempotency rather than assert the fixture.
+    # Given the matrix seeded once by the data migrations' own functions, in order.
+    # They are run here rather than relied upon: a transactional test starts from
+    # truncated tables, so migration-created rows are not present at this point.
+    # Seeding explicitly makes the test assert idempotency rather than assert the
+    # fixture. Every seed, not 0002 alone: 0002 leaves the slugs authz.0009 ledgers
+    # to that migration.
     #
     # schema_editor is unused by seed(), which is why None is safe and this exercises
     # the real code path instead of a re-implementation of it.
-    migration = importlib.import_module("apps.authz.migrations.0002_seed_matrix")
-    migration.seed(django_apps, None)
+    directory = Path(__file__).resolve().parents[2] / "apps" / "authz" / "migrations"
+    modules = [
+        importlib.import_module(f"apps.authz.migrations.{path.stem}")
+        for path in sorted(directory.glob("0*.py"))
+    ]
+    seeds = [
+        module.seed for module in modules if callable(getattr(module, "seed", None))
+    ]
+    for seed in seeds:
+        seed(django_apps, None)
     before = sorted(
         RoleGrant.objects.values_list("role", "capability__slug", "level"),
     )
     assert len(before) == EXPECTED_CELLS, "the first seed did not populate the matrix"
 
     # When it is replayed
-    migration.seed(django_apps, None)
+    for seed in seeds:
+        seed(django_apps, None)
 
     # Then nothing was duplicated and nothing changed, so fixing a wrong cell is a
     # re-run rather than a hand-written repair script

@@ -17,7 +17,15 @@ tenant-scoped row is touched here and the migration needs no cross-tenant marker
 `update_or_create` rather than `create`: the operation must be safe to replay against a
 database that already holds part of the matrix, which is what makes fixing a wrong cell
 a re-run rather than a hand-written repair script.
+
+The slugs `authz.0009` ledgers are left to that migration (AXRM-007 review B1). Written
+here on a fresh database, they would already exist when 0009 runs, so it would record
+nothing as created and its reverse could not tell them from an operator's rows. This
+changes fresh databases only, which is the point: deployed ones applied 0002 before the
+matrix named those slugs.
 """
+
+import importlib
 
 from django.apps import registry as app_registry
 from django.db import migrations
@@ -25,12 +33,20 @@ from django.db.backends.base.schema import BaseDatabaseSchemaEditor
 
 from apps.authz.matrix import MATRIX
 
+LEDGERED_LATER: frozenset[str] = frozenset(
+    importlib.import_module(
+        "apps.authz.migrations.0009_seed_regional_capabilities"
+    ).SLUGS
+)
+
 
 def seed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor) -> None:
     """Write every capability and every grant, replacing any that drifted."""
     capability_model = apps.get_model("authz", "Capability")
     grant_model = apps.get_model("authz", "RoleGrant")
     for row in MATRIX:
+        if row.slug in LEDGERED_LATER:
+            continue
         capability, _created = capability_model.objects.update_or_create(
             slug=row.slug,
             defaults={"label": row.label},
@@ -46,7 +62,9 @@ def seed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor) -> None:
 def unseed(apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor) -> None:
     """Remove the seeded capabilities, and their grants with them."""
     capability_model = apps.get_model("authz", "Capability")
-    capability_model.objects.filter(slug__in=[row.slug for row in MATRIX]).delete()
+    capability_model.objects.filter(
+        slug__in=[row.slug for row in MATRIX if row.slug not in LEDGERED_LATER]
+    ).delete()
 
 
 class Migration(migrations.Migration):

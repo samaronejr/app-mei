@@ -28,10 +28,11 @@ reason `UnknownCapability` exists in the permission matrix: "flag off" and
 working refusal while letting nothing through.
 """
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
+from types import MappingProxyType
 from typing import Concatenate, Final, ParamSpec, TypeVar
 from uuid import UUID
 
@@ -63,6 +64,28 @@ FEATURES: Final[frozenset[str]] = frozenset(
         # uploads are refused while CLAMAV_ENABLED is off and unscanned files are
         # never handed to staff. Requires `cycles_r1`; inert without it.
         "scan_required",
+        # AXRM-007 (regional MVP): the three provider-backed surfaces -- federal
+        # checks, document capture and municipal work. Each requires `cycles_r1`
+        # and `scan_required` (INV-R13): no provider work on unscanned intake.
+        "federal_checks",
+        "document_capture",
+        "municipal_work",
+    }
+)
+
+_REGIONAL_PREREQUISITES: Final = frozenset({"cycles_r1", "scan_required"})
+
+# Flags that are inert unless every flag they name is ALSO effectively on. Applied by
+# every answer this module gives -- `tenant_has`, `tenant_row_has` and both view
+# gates -- so a tenant row carrying a dependent flag without its prerequisites reads
+# as "off" everywhere, and killing a prerequisite platform-wide stands its
+# dependents down with it.
+FEATURE_PREREQUISITES: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
+    {
+        "scan_required": frozenset({"cycles_r1"}),
+        "federal_checks": _REGIONAL_PREREQUISITES,
+        "document_capture": _REGIONAL_PREREQUISITES,
+        "municipal_work": _REGIONAL_PREREQUISITES,
     }
 )
 
@@ -119,6 +142,13 @@ def _disabled_features() -> frozenset[str]:
     return frozenset(getattr(settings, "AXORIM_DISABLED_FEATURES", ()))
 
 
+def _effective(flag: str, features: frozenset[str] | list[str]) -> bool:
+    """Answer one flag from a raw set: the flag and its prerequisites, none killed."""
+    disabled = _disabled_features()
+    required = (flag, *FEATURE_PREREQUISITES.get(flag, ()))
+    return all(name in features and name not in disabled for name in required)
+
+
 def _read_features(tenant_id: UUID) -> frozenset[str]:
     # PLATFORM_QUERY_OK: the entitlement read itself. tenants_tenant carries no
     # policy by design — the middleware resolves it before any context exists — and
@@ -155,9 +185,7 @@ def tenant_has(tenant_id: UUID, flag: str) -> bool:
             f"would hide a permanently broken gate behind a plausible 404."
         )
         raise UnknownFeature(msg)
-    if flag in _disabled_features():
-        return False
-    return flag in _features_for(tenant_id)
+    return _effective(flag, _features_for(tenant_id))
 
 
 def tenant_row_has(tenant: Tenant, flag: str) -> bool:
@@ -169,7 +197,7 @@ def tenant_row_has(tenant: Tenant, flag: str) -> bool:
     if flag not in FEATURES:
         msg = f"{flag!r} is not a feature flag in FEATURES."
         raise UnknownFeature(msg)
-    return flag not in _disabled_features() and flag in (tenant.features or ())
+    return _effective(flag, tenant.features or [])
 
 
 _P = ParamSpec("_P")
@@ -253,11 +281,7 @@ def require_portal_feature(
             **kwargs: _P.kwargs,
         ) -> _ResponseT:
             stash_features = stashed_features(_portal_tenant_id(request))
-            if (
-                stash_features is None
-                or flag in _disabled_features()
-                or flag not in stash_features
-            ):
+            if stash_features is None or not _effective(flag, stash_features):
                 raise Http404
             return view(request, *args, **kwargs)
 

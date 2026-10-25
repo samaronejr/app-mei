@@ -58,6 +58,11 @@ NFSE_ALLOWED_FILES = frozenset(
         "apps/cycles/extraction/nfse_xml.py",
         # AXR1-024: synthetic XML generator only; no issuance or invoice workflow.
         "apps/automation/dataset.py",
+        # AXRM-007 (superseded restriction, ADR-0008): a client provider link names
+        # the RECEIVED-document collections it may read (`nfsen_recebidas`). Reading,
+        # never issuing: the audit actions and the capability matrix stay at zero.
+        "apps/integrations/models.py",
+        "apps/integrations/migrations/0001_initial.py",
     },
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
@@ -97,6 +102,11 @@ NFE_READ_ONLY_FILES = frozenset(
         "apps/cycles/extraction/nfe_xml.py",
         # AXR1-024: synthetic XML generator only.
         "apps/automation/dataset.py",
+        # AXRM-007 (superseded restriction, ADR-0008): the received-document
+        # collection labels of a client provider link. Read-only capture; issuing,
+        # transmitting or managing NF-e stays out of scope.
+        "apps/integrations/models.py",
+        "apps/integrations/migrations/0001_initial.py",
     },
 )
 

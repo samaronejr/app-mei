@@ -42,5 +42,6 @@
         <p class="mt-2 text-sm text-ink-600">{% translate "Autorize e acompanhe acessos da equipe da plataforma à sua firma." %}</p>
       </div>{% endif %}
     </section>
+    {% if fiscal_connections is not None %}{% include "integrations/connections_panel.html" %}{% endif %}
   </div>
 {% endblock %}
