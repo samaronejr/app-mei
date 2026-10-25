@@ -975,6 +975,24 @@ Evidence: `.evidence/AXRM-013-recovery-gates.txt`,
 `AXRM-013-happy.txt`, `AXRM-013-failure.txt`, `AXRM-013-adversarial.txt` and
 `AXRM-013-teardown.txt`.
 
+`AXRM-013` repair round 1 addresses only the three new independent-review
+blockers: the application build excludes the default `ops/secrets/` sources;
+competing billed-403 work openers join the same unique issue instead of raising;
+and a malformed HTTP-200 termo response opens owned unresolved firm work before
+the symbolic parse failure propagates. Its HTTP receipt remains final, no
+authorization is accepted, and the call is not reopened or resent. Three new
+regression cases cover real Docker COPY/export, two barrier-controlled database
+sessions and the malformed signed-termo submission. Final committed-head counts,
+isolated mutation results and cleanup receipts live in the
+`.evidence/AXRM-013-fix1-*` artifacts.
+
+**Custody remains blocked on the parent. `AXRM-011` [~], `AXRM-013` [~]: inherited
+013-I1/I2/I3 are still open.** Marker-prefixed and escaped credentials can leak
+through the inherited telemetry code, and nested Sentry credentials can survive
+in an unlabelled echo. This round does not change `privacy.py` or
+`config/settings/prod.py`, authorize a fifth AXRM-011 repair, certify aggregate
+custody, restack onto todo 14 or close independent-review/operator gates.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

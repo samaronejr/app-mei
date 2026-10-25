@@ -47,7 +47,7 @@ from apps.integrations.serpro.termo import (
     read_signed_termo,
 )
 from apps.integrations.serpro.termo_response import parse_termo_response
-from apps.integrations.serpro.work import PROC_MISSING, own_firm_condition
+from apps.integrations.serpro.work import PROC_MISSING, UNCERTAIN, own_firm_condition
 from apps.integrations.services import STALE_MESSAGE, IntegrationConflictError
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import Environment, JSONValue, TransportFailure
@@ -214,7 +214,17 @@ def submit_termo(
         return result
     if adapter.response is None:
         raise TermoInvalidoError
-    token = parse_termo_response(adapter.response)
+    try:
+        token = parse_termo_response(adapter.response)
+    except TransportFailure:
+        # The HTTP receipt is final, but domain acceptance is still unresolved.
+        with tenant_context(tenant_id):
+            own_firm_condition(
+                ProviderConnection.objects.get(pk=submission.connection_id),
+                UNCERTAIN,
+                [str(row.pk)],
+            )
+        raise
     valid_until = min(
         prepared.valid_until, datetime.fromtimestamp(token.expires_at, tz=UTC).date()
     )

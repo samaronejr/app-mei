@@ -21,6 +21,7 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake, IntakeState, ScanVerdict
 from apps.cycles.openers import TENANT_EVALUATORS, evaluate_tenant_exceptions
 from apps.integrations.call_models import FirmProviderCall
+from apps.integrations.firm_calls import firm_claim
 from apps.integrations.models import ClientProviderLink, FirmAuthorization
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
 from apps.integrations.serpro.codec import Parties
@@ -39,10 +40,12 @@ from apps.integrations.serpro.termo import (
 from apps.integrations.serpro.termo_state import termo_head, termo_in_force
 from apps.integrations.serpro.work import (
     PROC_MISSING,
+    UNCERTAIN,
     evaluate_termo_conditions,
     own_firm_condition,
 )
 from apps.integrations.services import IntegrationConflictError
+from apps.integrations.transport_types import TransportFailure
 from apps.obligations.models import AcquisitionOrigin, Document
 from apps.tenants.models import Membership, TenantRole
 from tests.fakes.provider import Reply
@@ -332,6 +335,30 @@ def test_refused_termo_is_recorded_and_owned_by_the_firm(
         assert not termo_in_force(world.connection.pk, timezone.localdate())
         issue = FirmIntegrationIssue.objects.get(state="aberta")
         assert (issue.reason, issue.owner_id) == (PROC_MISSING, world.actor.pk)
+
+
+def test_malformed_successful_termo_is_owned_without_another_submission(
+    world: SyntheticTermo,
+) -> None:
+    # Given a complete 200 without the promised token or expiration fields.
+    malformed = Reply(body=b'{"status":200,"mensagens":[],"dados":"{}"}')
+    with FakeSerpro((malformed, accepted())) as peer:
+        # When the normal signed-termo service cannot complete domain acceptance.
+        with pytest.raises(TransportFailure) as failure:
+            submit(world, peer.origin)
+        assert failure.value.code == "resposta_termo_invalida"
+        assert len(peer.requests) == 1
+    # Then its unresolved outcome is owned, never accepted or automatically resent.
+    with tenant_context(world.tenant.pk):
+        call = FirmProviderCall.objects.get()
+        assert not FirmAuthorization.objects.filter(status="aceito").exists()
+        issues = list(FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES))
+        assert len(issues) == 1
+        [issue] = issues
+        assert (issue.reason, issue.owner_id) == (UNCERTAIN, world.actor.pk)
+        assert issue.connection_id == world.connection.pk
+        assert issue.evidence_refs == [str(call.pk)]
+    assert firm_claim(world.tenant.pk, call.pk) is None
 
 
 def test_expired_termo_opens_firm_work_and_sends_nothing(world: SyntheticTermo) -> None:
