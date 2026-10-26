@@ -232,7 +232,7 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | `AXRM-008` | Client authority as append-only revisions (`AuthorityRecord`: procurações 00002/00004, PGMEI catalogued `nao_exigida`, client authorizations for NF-e/NFS-e capture and Ciência), the firm termo record (`FirmAuthorization`, submitted by todo 13) and owned provider problems (`IntegrationIssue` when the client has no open cycle, the registered cycle exception when it does). `authority_for(client, operation)` answers usable / missing / expired / unknown with a reason, fails closed for any operation outside the implemented A6 set, derives expiry from the injected date and, for capture, also requires a current, matching, non-divergent provider-held certificate. Declare, verify and revoke lock the client, re-check `fiscal.authority.manage` and the rendered chain version, and append a successor; a provider 403 appends `ausente_detectada`; `record_certificate_status` stores provider-reported certificate metadata only and marks a foreign CNPJ or unexpected generation `divergente`. Openers `autorizacao_ausente`, `certificado_provedor_vencendo` (30/7/1-day review dates), `certificado_provedor_vencido` and `credencial_divergente`. Workspace section "Autorizações e certificados" (firm-only, flag-gated, private evidence through the scanned staff intake; certificate files refused). | Apply `integrations.0002_authority_records` with `federal_checks` and `document_capture` off: nothing is drawn or evaluated. Recovery is flags off; authority rows are append-only evidence, so the reverse runs only while all three tables are empty and refuses afterwards (forward repair). The reverse never drops the shared `audit_reject_mutation()` function. |
 | `AXRM-009` | Client-scoped provider calls, append-only attempt receipts and effect barriers, uncertainty work on AXRM-008's `IntegrationIssue`, a client-less SP-TERMO firm submission journal, and a platform execution epoch. Reservation and dispatch recheck live controls under locks; every external storage/network boundary is outside transactions. Issuance/registration barriers and per-attempt journal replay prevent repeated effects after crashes or restores. Provider usage metrics are added as a prerequisite for restoring individual billed attempts; pricing/caps remain the next todo's mandatory policy hook. | No operation is registered by default; flags stay off and providers paused. Preserve all independent journal prefixes (client, firm, epochs), then run `reconcile_provider_operations` under the global pause. Uncertain effects are not retried. Populated protocol/usage migrations refuse reversal; keep tables and repair forward. Operator, provider-qualification and owner gates stay open. |
 | `AXRM-010` | Monthly `ProviderBudget` (tenant) with integer micro-BRL cap, known liability, uncertain exposure and reservations, plus a client-private per-attempt `ProviderReservation` ledger. Reservation locks the budget and refuses (`cota_esgotada`, `cota_ausente`, `tarifa_ausente`) before any I/O against the tenant cap and the platform ceiling; claim and dispatch recheck the held reservation. SERPRO Consulta/Emissao 200/202/403 settle as billed, other statuses release, unknown outcomes stay uncertain until reconciliation. Focus included calls reserve zero only under `focus-plan (PQ-FOCUS-4 pendente)` and stay journaled; Focus documents are metered monthly from captured revisions (the per-call AXRM-009 mapping is removed), Ciencia as estimated `focus_eventos`. Owned `cota_provedor_proxima`/`cota_provedor_esgotada` work at 80%/100%; the owner usage panel shows measured, estimated and missing. | A missing budget row, cap or price disables spend. Recovery = pause the provider and reconcile; usage rows stay append-only. `integrations.0004` reverses only while both budget tables are empty and removes only them; populated balances refuse reversal (forward repair). PQ-FOCUS-4, OD-R1 ceilings and owner activation stay open. |
-| `AXRM-011` | Closed A6 operation catalog, bounded Requests transport, per-call HMAC token-broker client, deterministic SERPRO/Focus peers and synthetic fixtures. TLS verification, split timeouts, byte/decompression limits, strict JSON, one credential-free PDF redirect to the documented storage host, and provider secret scrubbing in console/Sentry. | No table or migration; no adapter registration, provider activation or certificate handling. Recovery is a code revert. Provider qualification, operator and owner gates remain open. See `docs/provider-transport.md`. |
+| `AXRM-011` | Closed A6 operation catalog, bounded Requests transport, per-call HMAC token-broker client, deterministic SERPRO/Focus peers and synthetic fixtures. TLS verification, split timeouts, byte/decompression limits, strict JSON, one credential-free PDF redirect to the documented storage host, and shared two-pass structural credential/body redaction in console/Sentry. | No table or migration; no adapter registration, provider activation or certificate handling. Recovery is a code revert. Attempt 6 awaits independent review; provider qualification, operator and owner gates remain open. See `docs/provider-transport.md`. |
 
 `AXRM-011` adds **144 tests**: **142 pure transport tests** pass in three consecutive
 runs, and two exercise fenced finalization and the no-I/O-in-transactions boundary
@@ -355,6 +355,34 @@ recorded in `.evidence/AXRM-011-fix5-gates.txt`; red, mutation, range-diff and
 sink evidence is retained under `AXRM-011-fix5-*`. Fresh independent review
 and PR delivery remain pending; provider qualification, operator and owner
 activation gates stay open.
+
+`AXRM-011` review-5 rewrite (owner-authorized attempt 6, 2026-10-26).
+Attempt 5 at `f00d7cb` was rejected for deep credential echoes and escaped body
+fragments; its DoneClaim and attempt 4's are retained as historical evidence.
+Console and Sentry now use one iterative, two-pass walker over mapping keys and
+values, lists, tuples, sets and frozensets. Discovery collects sensitive leaves
+before replacing whole labelled values and their unlabelled aliases. Rendered
+str/bytes/JSON values use an escape-aware tokenizer, complete markers remain
+atomic, and replacement is idempotent. Production Sentry discovery runs before
+SDK depth/breadth truncation; SDK annotation paths do not become credentials.
+Bodies are excluded as whole containers, without discarding adjacent status,
+operation, timing or request identifiers. Transport, lease, budget and accepted
+short RLS transaction boundaries are unchanged.
+
+The original RV5 repros at `f00d7cb` show **6 nested Sentry failures** and
+**36 adversarial assertion failures**. The unchanged matrices now pass:
+RV4 **14**, RV3 **133**, RV5 nested **12**, RV5 adversarial **564 checks** and
+inherited AXRM-013 **3**. Privacy coverage grows from **172** to **338 tests**
+(**166 added**, three successful repetitions). All **79** bytecode-isolated
+guard mutations have applied receipts and named failing witnesses: **77** from
+the complete campaign and the remaining signed-URL/base64 mutations after adding
+real-sink witnesses, with identical production-source hashes. A new assertion
+checks body fragments in the actual message rather than random SDK identifiers.
+Evidence is retained under `AXRM-011-fix6-*`, including the complete mutation
+reconciliation. The default suite collects **6641** cases and the separate browser
+suite **195**; these are inventory counts, not passing-suite claims. Read
+`.evidence/AXRM-011-fix6-gates.txt` for committed-head STD-GATES exits and execution
+totals. Independent review, PR delivery and provider activation remain open.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.

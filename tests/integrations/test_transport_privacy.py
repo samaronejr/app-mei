@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import sentry_sdk
@@ -21,6 +21,9 @@ from tests.fakes.provider import Reply, permitted_send
 from tests.integrations.test_transport import KEY
 from tests.integrations.transport_tls import HOST, route_storage_host, tls_context
 from tests.security.test_credential_log_hygiene import _CaptureTransport
+
+if TYPE_CHECKING:
+    from sentry_sdk.types import Event
 
 
 @pytest.mark.parametrize(
@@ -478,7 +481,7 @@ def test_reviewed_b2_sentry_request_header_pairs_are_scrubbed() -> None:
     # Given the review's event with request headers as pairs.
     event = {"request": {"headers": [["Authorization", "Bearer " + CANARY]]}}
     # When the production hook processes it.
-    scrubbed = prod.scrub_sentry_event(event, {})  # type: ignore[arg-type]
+    scrubbed = prod.scrub_sentry_event(event, {})
     # Then the credential is gone.
     assert CANARY not in json.dumps(scrubbed)
 
@@ -715,3 +718,445 @@ def test_nested_credential_leaves_are_removed_from_unlabelled_echoes(
     assert token not in output
     assert "provider diagnostic" in output
     assert MARKER in output
+
+
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+@pytest.mark.parametrize("kind", ["str", "bytes"])
+@pytest.mark.parametrize(
+    ("field", "token"),
+    [
+        (
+            "access_token",
+            "eyJhbGciOiJIUzI1NiJ9.eyJqdGkiOiJydjAxMy1hY2Nlc3MifQ.n4a_xT19QMJ9bU8s",
+        ),
+        (
+            "jwt_token",
+            "eyJhbGciOiJSUzI1NiJ9.eyJqdGkiOiJydjAxMy1qd3QifQ.N8oQjfcJ9C_tlT3b",
+        ),
+        ("autenticar_procurador_token", "701c5703-4bf3-4e7a-a88b-0dce8a001313"),
+    ],
+)
+def test_deep_only_credential_leaf_cannot_escape_through_echo(
+    sink: str, kind: str, field: str, token: str
+) -> None:
+    # Given RV5's deeper leaf, without a second shallow credential to mask it.
+    leaf = token.encode() if kind == "bytes" else token
+    headers = {field.encode(): {"level2": [{"value": leaf}]}}
+    # When the real console handler or captured Sentry client processes it.
+    if sink == "console":
+        output = production_console(
+            lambda logger: logger.warning(
+                "deep-only headers=%s echo=%s request=R923", headers, token
+            )
+        )
+    else:
+
+        def emit() -> None:
+            sentry_sdk.set_extra("headers", headers)
+            sentry_sdk.set_extra("echo", token)
+            sentry_sdk.set_extra("request_id", "R923")
+            sentry_sdk.capture_message("deep-only")
+
+        events = captured_events(emit)
+        assert len(events) == 1
+        assert events[0].get("extra", {}).get("request_id") == "R923"
+        output = json.dumps(events)
+        assert prod.scrub_sentry_event(events[0], {}) == events[0]
+    # Then discovery removed both occurrences, retaining the useful context.
+    assert token not in output
+    assert "R923" in output
+
+
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+@pytest.mark.parametrize("field", ["body", "data", "payload"])
+@pytest.mark.parametrize("rendering", ["repr", "json", "bytes"])
+def test_escaped_body_is_removed_through_its_real_closing_delimiter(
+    sink: str, field: str, rendering: str
+) -> None:
+    # Given RV5's escaped body, including a sibling diagnostic after its delimiter.
+    value = "abc'\";" + CANARY
+    if rendering == "json":
+        body = json.dumps({field: value})
+    elif rendering == "bytes":
+        body = repr({field.encode(): value.encode()})
+    else:
+        body = repr({field: value})
+    message = f"body-probe {body} status=refused operation=SP-PAG elapsed=17"
+    # When either production sink receives already-rendered text.
+    if sink == "console":
+        output = production_console(lambda logger: logger.warning(message))
+        diagnostic = output
+    else:
+
+        def emit() -> None:
+            sentry_sdk.capture_message(message)
+
+        events = captured_events(emit)
+        assert len(events) == 1
+        output = json.dumps(events)
+        diagnostic = events[0]["message"]
+        assert prod.scrub_sentry_event(events[0], {}) == events[0]
+    # Then no body fragment survives and the next fields remain useful.
+    assert CANARY not in output
+    assert "abc" not in diagnostic
+    assert "status=refused operation=SP-PAG elapsed=17" in output
+
+
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+@pytest.mark.parametrize("case", range(48))
+def test_generated_depth_keys_quotes_escapes_and_separators(
+    sink: str, case: int
+) -> None:
+    # Given a deterministic generator varying independent input dimensions.
+    depth = (0, 2, 7, 17)[case % 4]
+    field = ("jwt_token", "payload", "X-Access-Token")[(case // 4) % 3]
+    separator = (",", ";", " ")[(case // 3) % 3]
+    value = (MARKER, "abc'\"", "\\'\"", "\\\\'\"")[case % 4]
+    value += separator + CANARY
+    key = field.encode() if case % 2 else field
+    leaf: object = value.encode() if (case // 2) % 2 else value
+    for level in range(depth):
+        leaf = {f"level{level}": [leaf]} if level % 2 else (leaf,)
+    context: dict[object, object] = {
+        "echo": value,
+        value.encode(): "retained",
+        "headers": {key: leaf},
+        "status": "refused",
+        "operation": "SP-PAG",
+        "elapsed": 17,
+    }
+    # Half the cases destroy structure with repr before reaching either sink.
+    argument = repr(context) if (case // 8) % 2 else context
+    # When the real production sink delivers the generated record.
+    if sink == "console":
+        output = production_console(
+            lambda logger: logger.warning("generated %s", argument)
+        )
+    else:
+
+        def emit() -> None:
+            sentry_sdk.set_extra("generated", argument)
+            sentry_sdk.capture_message("generated")
+
+        events = captured_events(emit)
+        assert len(events) == 1
+        output = json.dumps(events)
+        assert prod.scrub_sentry_event(events[0], {}) == events[0]
+    # Then both raw and represented echoes disappear, not the diagnostics.
+    assert CANARY not in output
+    assert "refused" in output
+    assert "SP-PAG" in output
+    assert "17" in output
+    assert "retained" in output
+
+
+@pytest.mark.parametrize("container", [list, tuple, set])
+def test_structural_collection_is_complete_before_any_replacement(
+    container: type[list[object]] | type[tuple[object, ...]] | type[set[object]],
+) -> None:
+    # Given a bytes echo/key before a sensitive field containing overlapping leaves.
+    short = "synthetic-short-secret"
+    long = short + "-private-tail"
+    event: Event = {
+        "extra": {
+            "echo": long.encode(),
+            "context": {long.encode(): "retained"},
+            "headers": {b"Authorization": container([short, long.encode()])},
+            "status": "refused",
+        }
+    }
+    # When the shared production event walker processes raw telemetry.
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then discovery is independent of iteration order, including set elements.
+    output = repr(scrubbed)
+    assert short not in output
+    assert "-private-tail" not in output
+    assert "retained" in output
+    assert "refused" in output
+    assert prod.scrub_sentry_event(scrubbed, {}) == scrubbed
+
+
+def test_short_secret_does_not_corrupt_the_marker_on_rescrub() -> None:
+    # Given a short real field value and a credential that overlaps marker text.
+    event: Event = {"extra": {"echo": "xy Filtered", "jwt_token": ["xy", "Filtered"]}}
+    # When collected values are replaced and the whole event is scrubbed again.
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then short credentials are not exempt and existing markers are atomic.
+    assert scrubbed.get("extra", {})["echo"] == f"{MARKER} {MARKER}"
+    assert prod.scrub_sentry_event(scrubbed, {}) == scrubbed
+
+
+def test_production_sentry_collects_before_sdk_depth_and_breadth_limits() -> None:
+    # Given a credential only after SDK breadth/depth limits, echoed early.
+    nested: object = {b"jwt_token": CANARY.encode()}
+    for _ in range(1200):
+        nested = {"level": nested}
+    context: dict[str, object] = {f"safe-{index}": "retained" for index in range(110)}
+    context["hidden"] = nested
+    transport = _CaptureTransport()
+    client = sentry_sdk.Client(
+        **prod.SENTRY_OPTIONS,
+        dsn="http://public@example.invalid/1",
+        transport=transport,
+    )
+    # When the real production client serializes and captures the event.
+    with sentry_sdk.isolation_scope() as scope:
+        scope.set_client(client)
+        scope.set_extra("echo", CANARY)
+        scope.set_extra("context", context)
+        sentry_sdk.capture_message("unbounded-depth status=refused elapsed=17")
+        client.flush()
+    client.close()
+    # Then the token was discovered before the SDK could discard its label.
+    assert len(transport.events) == 1
+    output = json.dumps(transport.events)
+    assert CANARY not in output
+    assert "status=refused elapsed=17" in output
+
+
+def test_console_discovers_a_credential_beyond_python_repr_depth() -> None:
+    # Given an echo before a credential deeper than Python's repr recursion limit.
+    nested: object = {b"jwt_token": CANARY.encode()}
+    for _ in range(1200):
+        nested = {"level": nested}
+    context = {"echo": CANARY, "nested": nested, "status": "refused"}
+    # When the real production handler renders the entire record.
+    output = production_console(
+        lambda logger: logger.warning("deep-console %s elapsed=17", context)
+    )
+    # Then neither recursion nor redaction loses the useful event.
+    assert CANARY not in output
+    assert "deep-console" in output
+    assert "refused" in output
+    assert "elapsed=17" in output
+
+
+def test_cycle_and_shared_alias_do_not_hide_a_credential_leaf() -> None:
+    # Given a cycle and a second reference to a sensitive, bytes-keyed subtree.
+    headers: dict[object, object] = {b"jwt_token": CANARY.encode()}
+    context: dict[str, object] = {"echo": CANARY, "headers": headers, "alias": headers}
+    context["cycle"] = context
+    # When a raw event is scrubbed without letting a serializer hide its structure.
+    event: Event = {"extra": context}
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then both aliases and the echo are safe, and rescrubbing is stable.
+    assert CANARY not in repr(scrubbed)
+    assert prod.scrub_sentry_event(scrubbed, {}) == scrubbed
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"""payload='abc\\";{CANARY}""",
+        f"""headers={{'Authorization': ['abc\\";{CANARY}']}} status=refused""",
+        f"""payload={{'nested': ['{CANARY}'] status=refused""",
+        f"""headers=[(b'jwt_token', b'abc\\\\";{CANARY}')] status=refused""",
+    ],
+)
+def test_malformed_or_nested_rendering_never_exposes_a_body(text: str) -> None:
+    # Given malformed or balanced nested data with no trustworthy inner separator.
+    # When the real console sink tokenizes the diagnostic.
+    output = production_console(lambda logger: logger.warning(text))
+    # Then uncertain closing boundaries fail closed, not at an escaped quote.
+    assert CANARY not in output
+    assert MARKER in output
+
+
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+def test_structured_record_extras_are_discovered_before_rendering(sink: str) -> None:
+    # Given a credential only in an extra field, echoed by the formatted message.
+    if sink == "console":
+        output = production_console(
+            lambda logger: logger.warning(
+                "extra-probe echo=%s status=refused",
+                CANARY,
+                extra={"headers": {b"Authorization": {"nested": {CANARY.encode()}}}},
+            )
+        )
+    else:
+
+        def emit() -> None:
+            sentry_sdk.set_extra("headers", {b"Authorization": {"nested": {CANARY}}})
+            sentry_sdk.capture_message(f"extra-probe echo={CANARY} status=refused")
+
+        events = captured_events(emit)
+        assert len(events) == 1
+        output = json.dumps(events)
+    # Then the shared discovery, not an active-secret context, removes the echo.
+    assert CANARY not in output
+    assert "extra-probe" in output
+    assert "status=refused" in output
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"jwt_token={MARKER}{CANARY} status=refused",
+        f"Authorization: Bearer {CANARY} status=refused",
+        f"body={{'brace': '{{', 'secret': '{CANARY}'}} status=refused",
+        f"payload=[{{'private': '{CANARY}'}}] status=refused",
+    ],
+)
+def test_token_boundaries_preserve_the_following_diagnostic(text: str) -> None:
+    # Given marker prefixes, bare values and quoted container delimiters.
+    # When the real console handler parses the rendered value.
+    output = production_console(lambda logger: logger.warning(text))
+    # Then only the complete value is removed, not the next diagnostic.
+    assert CANARY not in output
+    assert "status=refused" in output
+    assert scrub_provider_text(output) == output
+
+
+@pytest.mark.parametrize("container", [list, tuple, set, frozenset])
+def test_collected_credential_is_removed_from_unlabelled_containers(
+    container: type,
+) -> None:
+    # Given unlabelled container elements and a later sensitive field.
+    event: Event = {
+        "extra": {
+            "echo": container([CANARY.encode(), "retained"]),
+            "headers": {b"jwt_token": CANARY},
+            "status": "refused",
+        }
+    }
+    # When the shared raw-event walker handles every supported container.
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then all aliases are gone without discarding non-secret elements.
+    assert CANARY not in repr(scrubbed)
+    assert "retained" in repr(scrubbed)
+    assert prod.scrub_sentry_event(scrubbed, {}) == scrubbed
+
+
+@pytest.mark.parametrize("field", ["body", "data", "payload", "jwt_token"])
+def test_sensitive_container_is_replaced_as_a_whole(field: str) -> None:
+    # Given body contents, including a private mapping key and non-string leaves.
+    event: Event = {
+        "extra": {
+            "echo": CANARY,
+            field: {CANARY.encode(): [19, True, None, "private-field"]},
+            "status": "refused",
+        }
+    }
+    # When the event is scrubbed before any rendering.
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then neither body shape nor any body leaf reaches the event sink.
+    assert scrubbed.get("extra", {})[field] == MARKER
+    assert CANARY not in repr(scrubbed)
+    assert "refused" in repr(scrubbed)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Authorization",
+        "body=",
+        "jwt_token:",
+        "Basic",
+        "ordinary status=refused",
+        'not-a-field "quote"',
+    ],
+)
+def test_incomplete_or_non_sensitive_diagnostic_is_still_delivered(
+    message: str,
+) -> None:
+    # Given a boundary token without a value, or unrelated quoted text.
+    def emit() -> None:
+        sentry_sdk.capture_message(message)
+
+    # When the real Sentry hook tokenizes it.
+    events = captured_events(emit)
+    # Then parsing never drops the diagnostic to conceal malformed input.
+    assert len(events) == 1
+    assert events[0].get("message") == message
+
+
+@pytest.mark.parametrize("encoding", ["unicode", "escaped-slash"])
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+def test_decoded_rendered_credential_is_removed_from_raw_echoes(
+    encoding: str, sink: str
+) -> None:
+    # Given a credential known only through an escaped JSON value, plus a raw echo.
+    token = CANARY + "/private"
+    rendered = json.dumps({"jwt_token": token})
+    if encoding == "unicode":
+        rendered = rendered.replace("synthetic", r"\u0073ynthetic")
+    else:
+        rendered = rendered.replace("/", r"\/")
+    context = {"rendered": rendered, "echo": token, "status": "refused"}
+    # When the real sink discovers credentials in rendered strings.
+    if sink == "console":
+        output = production_console(
+            lambda logger: logger.warning("decoded-value %s", context)
+        )
+    else:
+
+        def emit() -> None:
+            sentry_sdk.set_extra("context", context)
+            sentry_sdk.capture_message("decoded-value")
+
+        events = captured_events(emit)
+        assert len(events) == 1
+        output = json.dumps(events)
+    # Then discovery uses the actual value, not only its escaped representation.
+    assert token not in output
+    assert "refused" in output
+
+
+def test_sdk_annotation_paths_are_not_treated_as_credential_data() -> None:
+    # Given real SDK depth annotations mirroring a credential-bearing field.
+    event: dict[str, object] = {
+        "extra": {
+            "headers": {b"jwt_token": {"level2": [{"value": CANARY.encode()}]}},
+            "echo": CANARY,
+            "status": "refused",
+            "operation": "SP-PAG",
+        },
+        "_meta": {"extra": {"headers": {"jwt_token": {"rem": [["!limit", "x"]]}}}},
+    }
+    # When the production hook scrubs actual values and then SDK annotations.
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then schema keys and diagnostics survive, without the credential echo.
+    extra = scrubbed.get("extra", {})
+    assert extra.get("echo") == MARKER
+    assert extra.get("status") == "refused"
+    assert extra.get("operation") == "SP-PAG"
+    assert CANARY not in repr(scrubbed)
+    assert prod.scrub_sentry_event(scrubbed, {}) == scrubbed
+
+
+@pytest.mark.parametrize("artifact", ["signed-url", "base64"])
+@pytest.mark.parametrize("sink", ["console", "sentry"])
+def test_unlabelled_private_artifact_is_removed_before_serialization(
+    artifact: str, sink: str
+) -> None:
+    # Given unregistered private data without a credential/body field label.
+    private_path = "private-object-7251.pdf"
+    value = (
+        f"https://storage.invalid/{private_path}?X-Amz-Signature={CANARY}"
+        if artifact == "signed-url"
+        else "YWJj" * 400
+    )
+    message = f"artifact-download {value} status=refused elapsed=17"
+    # When the actual production sink receives the complete, untruncated value.
+    if sink == "console":
+        output = production_console(lambda logger: logger.warning(message))
+    else:
+        transport = _CaptureTransport()
+        client = sentry_sdk.Client(
+            **prod.SENTRY_OPTIONS,
+            dsn="http://public@example.invalid/1",
+            transport=transport,
+        )
+        with sentry_sdk.isolation_scope() as scope:
+            scope.set_client(client)
+            sentry_sdk.capture_message(message)
+            client.flush()
+        client.close()
+        assert len(transport.events) == 1
+        output = json.dumps(transport.events)
+    # Then even a truncated prefix or the signed object's path cannot escape.
+    assert private_path not in output
+    assert CANARY not in output
+    assert ("YWJj" * 16) not in output
+    assert "artifact-download" in output
+    assert "status=refused elapsed=17" in output

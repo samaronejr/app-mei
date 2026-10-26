@@ -1,7 +1,10 @@
-"""Provider credential recognition for the existing console and Sentry scrubbers."""
+"""Structural, two-pass redaction shared by console and Sentry."""
 
+import ast
+import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Final
 
 MARKER: Final = "[Filtered]"
@@ -18,129 +21,355 @@ PROVIDER_FIELDS: Final = frozenset(
         "payload",
     }
 )
-# `name: value`, `name=value` and rendered pairs such as `('name', 'value')` or
-# `(b'name', b'value')`. A quoted value is redacted through its closing quote, so
-# escaped delimiters and separators inside it hide nothing. Match an intact
-# marker as a whole too: replacing it with itself keeps scrubbing idempotent,
-# without trusting a marker prefix followed by more credential text.
-_FIELD_VALUE: Final = re.compile(
-    r"""(?ix)(?:authorization|proxy-authorization|jwt_token|access_token|
-    autenticar_procurador_token|x-[a-z0-9_-]*token[a-z0-9_-]*)
-    ["']?\s*[:=,]\s*
-    (?:b?(?P<quote>["'])(?:(?:Bearer|Basic)\s+)?(?P<quoted>(?:\\[\s\S]|(?!(?P=quote))[^\\])*)(?P=quote)
-    |(?:(?:Bearer|Basic)\s+)?(?P<bare>(?:\[Filtered\]|[^\s"',;}\])])+))"""
-)
-# How a client serializes a bytes field name: `b'Authorization'`.
-_BYTES_REPR: Final = re.compile(r"""\Ab(["'])(.*)\1\Z""", re.DOTALL)
-_BEARER: Final = re.compile(r"(?i)\bBearer\s+([A-Za-z0-9._~+/=-]+)")
-# A quoted body field rendered from a mapping: `'body': 'value'`.
-_QUOTED_BODY: Final = re.compile(
-    r"""((["'])(?:body|data|payload)\2\s*:\s*(["']))(?:(?!\3).)*\3""",
-    re.IGNORECASE,
-)
-# Shorter collected values would be replaced inside unrelated words.
-MIN_COLLECTED: Final = 8
-_QUERY: Final = re.compile(r"(?i)([?&](?:token|access_token|jwt_token)=)([^&#\s\"']+)")
+_PUNCTUATION: Final = frozenset("{}[](),:=;?&#<>")
+_CLOSING: Final = {"{": "}", "[": "]", "(": ")"}
 _SIGNED_URL: Final = re.compile(
     r"""https?://[^\s"'<>]*[?&](?:X-Amz-[^=\s]+|Signature|AWSAccessKeyId)=[^\s"'<>]*""",
     re.IGNORECASE,
 )
-# Presigned query credentials, also when logged without scheme and host
-# (urllib3 logs `"GET /file?X-Amz-Signature=... HTTP/1.1"`).
 _SIGNED_QUERY: Final = re.compile(
-    r"(?i)([?&](?:X-Amz-[A-Za-z-]+|Signature|AWSAccessKeyId)=)[^&#\s\"']+"
+    r"(?i)([?&](?:X-Amz-[A-Za-z-]+|Signature|AWSAccessKeyId)=)([^&#\s\"']+)"
 )
 _BASE64: Final = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{1025,}={0,2}")
 
 
+@dataclass(frozen=True, slots=True)
+class _Token:
+    start: int
+    end: int
+    value: str
+    content_start: int
+    content_end: int
+
+
+def _literal(value: str) -> str:
+    """Decode only an individual str/bytes literal, never executable expressions."""
+    if not value.startswith(("'", '"', "b'", 'b"', "B'", 'B"')):
+        return value
+    try:
+        parsed = json.loads(value) if value.startswith('"') else ast.literal_eval(value)
+    except (ValueError, SyntaxError, SyntaxWarning):
+        return value
+    match parsed:
+        case bytes():
+            return parsed.decode("utf-8", "surrogateescape")
+        case str():
+            return parsed
+        case _:
+            return value
+
+
+def _tokens(text: str) -> list[_Token]:
+    """Find actual closing quotes, skipping escaped characters atomically."""
+    tokens: list[_Token] = []
+    cursor = 0
+    while cursor < len(text):
+        if text[cursor].isspace():
+            cursor += 1
+            continue
+        start = cursor
+        quote_at = cursor + int(
+            text[cursor] in "bB" and text[cursor + 1 : cursor + 2] in {"'", '"'}
+        )
+        if text[quote_at] in {"'", '"'}:
+            quote = text[quote_at]
+            cursor = quote_at + 1
+            while cursor < len(text):
+                if text[cursor] == "\\":
+                    cursor += 2
+                elif text[cursor] == quote:
+                    break
+                else:
+                    cursor += 1
+            content_end = min(cursor, len(text))
+            cursor = min(cursor + 1, len(text))
+            raw = text[start:cursor]
+            tokens.append(
+                _Token(start, cursor, _literal(raw), quote_at + 1, content_end)
+            )
+            continue
+        if text.startswith(MARKER, cursor):
+            cursor += len(MARKER)
+        elif text[cursor] in _PUNCTUATION:
+            cursor += 1
+        else:
+            while (
+                cursor < len(text)
+                and not text[cursor].isspace()
+                and text[cursor] not in _PUNCTUATION
+                and text[cursor] not in {"'", '"'}
+            ):
+                cursor += 1
+        tokens.append(_Token(start, cursor, text[start:cursor], start, cursor))
+    return tokens
+
+
 def field_name(name: str | bytes) -> str:
-    """Lowercase a field name given as bytes or as a serialized `b'...'` repr."""
+    """Normalize actual bytes keys and the SDK's serialized bytes-key literals."""
     text = name.decode("latin-1") if isinstance(name, bytes) else name
-    wrapped = _BYTES_REPR.match(text)
-    return (wrapped[2] if wrapped else text).lower()
+    return _literal(text).lower()
 
 
 def provider_field(name: str | bytes) -> bool:
-    """Recognize named tokens and all provider X-*Token* header variants."""
+    """Recognize provider credentials and every X-*Token* header."""
     lowered = field_name(name)
     return lowered in PROVIDER_FIELDS or (
         lowered.startswith("x-") and "token" in lowered
     )
 
 
-def _redact_field(match: re.Match[str]) -> str:
-    group = "quoted" if match["quoted"] is not None else "bare"
-    start, end = (index - match.start() for index in match.span(group))
-    return match[0][:start] + MARKER + match[0][end:]
-
-
-def scrub_provider_text(value: str) -> str:
-    """Remove credential-bearing text even without an attached Django request."""
-    value = _SIGNED_URL.sub(MARKER, value)
-    value = _FIELD_VALUE.sub(_redact_field, value)
-    value = _BEARER.sub(lambda match: match[0].replace(match[1], MARKER), value)
-    value = _QUOTED_BODY.sub(rf"\1{MARKER}\3", value)
-    value = _SIGNED_QUERY.sub(rf"\1{MARKER}", value)
-    value = _QUERY.sub(lambda match: match[1] + MARKER, value)
-    return _BASE64.sub(MARKER, value)
-
-
-def scrub_text(value: str, credentials: set[str]) -> str:
-    """Replace every active credential value, then provider credential shapes."""
-    for credential in sorted(credentials, key=len, reverse=True):
-        value = value.replace(credential, MARKER)
-    return scrub_provider_text(value)
-
-
-def collect_credentials(value: object, credentials: set[str]) -> None:
-    """Remember credential values long enough to replace them elsewhere."""
-    if isinstance(value, bytes):
-        collect_credentials(value.decode("utf-8", "replace"), credentials)
-    elif isinstance(value, str):
-        for candidate in (value, _BEARER.sub(r"\1", value)):
-            if len(candidate) >= MIN_COLLECTED:
-                credentials.add(candidate)
-    elif isinstance(value, Mapping):
-        for item in value.values():
-            collect_credentials(item, credentials)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            collect_credentials(item, credentials)
-
-
-def credential_pair(value: object) -> bool:
-    """Recognize a header-style `(name, value)` pair naming a provider credential."""
+def _sensitive(value: object, fields: frozenset[str] | None) -> bool:
     return (
-        isinstance(value, (list, tuple))
-        and len(value) == 2  # noqa: PLR2004
-        and isinstance(value[0], (str, bytes))
-        and provider_field(value[0])
+        fields is not None
+        and isinstance(value, (str, bytes))
+        and (provider_field(value) or field_name(value) in fields)
     )
 
 
-def redact_structure(value: object, credentials: set[str]) -> object:
-    """Redact before rendering, while field names and header pairs still exist.
+def _container_end(text: str, tokens: list[_Token]) -> int:
+    closing: list[str] = []
+    for item in tokens:
+        if item.content_start != item.start:
+            continue
+        if item.value in _CLOSING:
+            closing.append(_CLOSING[item.value])
+        elif item.value in _CLOSING.values():
+            if not closing or closing.pop() != item.value:
+                return len(text)
+            if not closing:
+                return item.end
+    return len(text)
 
-    Values found under provider fields are added to `credentials`, so a later
-    `scrub_text` pass also removes their other occurrences.
-    """
-    if isinstance(value, Mapping):
-        redacted: dict[object, object] = {}
-        for key, item in value.items():
-            if isinstance(key, (str, bytes)) and provider_field(key):
-                collect_credentials(item, credentials)
-                redacted[key] = MARKER
-            else:
-                redacted[key] = redact_structure(item, credentials)
-        return redacted
-    if isinstance(value, (list, tuple)):
-        if credential_pair(value):
-            collect_credentials(value[1], credentials)
-            items: list[object] = [value[0], MARKER]
+
+def _value_span(text: str, tokens: list[_Token], index: int) -> tuple[int, int]:
+    token = tokens[index]
+    if token.content_start != token.start:
+        return token.content_start, token.content_end
+    if token.value in _CLOSING:
+        return token.start, _container_end(text, tokens[index:])
+    end = token.start
+    while end < len(text):
+        if text.startswith(MARKER, end):
+            end += len(MARKER)
+        elif text[end].isspace() or text[end] in "',;\"}])&#":
+            break
         else:
-            items = [redact_structure(item, credentials) for item in value]
-        return tuple(items) if isinstance(value, tuple) else items
-    if isinstance(value, str):
-        # Known values first: pattern rules would alter them and defeat the match.
-        return scrub_text(value, credentials)
-    return value
+            end += 1
+    return token.start, end
+
+
+def _spans(
+    text: str, fields: frozenset[str] | None, credentials: set[str]
+) -> list[tuple[int, int]]:
+    tokens = _tokens(text)
+    spans: list[tuple[int, int]] = []
+    for index, token in enumerate(tokens):
+        following = index + 1
+        if _sensitive(token.value, fields):
+            if following >= len(tokens) or tokens[following].value not in {
+                ":",
+                "=",
+                ",",
+            }:
+                continue
+            following += 1
+        elif token.value.lower() not in {"bearer", "basic"}:
+            continue
+        if following < len(tokens):
+            if tokens[following].value.lower() in {"bearer", "basic"}:
+                following += 1
+            if following < len(tokens):
+                spans.append(_value_span(text, tokens, following))
+                if tokens[following].content_start != tokens[following].start:
+                    _remember(tokens[following].value, credentials)
+    spans.extend(match.span() for match in _SIGNED_URL.finditer(text))
+    spans.extend(match.span(2) for match in _SIGNED_QUERY.finditer(text))
+    spans.extend(match.span() for match in _BASE64.finditer(text))
+    for start, end in spans:
+        _remember(text[start:end], credentials)
+    return spans
+
+
+def _remember(text: str, credentials: set[str]) -> None:
+    """Recover raw leaves even when the SDK has represented a deep subtree."""
+    pending = [text]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        decoded = _literal(current)
+        if not current or decoded == MARKER or current in seen:
+            continue
+        seen.add(current)
+        credentials.add(current)
+        credentials.update((repr(current)[1:-1], json.dumps(current)[1:-1]))
+        if decoded != current:
+            pending.append(decoded)
+        if current.startswith(("{", "[", "(")):
+            tokens = _tokens(current)
+            pending.extend(
+                token.value
+                for index, token in enumerate(tokens)
+                if token.content_start != token.start
+                and (index + 1 == len(tokens) or tokens[index + 1].value != ":")
+            )
+
+
+def _children(
+    value: object, hidden: bool, fields: frozenset[str] | None
+) -> list[tuple[object, bool]]:
+    match value:
+        case Mapping():
+            return [
+                child
+                for key, item in value.items()
+                for child in ((key, hidden), (item, hidden or _sensitive(key, fields)))
+            ]
+        case [key, item] if _sensitive(key, fields):
+            return [(key, hidden), (item, True)]
+        case list() | tuple():
+            return [(item, hidden) for item in value]
+        case set() | frozenset():
+            return [(item, hidden) for item in value]
+        case _:
+            return []
+
+
+def _rebuild(value: object, items: list[object]) -> object:
+    match value:
+        case Mapping():
+            return dict(zip(items[::2], items[1::2], strict=True))
+        case list():
+            return items
+        case tuple():
+            return tuple(items)
+        case set():
+            return set(items)
+        case frozenset():
+            return frozenset(items)
+        case _:
+            return value
+
+
+def _walk(
+    value: object,
+    visit: Callable[[object, bool], object],
+    fields: frozenset[str] | None,
+) -> object:
+    """Walk without a recursion/depth limit; cycles become a safe edge marker."""
+    pending: list[tuple[object, bool, int]] = [(value, False, -1)]
+    results: list[object] = []
+    active: set[int] = set()
+    while pending:
+        current, hidden, count = pending.pop()
+        if count > 0:
+            items = results[-count:]
+            del results[-count:]
+            active.remove(id(current))
+            results.append(visit(_rebuild(current, items), hidden))
+            continue
+        if id(current) in active:
+            results.append(MARKER)
+            continue
+        children = _children(current, hidden, fields)
+        if children:
+            active.add(id(current))
+            pending.append((current, hidden, len(children)))
+            pending.extend((item, secret, -1) for item, secret in reversed(children))
+        else:
+            results.append(visit(current, hidden))
+    return results[0]
+
+
+def redact_structure(
+    value: object,
+    credentials: set[str],
+    *,
+    fields: frozenset[str] | None = frozenset(),
+    urls: Callable[[str], tuple[str, set[str]]] | None = None,
+) -> object:
+    """Discover first, replace second, across the entire record and all its keys."""
+    plans: dict[str, tuple[str, list[tuple[int, int]]]] = {}
+
+    def discover(item: object, hidden: bool) -> object:
+        if isinstance(item, (str, bytes)):
+            text = (
+                item.decode("utf-8", "surrogateescape")
+                if isinstance(item, bytes)
+                else item
+            )
+            if hidden:
+                _remember(text, credentials)
+            redacted, found = urls(text) if urls else (text, set())
+            credentials.update(found)
+            spans = _spans(redacted, fields, credentials)
+            plans[text] = (redacted, spans)
+        return item
+
+    _walk(value, discover, fields)
+    # A marker is an atomic alternative, never a prefix exemption. Longest values
+    # win over overlapping short credentials, including marker-prefixed secrets.
+    alternatives = sorted((credentials - {""}) | {MARKER}, key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(item) for item in alternatives))
+
+    def replace(item: object, hidden: bool) -> object:
+        if hidden:
+            return MARKER
+        if not isinstance(item, (str, bytes)):
+            return item
+        text = (
+            item.decode("utf-8", "surrogateescape") if isinstance(item, bytes) else item
+        )
+        redacted, spans = plans[text]
+        # Merge known-value matches with structural spans in original coordinates.
+        # Mutating a URL's signature first would otherwise hide its full known path.
+        spans = [*spans, *(match.span() for match in pattern.finditer(redacted))]
+        pieces: list[str] = []
+        cursor = 0
+        for start, end in sorted(spans, key=lambda span: (span[0], -span[1])):
+            if start < cursor:
+                continue
+            pieces.extend((redacted[cursor:start], MARKER))
+            cursor = end
+        pieces.append(redacted[cursor:])
+        redacted = "".join(pieces)
+        return (
+            redacted.encode("utf-8", "surrogateescape")
+            if isinstance(item, bytes)
+            else redacted
+        )
+
+    return _walk(value, replace, fields)
+
+
+def scrub_text(value: str, credentials: set[str]) -> str:
+    """Use the same discovery and replacement rules for rendered diagnostics."""
+    return str(redact_structure(value, credentials))
+
+
+def scrub_provider_text(value: str) -> str:
+    """Scrub a rendered diagnostic without any request or active-secret context."""
+    return scrub_text(value, set())
+
+
+def render_structure(value: object) -> str:
+    """Render a deep diagnostic with the stack walker, not recursive repr."""
+
+    def render(item: object, _hidden: bool) -> object:
+        match item:
+            case Mapping():
+                return (
+                    "{"
+                    + ", ".join(f"{key}: {part}" for key, part in item.items())
+                    + "}"
+                )
+            case list():
+                return "[" + ", ".join(str(part) for part in item) + "]"
+            case tuple():
+                content = ", ".join(str(part) for part in item)
+                return "(" + content + ("," if len(item) == 1 else "") + ")"
+            case set() | frozenset():
+                return "{" + ", ".join(sorted(str(part) for part in item)) + "}"
+            case _:
+                return repr(item)
+
+    return str(_walk(value, render, frozenset()))

@@ -1,7 +1,8 @@
 """Production settings: TLS-terminated, host-only cookies, Sentry on."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Final, cast
+from collections.abc import Mapping
+from typing import Any, Final, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import sentry_sdk
@@ -11,35 +12,23 @@ from django.conf import settings
 from django.urls import Resolver404, resolve
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
-from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
+from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 from sentry_sdk.types import Event, Hint
 
 from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
-from apps.integrations.privacy import (
-    collect_credentials,
-    credential_pair,
-    field_name,
-    provider_field,
-    redact_structure,
-    scrub_provider_text,
-    scrub_text,
-)
+from apps.integrations.privacy import redact_structure, render_structure, scrub_text
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING, env
 
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-type SentryValue = (
-    str | int | float | bool | dict[str, SentryValue] | list[SentryValue] | None
-)
 SENTRY_REDACTION_MARKER: Final = "[Filtered]"
 SENTRY_DSN_ERROR: Final = (
     "SENTRY_DSN is set but is not a DSN URL; unset it or provide the project DSN"
 )
 SENTRY_CREDENTIAL_FIELDS: Final = frozenset(
     {
+        *DEFAULT_DENYLIST,
+        *DEFAULT_PII_DENYLIST,
         "code",
         "confirmation_code",
         "key",
@@ -80,6 +69,8 @@ def _replace_path_segment(path: str, credential: str, replacement: str) -> str:
 
 
 def _redact_credential_url(value: str) -> tuple[str, set[str]]:
+    if not value.startswith(("/", "https://", "http://")):
+        return value, set()
     parsed = urlsplit(value)
     if not parsed.path.startswith("/"):
         return value, set()
@@ -119,56 +110,39 @@ def _redact_credential_url(value: str) -> tuple[str, set[str]]:
     return redacted, credentials
 
 
-def _scrub_sentry_urls(value: SentryValue, credentials: set[str]) -> SentryValue:
-    if isinstance(value, dict):
-        scrubbed: dict[str, SentryValue] = {}
-        for key, item in value.items():
-            # The SDK serializes a bytes key as "b'Authorization'".
-            if field_name(key) in SENTRY_CREDENTIAL_FIELDS or provider_field(key):
-                collect_credentials(item, credentials)
-                if isinstance(item, str) and item:
-                    credentials.add(item)
-                scrubbed[key] = SENTRY_REDACTION_MARKER
-            else:
-                scrubbed[key] = _scrub_sentry_urls(item, credentials)
-        return scrubbed
-    if isinstance(value, list):
-        if credential_pair(value):
-            collect_credentials(value[1], credentials)
-            return [value[0], SENTRY_REDACTION_MARKER]
-        return [_scrub_sentry_urls(item, credentials) for item in value]
-    if isinstance(value, str):
-        redacted, found = _redact_credential_url(value)
-        credentials.update(found)
-        return scrub_provider_text(redacted)
-    return value
-
-
-def _replace_sentry_credentials(
-    value: SentryValue,
-    credentials: set[str],
-) -> SentryValue:
-    if isinstance(value, dict):
-        return {
-            key: _replace_sentry_credentials(item, credentials)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_replace_sentry_credentials(item, credentials) for item in value]
-    if isinstance(value, str):
-        for credential in credentials:
-            value = value.replace(credential, SENTRY_REDACTION_MARKER)
-    return value
-
-
-def scrub_sentry_event(event: Event, _hint: Hint) -> Event:
+def scrub_sentry_event(event: Mapping[str, object], _hint: Hint) -> Event:
     credentials: set[str] = set(sensitive_values.get())
-    scrubbed = _scrub_sentry_urls(cast("SentryValue", event), credentials)
-    return cast("Event", _replace_sentry_credentials(scrubbed, credentials))
+    # SDK annotation paths mirror credential field names, but their leaves are
+    # bookkeeping such as "!limit"/"x", not credential values. They still receive
+    # every known-value replacement after discovery from the actual event.
+    source = {key: item for key, item in event.items() if key != "_meta"}
+    scrubbed = cast(
+        "Event",
+        redact_structure(
+            source,
+            credentials,
+            fields=SENTRY_CREDENTIAL_FIELDS,
+            urls=_redact_credential_url,
+        ),
+    )
+    if "_meta" in event:
+        annotations = redact_structure(
+            {"_meta": event["_meta"]}, credentials, fields=None
+        )
+        scrubbed.update(cast("Event", annotations))
+    return scrubbed
 
 
 def scrub_sentry_transaction(event: Event, hint: Hint) -> Event:
     return scrub_sentry_event(event, hint)
+
+
+class CredentialEventScrubber(EventScrubber):
+    """Discover raw credential leaves before SDK serialization can truncate them."""
+
+    def scrub_event(self, event: Event) -> None:
+        scrubbed = scrub_sentry_event(event, {})
+        event.update(scrubbed)
 
 
 def _request_credentials(record: logging.LogRecord) -> set[str]:
@@ -211,31 +185,50 @@ class CredentialURLLogFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         credentials = _request_credentials(record) | set(sensitive_values.get())
-        # Redact arguments while field names and header pairs still exist; the
-        # message template itself is interpolated only afterwards.
-        if record.args:
-            record.args = cast(
-                "tuple[object, ...] | Mapping[str, object]",
-                redact_structure(record.args, credentials),
-            )
-        if not isinstance(record.msg, str):
-            record.msg = redact_structure(record.msg, credentials)
+        # Interpolation is in-memory only. Scrubbing a template's %s first would
+        # destroy its placeholders and orphan the unlabelled argument values.
+        template = record.msg
+        message = template
+        if isinstance(message, str):
+            try:
+                message = record.getMessage()
+            except (TypeError, ValueError, KeyError, RecursionError):
+                message = f"{record.msg} {render_structure(record.args)}"
+        # One record-wide discovery includes arguments, extras and every exception
+        # before rendering can lose structure or a sibling field can be discarded.
+        chain = _exception_chain(record.exc_info[1]) if record.exc_info else []
+        source = {
+            **record.__dict__,
+            "msg": message,
+            "exception_arguments": [exception.args for exception in chain],
+            "exception_notes": [
+                getattr(exception, "__notes__", ()) for exception in chain
+            ],
+        }
+        scrubbed = cast(
+            "dict[str, Any]",
+            redact_structure(source, credentials, fields=SENTRY_CREDENTIAL_FIELDS),
+        )
+        record.__dict__.update(
+            (key, value)
+            for key, value in scrubbed.items()
+            if key not in {"exception_arguments", "exception_notes"}
+        )
+        for exception, arguments in zip(
+            chain, scrubbed["exception_arguments"], strict=True
+        ):
+            exception.args = arguments
+        if isinstance(template, str):
+            record.msg = template
         try:
             rendered = record.getMessage()
-        except (TypeError, ValueError, KeyError):
-            rendered = f"{record.msg} {record.args!r}"
+        except (TypeError, ValueError, KeyError, RecursionError):
+            rendered = f"{render_structure(record.msg)} {render_structure(record.args)}"
         record.args = ()
         record.msg = scrub_text(rendered, credentials)
-        for name in record.__dict__:
-            if provider_field(name):
-                record.__dict__[name] = SENTRY_REDACTION_MARKER
         if record.stack_info is not None:
             record.stack_info = scrub_text(record.stack_info, credentials)
         if record.exc_info is not None:
-            for exception in _exception_chain(record.exc_info[1]):
-                exception.args = cast(
-                    "tuple[Any, ...]", redact_structure(exception.args, credentials)
-                )
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text is not None:
             # The whole rendered chain, including causes and contexts.
@@ -340,7 +333,7 @@ SENTRY_OPTIONS: dict[str, Any] = {
     # worker traceback diagnostics. Celery widens what a frame can hold; pilot
     # privacy deliberately wins that trade.
     "include_local_variables": False,
-    "event_scrubber": EventScrubber(
+    "event_scrubber": CredentialEventScrubber(
         denylist=[*DEFAULT_DENYLIST, *sorted(SENTRY_CREDENTIAL_FIELDS)],
         recursive=True,
         send_default_pii=False,
