@@ -3,7 +3,7 @@
 import json
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1289,17 +1289,20 @@ CROSSING_DIAGNOSTICS = (
 )
 
 
-def crossing_output(sink: str, message: str, known: str) -> tuple[str, list[Any]]:
+def crossing_output(
+    sink: str, message: str, extras: Mapping[str, str]
+) -> tuple[str, list[Any]]:
     """Deliver one record through a real sink and return its text and events."""
     if sink == "console":
         output = production_console(
-            lambda logger: logger.warning(message, extra={"jwt_token": known}),
+            lambda logger: logger.warning(message, extra=dict(extras)),
             name="transport-privacy-crossing",
         )
         return output, []
 
     def emit() -> None:
-        sentry_sdk.set_extra("jwt_token", known)
+        for name, value in extras.items():
+            sentry_sdk.set_extra(name, value)
         sentry_sdk.capture_message(message)
 
     if sink == "before-send-only":
@@ -1334,7 +1337,7 @@ def test_known_value_crossing_a_quoted_credential_leaves_no_private_tail(
         "status=503 operation=SP-PAG elapsed_ms=37 request_id=RV6-901"
     )
     # When a real sink delivers the record.
-    output, events = crossing_output(sink, message, known)
+    output, events = crossing_output(sink, message, {"jwt_token": known})
     # Then the union of both ranges is gone and the diagnostics survive.
     assert output
     assert CROSSING_HEAD not in output
@@ -1376,3 +1379,79 @@ def test_only_touching_ranges_share_a_marker(text: str, expected: str) -> None:
     # Then touching ranges become one marker and separated ones stay distinct.
     assert once == expected
     assert scrub_text(once, {"ab", "cd"}) == once
+
+
+CHAIN_WORDS = ("alpha", "bravo", "charlie", "delta", "echo")
+CHAIN_FIELDS = ("jwt_token", "access_token", "autenticar_procurador_token")
+
+
+@pytest.mark.parametrize("windows", [2, 3], ids=["two-values", "chained-values"])
+@pytest.mark.parametrize("sink", ["console", "before-send-only", "production-options"])
+def test_overlapping_known_values_leave_no_tail_at_real_sinks(
+    sink: str, windows: int
+) -> None:
+    # Given known values that each start inside the previous one and end after it.
+    words = [f"rv6{name}D1709" for name in CHAIN_WORDS[: windows + 2]]
+    extras = {
+        CHAIN_FIELDS[index]: "-".join(words[index : index + 3])
+        for index in range(windows)
+    }
+    message = (
+        f"{'-'.join(words)} "
+        "status=503 operation=SP-PAG elapsed_ms=37 request_id=RV6-903"
+    )
+    # When a real sink delivers a record that contains the whole chain.
+    output, events = crossing_output(sink, message, extras)
+    # Then no word of the chain survives and the diagnostics do.
+    assert output
+    for word in words:
+        assert word not in output
+    assert MARKER in output
+    for diagnostic in ("status=503", "operation=SP-PAG", "elapsed_ms=37", "RV6-903"):
+        assert diagnostic in output
+    if sink == "console":
+        assert scrub_provider_text(output) == output
+    else:
+        assert len(events) == 1
+        assert prod.scrub_sentry_event(events[0], {}) == events[0]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("x aaa y", f"x {MARKER} y"),
+        ("x aa y aa z", f"x {MARKER} y {MARKER} z"),
+    ],
+    ids=["overlapping-occurrences", "disjoint-occurrences"],
+)
+def test_overlapping_occurrences_of_one_value_are_removed_whole(
+    text: str, expected: str
+) -> None:
+    # Given one known value that occurs overlapping itself, or twice apart.
+    # When it is replaced, and the result is scrubbed again.
+    once = scrub_text(text, {"aa"})
+    # Then overlapping occurrences share one marker and separate ones do not.
+    assert once == expected
+    assert scrub_text(once, {"aa"}) == once
+
+
+def test_union_that_consumes_a_closing_quote_loses_later_diagnostics_on_rescrub() -> (
+    None
+):
+    # Given a known value that crosses the closing quote of a quoted credential.
+    known = f"c' {CROSSING_TAIL}"
+    text = f"body='abc' {CROSSING_TAIL} status=503 operation=SP-PAG"
+    # When the union removes that quote and the result is scrubbed again.
+    once = scrub_text(text, {known})
+    twice = scrub_text(once, set())
+    # Then the first pass keeps the diagnostics and leaks nothing, the second reads
+    # the unterminated body to the end and drops them (privacy-safe), and it is stable.
+    assert once == f"body='{MARKER} status=503 operation=SP-PAG"
+    assert twice.startswith("body=")
+    assert MARKER in twice
+    for secret in ("abc", CROSSING_TAIL):
+        assert secret not in once
+        assert secret not in twice
+    for diagnostic in ("status=503", "operation=SP-PAG"):
+        assert diagnostic not in twice
+    assert scrub_text(twice, set()) == twice
