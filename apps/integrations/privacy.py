@@ -320,7 +320,11 @@ def redact_structure(
     # A marker is an atomic alternative, never a prefix exemption. Longest values
     # win over overlapping short credentials, including marker-prefixed secrets.
     alternatives = sorted((credentials - {""}) | {MARKER}, key=len, reverse=True)
-    pattern = re.compile("|".join(re.escape(item) for item in alternatives))
+    # A lookahead consumes nothing, so occurrences that overlap an earlier match
+    # are found too; _union() then removes every part of them.
+    pattern = re.compile(
+        "(?=(" + "|".join(re.escape(item) for item in alternatives) + "))"
+    )
 
     def replace(item: object, hidden: bool) -> object:
         if hidden:
@@ -333,7 +337,7 @@ def redact_structure(
         redacted, spans = plans[text]
         # Merge known-value matches with structural spans in original coordinates.
         # Mutating a URL's signature first would otherwise hide its full known path.
-        spans = [*spans, *(match.span() for match in pattern.finditer(redacted))]
+        spans = [*spans, *(match.span(1) for match in pattern.finditer(redacted))]
         pieces: list[str] = []
         cursor = 0
         for start, end in _union(spans):
