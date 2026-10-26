@@ -34,6 +34,8 @@ dependencies = [
   # (apps/cycles/parsing.py).
   "pypdf>=5.0",
   "redis",
+  # AXRM-011: the already-locked client is also required in production.
+  "requests==2.34.2",
   "sentry-sdk[django]",
   # Python 3.13's stdlib uuid has no uuid7() (it lands in 3.14) and Django 5.2 ships no
   # UUIDv7 field. Time-ordered primary keys matter here because every tenant-scoped
