@@ -462,6 +462,20 @@ proof passes. Owned lane `axrm-pg-011fix7`/`axrm-redis-011fix7` is removed with
 an empty receipt. Evidence is under `AXRM-011-fix7-*`. Independent review and
 all activation gates remain open.
 
+`AXRM-011` redaction-scan performance follow-up (review 7 NOTE, fixed before the
+wave-2 merge). The attempt-7 lookahead rescanned a long repetitive alternative at
+every position: 64 KiB took 3.3 s and 256 KiB 52 s. The known-value scan is now
+one Aho-Corasick pass that keeps only merged coverage intervals, so work is linear
+in the text plus the known values and every overlapping or self-overlapping
+occurrence is still covered before `_union()`; 256 KiB takes 0.17 s. Redaction
+semantics are unchanged: a frozen copy of the `329a98c` redactor is compared
+byte for byte, including a second scrub, on the rv7 range corpus and seeded
+overlapping inputs, and a latency test bounds 256 KiB of repetitive input at one
+second under an exclusive slot. There is no input cap, so nothing is skipped or
+left unredacted. Mutants of the new scan run in an exclusive slot. Gate totals,
+mutation results and the lane receipt are in `AXRM-011-perf-gates.txt` and the
+DoneClaim; review and the activation gates remain open.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),

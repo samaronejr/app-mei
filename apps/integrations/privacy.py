@@ -3,6 +3,7 @@
 import ast
 import json
 import re
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final
@@ -291,6 +292,55 @@ def _union(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
+class _KnownValues:
+    """Aho-Corasick index, built once for all strings in a discovered record."""
+
+    def __init__(self, values: set[str]) -> None:
+        self.edges: list[dict[str, int]] = [{}]
+        self.failure = [0]
+        self.lengths = [0]
+        for value in values:
+            state = 0
+            for character in value:
+                if character not in self.edges[state]:
+                    self.edges[state][character] = len(self.edges)
+                    self.edges.append({})
+                    self.failure.append(0)
+                    self.lengths.append(0)
+                state = self.edges[state][character]
+            self.lengths[state] = len(value)
+        pending = deque(self.edges[0].values())
+        while pending:
+            state = pending.popleft()
+            for character, following in self.edges[state].items():
+                pending.append(following)
+                fallback = self.failure[state]
+                while fallback and character not in self.edges[fallback]:
+                    fallback = self.failure[fallback]
+                self.failure[following] = self.edges[fallback].get(character, 0)
+                # All matches ending here are contained in the longest one.
+                self.lengths[following] = max(
+                    self.lengths[following], self.lengths[self.failure[following]]
+                )
+
+    def spans(self, text: str) -> list[tuple[int, int]]:
+        """Cover every overlapping match without storing each occurrence."""
+        merged: list[tuple[int, int]] = []
+        state = 0
+        for end, character in enumerate(text, 1):
+            while state and character not in self.edges[state]:
+                state = self.failure[state]
+            state = self.edges[state].get(character, 0)
+            length = self.lengths[state]
+            if length:
+                start = end - length
+                # Ends increase, but a longer match can enclose earlier ranges.
+                while merged and start <= merged[-1][1]:
+                    start = min(start, merged.pop()[0])
+                merged.append((start, end))
+        return merged
+
+
 def redact_structure(
     value: object,
     credentials: set[str],
@@ -317,14 +367,8 @@ def redact_structure(
         return item
 
     _walk(value, discover, fields)
-    # A marker is an atomic alternative, never a prefix exemption. Longest values
-    # win over overlapping short credentials, including marker-prefixed secrets.
-    alternatives = sorted((credentials - {""}) | {MARKER}, key=len, reverse=True)
-    # A lookahead consumes nothing, so occurrences that overlap an earlier match
-    # are found too; _union() then removes every part of them.
-    pattern = re.compile(
-        "(?=(" + "|".join(re.escape(item) for item in alternatives) + "))"
-    )
+    # Include the marker itself, without exempting marker-prefixed credentials.
+    known = _KnownValues((credentials - {""}) | {MARKER})
 
     def replace(item: object, hidden: bool) -> object:
         if hidden:
@@ -337,7 +381,7 @@ def redact_structure(
         redacted, spans = plans[text]
         # Merge known-value matches with structural spans in original coordinates.
         # Mutating a URL's signature first would otherwise hide its full known path.
-        spans = [*spans, *(match.span(1) for match in pattern.finditer(redacted))]
+        spans = [*spans, *known.spans(redacted)]
         pieces: list[str] = []
         cursor = 0
         for start, end in _union(spans):
