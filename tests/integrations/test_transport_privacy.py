@@ -12,7 +12,7 @@ import pytest
 import sentry_sdk
 
 from apps.delivery.privacy import delivery_secrets
-from apps.integrations.privacy import MARKER, scrub_provider_text
+from apps.integrations.privacy import MARKER, scrub_provider_text, scrub_text
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import ProviderRequest, TransportFailure
 from config.settings import prod
@@ -1277,3 +1277,102 @@ def test_sdk_malformed_limited_literal_is_still_a_credential() -> None:
     # Then normal credential discovery still removes it without losing the event.
     assert CANARY not in repr(scrubbed)
     assert scrubbed.get("extra", {}).get("status") == "refused"
+
+
+CROSSING_HEAD = "rv6-crossing-private-head-D1709"
+CROSSING_TAIL = "rv6-crossing-private-tail-D1709"
+CROSSING_DIAGNOSTICS = (
+    "status=503",
+    "operation=SP-PAG",
+    "elapsed_ms=37",
+    "request_id=RV6-901",
+)
+
+
+def crossing_output(sink: str, message: str, known: str) -> tuple[str, list[Any]]:
+    """Deliver one record through a real sink and return its text and events."""
+    if sink == "console":
+        output = production_console(
+            lambda logger: logger.warning(message, extra={"jwt_token": known}),
+            name="transport-privacy-crossing",
+        )
+        return output, []
+
+    def emit() -> None:
+        sentry_sdk.set_extra("jwt_token", known)
+        sentry_sdk.capture_message(message)
+
+    if sink == "before-send-only":
+        events = captured_events(emit)
+    else:
+        transport = _CaptureTransport()
+        client = sentry_sdk.Client(
+            **prod.SENTRY_OPTIONS,
+            dsn="http://public@example.invalid/1",
+            transport=transport,
+        )
+        with sentry_sdk.isolation_scope() as scope:
+            scope.clear()
+            scope.set_client(client)
+            sentry_sdk.get_current_scope().clear()
+            emit()
+            client.flush()
+        client.close()
+        events = transport.events
+    return json.dumps(events), events
+
+
+@pytest.mark.parametrize("sink", ["console", "before-send-only", "production-options"])
+@pytest.mark.parametrize("field", ["body", "payload", "jwt_token"])
+def test_known_value_crossing_a_quoted_credential_leaves_no_private_tail(
+    sink: str, field: str
+) -> None:
+    # Given a known value that starts before a quoted credential and ends inside it.
+    known = f"{CROSSING_HEAD} {field}='abc"
+    message = (
+        f"{known};{CROSSING_TAIL}' "
+        "status=503 operation=SP-PAG elapsed_ms=37 request_id=RV6-901"
+    )
+    # When a real sink delivers the record.
+    output, events = crossing_output(sink, message, known)
+    # Then the union of both ranges is gone and the diagnostics survive.
+    assert output
+    assert CROSSING_HEAD not in output
+    assert CROSSING_TAIL not in output
+    assert MARKER in output
+    for diagnostic in CROSSING_DIAGNOSTICS:
+        assert diagnostic in output
+    if sink == "console":
+        assert scrub_provider_text(output) == output
+    else:
+        assert len(events) == 1
+        assert prod.scrub_sentry_event(events[0], {}) == events[0]
+
+
+def test_crossing_ranges_merge_into_exactly_their_union() -> None:
+    # Given a known value crossing into a quoted credential, with context around.
+    known = "prefix body='abc"
+    text = f"keep {known};{CROSSING_TAIL}' status=503 ok"
+    # When the shared redactor replaces both ranges.
+    once = scrub_text(text, {known})
+    # Then one marker covers the union, nothing around it, and rescrubbing is stable.
+    assert once == f"keep {MARKER}' status=503 ok"
+    assert scrub_text(once, set()) == once
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("xx abcd yy", f"xx {MARKER} yy"),
+        ("xx ab-cd yy", f"xx {MARKER}-{MARKER} yy"),
+        ("xx ab cd yy", f"xx {MARKER} {MARKER} yy"),
+    ],
+    ids=["adjacent", "separated-by-punctuation", "separated-by-space"],
+)
+def test_only_touching_ranges_share_a_marker(text: str, expected: str) -> None:
+    # Given two known values, touching or separated by one character.
+    # When they are replaced, and the result is scrubbed again.
+    once = scrub_text(text, {"ab", "cd"})
+    # Then touching ranges become one marker and separated ones stay distinct.
+    assert once == expected
+    assert scrub_text(once, {"ab", "cd"}) == once
