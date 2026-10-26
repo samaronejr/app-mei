@@ -1181,3 +1181,96 @@ def test_malformed_url_is_filtered_without_dropping_the_event(authority: str) ->
     assert events[0]["extra"]["target"] == MARKER
     assert events[0]["extra"]["echo"] == f"target {MARKER} refused"
     assert prod.scrub_sentry_event(events[0], {}) == events[0]
+
+
+@pytest.mark.parametrize("scalar", [19, 17.5, True, False, None])
+@pytest.mark.parametrize("mode", ["before-send-only", "production-options"])
+def test_sdk_limited_body_scalars_do_not_become_credentials(
+    scalar: float | bool | None, mode: str
+) -> None:
+    # Given a body scalar deep enough for the SDK to replace it with repr.
+    request_id = f"request-{scalar!r}-R923"
+    context = {
+        "request": {"body": {"private": [scalar, CANARY]}},
+        "echo": CANARY,
+        "request_id": request_id,
+        "elapsed_ms": 17,
+        "status": "refused",
+    }
+
+    def emit() -> None:
+        sentry_sdk.set_extra("context", context)
+        sentry_sdk.capture_message("scalar-context")
+
+    # When either supported real SDK configuration delivers the event.
+    if mode == "before-send-only":
+        events = captured_events(emit)
+    else:
+        transport = _CaptureTransport()
+        client = sentry_sdk.Client(
+            **prod.SENTRY_OPTIONS,
+            dsn="http://public@example.invalid/1",
+            transport=transport,
+        )
+        with sentry_sdk.isolation_scope() as scope:
+            scope.set_client(client)
+            emit()
+            client.flush()
+        client.close()
+        events = transport.events
+    # Then real string credentials disappear without inventing scalar secrets.
+    assert len(events) == 1
+    assert CANARY not in json.dumps(events)
+    captured = events[0].get("extra", {}).get("context")
+    assert isinstance(captured, dict)
+    assert captured["request_id"] == request_id
+    assert captured["elapsed_ms"] == 17
+    assert captured["status"] == "refused"
+    assert prod.scrub_sentry_event(events[0], {}) == events[0]
+
+
+@pytest.mark.parametrize("credential", ["19", "True", "None"])
+def test_sdk_limited_string_credentials_are_not_exempt(credential: str) -> None:
+    # Given a real short string credential, not an SDK-represented scalar.
+    def emit() -> None:
+        sentry_sdk.set_extra(
+            "headers", {"jwt_token": {"level2": [{"value": credential}]}}
+        )
+        sentry_sdk.set_extra("echo", f"alias-{credential}-R923")
+        sentry_sdk.capture_message("string-credential")
+
+    # When the SDK represents the deep leaf before the hook runs.
+    events = captured_events(emit)
+    # Then parsing its representation still discovers the genuine credential.
+    assert len(events) == 1
+    assert credential not in events[0]["extra"]["echo"]
+    assert "R923" in events[0]["extra"]["echo"]
+
+
+def test_sdk_non_limit_annotations_do_not_exempt_a_credential() -> None:
+    # Given a numeric string without SDK depth-limit evidence.
+    event: dict[str, object] = {
+        "extra": {"jwt_token": "19", "echo": "alias-19-R923"},
+        "_meta": {"extra": {"jwt_token": {"": {"rem": [["!size", "x"]]}}}},
+    }
+    # When the production hook sees an unrelated annotation.
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then that annotation cannot turn a real credential into a safe number.
+    echo = scrubbed.get("extra", {}).get("echo")
+    assert isinstance(echo, str)
+    assert "19" not in echo
+    assert "R923" in echo
+
+
+def test_sdk_malformed_limited_literal_is_still_a_credential() -> None:
+    # Given an SDK-limited value that is not a complete Python literal.
+    value = f"not a complete literal; {CANARY}"
+    event: dict[str, object] = {
+        "extra": {"jwt_token": value, "echo": value, "status": "refused"},
+        "_meta": {"extra": {"jwt_token": {"": {"rem": [["!limit", "x"]]}}}},
+    }
+    # When scalar recovery cannot parse it.
+    scrubbed = prod.scrub_sentry_event(event, {})
+    # Then normal credential discovery still removes it without losing the event.
+    assert CANARY not in repr(scrubbed)
+    assert scrubbed.get("extra", {}).get("status") == "refused"

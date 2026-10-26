@@ -1,5 +1,6 @@
 """Production settings: TLS-terminated, host-only cookies, Sentry on."""
 
+import ast
 import logging
 from collections.abc import Mapping
 from typing import Any, Final, cast
@@ -113,6 +114,35 @@ def _redact_credential_url(value: str) -> tuple[str, set[str]]:
     return redacted, credentials
 
 
+def _restore_sentry_scalars(value: object, annotations: object) -> object:
+    """Recover non-string scalar reprs on the SDK's bounded annotation paths."""
+    if not isinstance(annotations, Mapping):
+        return value
+    match value:
+        case Mapping():
+            return {
+                key: _restore_sentry_scalars(item, annotations.get(str(key)))
+                for key, item in value.items()
+            }
+        case list():
+            return [
+                _restore_sentry_scalars(item, annotations.get(str(index)))
+                for index, item in enumerate(value)
+            ]
+        case str():
+            details = annotations.get("", {})
+            removals = details.get("rem") if isinstance(details, Mapping) else None
+            if isinstance(removals, list) and ["!limit", "x"] in removals:
+                try:
+                    scalar = ast.literal_eval(value)
+                except (ValueError, SyntaxError, SyntaxWarning):
+                    return value
+                match scalar:
+                    case int() | float() | None:
+                        return scalar
+    return value
+
+
 def scrub_sentry_event(event: Mapping[str, object], _hint: Hint) -> Event:
     credentials: set[str] = set(sensitive_values.get())
     # SDK annotation paths mirror credential field names, but their leaves are
@@ -122,7 +152,7 @@ def scrub_sentry_event(event: Mapping[str, object], _hint: Hint) -> Event:
     scrubbed = cast(
         "Event",
         redact_structure(
-            source,
+            _restore_sentry_scalars(source, event.get("_meta")),
             credentials,
             fields=SENTRY_CREDENTIAL_FIELDS,
             urls=_redact_credential_url,
