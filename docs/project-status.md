@@ -384,6 +384,49 @@ suite **195**; these are inventory counts, not passing-suite claims. Read
 `.evidence/AXRM-011-fix6-gates.txt` for committed-head STD-GATES exits and execution
 totals. Independent review, PR delivery and provider activation remain open.
 
+`AXRM-011` attempt-6 closeout (2026-10-26). The original committed-head run
+at `de02654` had one real failure: the existing Sentry integration test received
+no transaction events. A second redaction pass parsed a URL whose hostname had
+already become `[Filtered]`; the resulting URL-parser exception caused the SDK
+to discard the transaction. `247ce01` filters invalid diagnostic URLs and their
+echoes without losing the event. Unchanged manual sink QA then exposed scalar
+representations corrupting a request ID: `32e2c32` recovers native numbers,
+booleans and `None` only on SDK depth-limit annotation paths, while real string
+credentials remain subject to redaction. `2db4b6e` isolates only the three new
+malformed-URL cases from inherited SDK state before planting their inputs;
+their assertions and every pre-existing test remain unchanged.
+
+At `2db4b6e`, the unchanged live Sentry regression passes, the full selected
+privacy/security set has **507 passed**, and the exact original group-2 xdist
+command has **4556 passed, 51 skipped**. All **15** touched-guard mutants are
+applied and killed, with unmutated baselines of **356 privacy tests** and the
+live Sentry test passing in separate processes. The **5 failed, 351 passed**
+stage is the expected scalar-recovery-removal mutant, not the final suite.
+`AXRM-011-fix6c-final-gates.txt` ends with `PIPELINE_FAILED_STAGES=0` and
+`PIPELINE_UNIT_EXIT=0`; Ruff, format and Mypy also pass.
+
+The unchanged RV3/RV4/RV5/AXRM-013 matrices pass again. Actual console and
+captured Sentry event/transaction QA retain diagnostic identifiers, contain no
+planted credentials or body values, and remain idempotent. The **18** added
+continuation cases bring privacy coverage to **356**. With the explicitly reused
+unaffected group-1 results and six exclusive timing cases, the combined default
+inventory is **6608 passing cases and 51 existing skips** (**6659** total), not a
+claim of another full-suite invocation. The exact diff proof checks **1745**
+unchanged tracked blobs, unchanged existing privacy/security tests, the gate
+runner, and production AST outside the two Sentry repairs. Isolation **893/51**,
+portal **319**, CNPJ **29**, browser **195**, migrations, build/static checks and
+the original **79** structural-redactor mutation witnesses are reused with
+their original receipts.
+
+The historical mixed-serial mutation baseline remains recorded as failed
+(inherited breadcrumb state; zero mutants applied); no old test was weakened.
+Existing editor-only typing findings and the inherited npm advisory remain
+outside this repair. Owned attempt-6 containers and completed units are removed,
+with empty runtime receipts. Evidence and the replacement DoneClaim are under
+`AXRM-011-fix6c-*`; attempts 4 and 5 remain separate. Commit `de02654`'s transport
+addition subject misdescribes its redactor rewrite; history is retained rather
+than rewritten. Fresh independent review and all activation gates remain open.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),
