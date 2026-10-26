@@ -1173,7 +1173,10 @@ def test_malformed_url_is_filtered_without_dropping_the_event(authority: str) ->
         sentry_sdk.capture_message("malformed-url status=refused")
 
     # When the real Sentry hook parses diagnostic URLs.
-    events = captured_events(emit)
+    with sentry_sdk.isolation_scope() as scope:
+        scope.clear()
+        sentry_sdk.get_current_scope().clear()
+        events = captured_events(emit)
     # Then the whole invalid URL is hidden, but the event and context survive.
     assert len(events) == 1
     assert CANARY not in json.dumps(events)
