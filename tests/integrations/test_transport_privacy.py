@@ -1160,3 +1160,24 @@ def test_unlabelled_private_artifact_is_removed_before_serialization(
     assert ("YWJj" * 16) not in output
     assert "artifact-download" in output
     assert "status=refused elapsed=17" in output
+
+
+@pytest.mark.parametrize("authority", ["[Filtered]", "[not-an-ip]", "[unterminated"])
+def test_malformed_url_is_filtered_without_dropping_the_event(authority: str) -> None:
+    # Given a URL whose authority is invalid, including a previously scrubbed host.
+    url = f"https://{authority}/{CANARY}"
+
+    def emit() -> None:
+        sentry_sdk.set_extra("target", url)
+        sentry_sdk.set_extra("echo", f"target {url} refused")
+        sentry_sdk.capture_message("malformed-url status=refused")
+
+    # When the real Sentry hook parses diagnostic URLs.
+    events = captured_events(emit)
+    # Then the whole invalid URL is hidden, but the event and context survive.
+    assert len(events) == 1
+    assert CANARY not in json.dumps(events)
+    assert events[0]["message"] == "malformed-url status=refused"
+    assert events[0]["extra"]["target"] == MARKER
+    assert events[0]["extra"]["echo"] == f"target {MARKER} refused"
+    assert prod.scrub_sentry_event(events[0], {}) == events[0]

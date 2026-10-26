@@ -71,9 +71,12 @@ def _replace_path_segment(path: str, credential: str, replacement: str) -> str:
 def _redact_credential_url(value: str) -> tuple[str, set[str]]:
     if not value.startswith(("/", "https://", "http://")):
         return value, set()
-    parsed = urlsplit(value)
-    if not parsed.path.startswith("/"):
-        return value, set()
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        # Known-value replacement can put [Filtered] in a hostname. Invalid URLs
+        # are private diagnostics, not a reason to drop the surrounding event.
+        return SENTRY_REDACTION_MARKER, {value}
     try:
         match = resolve(parsed.path, urlconf=settings.ROOT_URLCONF)
     except Resolver404:
