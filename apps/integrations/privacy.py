@@ -280,6 +280,17 @@ def _walk(
     return results[0]
 
 
+def _union(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping and adjacent ranges so no part of any range survives."""
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def redact_structure(
     value: object,
     credentials: set[str],
@@ -325,9 +336,7 @@ def redact_structure(
         spans = [*spans, *(match.span() for match in pattern.finditer(redacted))]
         pieces: list[str] = []
         cursor = 0
-        for start, end in sorted(spans, key=lambda span: (span[0], -span[1])):
-            if start < cursor:
-                continue
+        for start, end in _union(spans):
             pieces.extend((redacted[cursor:start], MARKER))
             cursor = end
         pieces.append(redacted[cursor:])
