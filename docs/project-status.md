@@ -427,6 +427,41 @@ with empty runtime receipts. Evidence and the replacement DoneClaim are under
 addition subject misdescribes its redactor rewrite; history is retained rather
 than rewritten. Fresh independent review and all activation gates remain open.
 
+`AXRM-011` attempt 7 (RV6-PRIVACY-OVERLAP, owner-authorized 2026-10-26). The
+redactor sorted its structural and known-value ranges but skipped any range that
+started before the cursor, so a known value crossing into a quoted credential
+left its private tail visible at the console and both Sentry configurations.
+`b8e7ae1` merges overlapping and adjacent ranges into one union with one
+marker; `6be7054` also collects every occurrence of a known value, overlapping
+ones included, with a zero-width lookahead, so a value that starts inside an
+earlier match is no longer missed and chained windows are removed whole.
+
+The reviewer's attack, unmodified, fails **9 of 9** cases on the attempt-6
+product and has **0 of 9** failures with the union. The crossing witnesses
+(**9** real-sink cases, exact union, adjacent and separated controls) fail
+**11, pass 8** on the attempt-6 product; the overlapping-value witnesses fail
+**8, pass 7** on the union alone, with the tail visible, and all pass at
+`6be7054`. A union that consumes a closing quote is documented, not changed: no
+secret survives, and a second scrub reads the unterminated body to the end and
+drops the later diagnostics. Unchanged RV3 **133**, RV4 **14**, RV5 **12** and
+**504/48/12**, and AXRM-013 **3** pass again; the privacy module has **378**
+passing and the privacy/security selection **529**. Group 1 has **2068 passed**
+plus the six exclusive timing cases; the exact group-2 xdist command has
+**4556 passed, 51 skipped**; combined default inventory is **6630 passing
+cases and 51 existing skips** (**6681**). Ruff, format and Mypy pass, and all
+**11** range-union and known-scan mutants are applied and killed (unmutated
+baselines pass).
+
+Isolation **893/51**, portal **319**, CNPJ **29**, browser **195**, migrations,
+npm and static checks are reused from the reviewer's fresh run at `91e21a7`
+behind an exact diff proof: only `apps/integrations/privacy.py` and the privacy
+test module differ, **1745** other tracked blobs are identical, and its only
+production consumer is `config/settings/prod.py`. The first proof run failed on
+my own assertion (two import lines, not one); its log is kept and the corrected
+proof passes. Owned lane `axrm-pg-011fix7`/`axrm-redis-011fix7` is removed with
+an empty receipt. Evidence is under `AXRM-011-fix7-*`. Independent review and
+all activation gates remain open.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),
