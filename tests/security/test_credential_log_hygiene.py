@@ -17,6 +17,7 @@ from django.test import Client, RequestFactory, override_settings
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from sentry_sdk.integrations.celery import CeleryIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.scrubber import EventScrubber
 from sentry_sdk.transport import Transport
 
@@ -184,9 +185,19 @@ def _run_real_exception_events(
             {
                 "include_local_variables": True,
                 "event_scrubber": EventScrubber(),
+                "integrations": [
+                    integration
+                    for integration in options["integrations"]
+                    if not isinstance(
+                        integration,
+                        (prod_settings.CredentialLoggingBoundary, LoggingIntegration),
+                    )
+                ]
+                + [LoggingIntegration()],
                 "before_breadcrumb": None,
                 "before_send": None,
                 "before_send_transaction": None,
+                "before_send_log": None,
             }
         )
 

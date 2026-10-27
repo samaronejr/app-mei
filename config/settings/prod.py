@@ -14,11 +14,13 @@ from botocore.config import Config as BotocoreConfig
 from celery import _state as celery_state
 from django.conf import settings
 from django.urls import Resolver404, resolve
+from sentry_sdk.integrations import Integration
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
-from sentry_sdk.types import Breadcrumb, BreadcrumbHint, Event, Hint
+from sentry_sdk.types import Breadcrumb, BreadcrumbHint, Event, Hint, Log
+from sentry_sdk.utils import format_attribute
 
 from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
@@ -199,6 +201,35 @@ def drop_unscrubbable_breadcrumb(
         "Breadcrumb | None",
         drop_unscrubbable_event(breadcrumb, hint),
     )
+
+
+def drop_unscrubbable_log(log: Log, _hint: Hint) -> Log | None:
+    """Freeze SDK attributes before its batcher can render opaque originals."""
+    try:
+        credentials = _known_values()
+        attributes = {
+            str(name): format_attribute(value)
+            for name, value in log["attributes"].items()
+        }
+        scrubbed = redact_structure(
+            attributes,
+            credentials,
+            fields=SENTRY_CREDENTIAL_FIELDS,
+            urls=_redact_credential_url,
+        )
+        # "body" here is the SDK's diagnostic message, not a provider payload.
+        # Discover private attribute fields first, then replace their echoes in it.
+        return cast(
+            "Log",
+            redact_structure(
+                {**log, "attributes": scrubbed},
+                credentials,
+                fields=None,
+                urls=_redact_credential_url,
+            ),
+        )
+    except Exception:  # noqa: BLE001 - nothing unsafe enters the background batcher
+        return None
 
 
 class CredentialEventScrubber(EventScrubber):
@@ -408,7 +439,21 @@ class CredentialURLLogFilter(logging.Filter):
         try:
             if dict.get(record.__dict__, _DROPPED_RECORD):
                 return False
+            # makeLogRecord legitimately defaults these to None. Normalize only
+            # those defaults before any dispatcher or formatter reads them.
+            if record.name is None:
+                record.name = SENTRY_REDACTION_MARKER
+            if record.levelno is None:
+                record.levelno = logging.ERROR
+            if type(record.name) is not str or type(record.levelno) is not int:
+                _withhold(record, TypeError())
+            record.levelname = str(record.levelname)
             self._scrub(record)
+            # Probe the actual console formatter before StreamHandler.handleError
+            # could serialize an invalid original record to stderr.
+            logging.Formatter(BASE_LOGGING["formatters"]["simple"]["format"]).format(
+                record
+            )
         except Exception as error:  # noqa: BLE001 - fail closed, a log call never raises
             try:
                 _withhold(record, error)
@@ -465,7 +510,7 @@ class CredentialURLLogFilter(logging.Filter):
         replacements = list(
             zip(chain, cast("list[tuple[Any, ...]]", arguments), strict=True)
         )
-        record.__dict__.update(updates)
+        object.__setattr__(record, "__dict__", updates)
         for exception, replacement in replacements:
             exception.args = replacement
         if isinstance(template, str):
@@ -477,12 +522,41 @@ class CredentialURLLogFilter(logging.Filter):
         record.args = ()
         record.msg = scrub_text(rendered, credentials)
         if record.stack_info is not None:
-            record.stack_info = scrub_text(record.stack_info, credentials)
+            record.stack_info = scrub_text(str(record.stack_info), credentials)
         if record.exc_info is not None:
             record.exc_text = logging.Formatter().formatException(record.exc_info)
         if record.exc_text is not None:
             # The whole rendered chain, including causes and contexts.
-            record.exc_text = scrub_text(record.exc_text, credentials)
+            record.exc_text = scrub_text(str(record.exc_text), credentials)
+
+
+class CredentialLoggingBoundary(Integration):
+    """Guard the SDK's outer dispatch, including its unprotected finally block."""
+
+    identifier = "credential_logging_boundary"
+
+    @staticmethod
+    def setup_once() -> None:
+        previous = logging.Logger.callHandlers
+
+        def call_handlers(self: logging.Logger, record: logging.LogRecord) -> None:
+            try:
+                boundary = sentry_sdk.get_client().get_integration(
+                    CredentialLoggingBoundary
+                )
+            except Exception:  # noqa: BLE001 - fail closed before selecting a client
+                return
+            if boundary is None:
+                previous(self, record)
+                return
+            try:
+                if not CredentialURLLogFilter().filter(record):
+                    return
+                previous(self, record)
+            except Exception:  # noqa: BLE001 - never expose originals from SDK dispatch
+                return
+
+        type.__setattr__(logging.Logger, "callHandlers", call_handlers)
 
 
 # Logger.callHandlers' SDK patch processes the original record independently of
@@ -587,7 +661,12 @@ STORAGES = {
 
 _sentry_dsn = env.str("SENTRY_DSN", default="")
 SENTRY_OPTIONS: dict[str, Any] = {
-    "integrations": [DjangoIntegration(), CeleryIntegration(), _credential_logging],
+    "integrations": [
+        DjangoIntegration(),
+        CeleryIntegration(),
+        _credential_logging,
+        CredentialLoggingBoundary(),
+    ],
     "environment": env.str("SENTRY_ENVIRONMENT", default="production"),
     "traces_sample_rate": env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.0),
     "send_default_pii": False,
@@ -603,6 +682,7 @@ SENTRY_OPTIONS: dict[str, Any] = {
     "before_send": drop_unscrubbable_event,
     "before_send_transaction": drop_unscrubbable_event,
     "before_breadcrumb": drop_unscrubbable_breadcrumb,
+    "before_send_log": drop_unscrubbable_log,
 }
 _release = current_release()
 if _release != UNKNOWN_RELEASE:

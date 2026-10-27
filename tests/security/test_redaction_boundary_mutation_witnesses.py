@@ -153,8 +153,8 @@ def test_excessive_diagnostics_are_withheld_at_real_console_and_sdk_boundaries(
 _CANARY_ERROR: type[RuntimeError] = type(CANARY, (RuntimeError,), {})
 
 
-class _PrivateErrorName(dict[str, Any]):
-    def update(self, *_args: object, **_kwargs: object) -> None:
+class _PrivateErrorName:
+    def __str__(self) -> str:
         raise _CANARY_ERROR
 
 
@@ -167,12 +167,12 @@ def test_withholding_cannot_reintroduce_private_error_names_or_numeric_levels(
     record = logging.makeLogRecord(
         {
             "name": "axrm011.fix4.boundary",
-            "msg": canary,
+            "msg": _PrivateErrorName() if source == "error-name" else canary,
             "levelno": logging.ERROR if source == "error-name" else int(canary),
+            "exc_info": None if source == "error-name" else [None],
         }
     )
-    dictionary = _PrivateErrorName if source == "error-name" else _RejectUpdate
-    record.__dict__ = dictionary(record.__dict__)
+    record.__dict__ = _RejectUpdate(record.__dict__)
     with _sinks(monkeypatch, logs=True) as (logger, stream, client, transport):
         # When the entire record must be withheld through every real sink.
         logger.handle(record)

@@ -507,10 +507,19 @@ The private Celery stack name is resolved at use time; its absence does not brea
 settings import and instead withholds console diagnostics and drops SDK events.
 
 Every console and Sentry logging handler now uses the same ingress filter,
-including the SDK's optional Logs handler. Unsupported record subclasses are
-rejected rather than passed to an overridable formatter. A rejected standard
-record is permanently marked, and event/breadcrumb hints cannot revive it.
-`before_breadcrumb` scrubs before transient known values leave scope.
+including the SDK's optional Logs handler. A separate production integration
+filters before the SDK's outer `callHandlers` wrapper can inspect a rejected
+record, and contains client-selection and dispatch failures. Unsupported record
+subclasses are rejected rather than passed to an overridable formatter. Standard
+factory defaults are normalized, malformed dispatch fields are withheld, and the
+actual console formatter is checked before a handler can print a formatting
+error. Successful scrubs replace the record mapping from a safe snapshot without
+calling its original mutators. A rejected standard record is permanently marked,
+and event/breadcrumb hints cannot revive it. Plain clients retain their own
+logging policy, including handler exceptions. `before_breadcrumb` scrubs before
+transient known values leave scope. `before_send_log` freezes opaque SDK
+attributes and scrubs their rendered values before the background batcher,
+without hiding an ordinary diagnostic body.
 The raw event scrubber replaces the source from its safe snapshot with unbound
 dict primitives; secondary clear/marker overrides cannot escape, and a withheld
 event cannot become deliverable on a later capture. Events and transactions share
@@ -532,8 +541,8 @@ The same fresh-process 5 MiB body/echo case peaks at **1,309,884 KiB** before th
 limit and **31,088 KiB** after it. Approved small-input equivalence and the
 256 KiB exclusive latency witness remain separate gates.
 
-Current default collection is **6,770 selected**: **2,101** in CI group 1 and
-**4,669** in group 2; isolation selects **944**, CNPJ **29**. These are collection
+Current default collection is **6,788 selected**: **2,101** in CI group 1 and
+**4,687** in group 2; isolation selects **944**, CNPJ **29**. These are collection
 totals, not passing results. Committed-head runs and exits are recorded in
 `.evidence/AXRM-011-fix4-final2-gates.txt` and the rewritten
 `.evidence/AXRM-011-perf-doneclaim.json`. The incomplete inherited `rv9final` log
@@ -542,14 +551,21 @@ is excluded. The corrected breadcrumb helper fails against the actual
 Mutation reconciliation retains 13 scan mutants plus four resource-budget
 mutants; of the previous 26 filter mutants, the obsolete original-mapping getter
 mutant is retired because withholding no longer reads it, and the remaining
-25 are retargeted alongside 19 new boundary mutants. Every child uses a fresh
+25 are retargeted alongside 38 new boundary mutants. Every child uses a fresh
 bytecode root and in-memory source loading; source digests must remain unchanged.
+
+Nine additional dispatch/rendering probes failed at `3fd7953`, including SDK
+name introspection after console rejection, invalid standard fields, opaque
+console text and late SDK Log attribute serialization. The expanded precommit
+selection now passes **79 boundary witnesses** and **14 HTTP/logging controls**;
+Ruff, format and mypy pass across **1,152 files**. Compile inventory checks
+**17 scan** and **63 filter** mutants without counting any kills.
 
 The first committed-head privacy/security run at `78eb7bc` reported **615 passed,
 1 failed**: the deliberately unhardened control inherited the newly configured
 `before_breadcrumb` hook, so its planted breadcrumb was scrubbed. The helper now
-explicitly disables that hook only for the unhardened client, alongside its
-existing disabled outgoing hooks. No control assertion changed. The obsolete
+explicitly disables all production hooks and uses a plain logging integration
+only for the unhardened client. No control assertion changed. The obsolete
 run and its registered child scope were stopped before editing; its partial
 group-1 run is not a result. All final gates are rerun at the new local head.
 
