@@ -344,6 +344,16 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "(404 otherwise); `service` is a catalog slug and `action` one of three "
         "verbs. None authorizes anything: fiscal.authority.manage does."
     ),
+    "client-federal-payments-consult": (
+        "AXRM-015. The UUID names a client resolved through the actor's portfolio "
+        "(404 otherwise). It authorizes nothing: fiscal.checks.run and the "
+        "federal_checks flag do, rechecked under the client lock."
+    ),
+    "client-federal-payment-receipt": (
+        "AXRM-015. A portfolio-resolved client UUID and the UUID of one of that "
+        "client's payments (404 otherwise). Neither authorizes anything: "
+        "fiscal.checks.run does, rechecked again by the worker before any call."
+    ),
     "cycle-open": (
         "The UUID names a client resolved through the actor's portfolio; it does "
         "not authorize creation, which requires the cycle operation capability."
@@ -801,6 +811,12 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
     "open-exceptions": {
         "task": "apps.cycles.tasks.open_deterministic_exceptions",
         "schedule": crontab(hour=6, minute=0),
+    },
+    # AXRM-015: after the 20th, one system PAGTOWEB consultation per linked client
+    # and month (idempotent per month); inert while federal_checks is off.
+    "schedule-payment-consultations": {
+        "task": "apps.integrations.serpro.tasks.schedule_payment_consultations",
+        "schedule": crontab(hour=6, minute=30),
     },
     "generate-cycles": {
         "task": "apps.cycles.tasks.generate_monthly_cycles",

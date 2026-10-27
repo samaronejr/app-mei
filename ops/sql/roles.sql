@@ -236,6 +236,10 @@ $$;
 -- fiscal-situation reports are firm-side (INV-R10); each carries the client-anchored
 -- policy and DenyPortalAccess from obligations.0024. obligations_federalpayment is
 -- append-only: the receipt loop below keeps it SELECT/INSERT on re-applied bootstrap.
+-- PORTAL_NONE: integrations_paymentquery
+-- AXRM-015: a PAGTOWEB consultation (who asked, which window, pages fetched, outcome)
+-- is firm-side (INV-R10); integrations.0007 adds the client-anchored policy and
+-- DenyPortalAccess, so a grant added by mistake would still read nothing.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
 -- PORTAL_NONE: tenants_notificationpreference

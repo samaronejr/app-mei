@@ -193,6 +193,11 @@ _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
         "range_start": PERIOD,
         "range_end": PERIOD,
     },
+    "integrations.PaymentQuery": {
+        # paymentquery_one_active: a finished consultation, so a probe's clone on
+        # the same client cannot collide with the seeded row as a second active one.
+        "state": "encontrado",
+    },
     "cycles.Exception": {
         "due_on": dt.date(2026, 10, 1),
         # The portal predicate is client_visible-folded; a hidden row counts as
@@ -1082,6 +1087,8 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "providerreservation_call_fk",
         ),
         ("integrations_providercall", "retry_of_id", "providercall_retry_fk"),
+        # AXRM-015: a PAGTOWEB consultation names its client's own SERPRO link.
+        ("integrations_paymentquery", "link_id", "paymentquery_link_fk"),
         (
             "integrations_providercallattempt",
             "call_id",

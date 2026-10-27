@@ -1,0 +1,11 @@
+{% load ptbr %}{% comment %}
+One federal payment: number, family, payment date, total, association and receipt.
+The receipt button posts once per payment; the service makes repeats idempotent.
+{% endcomment %}<tr data-federal-payment="{{ row.payment.pk }}">
+  <td data-label="Documento">{{ row.payment.numero_documento }}</td>
+  <td data-label="Tipo">{{ row.tipo_label }} · {{ row.payment.periodo_apuracao|competencia }}</td>
+  <td data-label="Pago em">{{ row.payment.data_arrecadacao|data }}</td>
+  <td data-label="Valor total" class="numeric">{{ row.payment.valor_total|brl }}</td>
+  <td data-label="Situação">{% include "partials/ui/status_badge.html" with state=row.badge label=row.status_label only %}</td>
+  <td data-label="Comprovante">{% if row.may_request_receipt %}<form method="post" action="{% url 'client-federal-payment-receipt' row.payment.client_id row.payment.pk %}" class="inline">{% csrf_token %}<button class="ui-btn ui-btn-quiet" type="submit">Emitir comprovante</button></form>{% else %}<span class="text-sm">{{ row.receipt_label }}</span>{% endif %}</td>
+</tr>

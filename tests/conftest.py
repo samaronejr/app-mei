@@ -102,6 +102,9 @@ PORTAL_DENIED_TABLES = (
     "obligations_fiscalsituationreport",
     "integrations_firmintegrationissue",
     "integrations_firmproviderreservation",
+    # AXRM-015: PAGTOWEB consultations are firm-side (INV-R10); DenyPortalAccess from
+    # integrations.0007. Mirrors `-- PORTAL_NONE: integrations_paymentquery`.
+    "integrations_paymentquery",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
