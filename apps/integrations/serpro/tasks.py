@@ -46,7 +46,12 @@ def scheduled_window(today: date) -> PaymentRange | None:
 
 @shared_task(base=PlatformTask, bind=True)
 def schedule_payment_consultations(self: PlatformTask) -> int:
-    """Open one system consultation per linked client and month, then enqueue it."""
+    """Open one system consultation per linked client and month, then enqueue it.
+
+    Beat fires daily; the consultation's identity is the client and the competence
+    month, never the day, so once the month's consultation exists (in any state)
+    later days return it and nothing new is opened or billed (A6 SP-PAG).
+    """
     assert_no_transaction()
     today = timezone.localdate()
     window = scheduled_window(today)
@@ -68,7 +73,7 @@ def schedule_payment_consultations(self: PlatformTask) -> int:
         for link in links:
             try:
                 query = open_payment_query(
-                    link.client, window, actor=None, nonce=f"agendada:{today:%Y-%m}"
+                    link.client, window, actor=None, cadence=window.start
                 )
             except PaymentQueryConflictError:
                 continue

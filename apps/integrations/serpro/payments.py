@@ -86,6 +86,7 @@ from apps.obligations.payment_matching import match_das_payments
 from apps.obligations.system_ingest import ingest_system_document
 
 if TYPE_CHECKING:
+    from datetime import date
     from uuid import UUID
 
     from apps.integrations.transport_types import Environment, JSONValue
@@ -156,16 +157,27 @@ def open_payment_query(
     window: PaymentRange,
     *,
     actor: User | None,
-    nonce: str,
+    nonce: str = "",
+    cadence: date | None = None,
 ) -> PaymentQuery:
-    """Create (or return) the query for this intent under the client's lock."""
-    key = _digest(
-        "pagtoweb-consulta",
-        str(client.pk),
-        window.start.isoformat(),
-        window.end.isoformat(),
-        ",".join(window.revenue_codes),
-        nonce,
+    """Create (or return) the query for this intent under the client's lock.
+
+    A deliberate consultation is identified by its window and the form's nonce. A
+    scheduled one (`cadence` = the competence month it covers) is identified by the
+    client and that month alone: the window's end is the day the schedule fired,
+    so it must not take part, or every later day would open another paid query.
+    """
+    key = (
+        _digest("pagtoweb-agendada", str(client.pk), cadence.isoformat())
+        if cadence is not None
+        else _digest(
+            "pagtoweb-consulta",
+            str(client.pk),
+            window.start.isoformat(),
+            window.end.isoformat(),
+            ",".join(window.revenue_codes),
+            nonce,
+        )
     )
     existing = PaymentQuery.objects.filter(client_id=client.pk, request_key=key).first()
     if existing is not None:
