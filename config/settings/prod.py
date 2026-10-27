@@ -3,12 +3,14 @@
 import ast
 import logging
 from collections.abc import Mapping
+from contextvars import Token
 from typing import Any, Final, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import sentry_sdk
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
+from celery.signals import task_postrun, task_prerun
 from django.conf import settings
 from django.urls import Resolver404, resolve
 from sentry_sdk.integrations.celery import CeleryIntegration
@@ -213,10 +215,127 @@ def _exception_chain(exception: BaseException | None) -> list[BaseException]:
     return chain
 
 
+_TASK_FAILURE_LOGGER: Final = "celery.app.trace"
+_TASK_FAILURE_FIELDS: Final = frozenset(
+    {
+        "args",
+        "description",
+        "exc",
+        "hostname",
+        "id",
+        "internal",
+        "kwargs",
+        "name",
+        "traceback",
+    }
+)
+# What a failed task carried or raised; the other fields only identify the task.
+_TASK_FAILURE_SECRETS: Final = ("args", "exc", "kwargs", "traceback")
+_TASK_FAILURE_ALIAS: Final = "task_failure_context"
+_RECORD_FIELDS: Final = frozenset(logging.makeLogRecord({}).__dict__) | {
+    "asctime",
+    "message",
+}
+
+
+def _task_failure_context(
+    producer: object, context: object, credentials: set[str]
+) -> dict[str, object] | None:
+    """Keep a failed task's identity visible and hide what it carried or raised.
+
+    Celery logs each failure's context under ``extra["data"]``, a provider-body name,
+    so every leaf of it, key names included, became a known credential and rewrote
+    the task name and id and even the filter's own field names. Only Celery's exact
+    context shape, from its own logger, is treated this way; anything else stays
+    fully hidden. Sentry never sees this record: its Celery integration ignores the
+    logger, so only the console filter needs it.
+    """
+    if (
+        producer != _TASK_FAILURE_LOGGER
+        or not isinstance(context, Mapping)
+        or set(context) != _TASK_FAILURE_FIELDS
+    ):
+        return None
+    # A pair under a hidden name remembers its value, and the literals inside it.
+    redact_structure(
+        [["token", str(context[name])] for name in _TASK_FAILURE_SECRETS],
+        credentials,
+        fields=SENTRY_CREDENTIAL_FIELDS,
+    )
+    return {
+        name: SENTRY_REDACTION_MARKER if name in _TASK_FAILURE_SECRETS else item
+        for name, item in context.items()
+    }
+
+
+def _withhold(record: logging.LogRecord, error: Exception) -> None:
+    """Fail closed: a record the filter cannot scrub is replaced, never passed on."""
+    for name in set(record.__dict__) - _RECORD_FIELDS:
+        del record.__dict__[name]
+    record.msg = (
+        f"{SENTRY_REDACTION_MARKER} log record withheld: "
+        f"redaction failed ({type(error).__name__})"
+    )
+    record.args = ()
+    record.exc_info = None
+    record.exc_text = None
+    record.stack_info = None
+
+
+_MIN_TASK_SECRET: Final = 8
+_TASK_SECRET_TOKENS: dict[str, Token[tuple[str, ...]]] = {}
+
+
+def _remember_task_arguments(
+    *,
+    task_id: str | None = None,
+    args: object = None,
+    kwargs: object = None,
+    **_: object,
+) -> None:
+    """Make a running task's arguments known values for every sink it can reach.
+
+    A task that raises or logs what it was given puts it into Sentry's exception
+    value and breadcrumbs, where only known values are removed, while the Celery
+    integration withholds the arguments themselves. They are learned here for the
+    length of the run. Shorter strings are skipped: they cannot be told apart from
+    event field names, which the same scan would then rewrite.
+    """
+    if task_id is None:
+        return
+    given = [
+        *(args if isinstance(args, (list, tuple)) else ()),
+        *(kwargs.values() if isinstance(kwargs, Mapping) else ()),
+    ]
+    found: set[str] = set()
+    redact_structure([["token", given]], found, fields=SENTRY_CREDENTIAL_FIELDS)
+    known = tuple(sorted(item for item in found if len(item) >= _MIN_TASK_SECRET))
+    _TASK_SECRET_TOKENS[task_id] = sensitive_values.set(
+        (*sensitive_values.get(), *known)
+    )
+
+
+def _forget_task_arguments(*, task_id: str | None = None, **_: object) -> None:
+    token = _TASK_SECRET_TOKENS.pop(task_id, None) if task_id is not None else None
+    if token is not None:
+        sensitive_values.reset(token)
+
+
+task_prerun.connect(_remember_task_arguments, dispatch_uid="axrm011-task-arguments")
+task_postrun.connect(_forget_task_arguments, dispatch_uid="axrm011-task-arguments")
+
+
 class CredentialURLLogFilter(logging.Filter):
     """Remove provider and URL credentials before console record serialization."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            self._scrub(record)
+        except Exception as error:  # noqa: BLE001 - fail closed, a log call never raises
+            _withhold(record, error)
+        return True
+
+    def _scrub(self, record: logging.LogRecord) -> None:
         credentials = _request_credentials(record) | set(sensitive_values.get())
         # Interpolation is in-memory only. Scrubbing a template's %s first would
         # destroy its placeholders and orphan the unlabelled argument values.
@@ -230,27 +349,43 @@ class CredentialURLLogFilter(logging.Filter):
         # One record-wide discovery includes arguments, extras and every exception
         # before rendering can lose structure or a sibling field can be discarded.
         chain = _exception_chain(record.exc_info[1]) if record.exc_info else []
-        source = {
-            **record.__dict__,
-            "msg": message,
-            "exception_arguments": [exception.args for exception in chain],
-            "exception_notes": [
-                getattr(exception, "__notes__", ()) for exception in chain
-            ],
-        }
+        extras = {**record.__dict__, "msg": message}
+        task_context = _task_failure_context(
+            record.name, extras.get("data"), credentials
+        )
+        if task_context is not None:
+            extras["data"] = task_context
+        # Fields travel as positional [name, value] pairs, so a name that discovery
+        # rewrites or merges ("exc" inside "exception_arguments") can neither lose a
+        # field nor leave its original value in place.
+        pairs: list[list[object]] = [
+            [
+                _TASK_FAILURE_ALIAS
+                if name == "data" and task_context is not None
+                else name,
+                value,
+            ]
+            for name, value in extras.items()
+        ]
+        pairs.append(["exception_arguments", [error.args for error in chain]])
+        pairs.append(
+            [
+                "exception_notes",
+                [getattr(error, "__notes__", ()) for error in chain],
+            ]
+        )
         scrubbed = cast(
-            "dict[str, Any]",
-            redact_structure(source, credentials, fields=SENTRY_CREDENTIAL_FIELDS),
+            "list[list[object]]",
+            redact_structure(pairs, credentials, fields=SENTRY_CREDENTIAL_FIELDS),
         )
-        record.__dict__.update(
-            (key, value)
-            for key, value in scrubbed.items()
-            if key not in {"exception_arguments", "exception_notes"}
+        *fields, arguments, _notes = (pair[1] for pair in scrubbed)
+        updates = dict(zip(extras, fields, strict=True))
+        replacements = list(
+            zip(chain, cast("list[tuple[Any, ...]]", arguments), strict=True)
         )
-        for exception, arguments in zip(
-            chain, scrubbed["exception_arguments"], strict=True
-        ):
-            exception.args = arguments
+        record.__dict__.update(updates)
+        for exception, replacement in replacements:
+            exception.args = replacement
         if isinstance(template, str):
             record.msg = template
         try:
@@ -266,7 +401,6 @@ class CredentialURLLogFilter(logging.Filter):
         if record.exc_text is not None:
             # The whole rendered chain, including causes and contexts.
             record.exc_text = scrub_text(record.exc_text, credentials)
-        return True
 
 
 DEBUG = False
