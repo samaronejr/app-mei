@@ -476,6 +476,22 @@ left unredacted. Mutants of the new scan run in an exclusive slot. Gate totals,
 mutation results and the lane receipt are in `AXRM-011-perf-gates.txt` and the
 DoneClaim; review and the activation gates remain open.
 
+`AXRM-011` log-filter follow-up. Celery logs every failed task's context under
+`extra["data"]`, a provider-body name, so `CredentialURLLogFilter` hid all of it
+and remembered even its key names as credentials. The known-value scan then
+rewrote the filter's own `exception_arguments` field name and the filter raised
+`KeyError` from inside logging, so any failed task could break its caller, and the
+task name and id were redacted. The filter now scrubs fields as positional pairs,
+withholds a record it cannot scrub instead of raising, and keeps the task name and
+id visible while hiding what the task carried or raised. Sentry's Celery
+integration ignores that logger, so only the console path needed it. Separately, a
+running task's string arguments of eight characters or more become known values
+for the length of the run, so an exception message or breadcrumb that embeds them
+no longer reaches Sentry; a transformed secret is not recognized. The witnesses
+fail on the unmodified filter and every mutant of the new guard is killed.
+Evidence is under `AXRM-011-perf-filter-*` and `AXRM-011-perf-args-red.txt`; gate
+totals are in the DoneClaim.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),
