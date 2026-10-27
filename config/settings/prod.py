@@ -4,6 +4,7 @@ import ast
 import copy
 import logging
 from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any, Final, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 from weakref import ref
@@ -18,6 +19,7 @@ from sentry_sdk.integrations import Integration
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.scope import add_global_event_processor
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 from sentry_sdk.types import Breadcrumb, BreadcrumbHint, Event, Hint, Log
 from sentry_sdk.utils import format_attribute
@@ -237,6 +239,11 @@ class CredentialEventScrubber(EventScrubber):
 
     def scrub_event(self, event: Event) -> None:
         # Event is a TypedDict statically; the SDK's in-place hook owns its dict.
+        if not issubclass(type(cast("object", event)), dict):
+            # Only a dict can be rewritten without calling the carrier's methods.
+            # The boundary's processor refuses other carriers before this hook;
+            # check-ins skip processors, so here they are left untouched.
+            return
         husk = cast("dict[str, object]", cast("object", event))
         try:
             if dict.get(husk, _WITHHELD_EVENT):
@@ -424,8 +431,28 @@ def _task_known_values() -> tuple[str, ...]:
     return tuple(known)
 
 
+# What one log record was scrubbed with, for the length of its dispatch. A value
+# found only in the record's own fields (a password extra) is hidden by the first
+# pass, yet later passes and the SDK's event, breadcrumb and Log render the live
+# exception again from exc_info. All of them run inside that dispatch.
+_RECORD_DISPATCH: Final[ContextVar[set[str] | None]] = ContextVar(
+    "axrm011_record_dispatch_known_values", default=None
+)
+
+
 def _known_values() -> set[str]:
-    return {*sensitive_values.get(), *_task_known_values()}
+    return {
+        *sensitive_values.get(),
+        *_task_known_values(),
+        *(_RECORD_DISPATCH.get() or ()),
+    }
+
+
+def _share_with_dispatch(credentials: set[str]) -> None:
+    """Later passes and SDK sinks of this dispatch render exc_info again."""
+    dispatch = _RECORD_DISPATCH.get()
+    if dispatch is not None:
+        dispatch.update(credentials)
 
 
 class CredentialURLLogFilter(logging.Filter):
@@ -528,15 +555,17 @@ class CredentialURLLogFilter(logging.Filter):
         if record.exc_text is not None:
             # The whole rendered chain, including causes and contexts.
             record.exc_text = scrub_text(str(record.exc_text), credentials)
+        _share_with_dispatch(credentials)
 
 
 class CredentialLoggingBoundary(Integration):
-    """Guard the SDK's outer dispatch, including its unprotected finally block."""
+    """Guard the SDK's outer dispatch and give every event hook a plain dict."""
 
     identifier = "credential_logging_boundary"
 
     @staticmethod
     def setup_once() -> None:
+        add_global_event_processor(_own_event_carrier)
         previous = logging.Logger.callHandlers
 
         def call_handlers(self: logging.Logger, record: logging.LogRecord) -> None:
@@ -550,13 +579,42 @@ class CredentialLoggingBoundary(Integration):
                 previous(self, record)
                 return
             try:
-                if not CredentialURLLogFilter().filter(record):
-                    return
-                previous(self, record)
+                # Every sink of this record shares what its first pass discovered;
+                # a record logged during the dispatch inherits it as well.
+                known = _RECORD_DISPATCH.set(set(_RECORD_DISPATCH.get() or ()))
+                try:
+                    if not CredentialURLLogFilter().filter(record):
+                        return
+                    previous(self, record)
+                finally:
+                    _RECORD_DISPATCH.reset(known)
             except Exception:  # noqa: BLE001 - never expose originals from SDK dispatch
                 return
 
         type.__setattr__(logging.Logger, "callHandlers", call_handlers)
+
+
+def _own_event_carrier(event: Event, _hint: Hint) -> Event | None:
+    """Continue with a plain dict the hooks own, or refuse the carrier.
+
+    The scrubber hook rewrites through unbound dict primitives, but the SDK then
+    serializes through the carrier's own accessors: a dict subclass could revive
+    a husk, and a mapping that is not a dict cannot be rewritten at all. Reading
+    a subclass's storage through dict.items calls none of its methods; the
+    original keeps only the withheld marker.
+    """
+    carrier = cast("object", event)
+    if type(carrier) is dict:
+        return event
+    if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+        return event
+    if not issubclass(type(carrier), dict):
+        return None
+    original = cast("dict[str, object]", carrier)
+    owned = dict(dict.items(original))
+    dict.clear(original)
+    dict.update(original, {_WITHHELD_EVENT: True})
+    return cast("Event", cast("object", owned))
 
 
 # Logger.callHandlers' SDK patch processes the original record independently of

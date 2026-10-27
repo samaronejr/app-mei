@@ -541,10 +541,10 @@ The same fresh-process 5 MiB body/echo case peaks at **1,309,884 KiB** before th
 limit and **31,088 KiB** after it. Approved small-input equivalence and the
 256 KiB exclusive latency witness remain separate gates.
 
-Current default collection is **6,788 selected**: **2,101** in CI group 1 and
-**4,687** in group 2; isolation selects **944**, CNPJ **29**. These are collection
+Current default collection is **6,800 selected**: **2,101** in CI group 1 and
+**4,699** in group 2; isolation selects **944**, CNPJ **29**. These are collection
 totals, not passing results. Committed-head runs and exits are recorded in
-`.evidence/AXRM-011-fix4-final2-gates.txt` and the rewritten
+`.evidence/AXRM-011-fix4-final3-gates.txt` and the rewritten
 `.evidence/AXRM-011-perf-doneclaim.json`. The incomplete inherited `rv9final` log
 is excluded. The corrected breadcrumb helper fails against the actual
 `9f4dd6b` helper with two retained breadcrumbs and passes with scoped capture.
@@ -559,7 +559,8 @@ name introspection after console rejection, invalid standard fields, opaque
 console text and late SDK Log attribute serialization. The expanded precommit
 selection now passes **79 boundary witnesses** and **14 HTTP/logging controls**;
 Ruff, format and mypy pass across **1,152 files**. Compile inventory checks
-**17 scan** and **63 filter** mutants without counting any kills.
+**17 scan** and **63 filter** mutants without counting any kills (76 filter
+mutants after the audit below).
 
 The first committed-head privacy/security run at `78eb7bc` reported **615 passed,
 1 failed**: the deliberately unhardened control inherited the newly configured
@@ -568,6 +569,30 @@ explicitly disables all production hooks and uses a plain logging integration
 only for the unhardened client. No control assertion changed. The obsolete
 run and its registered child scope were stopped before editing; its partial
 group-1 run is not a result. All final gates are rerun at the new local head.
+
+An audit at `f825e45` found two more boundary defects (red receipts
+`AXRM-011-fix4s3-red.txt`, `AXRM-011-fix4s3-tests-red.txt`); its final run was
+stopped and none of its stages count. With Sentry active a record passes the
+filter at the dispatch boundary and again at each handler. A credential found
+only in the record's own fields (a `password` extra) was hidden by the first
+pass, but the console handler's pass rendered the live exception again from
+`exc_info`, so a note or an attribute-based `__str__` printed it; Sentry's
+exception value and opaque extras had leaked it before this follow-up as well.
+The values a record is scrubbed with now stay known for its whole dispatch, in
+a context variable read by every later filter pass, the scrubber hook,
+`before_send`, `before_breadcrumb` and `before_send_log`; a record logged during
+the dispatch inherits them, and they end with it. Separately, the scrubber hook
+raised `TypeError` into `capture_event` for a non-dict mapping, and a dict
+subclass could revive a withheld husk because the SDK serializes through the
+carrier's own accessors. The boundary integration now registers an event
+processor that hands every later hook a plain dict read from a subclass's
+storage through `dict.items`, leaves the original holding only the withheld
+marker and refuses other carriers; plain clients keep the SDK's behaviour.
+Check-ins skip processors by SDK design, so the hook leaves a non-dict check-in
+untouched and `before_send` scrubs the serialized copy. Twelve new witnesses
+(eight red at `f825e45`) and 13 new filter mutants cover these guards; three
+existing husk mutants are now witnessed through check-ins, where the hook still
+sees a subclass.
 
 Residual diagnostic loss is intentional where an argument equals an event schema
 key (`exception`) or the task's own name: exempting those bytes would exempt a
