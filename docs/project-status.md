@@ -468,11 +468,13 @@ every position: 64 KiB took 3.3 s and 256 KiB 52 s. The known-value scan is now
 one Aho-Corasick pass that keeps only merged coverage intervals, so work is linear
 in the text plus the known values and every overlapping or self-overlapping
 occurrence is still covered before `_union()`; 256 KiB takes 0.17 s. Redaction
-semantics are unchanged: a frozen copy of the `329a98c` redactor is compared
+semantics within the resource envelope below are unchanged: a frozen copy of the
+`329a98c` redactor is compared
 byte for byte, including a second scrub, on the rv7 range corpus and seeded
 overlapping inputs, and a latency test bounds 256 KiB of repetitive input at one
-second under an exclusive slot. There is no input cap, so nothing is skipped or
-left unredacted. Mutants of the new scan run in an exclusive slot. Gate totals,
+second under an exclusive slot. Oversized diagnostics are withheld in full,
+never scanned only up to a private prefix. Mutants of the scan run in an exclusive
+slot. Gate totals,
 mutation results and the lane receipt are in `AXRM-011-perf-gates.txt` and the
 DoneClaim; review and the activation gates remain open.
 
@@ -491,6 +493,66 @@ no longer reaches Sentry; a transformed secret is not recognized. The witnesses
 fail on the unmodified filter and every mutant of the new guard is killed.
 Evidence is under `AXRM-011-perf-filter-*` and `AXRM-011-perf-args-red.txt`; gate
 totals are in the DoneClaim.
+
+`AXRM-011` boundary follow-up, fix attempt 4 (2026-10-27). Review 8 replaced
+signal-owned task secrets and partial-record withholding; review 9 still found
+three blockers at `f4d629d`: a directly nested execution inherited its parent's
+request cache, a console-rejected record bypassed filtering through Sentry's
+logging integration, and hostile event mutators raised inside the husk fallback.
+Unmodified reviewer probes reproduce all three before the repair. Request caches
+now carry weak ownership identities, so copying a request cannot copy authority
+to reuse its parent's cache. Parent and child values still compose, and request
+stack removal cleans them up without a signal or a process-global task-ID map.
+The private Celery stack name is resolved at use time; its absence does not break
+settings import and instead withholds console diagnostics and drops SDK events.
+
+Every console and Sentry logging handler now uses the same ingress filter,
+including the SDK's optional Logs handler. Unsupported record subclasses are
+rejected rather than passed to an overridable formatter. A rejected standard
+record is permanently marked, and event/breadcrumb hints cannot revive it.
+`before_breadcrumb` scrubs before transient known values leave scope.
+The raw event scrubber replaces the source from its safe snapshot with unbound
+dict primitives; secondary clear/marker overrides cannot escape, and a withheld
+event cannot become deliverable on a later capture. Events and transactions share
+the fail-closed outgoing callback; the unused transaction wrapper was removed.
+
+Additional real-sink witnesses found that withholding could reintroduce a secret
+as an exception class name or an arbitrary numeric level. Withholding now reads
+none of that metadata: it emits a constant marker at ERROR severity and loses
+the original error class, logger identity and source. Successfully scrubbed
+records retain their diagnostics. Celery's exact success context is recognized
+alongside its failure context, preserving the success task name/ID while hiding
+arguments and the separately returned provider result.
+
+Discovery text and aggregate known-value characters are each bounded at
+512 Ki-characters (bytes count by their input length), before tokenization or trie
+construction. Exceeding either budget withholds the whole console diagnostic or
+SDK event; public rendered-text callers receive only `[Filtered]`.
+The same fresh-process 5 MiB body/echo case peaks at **1,309,884 KiB** before the
+limit and **31,088 KiB** after it. Approved small-input equivalence and the
+256 KiB exclusive latency witness remain separate gates.
+
+Current default collection is **6,770 selected**: **2,101** in CI group 1 and
+**4,669** in group 2; isolation selects **944**, CNPJ **29**. These are collection
+totals, not passing results. Committed-head runs and exits are recorded in
+`.evidence/AXRM-011-fix4-final-gates.txt` and the rewritten
+`.evidence/AXRM-011-perf-doneclaim.json`. The incomplete inherited `rv9final` log
+is excluded. The corrected breadcrumb helper fails against the actual
+`9f4dd6b` helper with two retained breadcrumbs and passes with scoped capture.
+Mutation reconciliation retains 13 scan mutants plus four resource-budget
+mutants; of the previous 26 filter mutants, the obsolete original-mapping getter
+mutant is retired because withholding no longer reads it, and the remaining
+25 are retargeted alongside 19 new boundary mutants. Every child uses a fresh
+bytecode root and in-memory source loading; source digests must remain unchanged.
+
+Residual diagnostic loss is intentional where an argument equals an event schema
+key (`exception`) or the task's own name: exempting those bytes would exempt a
+credential too. The real-sink impact probe records both cases and a normal
+argument control. Transformed or short task secrets are not recognized as known
+values. Nested `delivery_secrets` scopes still replace rather than extend each
+other; that implementation is outside this follow-up's allowed paths.
+Independent review, provider qualification, operator and owner activation gates
+remain open; this repair authorizes no push, merge or activation.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.

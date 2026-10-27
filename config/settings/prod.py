@@ -6,17 +6,19 @@ import logging
 from collections.abc import Mapping
 from typing import Any, Final, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
+from weakref import ref
 
 import sentry_sdk
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
-from celery._state import _task_stack
+from celery import _state as celery_state
 from django.conf import settings
 from django.urls import Resolver404, resolve
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
-from sentry_sdk.types import Event, Hint
+from sentry_sdk.types import Breadcrumb, BreadcrumbHint, Event, Hint
 
 from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
@@ -169,33 +171,54 @@ def scrub_sentry_event(event: Mapping[str, object], _hint: Hint) -> Event:
     return scrubbed
 
 
-def scrub_sentry_transaction(event: Event, hint: Hint) -> Event:
-    return scrub_sentry_event(event, hint)
-
-
 _WITHHELD_EVENT: Final = "axrm011_event_withheld"
+_DROPPED_RECORD: Final = "_axrm011_record_dropped"
 
 
-def drop_unscrubbable_event(event: Event, hint: Hint) -> Event | None:
+def drop_unscrubbable_event(event: Mapping[str, object], hint: Hint) -> Event | None:
     """before_send: an event that cannot be scrubbed is dropped, never delivered."""
-    if cast("Mapping[str, object]", event).get(_WITHHELD_EVENT):
-        return None
     try:
+        if dict.get(cast("dict[str, Any]", event), _WITHHELD_EVENT):
+            return None
+        record = hint.get("log_record")
+        if record is not None and (
+            type(record) is not logging.LogRecord
+            or dict.get(record.__dict__, _DROPPED_RECORD)
+        ):
+            return None
         return scrub_sentry_event(event, hint)
     except Exception:  # noqa: BLE001 - fail closed
         return None
+
+
+def drop_unscrubbable_breadcrumb(
+    breadcrumb: Breadcrumb, hint: BreadcrumbHint
+) -> Breadcrumb | None:
+    """Scrub before retention, while transient task/delivery values still exist."""
+    return cast(
+        "Breadcrumb | None",
+        drop_unscrubbable_event(breadcrumb, hint),
+    )
 
 
 class CredentialEventScrubber(EventScrubber):
     """Discover raw credential leaves before SDK serialization can truncate them."""
 
     def scrub_event(self, event: Event) -> None:
+        # Event is a TypedDict statically; the SDK's in-place hook owns its dict.
+        husk = cast("dict[str, object]", cast("object", event))
         try:
-            event.update(scrub_sentry_event(event, {}))
+            if dict.get(husk, _WITHHELD_EVENT):
+                return
+            scrubbed = scrub_sentry_event(event, {})
+            # The SDK owns a dict, but a subclass can override its mutators or
+            # inject fields during discovery. Replace its contents from the safe
+            # result using only the non-overridable dict primitives.
+            dict.clear(husk)
+            dict.update(husk, scrubbed)
         except Exception:  # noqa: BLE001 - fail closed; before_send drops the husk
-            husk = cast("dict[str, object]", event)
-            husk.clear()
-            husk[_WITHHELD_EVENT] = True
+            dict.clear(husk)
+            dict.update(husk, {_WITHHELD_EVENT: True})
 
 
 def _request_credentials(record: logging.LogRecord) -> set[str]:
@@ -214,7 +237,7 @@ def _request_credentials(record: logging.LogRecord) -> set[str]:
     parameters = {name: str(item) for name, item in match.kwargs.items()}
     if match.url_name == _RESET_FROM_KEY_URL_NAME:
         key = parameters.get("key")
-        if key in {None, _RESET_FORM_URL_KEY}:
+        if key is None or key == _RESET_FORM_URL_KEY:
             return set()
         uidb36 = parameters.get("uidb36")
         return {key, f"{uidb36}-{key}" if uidb36 is not None else key}
@@ -250,12 +273,15 @@ _TASK_FAILURE_FIELDS: Final = frozenset(
 # What a failed task carried or raised; the other fields only identify the task.
 _TASK_FAILURE_SECRETS: Final = ("args", "exc", "kwargs", "traceback")
 _TASK_FAILURE_ALIAS: Final = "task_failure_context"
+_TASK_SUCCESS_FIELDS: Final = frozenset(
+    {"args", "id", "kwargs", "name", "return_value", "runtime"}
+)
 
 
 def _task_failure_context(
     producer: object, context: object, credentials: set[str]
 ) -> dict[str, object] | None:
-    """Keep a failed task's identity visible and hide what it carried or raised.
+    """Keep Celery task identity visible and hide arguments, results and failures.
 
     Celery logs each failure's context under ``extra["data"]``, a provider-body name,
     so every leaf of it, key names included, became a known credential and rewrote
@@ -264,51 +290,63 @@ def _task_failure_context(
     fully hidden. Sentry never sees this record: its Celery integration ignores the
     logger, so only the console filter needs it.
     """
-    if (
-        producer != _TASK_FAILURE_LOGGER
-        or not isinstance(context, Mapping)
-        or set(context) != _TASK_FAILURE_FIELDS
-    ):
+    if producer != _TASK_FAILURE_LOGGER or not isinstance(context, Mapping):
+        return None
+    names = set(context)
+    secrets: tuple[str, ...]
+    if names == _TASK_FAILURE_FIELDS:
+        secrets = _TASK_FAILURE_SECRETS
+    elif names == _TASK_SUCCESS_FIELDS:
+        secrets = ("args", "kwargs", "return_value")
+    else:
         return None
     # A pair under a hidden name remembers its value, and the literals inside it.
     redact_structure(
-        [["token", str(context[name])] for name in _TASK_FAILURE_SECRETS],
+        [["token", str(context[name])] for name in secrets],
         credentials,
         fields=SENTRY_CREDENTIAL_FIELDS,
     )
     return {
-        name: SENTRY_REDACTION_MARKER if name in _TASK_FAILURE_SECRETS else item
+        name: SENTRY_REDACTION_MARKER if name in secrets else item
         for name, item in context.items()
     }
 
 
-def _withhold(record: logging.LogRecord, error: Exception) -> None:
+def _withhold(record: logging.LogRecord, _error: Exception) -> None:
     """Fail closed: replace the whole record, not only its message and extras.
 
     The production formatter renders standard fields as well (the logger name and
-    level), so a record that could not be scrubbed keeps nothing it arrived with but
-    a numeric level. The original mapping is untrusted: nothing on it is called, it
-    is read through the unbound dict method and then replaced, never edited.
+    level). Neither an arbitrary numeric level nor the redactor exception's class
+    name is safe metadata: either can itself contain an original credential.
+    Read none of the original mapping; replace it with constant diagnostics.
     """
-    original = object.__getattribute__(record, "__dict__")
-    level = dict.get(original, "levelno")
     safe = logging.LogRecord(
         name=SENTRY_REDACTION_MARKER,
-        level=level if type(level) is int else logging.ERROR,
+        level=logging.ERROR,
         pathname=SENTRY_REDACTION_MARKER,
         lineno=0,
-        msg=(
-            f"{SENTRY_REDACTION_MARKER} log record withheld: "
-            f"redaction failed ({type(error).__name__})"
-        ),
+        msg=f"{SENTRY_REDACTION_MARKER} log record withheld: redaction failed",
         args=(),
         exc_info=None,
     )
+    safe.levelname = "ERROR"
     object.__setattr__(record, "__dict__", safe.__dict__)
 
 
 _MIN_TASK_SECRET: Final = 8
 _TASK_KNOWN_CACHE: Final = "_axrm011_known_values"
+_TASK_KNOWN_OWNER: Final = "_axrm011_known_owner"
+
+
+class _CeleryTaskStack:
+    @property
+    def stack(self) -> list[Any] | None:
+        # Resolve at the protected use boundary, not while settings import.
+        # An unavailable private name must withhold diagnostics, not break boot.
+        return cast("list[Any] | None", celery_state._task_stack.stack)  # noqa: SLF001
+
+
+_task_stack = _CeleryTaskStack()
 
 
 class _TaskRequest(Protocol):
@@ -320,7 +358,8 @@ class _TaskRequest(Protocol):
 def _task_arguments_known(request: _TaskRequest) -> tuple[str, ...]:
     """The long string values a running task was given, learned once per execution."""
     cached = request.__dict__.get(_TASK_KNOWN_CACHE)
-    if cached is None:
+    owner = request.__dict__.get(_TASK_KNOWN_OWNER)
+    if cached is None or owner is None or owner() is not request:
         given = [
             *(request.args if isinstance(request.args, (list, tuple)) else ()),
             *(request.kwargs.values() if isinstance(request.kwargs, Mapping) else ()),
@@ -329,6 +368,9 @@ def _task_arguments_known(request: _TaskRequest) -> tuple[str, ...]:
         redact_structure([["token", given]], found, fields=SENTRY_CREDENTIAL_FIELDS)
         cached = tuple(sorted(item for item in found if len(item) >= _MIN_TASK_SECRET))
         request.__dict__[_TASK_KNOWN_CACHE] = cached
+        # Celery copies a parent's dictionary into direct nested requests. A weak
+        # identity binding rejects that copied cache without retaining the owner.
+        request.__dict__[_TASK_KNOWN_OWNER] = ref(request)
     return cast("tuple[str, ...]", cached)
 
 
@@ -359,12 +401,19 @@ class CredentialURLLogFilter(logging.Filter):
     """Remove provider and URL credentials before console record serialization."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # Only the standard carrier has non-overridable formatting/dict access.
+        # Reject custom carriers at every handler, including all SDK handlers.
+        if type(record) is not logging.LogRecord:
+            return False
         try:
+            if dict.get(record.__dict__, _DROPPED_RECORD):
+                return False
             self._scrub(record)
         except Exception as error:  # noqa: BLE001 - fail closed, a log call never raises
             try:
                 _withhold(record, error)
             except Exception:  # noqa: BLE001 - nothing more can be made safe: drop it
+                dict.update(record.__dict__, {_DROPPED_RECORD: True})
                 return False
         return True
 
@@ -434,6 +483,19 @@ class CredentialURLLogFilter(logging.Filter):
         if record.exc_text is not None:
             # The whole rendered chain, including causes and contexts.
             record.exc_text = scrub_text(record.exc_text, credentials)
+
+
+# Logger.callHandlers' SDK patch processes the original record independently of
+# console rejection. Put the same ingress filter on every SDK logging sink,
+# before it can format an event, retain a breadcrumb, or enqueue a Sentry Log.
+_credential_logging = LoggingIntegration()
+for _handler in (
+    _credential_logging._handler,  # noqa: SLF001 - locked SDK logging sinks
+    _credential_logging._breadcrumb_handler,  # noqa: SLF001
+    _credential_logging._sentry_logs_handler,  # noqa: SLF001
+):
+    if _handler is not None:
+        _handler.addFilter(CredentialURLLogFilter())
 
 
 DEBUG = False
@@ -525,7 +587,7 @@ STORAGES = {
 
 _sentry_dsn = env.str("SENTRY_DSN", default="")
 SENTRY_OPTIONS: dict[str, Any] = {
-    "integrations": [DjangoIntegration(), CeleryIntegration()],
+    "integrations": [DjangoIntegration(), CeleryIntegration(), _credential_logging],
     "environment": env.str("SENTRY_ENVIRONMENT", default="production"),
     "traces_sample_rate": env.float("SENTRY_TRACES_SAMPLE_RATE", default=0.0),
     "send_default_pii": False,
@@ -540,6 +602,7 @@ SENTRY_OPTIONS: dict[str, Any] = {
     ),
     "before_send": drop_unscrubbable_event,
     "before_send_transaction": drop_unscrubbable_event,
+    "before_breadcrumb": drop_unscrubbable_breadcrumb,
 }
 _release = current_release()
 if _release != UNKNOWN_RELEASE:

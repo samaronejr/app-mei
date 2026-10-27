@@ -9,6 +9,15 @@ from dataclasses import dataclass
 from typing import Final
 
 MARKER: Final = "[Filtered]"
+# Bound both discovery text and trie nodes, not a prefix of private input.
+_MAX_SCAN_CHARACTERS: Final = 512 * 1024
+_SCAN_BUDGET_ERROR: Final = "redaction diagnostic exceeds its character budget"
+
+
+class RedactionBudgetError(ValueError):
+    """The entire diagnostic must be withheld instead of partly scanned."""
+
+
 PROVIDER_FIELDS: Final = frozenset(
     {
         "authorization",
@@ -296,6 +305,8 @@ class _KnownValues:
     """Aho-Corasick index, built once for all strings in a discovered record."""
 
     def __init__(self, values: set[str]) -> None:
+        if sum(map(len, values)) > _MAX_SCAN_CHARACTERS:
+            raise RedactionBudgetError(_SCAN_BUDGET_ERROR)
         self.edges: list[dict[str, int]] = [{}]
         self.failure = [0]
         self.lengths = [0]
@@ -350,9 +361,14 @@ def redact_structure(
 ) -> object:
     """Discover first, replace second, across the entire record and all its keys."""
     plans: dict[str, tuple[str, list[tuple[int, int]]]] = {}
+    characters = 0
 
     def discover(item: object, hidden: bool) -> object:
+        nonlocal characters
         if isinstance(item, (str, bytes)):
+            characters += len(item)
+            if characters > _MAX_SCAN_CHARACTERS:
+                raise RedactionBudgetError(_SCAN_BUDGET_ERROR)
             text = (
                 item.decode("utf-8", "surrogateescape")
                 if isinstance(item, bytes)
@@ -400,7 +416,10 @@ def redact_structure(
 
 def scrub_text(value: str, credentials: set[str]) -> str:
     """Use the same discovery and replacement rules for rendered diagnostics."""
-    return str(redact_structure(value, credentials))
+    try:
+        return str(redact_structure(value, credentials))
+    except RedactionBudgetError:
+        return MARKER
 
 
 def scrub_provider_text(value: str) -> str:

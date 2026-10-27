@@ -5,7 +5,12 @@ from time import perf_counter
 
 import pytest
 
-from apps.integrations.privacy import MARKER, redact_structure, scrub_text
+from apps.integrations.privacy import (
+    MARKER,
+    RedactionBudgetError,
+    redact_structure,
+    scrub_text,
+)
 from tests.integrations.privacy_scan_reference import redact_structure as baseline
 
 DIAGNOSTICS = "status=503 operation=SP-PAG elapsed_ms=37 request_id=RV7-2701"
@@ -111,3 +116,31 @@ def test_repetitive_known_value_scan_completes_under_one_second(
     # Then all coverage collapses to one marker without quadratic scan work.
     assert actual == f"{MARKER} {DIAGNOSTICS}"
     assert elapsed < 1.0, f"256 KiB redaction took {elapsed:.3f}s"
+
+
+@pytest.mark.parametrize("source", ["text", "known-values", "aggregate-text"])
+def test_oversized_diagnostics_are_refused_before_unbounded_scan_allocation(
+    source: str,
+) -> None:
+    # Given diagnostics beyond the scan's 512 Ki-character resource envelope.
+    value: object = "ordinary diagnostic"
+    known: set[str] = set()
+    if source == "text":
+        value = "? " * (300 * 1024)
+    elif source == "known-values":
+        known = {"q" * (600 * 1024)}
+    else:
+        value = ["? " * (150 * 1024), "! " * (150 * 1024)]
+    # When discovery or index construction would exceed its resource budget.
+    with pytest.raises(RedactionBudgetError):
+        redact_structure(value, known)
+    # Then callers can withhold the whole record rather than scan a private prefix.
+
+
+def test_an_oversized_rendered_diagnostic_is_wholly_withheld_not_raised() -> None:
+    # Given a public text caller that cannot discard a structured SDK event.
+    text = "private diagnostic " * (40 * 1024)
+    # When the diagnostic exceeds the same resource envelope.
+    result = scrub_text(text, set())
+    # Then the entire result is the machine-consumed redaction sentinel.
+    assert result == MARKER
