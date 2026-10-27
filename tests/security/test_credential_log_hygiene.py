@@ -423,7 +423,14 @@ def test_real_event_capture_leaves_no_breadcrumbs_on_the_thread_scope(
     client.close()
     # Then nothing from that capture rides along with it.
     assert transport.events
-    assert all(not event.get("breadcrumbs") for event in transport.events)
+    crumbs = [
+        crumb
+        for event in transport.events
+        for crumb in cast("dict[str, Any]", event.get("breadcrumbs") or {}).get(
+            "values", []
+        )
+    ]
+    assert crumbs == []
 
 
 def test_referrer_policy_is_strict_origin_globally() -> None:
