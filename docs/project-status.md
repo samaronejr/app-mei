@@ -594,6 +594,22 @@ untouched and `before_send` scrubs the serialized copy. Twelve new witnesses
 existing husk mutants are now witnessed through check-ins, where the hook still
 sees a subclass.
 
+The `29b4ad2` final3 run completed both default groups (**2,093** and **4,648
+passed, 51 skipped**) and all **8** partitioned timing cases: **6,749 passed,
+51 skipped** in total. Isolation passed **893/51**, the privacy/security selection
+**646**, CNPJ **29**, and all **17** scan mutants were killed. The filter campaign
+stopped at an ownerless-request-cache survivor: removing the missing-owner check
+withheld or dropped diagnostics rather than relearning the execution's values.
+Two added real-console/Sentry cases cover copied and constructed ownerless
+caches; both fail on that mutant and pass on the unchanged product source
+(`AXRM-011-fix4-final4-witness.txt`). The four surveyed mutants left behind the
+stop were killed by existing witnesses (`AXRM-011-fix4s3-survey.txt`).
+The final4 evidence reruns the complete scan/filter campaigns and every selection
+containing the new cases; the DoneClaim identifies each byte-identical final3
+stage reused. The filter harness evaluates every mutant before failing on any
+unresolved result, retaining its original application, exit-code, assertion and
+invalid-run criteria.
+
 Residual diagnostic loss is intentional where an argument equals an event schema
 key (`exception`) or the task's own name: exempting those bytes would exempt a
 credential too. The real-sink impact probe records both cases and a normal
