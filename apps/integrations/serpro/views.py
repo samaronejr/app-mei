@@ -4,6 +4,7 @@ Both only record the intent and enqueue worker tasks after the request commits;
 provider I/O never runs inside a web request (A7.4).
 """
 
+from datetime import date
 from http import HTTPStatus
 from typing import Final
 from uuid import UUID
@@ -20,10 +21,11 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.objects import load_visible_client
 from apps.authz.services import require_can
+from apps.clients.models import ClientCompany
 from apps.clients.views import require_tenant
 from apps.core.flags import tenant_has
 from apps.core.refusal import WayBack, refusal_page
-from apps.cycles.services.cycle import tenant_id
+from apps.cycles.services.cycle import load_cycle, tenant_id
 from apps.cycles.workspace import parse_period
 from apps.integrations.serpro.pagtoweb import PaymentRange
 from apps.integrations.serpro.payments import (
@@ -66,11 +68,30 @@ def _refuse(
     )
 
 
+def _section(
+    request: AuthenticatedRequest,
+    client: ClientCompany,
+    period: date,
+    cycle_id: UUID | None,
+) -> HttpResponse:
+    return render(
+        request,
+        "integrations/federal_payments_panel.html",
+        {
+            "panel": federal_payments_panel(request.user, client, period),
+            "client": client,
+            "cycle_id": cycle_id,
+        },
+    )
+
+
 @require_http_methods(["GET"])
 @login_required
 @require_tenant
 @require_can("clients.view_assigned")
-def federal_payments_section(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
+def federal_payments_section(
+    request: AuthenticatedRequest, pk: UUID, periodo: str
+) -> HttpResponse:
     """Render the section for one portfolio client and competence (loaded by htmx).
 
     Kept out of the workspace and cycle-detail requests so both stay inside their
@@ -80,20 +101,24 @@ def federal_payments_section(request: AuthenticatedRequest, pk: UUID) -> HttpRes
         raise Http404
     client = load_visible_client(request.user, pk)
     try:
-        period = parse_period(request.GET.get("periodo"))
+        period = parse_period(periodo)
     except ValueError:
         raise Http404 from None
-    cycle = request.GET.get("ciclo", "")
-    try:
-        cycle_id = UUID(cycle) if cycle else None
-    except ValueError:
-        raise Http404 from None
-    panel = federal_payments_panel(request.user, client, period)
-    return render(
-        request,
-        "integrations/federal_payments_panel.html",
-        {"panel": panel, "client": client, "cycle_id": cycle_id},
-    )
+    return _section(request, client, period, None)
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_tenant
+@require_can("clients.view_assigned")
+def cycle_federal_payments_section(
+    request: AuthenticatedRequest, pk: UUID
+) -> HttpResponse:
+    """Render the same section for a portfolio-scoped cycle's client and period."""
+    if not tenant_has(tenant_id(), FLAG):
+        raise Http404
+    cycle = load_cycle(request.user, pk)
+    return _section(request, cycle.client, cycle.period_start, cycle.pk)
 
 
 @require_http_methods(["POST"])

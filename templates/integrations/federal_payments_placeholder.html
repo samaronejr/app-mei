@@ -1,9 +1,10 @@
 {% comment %}
 AXRM-015: the Receita Federal section loads from its own endpoint, so the workspace
 and the cycle detail stay inside their pinned 25-query read budget. The section's
-own query count is bounded by tests/integrations/test_pagtoweb_panel.py.
-{% endcomment %}<section id="receita-federal" class="ui-panel p-4" aria-labelledby="federal-payments-title" aria-busy="true" data-federal-payments-placeholder hx-get="{% url 'client-federal-payments-section' client_id %}?periodo={{ period|date:'Y-m' }}{% if cycle_id %}&amp;ciclo={{ cycle_id }}{% endif %}" hx-trigger="load" hx-swap="outerHTML">
+own query count is bounded by tests/integrations/test_pagtoweb_panel.py. The URL is
+built only from server-side tags: no tenant value reaches an htmx attribute.
+{% endcomment %}<section id="receita-federal" class="ui-panel p-4" aria-labelledby="federal-payments-title" aria-busy="true" data-federal-payments-placeholder hx-get="{% if cycle_id %}{% url 'cycle-federal-payments-section' cycle_id %}{% else %}{% url 'client-federal-payments-section' client_id period|date:'Y-m' %}{% endif %}" hx-trigger="load" hx-sync="this:drop" hx-swap="outerHTML">
   <h2 id="federal-payments-title" class="ui-panel-heading">Receita Federal — pagamentos</h2>
   <p class="text-sm text-ink-600">Carregando os pagamentos consultados na Receita…</p>
-  <noscript><p class="mt-2 text-sm"><a class="ui-link" href="{% url 'client-federal-payments-section' client_id %}?periodo={{ period|date:'Y-m' }}">Abrir os pagamentos da Receita</a></p></noscript>
+  <noscript><p class="mt-2 text-sm"><a class="ui-link" href="{% if cycle_id %}{% url 'cycle-federal-payments-section' cycle_id %}{% else %}{% url 'client-federal-payments-section' client_id period|date:'Y-m' %}{% endif %}">Abrir os pagamentos da Receita</a></p></noscript>
 </section>

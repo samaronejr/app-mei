@@ -346,8 +346,14 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
     ),
     "client-federal-payments-section": (
         "AXRM-015. The UUID names a client resolved through the actor's portfolio "
-        "(404 otherwise); the read renders only that client's own consultations "
-        "and payments. It authorizes nothing: clients.view_assigned does."
+        "(404 otherwise) and `periodo` is a validated AAAA-MM competence; the read "
+        "renders only that client's own consultations and payments. Neither "
+        "authorizes anything: clients.view_assigned does."
+    ),
+    "cycle-federal-payments-section": (
+        "AXRM-015. The UUID names a cycle resolved through the actor's portfolio "
+        "(load_cycle, 404 otherwise); client and competence come from that cycle. "
+        "It authorizes nothing: clients.view_assigned does."
     ),
     "client-federal-payments-consult": (
         "AXRM-015. The UUID names a client resolved through the actor's portfolio "

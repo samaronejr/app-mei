@@ -4,6 +4,7 @@ from django.urls import path
 
 from apps.integrations.serpro.views import (
     consult_federal_payments,
+    cycle_federal_payments_section,
     federal_payments_section,
     request_payment_receipt,
 )
@@ -16,9 +17,14 @@ urlpatterns = [
         name="client-authority-action",
     ),
     path(
-        "clientes/<uuid:pk>/receita/pagamentos/",
+        "clientes/<uuid:pk>/receita/pagamentos/competencia/<str:periodo>/",
         federal_payments_section,
         name="client-federal-payments-section",
+    ),
+    path(
+        "ciclos/<uuid:pk>/receita/pagamentos/",
+        cycle_federal_payments_section,
+        name="cycle-federal-payments-section",
     ),
     path(
         "clientes/<uuid:pk>/receita/pagamentos/consultar/",

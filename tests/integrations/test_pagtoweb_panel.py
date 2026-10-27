@@ -123,7 +123,11 @@ def _workspace(world: PortalSetup) -> str:
 
 def _section_url(world: PortalSetup, client_id: object = None) -> str:
     client = client_id or world.graph.client.pk
-    return f"/clientes/{client}/receita/pagamentos/?periodo={PERIOD:%Y-%m}"
+    return f"/clientes/{client}/receita/pagamentos/competencia/{PERIOD:%Y-%m}/"
+
+
+def _cycle_section_url(world: PortalSetup) -> str:
+    return f"/ciclos/{world.cycle.pk}/receita/pagamentos/"
 
 
 def test_the_section_is_not_drawn_while_federal_checks_is_off(
@@ -139,19 +143,20 @@ def test_the_section_is_not_drawn_while_federal_checks_is_off(
         assert PLACEHOLDER not in html
         assert SECTION not in html
     assert browser.get(_section_url(setup)).status_code == 404
+    assert browser.get(_cycle_section_url(setup)).status_code == 404
 
 
 def test_both_reads_load_the_section_from_its_own_endpoint(
     setup: PortalSetup,
 ) -> None:
     browser = setup.firm()
-    for url, cycle in (
-        (_workspace(setup), ""),
-        (f"/ciclos/{setup.cycle.pk}/", f"&amp;ciclo={setup.cycle.pk}"),
+    for url, section in (
+        (_workspace(setup), _section_url(setup)),
+        (f"/ciclos/{setup.cycle.pk}/", _cycle_section_url(setup)),
     ):
         html = browser.get(url).content.decode()
         assert PLACEHOLDER in html
-        assert f'hx-get="{_section_url(setup)}{cycle}"' in html
+        assert f'hx-get="{section}"' in html
 
 
 def test_the_sections_query_count_does_not_grow_with_rows(
@@ -173,7 +178,7 @@ def test_the_sections_query_count_does_not_grow_with_rows(
 def test_both_lists_render_with_honest_simulated_labels(setup: PortalSetup) -> None:
     _results(setup)
     browser = setup.firm()
-    for url in (_section_url(setup), f"{_section_url(setup)}&ciclo={setup.cycle.pk}"):
+    for url in (_section_url(setup), _cycle_section_url(setup)):
         response = browser.get(url)
         assert response.status_code == 200
         section = _section(response.content.decode())
