@@ -14,11 +14,13 @@ from apps.delivery.privacy import delivery_secrets
 from config.settings import prod
 from tests.security.test_redaction_boundary_regressions import (
     CANARY,
+    INNER,
     LOGGER,
     _EveryEnvelope,
     _RejectClear,
     _RejectMarker,
     _sinks,
+    recursive,
 )
 from tests.security.test_withhold_boundaries import _MissingStack
 
@@ -29,6 +31,7 @@ RECORD_LOCAL = "zqrecordlocal7351973519qz"
 REVIVED = "revived carrier diagnostic"
 INJECTED = "injected by the carrier update"
 MONITOR = "fix4-session3-monitor"
+SCRUBBED_ECHO = "argument echo [Filtered]"
 
 
 class _AttributeRenderedError(Exception):
@@ -124,6 +127,37 @@ def test_a_record_logged_during_a_dispatch_inherits_its_credentials(
     delivered = b"".join(transport.payloads).decode()
     assert "nested echo" in stream.getvalue()
     assert RECORD_LOCAL not in stream.getvalue() + delivered
+
+
+@pytest.mark.parametrize("origin", ["copied", "constructed"])
+def test_an_ownerless_request_cache_is_relearned_and_its_diagnostics_still_flow(
+    monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    # Given a request cache without its owner identity, copied or constructed.
+    executions = 2 if origin == "copied" else 1
+    with _sinks(monkeypatch) as (_, stream, client, transport):
+        # When the real task logs and captures its own credential through the sinks.
+        if origin == "copied":
+            result = recursive.apply(args=[CANARY, 1, True], task_id="fix4s3-ownerless")
+            assert result.state == "SUCCESS"
+        else:
+            recursive.push_request(
+                **{prod._TASK_KNOWN_CACHE: ("zq-stale-cache-73519",)}
+            )
+            try:
+                recursive(CANARY, 0)
+            finally:
+                recursive.pop_request()
+        client.flush()
+    # Then each execution relearned its own value and was scrubbed, not withheld.
+    console = stream.getvalue()
+    delivered = json.dumps(transport.events)
+    assert all(secret not in console + delivered for secret in (CANARY, INNER))
+    assert "log record withheld" not in console
+    assert console.count(SCRUBBED_ECHO) == executions
+    messages = [event.get("message") for event in transport.events]
+    assert messages.count(SCRUBBED_ECHO) == executions
+    assert prod._known_values() == set()
 
 
 class _ForeignMapping(MutableMapping[str, object]):
