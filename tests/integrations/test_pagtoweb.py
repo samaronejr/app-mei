@@ -8,11 +8,14 @@ import json
 import logging
 from datetime import date
 from decimal import Decimal
-from uuid import uuid4
+from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
-from django.db import connection
+from django.db import DatabaseError, connection, transaction
+from django.db.migrations.executor import MigrationExecutor
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 from sentry_sdk.integrations.logging import EventHandler
 
@@ -20,6 +23,7 @@ from apps.accounts.models import User
 from apps.audit.models import Event
 from apps.clients.models import ClientCompany, TaxProfile, TaxRegime
 from apps.core.tenancy import tenant_context
+from apps.cycles.completion_sources import source_subjects
 from apps.integrations.authority import head_record
 from apps.integrations.budget_models import ProviderBudget
 from apps.integrations.models import IntegrationIssue
@@ -33,7 +37,10 @@ from apps.integrations.serpro.payments import (
     run_payment_query,
 )
 from apps.integrations.serpro.tasks import scheduled_window
-from apps.obligations.federal import payment_from_provider
+from apps.obligations.federal import (
+    payment_from_provider,
+    record_payment_consultation,
+)
 from apps.obligations.models import (
     Document,
     FederalConsultation,
@@ -58,10 +65,13 @@ from tests.integrations.pagtoweb_support import (
     receipt_body,
     world,
 )
+from tests.integrations.test_migration_rollback import _as_migrator
 from tests.integrations.test_transport_privacy import (
     captured_events,
     production_console,
 )
+from tests.obligations.test_federal_records import _finalized_call, _provider_item
+from tests.portal.request_fixtures import portal_setup
 
 __all__ = ["world"]
 
@@ -337,28 +347,278 @@ def test_another_clients_das_obligation_is_never_matched(world: World) -> None:
     assert result.matched_obligation_id is None
 
 
-def test_a_document_on_file_keeps_its_first_association(world: World) -> None:
-    # Given the DAS was first recorded before its obligation existed.
+ASSOCIATED = "obligations.federal_payment_associated"
+AUGUST = "2026-08-01T00:00:00-03:00"
+OCTOBER = "2026-10-01T00:00:00-03:00"
+
+
+def _das_obligation(client: ClientCompany, competence: date) -> Obligation:
+    return Obligation.objects.create(
+        tenant_id=client.tenant_id,
+        client=client,
+        obligation_type_id="DAS",
+        competence_month=competence,
+        nominal_due_date=date(2026, 10, 20),
+        resolved_due_date=date(2026, 10, 20),
+    )
+
+
+def _without_obligation(world: World) -> None:
     with tenant_context(world.termo.tenant.pk):
         Obligation.objects.filter(pk=world.obligation.pk).delete()
+
+
+def _reported(payment: FederalPayment) -> dict[str, object]:
+    """Every column the Receita reported, i.e. all but the association."""
+    return {
+        field.attname: getattr(payment, field.attname)
+        for field in FederalPayment._meta.concrete_fields
+        if field.attname != "matched_obligation_id"
+    }
+
+
+def _associations(world: World) -> dict[str, UUID | None]:
+    return {row.numero_documento: row.matched_obligation_id for row in payments(world)}
+
+
+def _association_events(world: World) -> list[str]:
+    with tenant_context(world.termo.tenant.pk):
+        return sorted(
+            Event.objects.filter(action=ASSOCIATED).values_list("object_id", flat=True)
+        )
+
+
+def test_a_das_seen_before_its_obligation_is_bound_by_the_next_consultation(
+    world: World,
+) -> None:
+    # Given the DAS was first recorded before its obligation existed.
+    _without_obligation(world)
     world.script(page([item("DAS000000000003")]))
     assert world.consult().matched_count == 0
+    [before] = payments(world)
+    assert before.matched_obligation_id is None
     with tenant_context(world.termo.tenant.pk):
-        Obligation.objects.create(
-            tenant=world.termo.tenant,
-            client=world.termo.client,
-            obligation_type_id="DAS",
-            competence_month=COMPETENCE,
-            nominal_due_date=date(2026, 10, 20),
-            resolved_due_date=date(2026, 10, 20),
-        )
+        created = _das_obligation(world.termo.client, COMPETENCE)
     # When a later consultation returns the same document.
     world.script(page([item("DAS000000000003")]))
     second = world.consult(nonce="consulta-2")
-    # Then the append-only payment agrees with itself: no conflict, no rewrite.
-    assert (second.state, second.matched_count) == ("encontrado", 0)
-    [das] = payments(world)
-    assert das.matched_obligation_id is None
+    # Then it is bound to the obligation created since; nothing reported changed.
+    assert (second.state, second.matched_count) == ("encontrado", 1)
+    [after] = payments(world)
+    assert after.matched_obligation_id == created.pk
+    assert _reported(after) == _reported(before)
+    assert _association_events(world) == [str(before.pk)]
+    # And a third consultation finds it bound: no conflict, no second binding.
+    world.script(page([item("DAS000000000003")]))
+    third = world.consult(nonce="consulta-3")
+    assert (third.state, third.matched_count) == ("encontrado", 1)
+    assert _associations(world) == {"DAS000000000003": created.pk}
+    assert _association_events(world) == [str(before.pk)]
+    with tenant_context(world.termo.tenant.pk):
+        assert not SourceObservation.objects.exists()
+
+
+def test_a_recorded_association_stays_put_while_a_late_one_is_made(
+    world: World,
+) -> None:
+    # Given a September DAS matched at first sight and an August DAS seen before
+    # its obligation existed.
+    documents = [item("DAS000000000011"), item("DAS000000000012", periodo=AUGUST)]
+    world.script(page(documents))
+    assert world.consult().matched_count == 1
+    with tenant_context(world.termo.tenant.pk):
+        august = _das_obligation(world.termo.client, date(2026, 8, 1))
+    # When a later consultation returns both.
+    world.script(page(documents))
+    second = world.consult(nonce="consulta-2")
+    # Then only the unassociated one is bound; the first association is untouched.
+    assert second.matched_count == 2
+    assert _associations(world) == {
+        "DAS000000000011": world.obligation.pk,
+        "DAS000000000012": august.pk,
+    }
+    late = next(row for row in payments(world) if row.numero_documento.endswith("12"))
+    assert _association_events(world) == [str(late.pk)]
+
+
+def test_two_clients_with_identical_documents_never_cross_match(
+    world: World,
+) -> None:
+    # Given another MEI client of the same firm holds the same document number,
+    # period and amount, still unassociated.
+    tenant, client = world.termo.tenant, world.termo.client
+    _without_obligation(world)
+    with tenant_context(tenant.pk):
+        other = ClientCompany.objects.create(
+            tenant=tenant,
+            legal_name="Outro sintetico",
+            cnpj="11444777000161",
+            is_mei=True,
+        )
+        receipt = FederalConsultation.objects.create(
+            tenant=tenant,
+            client=other,
+            kind="pagamentos",
+            scope_digest="c" * 64,
+            range_start=COMPETENCE,
+            range_end=date(2026, 10, 27),
+            consulted_at=timezone.now(),
+            outcome="encontrado",
+            environment="fake",
+        )
+        FederalPayment.objects.create(
+            tenant=tenant,
+            client=other,
+            consultation=receipt,
+            numero_documento="DAS000000000013",
+            tipo="DAS",
+            periodo_apuracao=COMPETENCE,
+            data_arrecadacao=date(2026, 10, 20),
+            receita_codigo="1001",
+            valor_total=Decimal("76.60"),
+        )
+    world.script(page([item("DAS000000000013")]))
+    assert world.consult().matched_count == 0
+    # When both clients get their September DAS obligation and this client
+    # consults again.
+    with tenant_context(tenant.pk):
+        _das_obligation(other, COMPETENCE)
+        mine = _das_obligation(client, COMPETENCE)
+    world.script(page([item("DAS000000000013")]))
+    assert world.consult(nonce="consulta-2").matched_count == 1
+    # Then only this client's document is bound, to this client's obligation.
+    with tenant_context(tenant.pk):
+        rows = dict(
+            FederalPayment.objects.values_list("client_id", "matched_obligation_id")
+        )
+    assert rows == {client.pk: mine.pk, other.pk: None}
+
+
+def test_only_the_late_candidate_the_rule_decides_is_bound(world: World) -> None:
+    # Given the client is MEI only from October, so September's regime is unknown,
+    # and no DAS obligation existed when these documents were first recorded.
+    client = world.termo.client
+    _without_obligation(world)
+    with tenant_context(world.termo.tenant.pk):
+        _profile(client, TaxRegime.MEI, date(2026, 10, 1))
+    documents = [
+        item("DAS000000000014"),
+        item("DAS000000000015", periodo=OCTOBER),
+        item("DARF00000000016", tipo="04"),
+    ]
+    world.script(page(documents))
+    assert world.consult().matched_count == 0
+    # When both months' DAS obligations exist and the client consults again.
+    with tenant_context(world.termo.tenant.pk):
+        _das_obligation(client, COMPETENCE)
+        october = _das_obligation(client, date(2026, 10, 1))
+    world.script(page(documents))
+    assert world.consult(nonce="consulta-2").matched_count == 1
+    # Then the unknown-regime DAS and the same-period DARF stay unassociated.
+    assert _associations(world) == {
+        "DARF00000000016": None,
+        "DAS000000000014": None,
+        "DAS000000000015": october.pk,
+    }
+
+
+def test_a_production_consultation_binding_late_writes_the_official_fact(
+    settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    # Given a production call with real-data approval recorded a DAS before its
+    # obligation existed.
+    settings.MEDIA_ROOT = tmp_path
+    settings.PROVIDER_REAL_DATA_APPROVED = True
+    setup = portal_setup("axrm015-late")
+    client = setup.graph.client
+    record = payment_from_provider(_provider_item())
+    with tenant_context(setup.graph.tenant.pk):
+        first = _finalized_call(client, ref="late-1")
+        with transaction.atomic():
+            record_payment_consultation(
+                client, first, match_das_payments(client, [record])
+            )
+        assert not SourceObservation.objects.filter(kind="payment").exists()
+        subject = _das_obligation(client, COMPETENCE)
+        # When a later production consultation returns it.
+        second = _finalized_call(client, ref="late-2")
+        with transaction.atomic():
+            consultation = record_payment_consultation(
+                client, second, match_das_payments(client, [record])
+            )
+        # Then it is bound and that consultation wrote the official verified fact,
+        # which the cycle's completion sources bind.
+        assert FederalPayment.objects.get().matched_obligation_id == subject.pk
+        [fact] = SourceObservation.objects.filter(subject_ref=subject, kind="payment")
+        assert (fact.source_kind, fact.verification_status, fact.source_ref) == (
+            "official_api",
+            "verified",
+            record.numero_documento,
+        )
+        assert fact.value_json["consultation_id"] == str(consultation.pk)
+        assert subject.pk in source_subjects(setup.cycle)
+
+
+def test_the_database_admits_one_late_binding_and_reverses_populated(
+    world: World,
+) -> None:
+    # Given one late-bound DAS and one unassociated DARF on file.
+    _without_obligation(world)
+    documents = [item("DAS000000000017"), *darfs(1)]
+    world.script(page(documents))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        created = _das_obligation(world.termo.client, COMPETENCE)
+        other = _das_obligation(world.termo.client, date(2026, 8, 1))
+    world.script(page(documents))
+    world.consult(nonce="consulta-2")
+    rows = {row.tipo: row for row in payments(world)}
+    bound, darf = rows["DAS"], rows["DARF"]
+    assert bound.matched_obligation_id == created.pk
+    refused = (
+        (
+            "UPDATE {t} SET matched_obligation_id = %s WHERE id = %s",
+            [other.pk, bound.pk],
+        ),
+        ("UPDATE {t} SET matched_obligation_id = NULL WHERE id = %s", [bound.pk]),
+        (
+            "UPDATE {t} SET matched_obligation_id = %s, valor_total = 0 WHERE id = %s",
+            [created.pk, darf.pk],
+        ),
+        ("DELETE FROM {t} WHERE id = %s", [darf.pk]),
+    )
+    binding = (
+        "UPDATE {t} SET matched_obligation_id = %s WHERE id = %s",
+        [other.pk, darf.pk],
+    )
+
+    def refuse(statement: str, params: list[UUID]) -> None:
+        with (
+            pytest.raises(DatabaseError, match="append-only"),
+            transaction.atomic(),
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(statement.format(t="obligations_federalpayment"), params)
+
+    with _as_migrator():
+        # When the table owner re-points, unbinds, rewrites while binding or deletes.
+        for statement, params in refused:
+            refuse(statement, params)
+        # And the guard is reversed with these rows on file.
+        MigrationExecutor(connection).migrate(
+            [("obligations", "0025_federal_record_guards")]
+        )
+        # Then the strict append-only trigger is back and refuses even a binding.
+        refuse(*binding)
+    # And re-applied, every reported field and association is unchanged.
+    after = {row.tipo: row for row in payments(world)}
+    assert {tipo: _reported(row) for tipo, row in after.items()} == {
+        tipo: _reported(row) for tipo, row in rows.items()
+    }
+    assert _associations(world) == {
+        bound.numero_documento: created.pk,
+        darf.numero_documento: None,
+    }
 
 
 def _unassigned_accountant(world: World) -> User:

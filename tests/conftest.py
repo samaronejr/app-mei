@@ -143,6 +143,13 @@ APPEND_ONLY_TABLES = (
     "obligations_federalpayment",
 )
 
+# AXRM-015: the one column UPDATE an append-only table admits. obligations.0026's
+# trigger lets matched_obligation_id go from NULL to an obligation once; REVOKE ALL
+# above also drops column grants, so this is re-applied after it, as in roles.sql.
+APPEND_ONLY_COLUMN_UPDATE: dict[str, tuple[str, ...]] = {
+    "obligations_federalpayment": ("matched_obligation_id",),
+}
+
 # AXR1-023: writable-but-undeletable tables — UPDATE stays (revocation sets
 # revoked_at) while DELETE is refused, because the row is the audit trail. The
 # same REVOKE+GRANT pair lives in ops/sql/roles.sql and tenants.0012.
@@ -246,6 +253,19 @@ def django_db_setup(
                     IF to_regclass('public.{table}') IS NOT NULL THEN
                         REVOKE ALL ON {table} FROM {RUNTIME_ROLE};
                         GRANT SELECT, INSERT ON {table} TO {RUNTIME_ROLE};
+                    END IF;
+                END
+                $$
+                """,
+            )
+        for table, columns in APPEND_ONLY_COLUMN_UPDATE.items():
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF to_regclass('public.{table}') IS NOT NULL THEN
+                        GRANT UPDATE ({", ".join(columns)}) ON {table}
+                            TO {RUNTIME_ROLE};
                     END IF;
                 END
                 $$

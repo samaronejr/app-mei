@@ -429,9 +429,11 @@ def _settle_page(  # noqa: PLR0911 - one outcome per finalized call state
         call = ProviderCall.objects.get(pk=call_id, client_id=query.client_id)
         receipt = _receipt(query, digest, str(call.pk))
         if call.state == CallState.SUCCESS and adapter.records is not None:
-            records = match_das_payments(query.client, adapter.records)
             try:
                 with transaction.atomic():
+                    # Matching may bind a document already on file; it shares the
+                    # page's transaction, so a refused page binds nothing.
+                    records = match_das_payments(query.client, adapter.records)
                     record_payment_consultation(query.client, receipt, records)
             except (FederalRecordConflictError, ValidationError):
                 return _finish(query, PaymentQueryState.FALHA, "documento_divergente")

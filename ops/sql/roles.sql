@@ -278,6 +278,18 @@ BEGIN
     END LOOP;
 END
 $$;
+-- AXRM-015: a payment recorded before its DAS obligation existed is bound once.
+-- The REVOKE ALL above also drops column grants, so the one column UPDATE that
+-- obligations.0026 grants is re-applied here; that migration's trigger admits only
+-- matched_obligation_id going from NULL to an obligation.
+DO $$
+BEGIN
+    IF to_regclass('public.obligations_federalpayment') IS NOT NULL THEN
+        GRANT UPDATE (matched_obligation_id) ON obligations_federalpayment
+            TO app_runtime;
+    END IF;
+END
+$$;
 
 -- The epoch has no tenant content and no portal grant. Runtime code may only read
 -- it; the ownership-pinned restore procedure is its only increment path.
