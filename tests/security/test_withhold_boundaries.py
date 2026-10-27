@@ -160,6 +160,45 @@ def test_an_unavailable_task_stack_fails_closed_at_every_sink(
     assert transport.events == []
 
 
+def test_an_event_the_sdk_scrubber_failed_on_is_emptied_and_dropped_by_before_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an event the SDK's scrubber hook fails to scrub once.
+    event: Any = {"message": CANARY, "level": "error"}
+    scrubber = prod.SENTRY_OPTIONS["event_scrubber"]
+    original = prod.scrub_sentry_event
+
+    def failing_scrub(*_args: object) -> None:
+        message = "scrub failed"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(prod, "scrub_sentry_event", failing_scrub)
+    # When the hook runs, and before_send later sees the same event.
+    scrubber.scrub_event(event)
+    monkeypatch.setattr(prod, "scrub_sentry_event", original)
+    dropped = prod.SENTRY_OPTIONS["before_send"](event, {})
+    # Then nothing of it is left, and it is dropped even though a retry would succeed.
+    assert CANARY not in repr(event)
+    assert dropped is None
+
+
+@pytest.mark.parametrize("hook", ["before_send", "before_send_transaction"])
+def test_an_event_that_cannot_be_scrubbed_is_dropped_by_the_sdk_hooks(
+    monkeypatch: pytest.MonkeyPatch, hook: str
+) -> None:
+    # Given a scrubber that fails when the SDK hook runs it.
+    def failing_scrub(*_args: object) -> None:
+        message = "scrub failed"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(prod, "scrub_sentry_event", failing_scrub)
+    event: Any = {"message": CANARY}
+    # When the hook sees an event that was never marked as withheld.
+    delivered = prod.SENTRY_OPTIONS[hook](event, {})
+    # Then it is dropped rather than delivered as it arrived.
+    assert delivered is None
+
+
 def test_the_private_celery_stack_keeps_the_shape_the_redactor_reads() -> None:
     stack = _state._task_stack.stack
     assert stack is None or isinstance(stack, list)

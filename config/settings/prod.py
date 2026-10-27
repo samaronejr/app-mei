@@ -173,12 +173,29 @@ def scrub_sentry_transaction(event: Event, hint: Hint) -> Event:
     return scrub_sentry_event(event, hint)
 
 
+_WITHHELD_EVENT: Final = "axrm011_event_withheld"
+
+
+def drop_unscrubbable_event(event: Event, hint: Hint) -> Event | None:
+    """before_send: an event that cannot be scrubbed is dropped, never delivered."""
+    if cast("Mapping[str, object]", event).get(_WITHHELD_EVENT):
+        return None
+    try:
+        return scrub_sentry_event(event, hint)
+    except Exception:  # noqa: BLE001 - fail closed
+        return None
+
+
 class CredentialEventScrubber(EventScrubber):
     """Discover raw credential leaves before SDK serialization can truncate them."""
 
     def scrub_event(self, event: Event) -> None:
-        scrubbed = scrub_sentry_event(event, {})
-        event.update(scrubbed)
+        try:
+            event.update(scrub_sentry_event(event, {}))
+        except Exception:  # noqa: BLE001 - fail closed; before_send drops the husk
+            husk = cast("dict[str, object]", event)
+            husk.clear()
+            husk[_WITHHELD_EVENT] = True
 
 
 def _request_credentials(record: logging.LogRecord) -> set[str]:
@@ -270,9 +287,11 @@ def _withhold(record: logging.LogRecord, error: Exception) -> None:
 
     The production formatter renders standard fields as well (the logger name and
     level), so a record that could not be scrubbed keeps nothing it arrived with but
-    a numeric level.
+    a numeric level. The original mapping is untrusted: nothing on it is called, it
+    is read through the unbound dict method and then replaced, never edited.
     """
-    level = record.__dict__.get("levelno")
+    original = object.__getattribute__(record, "__dict__")
+    level = dict.get(original, "levelno")
     safe = logging.LogRecord(
         name=SENTRY_REDACTION_MARKER,
         level=level if type(level) is int else logging.ERROR,
@@ -285,8 +304,7 @@ def _withhold(record: logging.LogRecord, error: Exception) -> None:
         args=(),
         exc_info=None,
     )
-    record.__dict__.clear()
-    record.__dict__.update(safe.__dict__)
+    object.__setattr__(record, "__dict__", safe.__dict__)
 
 
 _MIN_TASK_SECRET: Final = 8
@@ -344,7 +362,10 @@ class CredentialURLLogFilter(logging.Filter):
         try:
             self._scrub(record)
         except Exception as error:  # noqa: BLE001 - fail closed, a log call never raises
-            _withhold(record, error)
+            try:
+                _withhold(record, error)
+            except Exception:  # noqa: BLE001 - nothing more can be made safe: drop it
+                return False
         return True
 
     def _scrub(self, record: logging.LogRecord) -> None:
@@ -517,8 +538,8 @@ SENTRY_OPTIONS: dict[str, Any] = {
         recursive=True,
         send_default_pii=False,
     ),
-    "before_send": scrub_sentry_event,
-    "before_send_transaction": scrub_sentry_transaction,
+    "before_send": drop_unscrubbable_event,
+    "before_send_transaction": drop_unscrubbable_event,
 }
 _release = current_release()
 if _release != UNKNOWN_RELEASE:
