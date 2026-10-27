@@ -24,7 +24,6 @@ from apps.cycles.services.cycle import tenant_id
 from apps.cycles.workspace import parse_period
 from apps.cycles.workspace_queries import read_workspace
 from apps.fiscal.models import Municipality
-from apps.integrations.serpro.payments_panel import federal_payments_panel
 from apps.integrations.workspace import authority_panel
 
 # AXR1-047: the flag the setup route is gated on, written as a literal for the
@@ -114,9 +113,9 @@ def client_workspace(
             "authority_panel": authority_panel(
                 request.user, workspace.client, timezone.localdate()
             ),
-            # AXRM-015: the Receita Federal payments section (None while off).
-            "federal_payments_panel": federal_payments_panel(
-                request.user, workspace.client, period
+            # AXRM-015: the Receita Federal section loads from its own endpoint.
+            "federal_payments_enabled": tenant_has(
+                workspace.client.tenant_id, "federal_checks"
             ),
         },
         status=status,

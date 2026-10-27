@@ -344,6 +344,11 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "(404 otherwise); `service` is a catalog slug and `action` one of three "
         "verbs. None authorizes anything: fiscal.authority.manage does."
     ),
+    "client-federal-payments-section": (
+        "AXRM-015. The UUID names a client resolved through the actor's portfolio "
+        "(404 otherwise); the read renders only that client's own consultations "
+        "and payments. It authorizes nothing: clients.view_assigned does."
+    ),
     "client-federal-payments-consult": (
         "AXRM-015. The UUID names a client resolved through the actor's portfolio "
         "(404 otherwise). It authorizes nothing: fiscal.checks.run and the "

@@ -76,7 +76,6 @@ from apps.cycles.workspace import (
     portal_projection,
 )
 from apps.cycles.workspace_views import client_workspace
-from apps.integrations.serpro.payments_panel import federal_payments_panel
 from apps.obligations.observations import (
     StaffFact,
     StaleObservationError,
@@ -342,10 +341,8 @@ def _render_detail(
         {
             "cycle": cycle,
             "coverage": reads.coverage,
-            # AXRM-015: the Receita Federal payments section (None while off).
-            "federal_payments_panel": federal_payments_panel(
-                request.user, cycle.client, cycle.period_start
-            ),
+            # AXRM-015: the Receita Federal section loads from its own endpoint.
+            "federal_payments_enabled": tenant_has(cycle.tenant_id, "federal_checks"),
             "service_label": dict(SERVICE_KIND_CHOICES)[cycle.engagement.service_kind],
             "tasks": tasks,
             "actions": [

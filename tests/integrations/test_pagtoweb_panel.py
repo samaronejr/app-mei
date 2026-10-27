@@ -9,6 +9,7 @@ import pytest
 from django.db import connection
 from django.db.migrations.exceptions import IrreversibleError
 from django.db.migrations.executor import MigrationExecutor
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
@@ -113,8 +114,16 @@ def _section(html: str) -> str:
     return html.split(SECTION, 1)[1].split("</section>", 1)[0]
 
 
+PLACEHOLDER = "data-federal-payments-placeholder"
+
+
 def _workspace(world: PortalSetup) -> str:
     return f"/clientes/{world.graph.client.pk}/?periodo={PERIOD:%Y-%m}"
+
+
+def _section_url(world: PortalSetup, client_id: object = None) -> str:
+    client = client_id or world.graph.client.pk
+    return f"/clientes/{client}/receita/pagamentos/?periodo={PERIOD:%Y-%m}"
 
 
 def test_the_section_is_not_drawn_while_federal_checks_is_off(
@@ -125,14 +134,46 @@ def test_the_section_is_not_drawn_while_federal_checks_is_off(
     tenant.save(update_fields=["features"])
     _results(setup)
     browser = setup.firm()
-    assert SECTION not in browser.get(_workspace(setup)).content.decode()
-    assert SECTION not in browser.get(f"/ciclos/{setup.cycle.pk}/").content.decode()
+    for url in (_workspace(setup), f"/ciclos/{setup.cycle.pk}/"):
+        html = browser.get(url).content.decode()
+        assert PLACEHOLDER not in html
+        assert SECTION not in html
+    assert browser.get(_section_url(setup)).status_code == 404
+
+
+def test_both_reads_load_the_section_from_its_own_endpoint(
+    setup: PortalSetup,
+) -> None:
+    browser = setup.firm()
+    for url, cycle in (
+        (_workspace(setup), ""),
+        (f"/ciclos/{setup.cycle.pk}/", f"&amp;ciclo={setup.cycle.pk}"),
+    ):
+        html = browser.get(url).content.decode()
+        assert PLACEHOLDER in html
+        assert f'hx-get="{_section_url(setup)}{cycle}"' in html
+
+
+def test_the_sections_query_count_does_not_grow_with_rows(
+    setup: PortalSetup,
+) -> None:
+    _results(setup)
+    browser = setup.firm()
+    browser.get(_section_url(setup))
+    with CaptureQueriesContext(connection) as few:
+        assert browser.get(_section_url(setup)).status_code == 200
+    for _ in range(5):
+        _foreign_payment(setup.graph.tenant, setup.graph.client)
+    with CaptureQueriesContext(connection) as many:
+        html = browser.get(_section_url(setup)).content.decode()
+    assert html.count("data-federal-payment=") == 7
+    assert len(many) == len(few)
 
 
 def test_both_lists_render_with_honest_simulated_labels(setup: PortalSetup) -> None:
     _results(setup)
     browser = setup.firm()
-    for url in (_workspace(setup), f"/ciclos/{setup.cycle.pk}/"):
+    for url in (_section_url(setup), f"{_section_url(setup)}&ciclo={setup.cycle.pk}"):
         response = browser.get(url)
         assert response.status_code == 200
         section = _section(response.content.decode())
@@ -151,10 +192,10 @@ def test_only_production_with_approval_reads_confirmed(
 ) -> None:
     _results(setup, environment="producao")
     settings.PROVIDER_REAL_DATA_APPROVED = False
-    section = _section(setup.firm().get(_workspace(setup)).content.decode())
+    section = _section(setup.firm().get(_section_url(setup)).content.decode())
     assert 'data-state="confirmed"' not in section
     settings.PROVIDER_REAL_DATA_APPROVED = True
-    section = _section(setup.firm().get(_workspace(setup)).content.decode())
+    section = _section(setup.firm().get(_section_url(setup)).content.decode())
     assert section.count('data-state="confirmed"') == 1
     assert "Pagamento encontrado na Receita" in section
 
@@ -289,11 +330,13 @@ def test_another_firms_client_and_payment_are_404_for_both_routes(
             f"/clientes/{client_b}/receita/pagamentos/consultar/",
             {"periodo": f"{PERIOD:%Y-%m}", "ultima": "", "nonce": uuid4().hex},
         )
+    section_foreign = browser.get(_section_url(setup, client_b))
     assert (
         through_own.status_code,
         through_foreign.status_code,
         consult_foreign.status_code,
-    ) == (404, 404, 404)
+        section_foreign.status_code,
+    ) == (404, 404, 404, 404)
     receipt_delay.assert_not_called()
     query_delay.assert_not_called()
     with tenant_context(foreign.graph.tenant.pk):

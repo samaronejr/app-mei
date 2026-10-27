@@ -12,7 +12,7 @@ from django import forms
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404, HttpResponse
-from django.shortcuts import redirect
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods
@@ -33,6 +33,7 @@ from apps.integrations.serpro.payments import (
     queue_payment_consultation,
     queue_payment_receipt,
 )
+from apps.integrations.serpro.payments_panel import federal_payments_panel
 
 HEADING: Final = "Não foi possível consultar a Receita"
 
@@ -62,6 +63,36 @@ def _refuse(
         heading=HEADING,
         reason=reason,
         back=WayBack(_back(client_id), "Voltar ao espaço do cliente"),
+    )
+
+
+@require_http_methods(["GET"])
+@login_required
+@require_tenant
+@require_can("clients.view_assigned")
+def federal_payments_section(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
+    """Render the section for one portfolio client and competence (loaded by htmx).
+
+    Kept out of the workspace and cycle-detail requests so both stay inside their
+    pinned read budget; this response's own query count is constant.
+    """
+    if not tenant_has(tenant_id(), FLAG):
+        raise Http404
+    client = load_visible_client(request.user, pk)
+    try:
+        period = parse_period(request.GET.get("periodo"))
+    except ValueError:
+        raise Http404 from None
+    cycle = request.GET.get("ciclo", "")
+    try:
+        cycle_id = UUID(cycle) if cycle else None
+    except ValueError:
+        raise Http404 from None
+    panel = federal_payments_panel(request.user, client, period)
+    return render(
+        request,
+        "integrations/federal_payments_panel.html",
+        {"panel": panel, "client": client, "cycle_id": cycle_id},
     )
 
 

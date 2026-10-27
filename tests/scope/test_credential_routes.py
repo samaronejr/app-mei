@@ -100,6 +100,7 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "client-authority-action",
         # AXRM-015: a portfolio-resolved client id and a payment id of that
         # client; never bearer credentials.
+        "client-federal-payments-section",
         "client-federal-payments-consult",
         "client-federal-payment-receipt",
         "admin:*",
