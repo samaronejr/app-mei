@@ -161,6 +161,17 @@ def _capture_real_exception_events(
     *,
     hardened: bool,
 ) -> tuple[list[Event], tuple[int, int]]:
+    # The helper's own http.client requests add breadcrumbs to this thread's scope;
+    # they must not outlive it and ride along with a later test's events.
+    with sentry_sdk.isolation_scope(), sentry_sdk.new_scope():
+        return _run_real_exception_events(live_server, hardened=hardened)
+
+
+def _run_real_exception_events(
+    live_server: LiveServer,
+    *,
+    hardened: bool,
+) -> tuple[list[Event], tuple[int, int]]:
     transport = _CaptureTransport()
     options = {
         **prod_settings.SENTRY_OPTIONS,

@@ -1,6 +1,7 @@
 """Production settings: TLS-terminated, host-only cookies, Sentry on."""
 
 import ast
+import copy
 import logging
 from collections.abc import Mapping
 from contextvars import Token
@@ -22,7 +23,8 @@ from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
 from apps.integrations.privacy import redact_structure, render_structure, scrub_text
 from config.settings.base import *  # noqa: F403
-from config.settings.base import LOGGING, env
+from config.settings.base import LOGGING as BASE_LOGGING
+from config.settings.base import env
 
 SENTRY_REDACTION_MARKER: Final = "[Filtered]"
 SENTRY_DSN_ERROR: Final = (
@@ -511,6 +513,7 @@ SENTRY_OPTIONS: dict[str, Any] = {
 _release = current_release()
 if _release != UNKNOWN_RELEASE:
     SENTRY_OPTIONS["release"] = _release
+LOGGING = copy.deepcopy(BASE_LOGGING)
 LOGGING.setdefault("filters", {})["credential_urls"] = {
     "()": CredentialURLLogFilter,
 }
