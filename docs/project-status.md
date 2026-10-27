@@ -535,7 +535,7 @@ limit and **31,088 KiB** after it. Approved small-input equivalence and the
 Current default collection is **6,770 selected**: **2,101** in CI group 1 and
 **4,669** in group 2; isolation selects **944**, CNPJ **29**. These are collection
 totals, not passing results. Committed-head runs and exits are recorded in
-`.evidence/AXRM-011-fix4-final-gates.txt` and the rewritten
+`.evidence/AXRM-011-fix4-final2-gates.txt` and the rewritten
 `.evidence/AXRM-011-perf-doneclaim.json`. The incomplete inherited `rv9final` log
 is excluded. The corrected breadcrumb helper fails against the actual
 `9f4dd6b` helper with two retained breadcrumbs and passes with scoped capture.
@@ -544,6 +544,14 @@ mutants; of the previous 26 filter mutants, the obsolete original-mapping getter
 mutant is retired because withholding no longer reads it, and the remaining
 25 are retargeted alongside 19 new boundary mutants. Every child uses a fresh
 bytecode root and in-memory source loading; source digests must remain unchanged.
+
+The first committed-head privacy/security run at `78eb7bc` reported **615 passed,
+1 failed**: the deliberately unhardened control inherited the newly configured
+`before_breadcrumb` hook, so its planted breadcrumb was scrubbed. The helper now
+explicitly disables that hook only for the unhardened client, alongside its
+existing disabled outgoing hooks. No control assertion changed. The obsolete
+run and its registered child scope were stopped before editing; its partial
+group-1 run is not a result. All final gates are rerun at the new local head.
 
 Residual diagnostic loss is intentional where an argument equals an event schema
 key (`exception`) or the task's own name: exempting those bytes would exempt a

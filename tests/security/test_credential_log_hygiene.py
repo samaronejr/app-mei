@@ -184,6 +184,7 @@ def _run_real_exception_events(
             {
                 "include_local_variables": True,
                 "event_scrubber": EventScrubber(),
+                "before_breadcrumb": None,
                 "before_send": None,
                 "before_send_transaction": None,
             }
