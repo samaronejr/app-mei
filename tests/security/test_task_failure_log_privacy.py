@@ -224,6 +224,64 @@ def _explodes(*_args: object, **_kwargs: object) -> object:
     raise KeyError(message)
 
 
+WITHHELD_CANARY = "synthetic-withheld-field-canary-7003"
+
+
+class _StrictConsole(logging.StreamHandler[io.StringIO]):
+    def handleError(self, record: logging.LogRecord) -> None:
+        message = "the withheld record could not be formatted"
+        raise AssertionError(message)
+
+
+def _production_console() -> tuple[logging.Handler, io.StringIO]:
+    stream = io.StringIO()
+    handler = _StrictConsole(stream)
+    handler.setFormatter(
+        logging.Formatter(prod.LOGGING["formatters"]["simple"]["format"])
+    )
+    for name in prod.LOGGING["handlers"]["console"]["filters"]:
+        handler.addFilter(prod.LOGGING["filters"][name]["()"]())
+    return handler, stream
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "name",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "funcName",
+        "threadName",
+        "processName",
+        "created",
+    ],
+)
+def test_a_withheld_record_emits_no_original_field_through_the_production_console(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    # Given the configured production handler and formatter, and a record whose
+    # standard field, message and extra all carry a credential.
+    handler, stream = _production_console()
+    record = logging.makeLogRecord(
+        {
+            "msg": WITHHELD_CANARY,
+            "private_extra": WITHHELD_CANARY,
+            field: WITHHELD_CANARY,
+        }
+    )
+    # When scrubbing fails and the record is withheld.
+    monkeypatch.setattr(prod, "redact_structure", _explodes)
+    handler.handle(record)
+    # Then the record is still formatted, and nothing of the original is emitted.
+    emitted = stream.getvalue()
+    assert MARKER in emitted
+    assert WITHHELD_CANARY not in emitted
+    assert WITHHELD_CANARY not in repr(record.__dict__)
+
+
 @pytest.mark.parametrize(
     "broken",
     [_wrong_shape, _extra_field, _not_pairs, _explodes],
