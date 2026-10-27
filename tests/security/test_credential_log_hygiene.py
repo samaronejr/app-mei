@@ -392,6 +392,29 @@ def test_sentry_scrubs_real_exception_events_and_transactions(
     assert prod_settings.SENTRY_REDACTION_MARKER in serialized
 
 
+@override_settings(
+    ROOT_URLCONF=__name__,
+    MIDDLEWARE=["django.middleware.security.SecurityMiddleware"],
+)
+@pytest.mark.django_db(transaction=True)
+def test_real_event_capture_leaves_no_breadcrumbs_on_the_thread_scope(
+    live_server: LiveServer,
+) -> None:
+    # Given the helper's own client-side requests, made on this thread.
+    _capture_real_exception_events(live_server, hardened=True)
+    transport = _CaptureTransport()
+    client = sentry_sdk.Client(dsn=SENTRY_TEST_DSN, transport=transport)
+    # When a later, unrelated event is captured here.
+    with sentry_sdk.isolation_scope() as scope:
+        scope.set_client(client)
+        sentry_sdk.capture_message("later event")
+        client.flush()
+    client.close()
+    # Then nothing from that capture rides along with it.
+    assert transport.events
+    assert all(not event.get("breadcrumbs") for event in transport.events)
+
+
 def test_referrer_policy_is_strict_origin_globally() -> None:
     assert base_settings.SECURE_REFERRER_POLICY == "strict-origin"
     assert prod_settings.SECURE_REFERRER_POLICY == "strict-origin"
