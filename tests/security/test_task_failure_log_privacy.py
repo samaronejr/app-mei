@@ -228,7 +228,7 @@ WITHHELD_CANARY = "synthetic-withheld-field-canary-7003"
 
 
 class _StrictConsole(logging.StreamHandler[io.StringIO]):
-    def handleError(self, record: logging.LogRecord) -> None:
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802 - override
         message = "the withheld record could not be formatted"
         raise AssertionError(message)
 

@@ -31,6 +31,12 @@ def is_known(secret: str) -> bool:
     return secret not in json.dumps(event)
 
 
+class _BoundTask(Protocol):
+    request: Any
+
+    def retry(self, *, countdown: int, max_retries: int) -> Exception: ...
+
+
 class _Applicable(Protocol):
     def apply(self, *, args: list[str], task_id: str) -> object: ...
 
@@ -63,7 +69,7 @@ def _fail(secret: str) -> None:
     raise RuntimeError(message)
 
 
-def _retry(self: Any, secret: str) -> bool:
+def _retry(self: _BoundTask, secret: str) -> bool:
     _observe(secret)
     if self.request.retries == 0:
         raise self.retry(countdown=0, max_retries=1)

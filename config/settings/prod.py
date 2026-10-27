@@ -4,14 +4,13 @@ import ast
 import copy
 import logging
 from collections.abc import Mapping
-from contextvars import Token
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import sentry_sdk
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
-from celery.signals import task_postrun, task_prerun
+from celery._state import _task_stack
 from django.conf import settings
 from django.urls import Resolver404, resolve
 from sentry_sdk.integrations.celery import CeleryIntegration
@@ -148,7 +147,7 @@ def _restore_sentry_scalars(value: object, annotations: object) -> object:
 
 
 def scrub_sentry_event(event: Mapping[str, object], _hint: Hint) -> Event:
-    credentials: set[str] = set(sensitive_values.get())
+    credentials = _known_values()
     # SDK annotation paths mirror credential field names, but their leaves are
     # bookkeeping such as "!limit"/"x", not credential values. They still receive
     # every known-value replacement after discovery from the actual event.
@@ -234,10 +233,6 @@ _TASK_FAILURE_FIELDS: Final = frozenset(
 # What a failed task carried or raised; the other fields only identify the task.
 _TASK_FAILURE_SECRETS: Final = ("args", "exc", "kwargs", "traceback")
 _TASK_FAILURE_ALIAS: Final = "task_failure_context"
-_RECORD_FIELDS: Final = frozenset(logging.makeLogRecord({}).__dict__) | {
-    "asctime",
-    "message",
-}
 
 
 def _task_failure_context(
@@ -271,60 +266,75 @@ def _task_failure_context(
 
 
 def _withhold(record: logging.LogRecord, error: Exception) -> None:
-    """Fail closed: a record the filter cannot scrub is replaced, never passed on."""
-    for name in set(record.__dict__) - _RECORD_FIELDS:
-        del record.__dict__[name]
-    record.msg = (
-        f"{SENTRY_REDACTION_MARKER} log record withheld: "
-        f"redaction failed ({type(error).__name__})"
+    """Fail closed: replace the whole record, not only its message and extras.
+
+    The production formatter renders standard fields as well (the logger name and
+    level), so a record that could not be scrubbed keeps nothing it arrived with but
+    a numeric level.
+    """
+    level = record.__dict__.get("levelno")
+    safe = logging.LogRecord(
+        name=SENTRY_REDACTION_MARKER,
+        level=level if type(level) is int else logging.ERROR,
+        pathname=SENTRY_REDACTION_MARKER,
+        lineno=0,
+        msg=(
+            f"{SENTRY_REDACTION_MARKER} log record withheld: "
+            f"redaction failed ({type(error).__name__})"
+        ),
+        args=(),
+        exc_info=None,
     )
-    record.args = ()
-    record.exc_info = None
-    record.exc_text = None
-    record.stack_info = None
+    record.__dict__.clear()
+    record.__dict__.update(safe.__dict__)
 
 
 _MIN_TASK_SECRET: Final = 8
-_TASK_SECRET_TOKENS: dict[str, Token[tuple[str, ...]]] = {}
+_TASK_KNOWN_CACHE: Final = "_axrm011_known_values"
 
 
-def _remember_task_arguments(
-    *,
-    task_id: str | None = None,
-    args: object = None,
-    kwargs: object = None,
-    **_: object,
-) -> None:
-    """Make a running task's arguments known values for every sink it can reach.
+class _TaskRequest(Protocol):
+    args: object
+    kwargs: object
+    __dict__: dict[str, Any]
 
-    A task that raises or logs what it was given puts it into Sentry's exception
-    value and breadcrumbs, where only known values are removed, while the Celery
-    integration withholds the arguments themselves. They are learned here for the
-    length of the run. Shorter strings are skipped: they cannot be told apart from
-    event field names, which the same scan would then rewrite.
+
+def _task_arguments_known(request: _TaskRequest) -> tuple[str, ...]:
+    """The long string values a running task was given, learned once per execution."""
+    cached = request.__dict__.get(_TASK_KNOWN_CACHE)
+    if cached is None:
+        given = [
+            *(request.args if isinstance(request.args, (list, tuple)) else ()),
+            *(request.kwargs.values() if isinstance(request.kwargs, Mapping) else ()),
+        ]
+        found: set[str] = set()
+        redact_structure([["token", given]], found, fields=SENTRY_CREDENTIAL_FIELDS)
+        cached = tuple(sorted(item for item in found if len(item) >= _MIN_TASK_SECRET))
+        request.__dict__[_TASK_KNOWN_CACHE] = cached
+    return cast("tuple[str, ...]", cached)
+
+
+def _task_known_values() -> tuple[str, ...]:
+    """Argument values of the tasks running on this thread, owned by their requests.
+
+    Celery pushes a request for every execution and pops it itself, signal or not, so
+    these values cannot outlive their run, be swapped between overlapping executions
+    that share a task id, or survive because a cleanup signal never arrived. Nested
+    tasks compose; the inherited delivery context stays a separate source.
     """
-    if task_id is None:
-        return
-    given = [
-        *(args if isinstance(args, (list, tuple)) else ()),
-        *(kwargs.values() if isinstance(kwargs, Mapping) else ()),
-    ]
-    found: set[str] = set()
-    redact_structure([["token", given]], found, fields=SENTRY_CREDENTIAL_FIELDS)
-    known = tuple(sorted(item for item in found if len(item) >= _MIN_TASK_SECRET))
-    _TASK_SECRET_TOKENS[task_id] = sensitive_values.set(
-        (*sensitive_values.get(), *known)
-    )
+    known: list[str] = []
+    seen: set[int] = set()
+    for task in _task_stack.stack or ():
+        if id(task) in seen:
+            continue
+        seen.add(id(task))
+        for request in task.request_stack.stack or ():
+            known.extend(_task_arguments_known(request))
+    return tuple(known)
 
 
-def _forget_task_arguments(*, task_id: str | None = None, **_: object) -> None:
-    token = _TASK_SECRET_TOKENS.pop(task_id, None) if task_id is not None else None
-    if token is not None:
-        sensitive_values.reset(token)
-
-
-task_prerun.connect(_remember_task_arguments, dispatch_uid="axrm011-task-arguments")
-task_postrun.connect(_forget_task_arguments, dispatch_uid="axrm011-task-arguments")
+def _known_values() -> set[str]:
+    return {*sensitive_values.get(), *_task_known_values()}
 
 
 class CredentialURLLogFilter(logging.Filter):
@@ -338,7 +348,7 @@ class CredentialURLLogFilter(logging.Filter):
         return True
 
     def _scrub(self, record: logging.LogRecord) -> None:
-        credentials = _request_credentials(record) | set(sensitive_values.get())
+        credentials = _request_credentials(record) | _known_values()
         # Interpolation is in-memory only. Scrubbing a template's %s first would
         # destroy its placeholders and orphan the unlabelled argument values.
         template = record.msg
