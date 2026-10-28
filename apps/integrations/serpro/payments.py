@@ -14,17 +14,27 @@ becomes todo 14's per-call `FederalConsultation` receipt. Rules:
   protocol never retries it, and admission refuses the client's next call until the
   authority is declared and verified again.
 * Nothing here infers non-payment: an empty answer is a `nada_localizado` receipt.
+* The runner about to pay for a page takes the consultation's settlement lease
+  first and renews it on every later page; while it is live (database time) any
+  other runner yields without writing, and `integrations.0008` refuses such a
+  write outright. Only after the lease runs out (the owner died) may a redelivered
+  runner take over and resume, never re-fetching a page another runner paid for.
 """
 
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from datetime import timedelta
 from logging import getLogger
 from typing import TYPE_CHECKING, Final, cast
+from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
+from django.db.models import Q
+from django.db.models.functions import Now
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -86,8 +96,11 @@ from apps.obligations.payment_matching import match_das_payments
 from apps.obligations.system_ingest import ingest_system_document
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from datetime import date
     from uuid import UUID
+
+    from django.db.models import QuerySet
 
     from apps.integrations.transport_types import Environment, JSONValue
 
@@ -95,6 +108,10 @@ logger = getLogger(__name__)
 
 CHECKS: Final = "fiscal.checks.run"
 FLAG: Final = "federal_checks"
+# Covers one claim, a send under its 120 s call lease, the one fresh claim after a
+# SERPRO 401 and the page's settlement, with margin. Past it the owner is dead.
+SETTLEMENT_LEASE: Final = timedelta(minutes=10)
+OWNER_SETTING: Final = "app.payment_settlement_owner"
 FAILED_REASON: Final = IssueReason.CONSULTA_PAGAMENTOS_FALHOU
 REASONS: Final = {
     FAILED_REASON: ExceptionReason(
@@ -315,6 +332,9 @@ def _finish(
     query.failure_code = code
     query.finished_at = timezone.now()
     query.version += 1
+    # Settled: no runner holds the consultation any longer.
+    query.settlement_owner = None
+    query.settlement_until = None
     query.save()
     record_event(
         action="integrations.payment_consultation_finished",
@@ -363,20 +383,79 @@ def _locked(query_id: UUID) -> PaymentQuery:
     )
 
 
-def _settling(query_id: UUID, index: int) -> PaymentQuery | None:
-    """Lock the consultation to settle page `index`; None when that is not ours.
+@contextmanager
+def _as_runner(tenant_id: UUID, runner: UUID) -> Iterator[None]:
+    """Tenant context whose writes the database attributes to `runner`."""
+    with tenant_context(tenant_id):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config(%s, %s, true)", [OWNER_SETTING, str(runner)]
+            )
+        yield
 
-    The condition belongs to the locking query, so Postgres evaluates it on the
-    row's newest version once the lock is granted. A runner that read the
-    consultation before another one finished it, or applied this page, finds
-    nothing to settle: a terminal outcome is final.
-    """
+
+def _free(runner: UUID) -> Q:
+    """No other runner holds a live settlement lease (Postgres evaluates it)."""
+    return (
+        Q(settlement_owner__isnull=True)
+        | Q(settlement_owner=runner)
+        | Q(settlement_until__lte=Now())
+    )
+
+
+def _unowned(query_id: UUID, runner: UUID) -> PaymentQuery | None:
+    """Lock an active consultation no live runner owns; None means yield."""
     return (
         PaymentQuery.objects.select_for_update(of=("self",))
         .select_related("client", "link__connection", "requested_by")
-        .filter(pk=query_id, state__in=ACTIVE_QUERY_STATES, pages_fetched=index)
+        .filter(pk=query_id, state__in=ACTIVE_QUERY_STATES)
+        .filter(_free(runner))
         .first()
     )
+
+
+def _open_page(query_id: UUID, index: int, runner: UUID) -> QuerySet[PaymentQuery]:
+    """Page `index` of an active consultation that no other live runner settles.
+
+    The lease (`_own`) and the settlement lock (`_settling`) share this condition;
+    it belongs to the locking statement, so Postgres evaluates it on the row's
+    newest version once the lock is granted.
+    """
+    return (
+        PaymentQuery.objects.select_related("client", "link__connection")
+        .filter(pk=query_id, state__in=ACTIVE_QUERY_STATES, pages_fetched=index)
+        .filter(_free(runner))
+    )
+
+
+def _settling(query_id: UUID, index: int, runner: UUID) -> PaymentQuery | None:
+    """Lock the consultation to settle page `index`; None when that is not ours.
+
+    A runner that read the consultation before another one finished it, applied
+    this page or took its settlement lease finds nothing to settle: a terminal
+    outcome is final.
+    """
+    return (
+        _open_page(query_id, index, runner)
+        .select_related("requested_by")
+        .select_for_update(of=("self",))
+        .first()
+    )
+
+
+def _own(query: PaymentQuery, index: int, runner: UUID) -> bool:
+    """Take or renew the settlement lease before paying for page `index`.
+
+    One conditional UPDATE: under READ COMMITTED Postgres re-checks it on the
+    newest row version, so of two runners racing for the same page exactly one
+    becomes the owner and the other pays for nothing.
+    """
+    with _as_runner(query.tenant_id, runner):
+        return bool(
+            _open_page(query.pk, index, runner).update(
+                settlement_owner=runner, settlement_until=Now() + SETTLEMENT_LEASE
+            )
+        )
 
 
 def _stored(query_id: UUID) -> PaymentQuery:
@@ -396,12 +475,18 @@ def _receipt(
     )
 
 
-def _refused(
-    query: PaymentQuery, index: int, digest: str, key: str, error: Exception
+def _refused(  # noqa: PLR0913 - the page's identity plus the refusing runner
+    query: PaymentQuery,
+    index: int,
+    digest: str,
+    key: str,
+    error: Exception,
+    *,
+    runner: UUID,
 ) -> PaymentQuery:
     """Admission refused this page before any byte was sent."""
-    with tenant_context(query.tenant_id):
-        settling = _settling(query.pk, index)
+    with _as_runner(query.tenant_id, runner):
+        settling = _settling(query.pk, index, runner)
         if settling is None:
             return _stored(query.pk)
         query = settling
@@ -439,16 +524,18 @@ def _refused(
         )
 
 
-def _settle_page(  # noqa: PLR0911 - one outcome per finalized call state
+def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call state
     query: PaymentQuery,
     index: int,
     digest: str,
     call_id: UUID,
     adapter: PageAdapter,
+    *,
+    runner: UUID,
 ) -> PaymentQuery | None:
     """Turn one finalized page call into receipts and payments; None = next page."""
-    with tenant_context(query.tenant_id):
-        settling = _settling(query.pk, index)
+    with _as_runner(query.tenant_id, runner):
+        settling = _settling(query.pk, index, runner)
         if settling is None:
             return _stored(query.pk)
         query = settling
@@ -521,7 +608,9 @@ def _refused_quota(
     return _finish(query, PaymentQueryState.FALHA, "cota_esgotada_parcial")
 
 
-def _page(query: PaymentQuery, parties: Parties, index: int) -> PaymentQuery | None:
+def _page(  # noqa: PLR0911 - each step may end the consultation or yield it
+    query: PaymentQuery, parties: Parties, index: int, runner: UUID
+) -> PaymentQuery | None:
     """Fetch page `index` through the full protocol; None means fetch the next one."""
     data = page_data(query.window, index)
     digest = hashlib.sha256(
@@ -529,8 +618,8 @@ def _page(query: PaymentQuery, parties: Parties, index: int) -> PaymentQuery | N
     ).hexdigest()
     key = _page_key(query, index)
     request = CallRequest(PAGE_OPERATION, key, digest, key)
-    with tenant_context(query.tenant_id):
-        current = _settling(query.pk, index)
+    with _as_runner(query.tenant_id, runner):
+        current = _settling(query.pk, index, runner)
         if current is None:
             return _stored(query.pk)
         if not _initiator_allowed(current):
@@ -540,7 +629,11 @@ def _page(query: PaymentQuery, parties: Parties, index: int) -> PaymentQuery | N
     try:
         row = reserve(query.tenant_id, query.link_id, request)
     except AdmissionDeniedError as error:
-        return _refused(query, index, digest, key, error)
+        return _refused(query, index, digest, key, error, runner=runner)
+    if not _own(query, index, runner):
+        # A live runner owns this consultation's settlement; it is left alone.
+        with tenant_context(query.tenant_id):
+            return _stored(query.pk)
     ticket = claim(query.tenant_id, row.pk)
     if ticket is None:
         with tenant_context(query.tenant_id):
@@ -552,21 +645,27 @@ def _page(query: PaymentQuery, parties: Parties, index: int) -> PaymentQuery | N
                 _transport(cast("Environment", query.environment)), parties, data
             )
         )
-        return _settle_page(query, index, digest, row.pk, adapter)
+        return _settle_page(query, index, digest, row.pk, adapter, runner=runner)
     adapter = PageAdapter(
         SerproAdapter(_transport(cast("Environment", query.environment)), parties, data)
     )
     perform(ticket, adapter)
-    return _settle_page(query, index, digest, row.pk, adapter)
+    return _settle_page(query, index, digest, row.pk, adapter, runner=runner)
 
 
 def run_payment_query(tenant_id: UUID, query_id: UUID) -> PaymentQuery:
-    """Run (or resume) one consultation; each phase owns its own short transaction."""
+    """Run (or resume) one consultation; each phase owns its own short transaction.
+
+    A consultation whose settlement lease another runner holds is returned as
+    stored, with nothing written: its owner finishes it, or a later delivery
+    resumes it once that lease has run out.
+    """
     assert_no_transaction()
-    with tenant_context(tenant_id):
-        query = _locked(query_id)
-        if query.state not in ACTIVE_QUERY_STATES:
-            return query
+    runner = uuid4()
+    with _as_runner(tenant_id, runner):
+        query = _unowned(query_id, runner)
+        if query is None:
+            return _stored(query_id)
         if not _initiator_allowed(query):
             return _finish(query, PaymentQueryState.FALHA, "solicitante_sem_permissao")
         parties = termo_parties(query.link.connection_id, query.client.cnpj)
@@ -578,7 +677,7 @@ def run_payment_query(tenant_id: UUID, query_id: UUID) -> PaymentQuery:
             query.version += 1
             query.save()
     for index in range(query.pages_fetched, MAX_PAGES):
-        finished = _page(query, parties, index)
+        finished = _page(query, parties, index, runner)
         if finished is not None:
             return finished
         with tenant_context(tenant_id):

@@ -167,6 +167,11 @@ class PaymentQuery(ClientRecord):
     created_at = models.DateTimeField(default=timezone.now)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
+    # The runner that is paying for this consultation's pages settles it alone
+    # until this lease (database time) runs out; `integrations.0008` refuses any
+    # other writer while it is live.
+    settlement_owner = models.UUIDField(null=True, blank=True)
+    settlement_until = models.DateTimeField(null=True, blank=True)
 
     class Meta(ClientRecord.Meta):
         """One intent per key, one active consultation per client, honest counts."""
@@ -198,6 +203,13 @@ class PaymentQuery(ClientRecord):
             models.CheckConstraint(
                 condition=Q(pages_fetched__lte=MAX_PAYMENT_PAGES),
                 name="paymentquery_page_cap",
+            ),
+            models.CheckConstraint(
+                condition=Q(
+                    settlement_owner__isnull=True, settlement_until__isnull=True
+                )
+                | Q(settlement_owner__isnull=False, settlement_until__isnull=False),
+                name="paymentquery_owner_lease",
             ),
         ]
 
