@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+from typing import TYPE_CHECKING, cast
 
 import pytest
 import sentry_sdk
@@ -20,6 +21,9 @@ from tests.security.test_redaction_boundary_regressions import (
     _sinks,
 )
 from tests.security.test_withhold_boundaries import _MissingStack
+
+if TYPE_CHECKING:
+    from sentry_sdk._types import Log
 
 
 class _NameTrap(logging.LogRecord):
@@ -165,6 +169,40 @@ def test_sdk_logs_cannot_serialize_a_known_credential_from_an_opaque_extra(
         for log in json.loads(item.payload.get_bytes())["items"]
     ]
     assert [log["body"] for log in logs] == ["ordinary diagnostic"]
+
+
+def test_direct_sdk_logs_freeze_opaque_attributes_before_the_private_context_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an SDK log entering the client without the logging adapter's rendering.
+    log = {
+        "body": "ordinary direct sdk diagnostic",
+        "attributes": {"opaque": _OpaqueSecret()},
+        "severity_text": "error",
+        "severity_number": 17,
+        "time_unix_nano": 0,
+        "trace_id": None,
+        "span_id": None,
+    }
+    with _sinks(monkeypatch, logs=True) as (_, stream, client, transport):
+        with delivery_secrets(CANARY):
+            # When the real client runs the production hook before enqueueing.
+            client._capture_log(
+                cast("Log", cast("object", log)), sentry_sdk.get_current_scope()
+            )
+        # Then late serialization must be safe after the credential scope is gone.
+        client.flush()
+    assert transport.item_types == ["log"]
+    assert CANARY not in stream.getvalue() + b"".join(transport.payloads).decode()
+    logs = [
+        item
+        for payload in transport.payloads
+        for envelope_item in Envelope.deserialize(payload)
+        if envelope_item.type == "log"
+        for item in json.loads(envelope_item.payload.get_bytes())["items"]
+    ]
+    assert [item["body"] for item in logs] == ["ordinary direct sdk diagnostic"]
+    assert logs[0]["attributes"]["opaque"]["value"] == "[Filtered]"
 
 
 class _InjectingRecordUpdate(dict[str, object]):
