@@ -354,9 +354,9 @@ def _plain_storage(value: object) -> dict[str, Any]:
     if not issubclass(type(value), dict):
         raise TypeError
     return {
-        key: item
+        str.__str__(key): item
         for key, item in dict.items(cast("dict[Any, Any]", value))
-        if type(key) is str
+        if issubclass(type(key), str)
     }
 
 
@@ -381,6 +381,12 @@ def _record_source(
     record: logging.LogRecord,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[TracebackType | None]]:
     original = _plain_storage(record.__dict__)
+    # Normalize defaults in owned storage, not by looking up original attributes:
+    # even an exact LogRecord can hold subclassed keys in its native dictionary.
+    if original.get("name") is None:
+        original["name"] = SENTRY_REDACTION_MARKER
+    if original.get("levelno") is None:
+        original["levelno"] = logging.ERROR
     exc_info = original.get("exc_info")
     nodes, traces = _exception_snapshot(exc_info) if exc_info is not None else ([], [])
     empty_info = (
@@ -756,7 +762,7 @@ def _task_known_values() -> tuple[str, ...]:
 
 def _known_values() -> set[str]:
     return {
-        *sensitive_values.get(),
+        *(str.__str__(value) for value in sensitive_values.get()),
         *_task_known_values(),
     }
 
@@ -773,13 +779,12 @@ class CredentialURLLogFilter(logging.Filter):
             original = _plain_storage(record.__dict__)
             if original.get(_DROPPED_RECORD) is True:
                 return False
-            # makeLogRecord legitimately defaults these to None. Normalize only
-            # those defaults before any dispatcher or formatter reads them.
-            if record.name is None:
-                record.name = SENTRY_REDACTION_MARKER
-            if record.levelno is None:
-                record.levelno = logging.ERROR
-            if type(record.name) is not str or type(record.levelno) is not int:
+            # makeLogRecord legitimately defaults these to None. _record_source
+            # normalizes those defaults in its owned copy before any formatter.
+            name, level = original.get("name"), original.get("levelno")
+            if (name is not None and type(name) is not str) or (
+                level is not None and type(level) is not int
+            ):
                 _withhold(record, TypeError())
             self._scrub(record)
             # Probe the actual console formatter before StreamHandler.handleError
@@ -898,9 +903,29 @@ def _install_record_creation() -> None:
                 strict=False,
             )
         )
-        fields.update(options)
+        fields.update(_plain_storage(options))
+        level = fields["level"]
+        stack_info = fields.get("stack_info", False)
+        stacklevel = fields.get("stacklevel", 1)
+        args = cast("tuple[object, ...]", fields["args"])
+        if any(
+            type(value) is not expected
+            for value, expected in (
+                (level, int),
+                (stack_info, bool),
+                (stacklevel, int),
+                (args, tuple),
+            )
+        ):
+            previous_log(
+                self,
+                logging.ERROR,
+                f"{SENTRY_REDACTION_MARKER} log record withheld: redaction failed",
+                (),
+                stacklevel=2,
+            )
+            return
         try:
-            args = cast("tuple[object, ...]", fields["args"])
             extra = fields.get("extra")
             exc_info = fields.get("exc_info")
             if (
@@ -926,13 +951,13 @@ def _install_record_creation() -> None:
             safe_args, safe_extra, safe_info = (), None, None
         previous_log(
             self,
-            fields["level"],
+            cast("int", level),
             safe_msg,
             safe_args,
             exc_info=safe_info,
             extra=safe_extra,
-            stack_info=fields.get("stack_info", False),
-            stacklevel=cast("int", fields.get("stacklevel", 1)) + 1,
+            stack_info=cast("bool", stack_info),
+            stacklevel=cast("int", stacklevel) + 1,
         )
 
     type.__setattr__(logging.Logger, "_log", inert_log)
@@ -970,10 +995,49 @@ def _safe_capture_hint(hint: Hint | None) -> Hint:
             raise TypeError
         if _plain_storage(record.__dict__).get(_DROPPED_RECORD) is True:
             raise TypeError
+        if not CredentialURLLogFilter().filter(record):
+            raise TypeError
         result["log_record"] = record
     if source.get("exc_info") is not None:
         result["exc_info"] = cast("Any", _safe_exception_info(source["exc_info"]))
     return result
+
+
+def _project_capture_kwargs(values: dict[str, object]) -> dict[str, Any]:
+    """Own every keyword before Scope.update_from_kwargs merges its values."""
+    return {
+        name: (
+            _project_mapping(value)
+            if name in {"extras", "contexts", "tags", "attributes", "user"}
+            and value is not None
+            else project_structure(value)
+        )
+        for name, value in _plain_storage(values).items()
+    }
+
+
+def _project_capture_scope(scope: sentry_sdk.Scope | None) -> sentry_sdk.Scope | None:
+    """Refuse foreign scope protocols and freeze native scope diagnostic data."""
+    if scope is None:
+        return None
+    if type(scope) is not sentry_sdk.Scope:
+        raise TypeError
+    for name in (
+        "_extras",
+        "_contexts",
+        "_tags",
+        "_attributes",
+        "_user",
+        "_transaction_info",
+    ):
+        value = object.__getattribute__(scope, name)
+        if value is not None:
+            object.__setattr__(scope, name, _project_mapping(value))
+    for name in ("_level", "_fingerprint", "_transaction"):
+        object.__setattr__(
+            scope, name, project_structure(object.__getattribute__(scope, name))
+        )
+    return scope
 
 
 def _install_capture_boundary() -> None:
@@ -993,7 +1057,10 @@ def _install_capture_boundary() -> None:
             if owned is None:
                 return None
             return previous_capture(
-                self, owned, hint=_safe_capture_hint(hint), scope=scope
+                self,
+                owned,
+                hint=_safe_capture_hint(hint),
+                scope=_project_capture_scope(scope),
             )
         except Exception:  # noqa: BLE001 - production telemetry fails closed
             return None
@@ -1014,7 +1081,11 @@ def _install_capture_boundary() -> None:
             if owned is None:
                 return None
             return previous_scoped_capture(
-                self, owned, hint=_safe_capture_hint(hint), scope=scope, **scope_kwargs
+                self,
+                owned,
+                hint=_safe_capture_hint(hint),
+                scope=_project_capture_scope(scope),
+                **_project_capture_kwargs(scope_kwargs),
             )
         except Exception:  # noqa: BLE001 - includes the SDK's post-capture read
             return None
@@ -1059,7 +1130,8 @@ def _own_event_carrier(event: Event) -> Event | None:
     if type(carrier) is dict:
         # The public cron API reads check_in_id after capture returns. A failed
         # scrub must husk only our copy, not destroy that caller's return value.
-        if source.get("type") == "check_in":
+        event_type = source.get("type")
+        if type(event_type) is str and event_type == "check_in":
             return cast("Event", project_structure(dict.copy(original)))
         # Freeze objects now, but discover credentials only after scope merging.
         # Early text redaction can destroy a range crossing a later scope secret.
@@ -1088,8 +1160,8 @@ def _install_exception_capture() -> None:
             return previous(
                 self,
                 cast("Any", _safe_exception_info(error)),
-                scope=scope,
-                **scope_kwargs,
+                scope=_project_capture_scope(scope),
+                **_project_capture_kwargs(scope_kwargs),
             )
         except Exception:  # noqa: BLE001 - never render a failing capture
             return None
@@ -1154,10 +1226,12 @@ def _install_sdk_exception_conversion() -> None:
 def _task_declares_exception(task: object, ancestry: tuple[type, ...]) -> bool:
     for kind in type.__dict__["__mro__"].__get__(type(task)):
         namespace = type.__dict__["__dict__"].__get__(kind)
-        if "throws" in namespace:
-            declared = namespace["throws"]
-            choices = declared if type(declared) is tuple else (declared,)
-            return any(base is expected for base in ancestry for expected in choices)
+        for name, declared in namespace.items():
+            if type(name) is str and name == "throws":
+                choices = declared if type(declared) is tuple else (declared,)
+                return any(
+                    base is expected for base in ancestry for expected in choices
+                )
     return False
 
 
@@ -1217,7 +1291,9 @@ def _install_sdk_carriers() -> None:
                 return
             source = _plain_storage(log)
             source["attributes"] = _project_mapping(source.get("attributes", {}))
-            previous_log(self, cast("Log", project_structure(source)), scope)
+            owned_scope = _project_capture_scope(scope)
+            if owned_scope is not None:
+                previous_log(self, cast("Log", project_structure(source)), owned_scope)
         except Exception:  # noqa: BLE001 - no carrier enters SDK telemetry rendering
             return
 

@@ -231,6 +231,10 @@ def _remember(text: str, credentials: set[str]) -> None:
 def _children(
     value: object, hidden: bool, fields: frozenset[str] | None
 ) -> list[tuple[object, bool]]:
+    # A carrier claims structure. Refuse non-native nested dicts before walking
+    # rather than allowing the SDK to call their accessors later.
+    if type(value) is not dict and issubclass(type(value), dict):
+        raise TypeError
     if type(value) is dict:
         return [
             child
@@ -272,7 +276,10 @@ def diagnostic_type(value: object) -> tuple[str, str]:
         ),
         "builtins",
     )
-    return module, type.__dict__["__name__"].__get__(kind)
+    # CPython permits a str subclass here. Owning its Unicode storage must
+    # precede f-strings and synthetic exception construction, not follow them.
+    name = type.__dict__["__name__"].__get__(kind)
+    return module, str.__str__(name)
 
 
 def project_structure(value: object) -> object:
@@ -294,6 +301,14 @@ def project_structure(value: object) -> object:
             or kind is frozenset
         ):
             return item
+        # A string subclass still owns native text storage. Copy that storage
+        # without its renderers so credential-bearing field names stay labelled.
+        if issubclass(kind, (str, bytes)):
+            return (
+                str.__str__(cast("str", item))
+                if issubclass(kind, str)
+                else bytes.__bytes__(cast("bytes", item))
+            )
         if kind is Decimal:
             return Decimal.__str__(cast("Decimal", item))
         if kind is UUID:
@@ -316,10 +331,6 @@ def project_structure(value: object) -> object:
             if zone is not None and type(zone) is not timezone:
                 stamp = datetime.replace(stamp, tzinfo=None)
             return datetime.isoformat(stamp)
-        # A nested dict subclass cannot safely reach the SDK serializer. Unlike an
-        # opaque scalar, a carrier claims structure: refuse it rather than call it.
-        if issubclass(kind, dict):
-            raise TypeError
         module, name = diagnostic_type(item)
         return f"<{module}.{name}>"
 
