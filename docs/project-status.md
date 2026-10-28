@@ -696,9 +696,9 @@ patches add upgrade coupling and require their real-path canaries on upgrades.
 
 The complete baseline settings/privacy modules produce **386 call-phase
 failures** for the hostile-data witnesses; **12** already-safe invalid-name
-controls remain passing. The focused repair selection passes **957** tests, and
+controls remain passing. The initial focused repair selection passed **957** tests, and
 Ruff, format and mypy pass across **1,158 files**. Current default collection is
-**7,262 selected**: **2,101** in group 1 and **5,161** in group 2, including
+**7,264 selected**: **2,101** in group 1 and **5,163** in group 2, including
 **411** new real-sink/projection cases. Collection is not passing-suite evidence.
 The new strict campaigns contain **25 scan** and **89 filter** mutants.
 Twelve obsolete sharing/render-order guards are explicitly retired; new
@@ -708,8 +708,19 @@ Every child reports all selected node IDs and call outcomes; incomplete calls,
 setup/teardown/import/thread failures, missing application and timeouts cannot
 count as kills. Final clean-head gates, complete campaign results and owned
 container/volume teardown are recorded under `.evidence/AXRM-011-fix6-*` and
-`.evidence/AXRM-011-perf-doneclaim.json`, with no earlier final stage reused.
+`.evidence/AXRM-011-doneclaim.json`, with no earlier final stage reused.
 Independent review and all provider, operator and activation gates remain open.
+
+The first full run at `ab24df4` passed its ordinary gates and all 25 scan
+mutants, but only 85 of 89 filter mutants were killed, so it is not a final
+passing run. Two additional real-sink witnesses cover malformed scrub field
+counts and a raw credential template whose percent interpolation changes the
+labelled value while leaving an unlabelled original echo. The two hinted-record
+mutants now disable both the early capture rejection and the equivalent later
+hook, rather than being masked by the earlier guard. Their existing public-path
+witnesses remain unchanged. The complete 939-call targeted baseline passes and
+all four former survivors are killed with no invalid children. No mutant was
+retired to resolve these survivors; fresh full-head verification is still required.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.

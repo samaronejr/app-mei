@@ -11,12 +11,13 @@ import sentry_sdk
 from celery import _state
 
 from apps.delivery.privacy import delivery_secrets
+from apps.integrations.privacy import redact_structure
 from config.settings import prod
 from tests.security.test_redaction_boundary_regressions import CANARY, _sinks
 from tests.security.test_withhold_boundaries import _MissingStack, _RejectUpdate
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from sentry_sdk.types import Event, Hint
 
@@ -43,6 +44,57 @@ def test_a_dropped_standard_record_hint_cannot_revive_its_original_event(
     # Then neither the event nor the retained breadcrumb can revive it.
     assert len(transport.events) == 1
     assert CANARY not in b"".join(transport.payloads).decode()
+
+
+def test_malformed_scrub_field_count_is_withheld_at_real_sinks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    injected = False
+
+    def add_unexpected_field(
+        value: object,
+        credentials: set[str],
+        *,
+        fields: frozenset[str] | None = frozenset(),
+        urls: Callable[[str], tuple[str, set[str]]] | None = None,
+    ) -> object:
+        nonlocal injected
+        result = redact_structure(value, credentials, fields=fields, urls=urls)
+        if type(result) is list and result and not injected:
+            pairs = cast("list[list[object]]", result)
+            if pairs[-1][0] == "exception_snapshot":
+                pairs.insert(-1, ["unexpected_field", CANARY])
+                injected = True
+        return result
+
+    with _sinks(monkeypatch, logs=True) as (logger, stream, client, transport):
+        with monkeypatch.context() as broken:
+            broken.setattr(prod, "redact_structure", add_unexpected_field)
+            logger.error("ordinary diagnostic before corrupt snapshot")
+        sentry_sdk.capture_message("ordinary following event")
+        client.flush()
+    assert injected
+    assert prod.SENTRY_REDACTION_MARKER in stream.getvalue()
+    assert CANARY not in stream.getvalue() + b"".join(transport.payloads).decode()
+    assert any(
+        event.get("message") == "ordinary following event" for event in transport.events
+    )
+
+
+def test_raw_template_credentials_survive_interpolation_for_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = f"{CANARY}%s-tail"
+    echo = credential.replace("%", "%%")
+    template = f"password='{credential}' echo={echo} status=503 request_id=raw-template"
+    with _sinks(monkeypatch, logs=True) as (logger, stream, client, transport):
+        logger.error(template, "public")
+        client.flush()
+    emitted = stream.getvalue() + b"".join(transport.payloads).decode()
+    assert CANARY not in emitted
+    assert "status=503" in stream.getvalue()
+    assert "request_id=raw-template" in stream.getvalue()
+    assert transport.events
 
 
 def test_the_private_stack_name_is_resolved_again_at_each_use(
