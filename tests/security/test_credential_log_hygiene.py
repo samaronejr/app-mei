@@ -277,9 +277,12 @@ def test_production_console_filter_redacts_credential_request_records() -> None:
     )
 
     assert prod_settings.CredentialURLLogFilter().filter(record) is True
-    rendered = f"{record.getMessage()} {exception}"
+    rendered = logging.Formatter().format(record)
     assert LOG_CANARY not in rendered
     assert rendered.count(prod_settings.SENTRY_REDACTION_MARKER) == 2
+    assert record.exc_info is not None
+    assert record.exc_info[1] is not exception
+    assert exception.args == (f"request failed at {path}",)
     assert prod_settings.LOGGING["handlers"]["console"]["filters"] == [
         "credential_urls",
     ]
