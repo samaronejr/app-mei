@@ -17,8 +17,13 @@ becomes todo 14's per-call `FederalConsultation` receipt. Rules:
 * The runner about to pay for a page takes the consultation's settlement lease
   first and renews it on every later page; while it is live (database time) any
   other runner yields without writing, and `integrations.0008` refuses such a
-  write outright. Only after the lease runs out (the owner died) may a redelivered
-  runner take over and resume, never re-fetching a page another runner paid for.
+  write outright. Every runner also holds a session lock on its own database
+  connection while it runs; only once the lease has run out AND that connection
+  is gone (the owner died, `integrations.0009`) may a redelivered runner take over
+  and resume, never re-fetching a page another runner paid for. A runner merely
+  stalled past its lease keeps its consultation and the page it paid for.
+* A page reserved but never claimed is cancelled and its reservation released as
+  soon as the consultation is final, so no abandoned page holds the firm's cap.
 """
 
 from __future__ import annotations
@@ -32,8 +37,14 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import IntegrityError, connection, transaction
-from django.db.models import Q
+from django.db import (
+    IntegrityError,
+    InterfaceError,
+    OperationalError,
+    connection,
+    transaction,
+)
+from django.db.models import BooleanField, Func, Q
 from django.db.models.functions import Now
 from django.utils import timezone
 
@@ -54,6 +65,7 @@ from apps.integrations.authority import (
     record_authority_denial,
 )
 from apps.integrations.budget_pricing import BudgetDeniedError
+from apps.integrations.budget_settlement import release
 from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
@@ -109,9 +121,15 @@ logger = getLogger(__name__)
 CHECKS: Final = "fiscal.checks.run"
 FLAG: Final = "federal_checks"
 # Covers one claim, a send under its 120 s call lease, the one fresh claim after a
-# SERPRO 401 and the page's settlement, with margin. Past it the owner is dead.
+# SERPRO 401 and the page's settlement, with margin. Past it, an owner whose
+# database session is gone too is dead.
 SETTLEMENT_LEASE: Final = timedelta(minutes=10)
 OWNER_SETTING: Final = "app.payment_settlement_owner"
+# Session-level advisory lock keyed by the runner's token; `integrations.0009`'s
+# `integrations_payment_runner_alive` derives the same key from the stored owner.
+RUNNER_LOCK: Final = "SELECT pg_advisory_lock(hashtextextended(%s, 0))"
+RUNNER_UNLOCK: Final = "SELECT pg_advisory_unlock(hashtextextended(%s, 0))"
+UNUSED_PAGE: Final = "consulta_encerrada"
 FAILED_REASON: Final = IssueReason.CONSULTA_PAGAMENTOS_FALHOU
 REASONS: Final = {
     FAILED_REASON: ExceptionReason(
@@ -336,6 +354,7 @@ def _finish(
     query.settlement_owner = None
     query.settlement_until = None
     query.save()
+    _release_unused(query)
     record_event(
         action="integrations.payment_consultation_finished",
         tenant_id=query.tenant_id,
@@ -375,6 +394,24 @@ def _finish(
     return query
 
 
+def _release_unused(query: PaymentQuery) -> None:
+    """Cancel the finished consultation's pages that were reserved but never claimed.
+
+    Such a page (its runner yielded, or died before the claim) will never be sent
+    once the consultation is final; its reservation goes back to the firm's cap in
+    this same transaction. A claimed page is left alone: it is the protocol's.
+    """
+    keys = [_page_key(query, index) for index in range(MAX_PAGES)]
+    for call in ProviderCall.objects.select_for_update().filter(
+        client_id=query.client_id, request_key__in=keys, state=CallState.RESERVED
+    ):
+        release(call)
+        call.state = CallState.CANCELLED
+        call.provider_code = UNUSED_PAGE
+        call.version += 1
+        call.save()
+
+
 def _locked(query_id: UUID) -> PaymentQuery:
     return (
         PaymentQuery.objects.select_for_update(of=("self",))
@@ -394,12 +431,43 @@ def _as_runner(tenant_id: UUID, runner: UUID) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def _alive(runner: UUID) -> Iterator[None]:
+    """Hold the runner's session lock for as long as this run lasts.
+
+    Postgres drops it with the connection, so it outlives a stall but not the
+    death of the process: the proof that a lapsed lease's owner is really gone.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(RUNNER_LOCK, [str(runner)])
+    try:
+        yield
+    finally:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(RUNNER_UNLOCK, [str(runner)])
+        except (InterfaceError, OperationalError):
+            # The connection is gone, and its session lock went with it.
+            logger.warning("PAGTOWEB runner connection lost before unlocking")
+
+
+class _OwnerAlive(Func):
+    """The settlement owner's runner still holds its session lock (`_alive`)."""
+
+    function = "integrations_payment_runner_alive"
+    output_field = BooleanField()
+
+
 def _free(runner: UUID) -> Q:
-    """No other runner holds a live settlement lease (Postgres evaluates it)."""
+    """No other runner holds the settlement (Postgres evaluates it).
+
+    Another runner's lease is free only once it has run out and that runner's
+    connection is gone: a live owner stalled past its deadline keeps it.
+    """
     return (
         Q(settlement_owner__isnull=True)
         | Q(settlement_owner=runner)
-        | Q(settlement_until__lte=Now())
+        | (Q(settlement_until__lte=Now()) & ~Q(_OwnerAlive("settlement_owner")))
     )
 
 
@@ -631,9 +699,13 @@ def _page(  # noqa: PLR0911 - each step may end the consultation or yield it
     except AdmissionDeniedError as error:
         return _refused(query, index, digest, key, error, runner=runner)
     if not _own(query, index, runner):
-        # A live runner owns this consultation's settlement; it is left alone.
+        # A live runner owns this consultation's settlement; it is left alone. If
+        # it was finished meanwhile, this page is never sent: release it now.
         with tenant_context(query.tenant_id):
-            return _stored(query.pk)
+            stored = _stored(query.pk)
+            if stored.state not in ACTIVE_QUERY_STATES:
+                _release_unused(stored)
+            return stored
     ticket = claim(query.tenant_id, row.pk)
     if ticket is None:
         with tenant_context(query.tenant_id):
@@ -658,10 +730,15 @@ def run_payment_query(tenant_id: UUID, query_id: UUID) -> PaymentQuery:
 
     A consultation whose settlement lease another runner holds is returned as
     stored, with nothing written: its owner finishes it, or a later delivery
-    resumes it once that lease has run out.
+    resumes it once that lease has run out and its owner's connection is gone.
     """
     assert_no_transaction()
     runner = uuid4()
+    with _alive(runner):
+        return _run(tenant_id, query_id, runner)
+
+
+def _run(tenant_id: UUID, query_id: UUID, runner: UUID) -> PaymentQuery:
     with _as_runner(tenant_id, runner):
         query = _unowned(query_id, runner)
         if query is None:

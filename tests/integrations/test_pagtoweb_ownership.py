@@ -19,6 +19,7 @@ from django.db.models.functions import Now
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
+from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_models import CallState
 from apps.integrations.models import IntegrationIssue
 from apps.integrations.serpro import payments as payment_service
@@ -43,6 +44,7 @@ from tests.integrations.test_pagtoweb_schedule import Fire, fire
 
 if TYPE_CHECKING:
     from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
 
 __all__ = ["fire", "world"]
 
@@ -61,6 +63,7 @@ class Stop:
 
     at: int = 1
     dies: bool = False
+    drops_session: bool = False
     entered: threading.Event = field(default_factory=threading.Event)
     release: threading.Event = field(default_factory=threading.Event)
     calls: int = 0
@@ -79,6 +82,8 @@ def stop_at(monkeypatch: pytest.MonkeyPatch, step: str, **stops: Stop) -> None:
                 for arg in args:
                     if isinstance(arg, PageAdapter) and arg.records is not None:
                         stop.records = len(arg.records)
+                if stop.drops_session:
+                    session_ends()
                 stop.entered.set()
                 if stop.dies:
                     raise WorkerDiedError
@@ -86,6 +91,17 @@ def stop_at(monkeypatch: pytest.MonkeyPatch, step: str, **stops: Stop) -> None:
         return real(*args, **kwargs)
 
     monkeypatch.setattr(payment_service, step, gated)
+
+
+def session_ends() -> None:
+    """This runner's database session ends while its thread lives on.
+
+    Its session lock goes with the connection, so the runner is presumed dead; the
+    thread reconnects under the same runtime role, as Django does after a loss.
+    """
+    connection.close()
+    with connection.cursor() as cursor:
+        cursor.execute("SET ROLE app_runtime")
 
 
 def untouched(world: World, query_id: UUID) -> dict[str, object]:
@@ -390,6 +406,8 @@ def test_an_owner_whose_lease_ran_out_yields_to_the_runner_that_took_over(
     # Given A holds a paid page past its lease and C took the consultation over.
     query = scheduled_query(world)
     owner, successor = Stop(), Stop()
+    # A's database session is gone too: only then is it presumed dead.
+    owner.drops_session = True
     stop_at(monkeypatch, "_settle_page", owner=owner, next=successor)
     world.script(page([item("DAS-LATE-01")]))
     pools: list[ThreadPoolExecutor] = []
@@ -565,3 +583,253 @@ def test_the_owner_guard_reverses_populated_and_comes_back(world: World) -> None
         transaction.atomic(),
     ):
         PaymentQuery.objects.filter(pk=query.pk).update(failure_code="y")
+
+
+# Review 4 (AXRM015-RV4-*): a stalled owner keeps its page, a yielded delivery
+# comes back by itself, and no abandoned page keeps the firm's cap.
+
+PAGE_MICROBRL = 240_000  # One SP-PAG page at the world's 0.24 BRL tariff.
+
+
+def cap_admits(world: World, pages: int) -> None:
+    """From now on the firm's cap admits exactly `pages` more SP-PAG pages."""
+    with tenant_context(world.termo.tenant.pk):
+        budget = ProviderBudget.objects.get()
+        used = budget.known_liability + budget.uncertain_exposure + budget.reserved
+        ProviderBudget.objects.filter(pk=budget.pk).update(
+            cap_microbrl=used + pages * PAGE_MICROBRL
+        )
+
+
+def access(world: World, role: str | None = None) -> str:
+    """Set the initiator's role (None reads it); returns the role it had."""
+    actor = world.termo.actor
+    with tenant_context(world.termo.tenant.pk):
+        had = Membership.objects.filter(user=actor).values_list("role", flat=True).get()
+        if role is not None:
+            Membership.objects.filter(user=actor).update(role=role)
+    return had
+
+
+def unused_pages_returned(world: World) -> None:
+    """Nothing was sent, the page call is cancelled and its money is back."""
+    assert world.budget().reserved == 0
+    assert [(c.state, c.attempts, c.provider_code) for c in world.calls()] == [
+        (CallState.CANCELLED, 0, "consulta_encerrada")
+    ]
+    with tenant_context(world.termo.tenant.pk):
+        held = ProviderReservation.objects.values_list("state", flat=True)
+        assert list(held) == ["released"]
+    assert world.sent() == []
+
+
+def staff_retry_is_admitted(
+    world: World,
+    previous: PaymentQuery,
+    capture: Any,  # noqa: ANN401 - pytest-django fixture
+) -> None:
+    """The deliberate retry pays for the one page the cap admits, and records it."""
+    world.script(page([item("DAS-RETRY-01")]))
+    with tenant_context(world.termo.tenant.pk), capture():
+        retry = queue_payment_consultation(
+            world.termo.actor,
+            world.termo.client.pk,
+            WINDOW,
+            expected_latest=previous.pk,
+            nonce=f"retry-{previous.pk}",
+        )
+    assert run(retry) == "encontrado"
+    assert len(world.sent()) == 1
+    # Its own paid page stays settled: only never-claimed pages are released.
+    assert (world.calls()[-1].state, world.calls()[-1].billed) == (
+        CallState.SUCCESS,
+        "sim",
+    )
+
+
+def test_a_stalled_owner_keeps_its_paid_page_past_its_lease(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given A paid for its page and stalls before settling it, past its lease,
+    # while its process and its database session live on.
+    query = scheduled_query(world)
+    owner = Stop()
+    stop_at(monkeypatch, "_settle_page", owner=owner)
+    world.script(page([item("DAS-STALLED-01")]))
+    pool, first = runner("owner", lambda: run(query))
+    try:
+        assert owner.entered.wait(timeout=10)
+        assert owner.records == 1
+        lease_runs_out(world, query.pk)
+        before = untouched(world, query.pk)
+        # When B runs the consultation on another connection.
+        late_pool, late = runner("late", lambda: run(query))
+        # Then B yields and writes nothing: A is late, not dead.
+        assert late.result(timeout=25) == "em_andamento"
+        late_pool.shutdown(wait=True)
+        assert untouched(world, query.pk) == before
+    finally:
+        owner.release.set()
+        pool.shutdown(wait=True)
+    # And A, released, records the page it paid for.
+    assert first.result(timeout=25) == "encontrado"
+    view = settled(world, query.pk)
+    assert view["query"][:4] == ("encontrado", "", 1, 1)  # type: ignore[index]
+    assert view["receipts"] == [("encontrado", 1)]
+    assert (view["payments"], view["requests"], view["finished_events"]) == (1, 1, 1)
+
+
+def test_a_delivery_yielding_to_a_dead_owner_schedules_its_own_recovery(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given A applied page 1 and died before page 2, its lease still live.
+    query = scheduled_query(world)
+    dead = Stop(at=2, dies=True)
+    stop_at(monkeypatch, "reserve", owner=dead)
+    world.script(page(darfs(100)), page(darfs(1, start=100)))
+    pool, first = runner("owner", lambda: run(query))
+    assert dead.entered.wait(timeout=10)
+    with pytest.raises(WorkerDiedError):
+        first.result(timeout=25)
+    pool.shutdown(wait=True)
+    scheduled: list[tuple[tuple[str, ...], datetime]] = []
+
+    def later(args: tuple[str, ...], eta: "datetime", *, ignore_result: bool) -> None:
+        assert ignore_result
+        scheduled.append((tuple(args), eta))
+
+    monkeypatch.setattr(tasks.run_payment_query_task, "apply_async", later)
+    # When the only redelivery arrives before the lease ends.
+    assert redeliver(query) == "em_andamento"
+    # Then it schedules the consultation again for after the lease's deadline.
+    deadline = stored(world, query.pk).settlement_until
+    assert deadline is not None
+    assert len(scheduled) == 1
+    args, eta = scheduled[0]
+    assert args == (str(query.tenant_id), str(query.pk))
+    assert eta > deadline
+    # And a continuation still finding the lease live yields and looks again.
+    assert tasks.run_payment_query_task.apply(args=args).get() == "em_andamento"
+    assert len(scheduled) == 2
+    assert scheduled[1][1] > deadline
+    # And once the lease has run out, the continuation resumes by itself.
+    lease_runs_out(world, query.pk)
+    assert tasks.run_payment_query_task.apply(args=scheduled[1][0]).get() == (
+        "encontrado"
+    )
+    assert len(scheduled) == 2
+    view = settled(world, query.pk)
+    assert view["query"][:4] == ("encontrado", "", 2, 101)  # type: ignore[index]
+    assert view["receipts"] == [("encontrado", 100), ("encontrado", 1)]
+    assert world.offsets() == [0, 100]
+
+
+def test_a_stale_runner_reserving_after_the_finish_returns_the_page_to_the_cap(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Any,  # noqa: ANN401 - pytest-django fixture
+) -> None:
+    # Given B passed its checks and waits at its reservation.
+    with tenant_context(world.termo.tenant.pk), django_capture_on_commit_callbacks():
+        query = queue_payment_consultation(
+            world.termo.actor,
+            world.termo.client.pk,
+            WINDOW,
+            expected_latest=None,
+            nonce="u",
+        )
+    late = Stop()
+    stop_at(monkeypatch, "reserve", late=late)
+    pool, stale = runner("late", lambda: run(query))
+    try:
+        assert late.entered.wait(timeout=10)
+        # When the initiator loses access, A finishes the consultation without
+        # any page, and the firm's cap admits exactly one more page.
+        role = access(world, TenantRole.STAFF_ACCOUNTANT)
+        assert run(query) == "falha"
+        cap_admits(world, 1)
+    finally:
+        late.release.set()
+        pool.shutdown(wait=True)
+    # Then B's reservation for the finished consultation goes back to the cap.
+    assert stale.result(timeout=25) == "falha"
+    unused_pages_returned(world)
+    assert stored(world, query.pk).failure_code == "solicitante_sem_permissao"
+    # And once access is back, the deliberate staff retry is admitted.
+    access(world, role)
+    staff_retry_is_admitted(world, query, django_capture_on_commit_callbacks)
+
+
+def test_a_page_reserved_by_a_runner_that_died_is_released_when_it_ends(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Any,  # noqa: ANN401 - pytest-django fixture
+) -> None:
+    # Given A reserved page 1 and died before taking the settlement lease.
+    with tenant_context(world.termo.tenant.pk), django_capture_on_commit_callbacks():
+        query = queue_payment_consultation(
+            world.termo.actor,
+            world.termo.client.pk,
+            WINDOW,
+            expected_latest=None,
+            nonce="d",
+        )
+    dead = Stop(dies=True)
+    stop_at(monkeypatch, "_own", owner=dead)
+    pool, first = runner("owner", lambda: run(query))
+    assert dead.entered.wait(timeout=10)
+    with pytest.raises(WorkerDiedError):
+        first.result(timeout=25)
+    pool.shutdown(wait=True)
+    cap_admits(world, 0)
+    # When the initiator loses access and the next delivery ends the consultation.
+    role = access(world, TenantRole.STAFF_ACCOUNTANT)
+    assert run(query) == "falha"
+    # Then the page nobody will send goes back to the cap.
+    unused_pages_returned(world)
+    # And once access is back, the deliberate staff retry is admitted.
+    access(world, role)
+    staff_retry_is_admitted(world, query, django_capture_on_commit_callbacks)
+
+
+def overwrite(world: World, query_id: UUID) -> None:
+    with tenant_context(world.termo.tenant.pk), transaction.atomic():
+        PaymentQuery.objects.filter(pk=query_id).update(
+            state="incerto", failure_code="sobrescrito"
+        )
+
+
+def test_the_database_refuses_another_writer_while_the_owners_session_lives(
+    world: World,
+) -> None:
+    # Given an owner whose lease ran out while its connection still holds its
+    # session lock (keyed as `integrations.0009` reads it).
+    query = scheduled_query(world)
+    owner = uuid4()
+    assert payment_service._own(query, 0, owner)
+    lease_runs_out(world, query.pk)
+    held, done = threading.Event(), threading.Event()
+
+    def owner_session() -> str:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))", [str(owner)]
+            )
+        held.set()
+        assert done.wait(timeout=20)
+        return "closed"
+
+    pool, session = runner("session", owner_session)
+    try:
+        assert held.wait(timeout=10)
+        # When another writer updates the consultation.
+        with pytest.raises(DatabaseError, match="settled by a live runner"):
+            overwrite(world, query.pk)
+        assert stored(world, query.pk).state == "na_fila"
+    finally:
+        done.set()
+        pool.shutdown(wait=True)
+    # Then only once that connection is gone may another writer proceed.
+    assert session.result(timeout=25) == "closed"
+    overwrite(world, query.pk)
+    assert stored(world, query.pk).failure_code == "sobrescrito"

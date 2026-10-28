@@ -7,11 +7,12 @@ from uuid import UUID
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
+from django.utils.timezone import now as wall_clock
 
 from apps.core.flags import tenant_has
 from apps.core.tasks import PhasedTenantTask, PlatformTask, assert_no_transaction
 from apps.integrations.models import ClientProviderLink, LinkStatus
-from apps.integrations.serpro.models import PaymentQueryState
+from apps.integrations.serpro.models import ACTIVE_QUERY_STATES, PaymentQueryState
 from apps.integrations.serpro.pagtoweb import PaymentRange
 from apps.integrations.serpro.payments import (
     PaymentQueryConflictError,
@@ -21,12 +22,32 @@ from apps.integrations.serpro.payments import (
 )
 
 SCHEDULE_AFTER_DAY: Final = 20
+# How long after the owner's lease deadline a yielded delivery looks again.
+RESUME_MARGIN: Final = timedelta(seconds=30)
 
 
 @shared_task(base=PhasedTenantTask)
 def run_payment_query_task(tenant_id: str, query_id: str) -> str:
-    """Run or resume one consultation; a redelivered message never rebills a page."""
-    return run_payment_query(UUID(tenant_id), UUID(query_id)).state
+    """Run or resume one consultation; a redelivered message never rebills a page.
+
+    A delivery that yielded to the runner holding the settlement lease is
+    acknowledged like any other, so it schedules this task again for just after
+    that lease ends: if the owner died, the consultation resumes without staff or
+    another delivery; if it is still working, the continuation yields and looks
+    again. It ends once the consultation is final.
+    """
+    query = run_payment_query(UUID(tenant_id), UUID(query_id))
+    if query.state in ACTIVE_QUERY_STATES:
+        # Real time, whatever calendar day the schedule believes it is.
+        now = wall_clock()
+        deadline = query.settlement_until or now
+        # Nobody waits for the continuation: no result is subscribed to or kept.
+        run_payment_query_task.apply_async(
+            (tenant_id, query_id),
+            eta=max(deadline, now) + RESUME_MARGIN,
+            ignore_result=True,
+        )
+    return query.state
 
 
 @shared_task(base=PhasedTenantTask)
