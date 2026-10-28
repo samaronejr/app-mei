@@ -111,7 +111,7 @@ def test_reentrant_exception_rendering_protects_the_complete_dispatch(
         known_after = prod._known_values()
         sentry_sdk.capture_message(FOLLOWING)
         client.flush()
-    # Then every sink is safe and the outer, nested and following records flow.
+    # Then every sink is safe, without invoking the application's renderer.
     console = stream.getvalue()
     delivered = b"".join(transport.payloads).decode()
     events = json.dumps(transport.events)
@@ -119,7 +119,8 @@ def test_reentrant_exception_rendering_protects_the_complete_dispatch(
         value not in console + delivered + events for value in (CANARY, CHILD_CANARY)
     )
     assert "outer record-local failure" in console
-    assert "credential echo" in console
+    assert "credential echo" not in console
+    assert error.rendered is False
     assert "log record withheld" not in console
     assert known_after == set()
     outer = next(event for event in transport.events if event.get("exception"))
@@ -127,7 +128,7 @@ def test_reentrant_exception_rendering_protects_the_complete_dispatch(
     later = next(
         event for event in transport.events if event.get("message") == FOLLOWING
     )
-    assert "credential echo" in json.dumps(later.get("breadcrumbs"))
+    assert "credential echo" not in json.dumps(later.get("breadcrumbs"))
     assert "outer record-local failure" in delivered
     if logs:
         assert "log" in transport.item_types
@@ -190,8 +191,10 @@ def test_raw_record_discovery_precedes_every_rendering_field(
     # Then the nested diagnostic inherited discovery, even through copy_context.
     emitted = stream.getvalue() + b"".join(transport.payloads).decode()
     assert CANARY not in emitted + json.dumps(transport.events)
-    assert "ordinary record field" in emitted or "ordinary rendered field" in emitted
-    assert "reentrant field credential echo" in stream.getvalue()
+    assert "ordinary record field" in emitted or "_RenderingField" in emitted
+    assert "reentrant field credential echo" not in stream.getvalue()
+    assert value.rendered is False
+    assert request.context is None
     assert "log record withheld" not in stream.getvalue()
     assert any(event.get("message") == FOLLOWING for event in transport.events)
     assert "log" in transport.item_types

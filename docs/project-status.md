@@ -658,6 +658,59 @@ Final results and owned-container/volume teardown belong to
 `.evidence/AXRM-011-perf-doneclaim.json`. Independent review and all provider,
 operator and activation gates remain open.
 
+`AXRM-011` boundary follow-up, fix attempt 6 (2026-10-28). Review 11 rejected
+`5bd1b2e`: running an application's renderer could emit an unlabelled credential
+from a copied context, a thread, another sink or a stack-local value, and sharing
+the record's credential set could outlive its dispatch. Production diagnostics
+now freeze their inputs instead of running that code. Exact native containers
+are walked without instance checks; opaque values become `<module.Type>`.
+Dictionary carrier storage is read through base dictionary primitives, not
+overridable accessors. No original exception is mutated.
+
+The console record-creation guard is installed without requiring a Sentry DSN.
+The full production SDK paths also project public log parameters and attributes,
+scope attributes, event and breadcrumb carriers, and direct SDK log carriers
+before SDK formatting. Exception conversion reads native args, notes, links,
+group membership, errno and traceback code metadata through builtin descriptors.
+It supplies an inert exception graph and primitive SDK values. Non-exception SDK
+stack snapshots use frames frozen and redacted with the record, rather than
+re-reading live frames after the record's private fields have been removed.
+Raw primitive exception/event text is redacted only after scope fields merge,
+so a later credential crossing a quoted field still receives one complete range
+union. There is no record credential context variable or shared mutable set.
+
+Diagnostic loss is intentional: custom `str`, `repr`, formatting and attribute
+hooks do not supply text. Accessor-only object details disappear; an unsupported
+structural carrier is refused. Custom datetime timezones are omitted without
+calling them, while their wall time remains visible. Exception types, primitive
+arguments and codes, notes, cause/context/group relationships, stable grouping
+and file/line/function frames remain available; frame locals and source text do
+not. Existing malformed control metadata is still withheld at ERROR.
+
+**Accepted gap P3:** Celery core/billiard can render a task exception before
+calling either logging or SDK capture. That earlier rendering can still run
+application code and emit an unlabelled stack-local credential. This repair does
+not patch Celery internals and does not close P3. The gap must remain explicit
+before any real-provider work. The locked Sentry entry-point and conversion
+patches add upgrade coupling and require their real-path canaries on upgrades.
+
+The complete baseline settings/privacy modules produce **386 call-phase
+failures** for the hostile-data witnesses; **12** already-safe invalid-name
+controls remain passing. The focused repair selection passes **957** tests, and
+Ruff, format and mypy pass across **1,158 files**. Current default collection is
+**7,262 selected**: **2,101** in group 1 and **5,161** in group 2, including
+**411** new real-sink/projection cases. Collection is not passing-suite evidence.
+The new strict campaigns contain **25 scan** and **89 filter** mutants.
+Twelve obsolete sharing/render-order guards are explicitly retired; new
+mutants restore original-object rendering, unsafe instance dispatch, omitted SDK
+ingress projection, live stack reads and retained credential contexts.
+Every child reports all selected node IDs and call outcomes; incomplete calls,
+setup/teardown/import/thread failures, missing application and timeouts cannot
+count as kills. Final clean-head gates, complete campaign results and owned
+container/volume teardown are recorded under `.evidence/AXRM-011-fix6-*` and
+`.evidence/AXRM-011-perf-doneclaim.json`, with no earlier final stage reused.
+Independent review and all provider, operator and activation gates remain open.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),

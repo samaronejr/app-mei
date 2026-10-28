@@ -2,10 +2,15 @@
 
 import ast
 import copy
+import hashlib
+import json
 import logging
+import sys
 from collections.abc import Mapping
-from contextvars import ContextVar
-from typing import Any, Final, Protocol, cast
+from contextlib import suppress
+from functools import partial
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 from weakref import ref
 
@@ -14,8 +19,15 @@ from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
 from celery import _state as celery_state
 from django.conf import settings
+from django.core.handlers.asgi import ASGIRequest
+from django.core.handlers.wsgi import WSGIRequest
+from django.http import HttpRequest
 from django.urls import Resolver404, resolve
+from sentry_sdk import logger as sdk_logger
+from sentry_sdk import utils as sentry_utils
 from sentry_sdk.integrations import Integration
+from sentry_sdk.integrations import celery as sentry_celery
+from sentry_sdk.integrations import logging as sentry_logging
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -26,7 +38,9 @@ from sentry_sdk.utils import format_attribute
 from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
 from apps.integrations.privacy import (
+    diagnostic_type,
     discover_structure,
+    project_structure,
     redact_structure,
     render_structure,
     scrub_text,
@@ -34,6 +48,10 @@ from apps.integrations.privacy import (
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING as BASE_LOGGING
 from config.settings.base import env
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from types import FrameType
 
 SENTRY_REDACTION_MARKER: Final = "[Filtered]"
 SENTRY_DSN_ERROR: Final = (
@@ -70,6 +88,11 @@ SENTRY_CREDENTIAL_FIELDS: Final = frozenset(
 )
 _RESET_FROM_KEY_URL_NAME: Final = "account_reset_password_from_key"
 _RESET_FORM_URL_KEY: Final = "set-password"
+_EXC_INFO_LENGTH: Final = 3
+type _ExceptionInfo = (
+    tuple[type[BaseException], BaseException, TracebackType | None]
+    | tuple[None, None, None]
+)
 
 
 def _replace_path_segment(path: str, credential: str, replacement: str) -> str:
@@ -158,6 +181,7 @@ def _restore_sentry_scalars(value: object, annotations: object) -> object:
 
 def scrub_sentry_event(event: Mapping[str, object], _hint: Hint) -> Event:
     credentials = _known_values()
+    event = cast("dict[str, Any]", project_structure(_plain_storage(event)))
     # SDK annotation paths mirror credential field names, but their leaves are
     # bookkeeping such as "!limit"/"x", not credential values. They still receive
     # every known-value replacement after discovery from the actual event.
@@ -176,22 +200,34 @@ def scrub_sentry_event(event: Mapping[str, object], _hint: Hint) -> Event:
             {"_meta": event["_meta"]}, credentials, fields=None
         )
         scrubbed.update(cast("Event", annotations))
+    if "exception" in scrubbed and "fingerprint" not in scrubbed:
+        identity = [
+            [item.get("module"), item.get("type"), item.get("stacktrace")]
+            for item in scrubbed["exception"].get("values", [])
+        ]
+        scrubbed["fingerprint"] = [
+            "axrm011",
+            hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(),
+        ]
     return scrubbed
 
 
 _WITHHELD_EVENT: Final = "axrm011_event_withheld"
 _DROPPED_RECORD: Final = "_axrm011_record_dropped"
+_RECORD_STACK: Final = "_axrm011_stack_frames"
 
 
 def drop_unscrubbable_event(event: Mapping[str, object], hint: Hint) -> Event | None:
     """before_send: an event that cannot be scrubbed is dropped, never delivered."""
     try:
-        if dict.get(cast("dict[str, Any]", event), _WITHHELD_EVENT):
+        if type(event) is not dict:
             return None
-        record = hint.get("log_record")
+        if _plain_storage(event).get(_WITHHELD_EVENT) is True:
+            return None
+        record = _plain_storage(hint).get("log_record")
         if record is not None and (
             type(record) is not logging.LogRecord
-            or dict.get(record.__dict__, _DROPPED_RECORD)
+            or _plain_storage(record.__dict__).get(_DROPPED_RECORD) is True
         ):
             return None
         return scrub_sentry_event(event, hint)
@@ -213,6 +249,7 @@ def drop_unscrubbable_log(log: Log, _hint: Hint) -> Log | None:
     """Freeze SDK attributes before its batcher can render opaque originals."""
     try:
         credentials = _known_values()
+        log = cast("Log", project_structure(_plain_storage(log)))
         attributes = {
             str(name): format_attribute(value)
             for name, value in log["attributes"].items()
@@ -250,7 +287,7 @@ class CredentialEventScrubber(EventScrubber):
             return
         husk = cast("dict[str, object]", cast("object", event))
         try:
-            if dict.get(husk, _WITHHELD_EVENT):
+            if _plain_storage(husk).get(_WITHHELD_EVENT) is True:
                 return
             scrubbed = scrub_sentry_event(event, {})
             # The SDK owns a dict, but a subclass can override its mutators or
@@ -264,13 +301,20 @@ class CredentialEventScrubber(EventScrubber):
 
 
 def _request_credentials(record: logging.LogRecord) -> set[str]:
-    request = getattr(record, "request", None)
-    if request is None:
+    request = _plain_storage(record.__dict__).get("request")
+    if (
+        type(request) is not HttpRequest
+        and type(request) is not WSGIRequest
+        and type(request) is not ASGIRequest
+    ):
         return set()
+    attributes = _plain_storage(object.__getattribute__(request, "__dict__"))
+    path = attributes.get("path_info", "")
+    path = path if type(path) is str else ""
     try:
         match = resolve(
-            request.path_info,
-            urlconf=getattr(request, "urlconf", settings.ROOT_URLCONF),
+            path,
+            urlconf=settings.ROOT_URLCONF,
         )
     except Resolver404:
         return set()
@@ -294,8 +338,280 @@ def _exception_chain(exception: BaseException | None) -> list[BaseException]:
         if current is None or any(current is seen for seen in chain):
             continue
         chain.append(current)
-        pending.extend((current.__cause__, current.__context__))
+        pending.extend(
+            (
+                BaseException.__dict__["__cause__"].__get__(current),
+                BaseException.__dict__["__context__"].__get__(current),
+            )
+        )
+        with suppress(TypeError):
+            pending.extend(BaseExceptionGroup.__dict__["exceptions"].__get__(current))
     return chain
+
+
+def _plain_storage(value: object) -> dict[str, Any]:
+    """Read a dict carrier's string fields without invoking any of its hooks."""
+    if not issubclass(type(value), dict):
+        raise TypeError
+    return {
+        key: item
+        for key, item in dict.items(cast("dict[Any, Any]", value))
+        if type(key) is str
+    }
+
+
+def _project_mapping(value: object) -> dict[Any, Any]:
+    if not issubclass(type(value), dict):
+        raise TypeError
+    pairs = project_structure(list(dict.items(cast("dict[Any, Any]", value))))
+    return dict(cast("list[tuple[object, object]]", pairs))
+
+
+def _stack_frames() -> list[list[Any]]:
+    frames = []
+    frame: FrameType | None = sys._getframe(1)  # noqa: SLF001 - code metadata only
+    while frame is not None:
+        code = frame.f_code
+        frames.append([code.co_filename, code.co_name, frame.f_lineno])
+        frame = frame.f_back
+    return list(reversed(frames))
+
+
+def _record_source(
+    record: logging.LogRecord,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[TracebackType | None]]:
+    original = _plain_storage(record.__dict__)
+    exc_info = original.get("exc_info")
+    nodes, traces = _exception_snapshot(exc_info) if exc_info is not None else ([], [])
+    empty_info = (
+        type(exc_info) is tuple
+        and len(exc_info) == _EXC_INFO_LENGTH
+        and all(part is None for part in exc_info)
+    )
+    original["exc_info"] = (None, None, None) if empty_info else None
+    extras = cast("dict[str, Any]", project_structure(original))
+    if (
+        extras.get("stack_info") is not None or empty_info
+    ) and _RECORD_STACK not in extras:
+        extras[_RECORD_STACK] = _stack_frames()
+    return extras, nodes, traces
+
+
+def _exception_snapshot(
+    exc_info: object,
+) -> tuple[list[dict[str, Any]], list[TracebackType | None]]:
+    if type(exc_info) is not tuple or len(exc_info) != _EXC_INFO_LENGTH:
+        raise TypeError
+    if exc_info[1] is None:
+        return [], []
+    chain = _exception_chain(exc_info[1])
+    indices = {id(error): index for index, error in enumerate(chain)}
+    nodes: list[dict[str, Any]] = []
+    traces: list[TracebackType | None] = []
+    for index, error in enumerate(chain):
+        module, name = diagnostic_type(error)
+        attributes = _plain_storage(BaseException.__dict__["__dict__"].__get__(error))
+        trace = (
+            exc_info[2]
+            if index == 0
+            else BaseException.__dict__["__traceback__"].__get__(error)
+        )
+        if trace is not None and type(trace) is not TracebackType:
+            # Celery supplies a pickleable traceback proxy; use only the real
+            # exception traceback, never the proxy's frame/accessor protocol.
+            trace = BaseException.__dict__["__traceback__"].__get__(error)
+        traces.append(trace)
+        frames = []
+        cursor = trace
+        while cursor is not None:
+            code = cursor.tb_frame.f_code
+            frames.append(
+                {
+                    "filename": code.co_filename,
+                    "function": code.co_name,
+                    "lineno": cursor.tb_lineno,
+                }
+            )
+            cursor = cursor.tb_next
+        cause = BaseException.__dict__["__cause__"].__get__(error)
+        context = BaseException.__dict__["__context__"].__get__(error)
+        try:
+            children = BaseExceptionGroup.__dict__["exceptions"].__get__(error)
+        except TypeError:
+            children = ()
+        try:
+            errno = OSError.__dict__["errno"].__get__(error)
+        except TypeError:
+            errno = attributes.get("_axrm011_errno")
+        nodes.append(
+            {
+                "module": module,
+                "type": name,
+                "args": project_structure(
+                    BaseException.__dict__["args"].__get__(error)
+                ),
+                "notes": project_structure(attributes.get("__notes__", [])),
+                "frames": project_structure(attributes.get("_axrm011_frames", frames)),
+                "errno": project_structure(errno),
+                "cause": indices.get(id(cause)),
+                "context": indices.get(id(context)),
+                "suppressed": BaseException.__dict__["__suppress_context__"].__get__(
+                    error
+                ),
+                "children": [indices[id(child)] for child in children],
+            }
+        )
+    return nodes, traces
+
+
+def _exception_message(node: dict[str, Any]) -> str:
+    args = node["args"]
+    if type(args) is tuple and len(args) == 1 and type(args[0]) is str:
+        return args[0]
+    return render_structure(args) if args else ""
+
+
+def _exception_texts(nodes: list[dict[str, Any]]) -> list[list[Any]]:
+    return [
+        [
+            node["module"],
+            node["type"],
+            node["args"],
+            node["notes"],
+            [
+                [frame["filename"], frame["function"], frame["lineno"]]
+                for frame in node["frames"]
+            ],
+            node["errno"],
+        ]
+        for node in nodes
+    ]
+
+
+def _restore_exception_nodes(
+    nodes: list[dict[str, Any]], texts: list[list[Any]]
+) -> list[dict[str, Any]]:
+    # These names describe the schema, not application-supplied mapping keys.
+    # A short private argument such as "ex" must not rename "context".
+    return [
+        {
+            **node,
+            "module": row[0],
+            "type": row[1],
+            "args": row[2],
+            "notes": row[3],
+            "frames": [
+                {"filename": frame[0], "function": frame[1], "lineno": frame[2]}
+                for frame in row[4]
+            ],
+            "errno": row[5],
+        }
+        for node, row in zip(nodes, texts, strict=True)
+    ]
+
+
+def _synthetic_exception_info(
+    nodes: list[dict[str, Any]], traces: list[TracebackType | None]
+) -> _ExceptionInfo:
+    """The SDK and formatters receive no application exception or attribute."""
+    if not nodes:
+        return None, None, None
+    errors: dict[int, BaseException] = {}
+    remaining = {index: len(node["children"]) for index, node in enumerate(nodes)}
+    parents: dict[int, list[int]] = {}
+    for index, node in enumerate(nodes):
+        for child in node["children"]:
+            parents.setdefault(child, []).append(index)
+    ready = [index for index, count in remaining.items() if not count]
+    # Group membership is immutable and acyclic; cause/context links may cycle.
+    # Construct leaves before groups, then attach all chain links in a second pass.
+    while ready:
+        index = ready.pop()
+        node = nodes[index]
+        base = ExceptionGroup if node["children"] else Exception
+        kind = type(node["type"], (base,), {"__module__": node["module"]})
+        message = _exception_message(node)
+        errors[index] = (
+            kind(message, [errors[child] for child in node["children"]])
+            if node["children"]
+            else kind(message)
+        )
+        error = errors[index]
+        BaseException.__dict__["__traceback__"].__set__(error, traces[index])
+        attributes = BaseException.__dict__["__dict__"].__get__(error)
+        dict.update(
+            attributes,
+            {
+                "__notes__": node["notes"],
+                "_axrm011_frames": node["frames"],
+                "_axrm011_errno": node["errno"],
+            },
+        )
+        for parent in parents.get(index, []):
+            remaining[parent] -= 1
+            if not remaining[parent]:
+                ready.append(parent)
+    for index, node in enumerate(nodes):
+        error = errors[index]
+        BaseException.__dict__["__cause__"].__set__(error, errors.get(node["cause"]))
+        BaseException.__dict__["__context__"].__set__(
+            error, errors.get(node["context"])
+        )
+        BaseException.__dict__["__suppress_context__"].__set__(
+            error, node["suppressed"]
+        )
+    return type(errors[0]), errors[0], traces[0]
+
+
+def _safe_exception_info(
+    exc_info: object,
+) -> _ExceptionInfo:
+    if exc_info is None or exc_info is True:
+        exc_info = sys.exc_info()
+    elif type(exc_info) is not tuple:
+        exc_info = (
+            type(exc_info),
+            exc_info,
+            BaseException.__dict__["__traceback__"].__get__(exc_info),
+        )
+    nodes, traces = _exception_snapshot(exc_info)
+    # Freeze, do not redact yet: scope fields have not been merged. Their ranges
+    # must be unioned with these original primitive strings in the raw scrubber.
+    return _synthetic_exception_info(nodes, traces)
+
+
+def _exception_values(exc_info: object, mechanism: object) -> list[dict[str, Any]]:
+    nodes, _ = _exception_snapshot(exc_info)
+    values = []
+    projected_mechanism = project_structure(mechanism)
+    for index, node in enumerate(nodes):
+        details = {
+            **(projected_mechanism if type(projected_mechanism) is dict else {}),
+            "exception_id": index,
+        }
+        for parent, candidate in enumerate(nodes):
+            if index in candidate["children"]:
+                details.update(
+                    parent_id=parent,
+                    source=f"exceptions[{candidate['children'].index(index)}]",
+                )
+            elif candidate["cause"] == index:
+                details.update(source="__cause__")
+            elif candidate["context"] == index:
+                details.update(source="__context__")
+        if node["errno"] is not None:
+            details["meta"] = {"errno": {"number": node["errno"]}}
+        values.append(
+            {
+                "module": node["module"],
+                "type": node["type"],
+                "value": _exception_message(node)
+                + "".join("\n" + str(note) for note in node["notes"]),
+                "stacktrace": {"frames": node["frames"]},
+                "mechanism": details,
+            }
+        )
+    return list(reversed(values))
 
 
 _TASK_FAILURE_LOGGER: Final = "celery.app.trace"
@@ -332,7 +648,7 @@ def _task_failure_context(
     fully hidden. Sentry never sees this record: its Celery integration ignores the
     logger, so only the console filter needs it.
     """
-    if producer != _TASK_FAILURE_LOGGER or not isinstance(context, Mapping):
+    if producer != _TASK_FAILURE_LOGGER or type(context) is not dict:
         return None
     names = set(context)
     secrets: tuple[str, ...]
@@ -399,9 +715,15 @@ def _task_arguments_known(request: _TaskRequest) -> tuple[str, ...]:
     cached = request.__dict__.get(_TASK_KNOWN_CACHE)
     owner = request.__dict__.get(_TASK_KNOWN_OWNER)
     if cached is None or owner is None or owner() is not request:
+        positional = project_structure(request.args)
+        keyword = project_structure(request.kwargs)
         given = [
-            *(request.args if isinstance(request.args, (list, tuple)) else ()),
-            *(request.kwargs.values() if isinstance(request.kwargs, Mapping) else ()),
+            *(
+                positional
+                if type(positional) is list or type(positional) is tuple
+                else ()
+            ),
+            *(keyword.values() if type(keyword) is dict else ()),
         ]
         found: set[str] = set()
         redact_structure([["token", given]], found, fields=SENTRY_CREDENTIAL_FIELDS)
@@ -432,31 +754,11 @@ def _task_known_values() -> tuple[str, ...]:
     return tuple(known)
 
 
-# What one log record was scrubbed with, for the length of its dispatch. A value
-# found only in the record's own fields (a password extra) is hidden by the first
-# pass, yet later passes and the SDK's event, breadcrumb and Log render the live
-# exception again from exc_info. All of them run inside that dispatch.
-_RECORD_DISPATCH: Final[ContextVar[set[str] | None]] = ContextVar(
-    "axrm011_record_dispatch_known_values", default=None
-)
-
-
 def _known_values() -> set[str]:
-    credentials = {
+    return {
         *sensitive_values.get(),
         *_task_known_values(),
-        *(_RECORD_DISPATCH.get() or ()),
     }
-    _share_with_dispatch(credentials)
-    dispatch = _RECORD_DISPATCH.get()
-    return credentials if dispatch is None else dispatch
-
-
-def _share_with_dispatch(credentials: set[str]) -> None:
-    """Later passes and SDK sinks of this dispatch render exc_info again."""
-    dispatch = _RECORD_DISPATCH.get()
-    if dispatch is not None:
-        dispatch.update(credentials)
 
 
 class CredentialURLLogFilter(logging.Filter):
@@ -468,7 +770,8 @@ class CredentialURLLogFilter(logging.Filter):
         if type(record) is not logging.LogRecord:
             return False
         try:
-            if dict.get(record.__dict__, _DROPPED_RECORD):
+            original = _plain_storage(record.__dict__)
+            if original.get(_DROPPED_RECORD) is True:
                 return False
             # makeLogRecord legitimately defaults these to None. Normalize only
             # those defaults before any dispatcher or formatter reads them.
@@ -495,16 +798,14 @@ class CredentialURLLogFilter(logging.Filter):
     def _scrub(self, record: logging.LogRecord) -> None:
         credentials = _known_values()
         credentials.update(_request_credentials(record))
-        template = record.msg
-        chain = _exception_chain(record.exc_info[1]) if record.exc_info else []
-        extras = {**record.__dict__}
-        context = _task_failure_context(record.name, extras.get("data"))
+        extras, nodes, traces = _record_source(record)
+        template = extras["msg"]
+        context = _task_failure_context(extras["name"], extras.get("data"))
         task_context, private = context if context is not None else (None, ())
         if task_context is not None:
             extras["data"] = task_context
-        # Raw discovery must finish before getMessage, str, exception formatting
-        # or an opaque attribute can log. Its credential set is the dispatch's
-        # live set, including reentrant calls and copies of the current Context.
+        # Nothing after this projection can call an application's renderer,
+        # accessor or protocol hook. Credentials belong only to this local walk.
         pairs: list[list[object]] = [
             [
                 _TASK_FAILURE_ALIAS
@@ -514,37 +815,25 @@ class CredentialURLLogFilter(logging.Filter):
             ]
             for name, value in extras.items()
         ]
-        pairs.append(["exception_arguments", [error.args for error in chain]])
-        pairs.append(
-            [
-                "exception_notes",
-                [getattr(error, "__notes__", ()) for error in chain],
-            ]
-        )
+        pairs.append(["exception_snapshot", _exception_texts(nodes)])
         discover_structure(
             [*pairs, ["token", private]],
             credentials,
             fields=SENTRY_CREDENTIAL_FIELDS,
         )
-        _share_with_dispatch(credentials)
-        # Keep the same discovery of Celery's rendered private fields, but only
-        # after their raw leaves and all the other record credentials are known.
         redact_structure(
-            [["token", str(value)] for value in private],
+            [["token", render_structure(value)] for value in private],
             credentials,
             fields=SENTRY_CREDENTIAL_FIELDS,
         )
-        record.levelname = str(record.levelname)
-        # Interpolate before replacing the template's placeholders. Rendering can
-        # reenter logging; discovery above has already published its credentials.
-        message = template
-        if isinstance(message, str):
-            try:
-                message = record.getMessage()
-            except (TypeError, ValueError, KeyError, RecursionError):
-                message = f"{record.msg} {render_structure(record.args)}"
+        message = str(template)
+        try:
+            if extras["args"]:
+                message %= extras["args"]
+        except (TypeError, ValueError, KeyError, RecursionError):
+            message = f"{message} {render_structure(extras['args'])}"
         pairs[list(extras).index("msg")][1] = message
-        pairs[list(extras).index("levelname")][1] = record.levelname
+        pairs[list(extras).index("levelname")][1] = str(extras["levelname"])
         # Fields travel as positional [name, value] pairs, so a name that discovery
         # rewrites or merges ("exc" inside "exception_arguments") can neither lose a
         # field nor leave its original value in place.
@@ -552,29 +841,139 @@ class CredentialURLLogFilter(logging.Filter):
             "list[list[object]]",
             redact_structure(pairs, credentials, fields=SENTRY_CREDENTIAL_FIELDS),
         )
-        *fields, arguments, _notes = (pair[1] for pair in scrubbed)
+        *fields, snapshot = (pair[1] for pair in scrubbed)
         updates = dict(zip(extras, fields, strict=True))
-        replacements = list(
-            zip(chain, cast("list[tuple[Any, ...]]", arguments), strict=True)
-        )
-        object.__setattr__(record, "__dict__", updates)
-        for exception, replacement in replacements:
-            exception.args = replacement
-        if isinstance(template, str):
-            record.msg = template
+        # Render only the redacted primitive arguments. Rendering the original
+        # container first can consume a credential-bearing key's following value.
+        rendered = str(template)
         try:
-            rendered = record.getMessage()
+            if updates["args"]:
+                rendered %= updates["args"]
         except (TypeError, ValueError, KeyError, RecursionError):
-            rendered = f"{render_structure(record.msg)} {render_structure(record.args)}"
-        record.args = ()
-        record.msg = scrub_text(rendered, credentials)
-        if record.stack_info is not None:
-            record.stack_info = scrub_text(str(record.stack_info), credentials)
-        if record.exc_info is not None:
-            record.exc_text = logging.Formatter().formatException(record.exc_info)
-        if record.exc_text is not None:
-            # The whole rendered chain, including causes and contexts.
-            record.exc_text = scrub_text(str(record.exc_text), credentials)
+            rendered = f"{rendered} {render_structure(updates['args'])}"
+        updates["msg"] = scrub_text(rendered, credentials)
+        snapshot = _restore_exception_nodes(nodes, cast("list[list[Any]]", snapshot))
+        if nodes:
+            updates["exc_info"] = _synthetic_exception_info(snapshot, traces)
+            lines: list[str] = []
+            for node in reversed(snapshot):
+                lines.extend(
+                    f'  File "{frame["filename"]}", line {frame["lineno"]}, '
+                    f"in {frame['function']}"
+                    for frame in node["frames"]
+                )
+                lines.append(
+                    f"{node['module']}.{node['type']}: {_exception_message(node)}"
+                )
+                lines.extend(str(note) for note in node["notes"])
+            updates["exc_text"] = "\n".join(lines)
+        updates["args"] = ()
+        for name in ("stack_info", "exc_text"):
+            if updates.get(name) is not None:
+                updates[name] = scrub_text(str(updates[name]), credentials)
+        object.__setattr__(record, "__dict__", updates)
+
+
+def _install_record_creation() -> None:
+    previous_log = logging.Logger.__dict__["_log"]
+
+    def inert_log(
+        self: logging.Logger,
+        *positional: object,
+        **options: object,
+    ) -> None:
+        # Preserve the stdlib's positional and keyword _log calling convention.
+        fields: dict[str, object] = dict(
+            zip(
+                (
+                    "level",
+                    "msg",
+                    "args",
+                    "exc_info",
+                    "extra",
+                    "stack_info",
+                    "stacklevel",
+                ),
+                positional,
+                strict=False,
+            )
+        )
+        fields.update(options)
+        try:
+            args = cast("tuple[object, ...]", fields["args"])
+            extra = fields.get("extra")
+            exc_info = fields.get("exc_info")
+            if (
+                len(args) == 1
+                and type(args[0]) is not dict
+                and issubclass(type(args[0]), dict)
+            ):
+                args = (_project_mapping(args[0]),)
+            safe_args = cast("tuple[Any, ...]", project_structure(args))
+            safe_extra = (
+                cast("dict[str, Any]", project_structure(_plain_storage(extra)))
+                if extra is not None
+                else None
+            )
+            safe_info = None
+            if exc_info is not None and exc_info is not False:
+                safe_info = _safe_exception_info(exc_info)
+            safe_msg = project_structure(fields["msg"])
+        except Exception:  # noqa: BLE001 - no original reaches record creation
+            safe_msg = (
+                f"{SENTRY_REDACTION_MARKER} log record withheld: redaction failed"
+            )
+            safe_args, safe_extra, safe_info = (), None, None
+        previous_log(
+            self,
+            fields["level"],
+            safe_msg,
+            safe_args,
+            exc_info=safe_info,
+            extra=safe_extra,
+            stack_info=fields.get("stack_info", False),
+            stacklevel=cast("int", fields.get("stacklevel", 1)) + 1,
+        )
+
+    type.__setattr__(logging.Logger, "_log", inert_log)
+
+
+def _install_record_dispatch() -> None:
+    previous = logging.Logger.callHandlers
+
+    def call_handlers(self: logging.Logger, record: logging.LogRecord) -> None:
+        try:
+            boundary = sentry_sdk.get_client().get_integration(
+                CredentialLoggingBoundary
+            )
+        except Exception:  # noqa: BLE001 - fail closed before selecting a client
+            return
+        if boundary is None and __name__ != settings.SETTINGS_MODULE:
+            previous(self, record)
+            return
+        try:
+            if not CredentialURLLogFilter().filter(record):
+                return
+            previous(self, record)
+        except Exception:  # noqa: BLE001 - never expose originals from SDK dispatch
+            return
+
+    type.__setattr__(logging.Logger, "callHandlers", call_handlers)
+
+
+def _safe_capture_hint(hint: Hint | None) -> Hint:
+    source = _plain_storage(hint) if hint is not None else {}
+    result: Hint = {}
+    if "log_record" in source:
+        record = source["log_record"]
+        if type(record) is not logging.LogRecord:
+            raise TypeError
+        if _plain_storage(record.__dict__).get(_DROPPED_RECORD) is True:
+            raise TypeError
+        result["log_record"] = record
+    if source.get("exc_info") is not None:
+        result["exc_info"] = cast("Any", _safe_exception_info(source["exc_info"]))
+    return result
 
 
 def _install_capture_boundary() -> None:
@@ -593,7 +992,9 @@ def _install_capture_boundary() -> None:
             owned = _own_event_carrier(event)
             if owned is None:
                 return None
-            return previous_capture(self, owned, hint=hint, scope=scope)
+            return previous_capture(
+                self, owned, hint=_safe_capture_hint(hint), scope=scope
+            )
         except Exception:  # noqa: BLE001 - production telemetry fails closed
             return None
 
@@ -613,7 +1014,7 @@ def _install_capture_boundary() -> None:
             if owned is None:
                 return None
             return previous_scoped_capture(
-                self, owned, hint=hint, scope=scope, **scope_kwargs
+                self, owned, hint=_safe_capture_hint(hint), scope=scope, **scope_kwargs
             )
         except Exception:  # noqa: BLE001 - includes the SDK's post-capture read
             return None
@@ -633,35 +1034,10 @@ class CredentialLoggingBoundary(Integration):
     @staticmethod
     def setup_once() -> None:
         _install_capture_boundary()
-        previous = logging.Logger.callHandlers
-
-        def call_handlers(self: logging.Logger, record: logging.LogRecord) -> None:
-            try:
-                boundary = sentry_sdk.get_client().get_integration(
-                    CredentialLoggingBoundary
-                )
-            except Exception:  # noqa: BLE001 - fail closed before selecting a client
-                return
-            if boundary is None:
-                previous(self, record)
-                return
-            try:
-                # Every sink of this record shares what its first pass discovered;
-                # a record logged during the dispatch inherits it as well.
-                dispatch = _RECORD_DISPATCH.get()
-                known = _RECORD_DISPATCH.set(
-                    dispatch if dispatch is not None else set()
-                )
-                try:
-                    if not CredentialURLLogFilter().filter(record):
-                        return
-                    previous(self, record)
-                finally:
-                    _RECORD_DISPATCH.reset(known)
-            except Exception:  # noqa: BLE001 - never expose originals from SDK dispatch
-                return
-
-        type.__setattr__(logging.Logger, "callHandlers", call_handlers)
+        _install_record_dispatch()
+        _install_exception_capture()
+        _install_sdk_carriers()
+        _install_sdk_stack_projection()
 
 
 def _own_event_carrier(event: Event) -> Event | None:
@@ -677,18 +1053,237 @@ def _own_event_carrier(event: Event) -> Event | None:
     if not issubclass(type(carrier), dict):
         return None
     original = cast("dict[str, object]", carrier)
-    if dict.get(original, _WITHHELD_EVENT):
+    source = _plain_storage(original)
+    if source.get(_WITHHELD_EVENT) is True:
         return None
     if type(carrier) is dict:
         # The public cron API reads check_in_id after capture returns. A failed
         # scrub must husk only our copy, not destroy that caller's return value.
-        if dict.get(original, "type") == "check_in":
-            return cast("Event", cast("object", dict.copy(original)))
-        return event
-    owned = dict(dict.items(original))
+        if source.get("type") == "check_in":
+            return cast("Event", project_structure(dict.copy(original)))
+        # Freeze objects now, but discover credentials only after scope merging.
+        # Early text redaction can destroy a range crossing a later scope secret.
+        owned = cast("dict[str, Any]", project_structure(source))
+        dict.clear(original)
+        dict.update(original, owned)
+        return cast("Event", cast("object", original))
+    owned = source
     dict.clear(original)
     dict.update(original, {_WITHHELD_EVENT: True})
-    return cast("Event", cast("object", owned))
+    return cast("Event", project_structure(owned))
+
+
+def _install_exception_capture() -> None:
+    previous = sentry_sdk.Scope.capture_exception
+
+    def capture_exception(
+        self: sentry_sdk.Scope,
+        error: object = None,
+        scope: sentry_sdk.Scope | None = None,
+        **scope_kwargs: object,
+    ) -> str | None:
+        if self.get_client().get_integration(CredentialLoggingBoundary) is None:
+            return previous(self, cast("Any", error), scope=scope, **scope_kwargs)
+        try:
+            return previous(
+                self,
+                cast("Any", _safe_exception_info(error)),
+                scope=scope,
+                **scope_kwargs,
+            )
+        except Exception:  # noqa: BLE001 - never render a failing capture
+            return None
+
+    type.__setattr__(sentry_sdk.Scope, "capture_exception", capture_exception)
+    _install_sdk_exception_conversion()
+
+
+def _install_sdk_exception_conversion() -> None:
+    previous_values = sentry_utils.exceptions_from_error_tuple
+    previous_task = sentry_celery._capture_exception  # noqa: SLF001 - SDK ingress
+
+    def exceptions_from_error_tuple(
+        exc_info: _ExceptionInfo,
+        client_options: dict[str, Any] | None = None,
+        mechanism: dict[str, Any] | None = None,
+        full_stack: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if (
+            client_options is not None
+            and client_options.get("before_send") is drop_unscrubbable_event
+        ):
+            return _exception_values(exc_info, mechanism)
+        return previous_values(
+            exc_info, cast("Any", client_options), mechanism, full_stack
+        )
+
+    def capture_task_exception(
+        task: object,
+        exc_info: _ExceptionInfo,
+    ) -> None:
+        if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+            previous_task(task, exc_info)
+            return
+        try:
+            # The SDK checks control-flow types before its conversion helper.
+            # This is Sentry's ingress, not a hook into Celery's P3 renderer.
+            ancestry = type.__dict__["__mro__"].__get__(type(exc_info[1]))
+            if any(
+                base is control
+                for base in ancestry
+                for control in sentry_celery.CELERY_CONTROL_FLOW_EXCEPTIONS
+            ):
+                sentry_celery._set_status("aborted")  # noqa: SLF001
+                return
+            sentry_celery._set_status("internal_error")  # noqa: SLF001
+            if _task_declares_exception(task, ancestry):
+                return
+            event, hint = sentry_utils.event_from_exception(
+                cast("Any", _safe_exception_info(exc_info)),
+                client_options=sentry_sdk.get_client().options,
+                mechanism={"type": "celery", "handled": False},
+            )
+            sentry_sdk.capture_event(event, hint=hint)
+        except Exception:  # noqa: BLE001 - telemetry must not replace a task failure
+            return
+
+    sentry_utils.exceptions_from_error_tuple = exceptions_from_error_tuple
+    sentry_celery._capture_exception = capture_task_exception  # noqa: SLF001
+
+
+def _task_declares_exception(task: object, ancestry: tuple[type, ...]) -> bool:
+    for kind in type.__dict__["__mro__"].__get__(type(task)):
+        namespace = type.__dict__["__dict__"].__get__(kind)
+        if "throws" in namespace:
+            declared = namespace["throws"]
+            choices = declared if type(declared) is tuple else (declared,)
+            return any(base is expected for base in ancestry for expected in choices)
+    return False
+
+
+def _install_sdk_logger_projection() -> None:
+    previous = sdk_logger._capture_log  # noqa: SLF001 - before public SDK formatting
+    previous_attribute = sentry_sdk.Scope.set_attribute
+
+    def capture_log(
+        severity_text: str,
+        severity_number: int,
+        template: object,
+        **kwargs: object,
+    ) -> None:
+        try:
+            source = _plain_storage(kwargs)
+            if source.get("attributes") is not None:
+                source["attributes"] = _project_mapping(source["attributes"])
+            owned = cast("dict[str, Any]", project_structure(source))
+            message = str(project_structure(template))
+        except Exception:  # noqa: BLE001 - no object reaches SDK format_map/repr
+            return
+        previous(severity_text, severity_number, message, **owned)
+
+    def set_attribute(self: sentry_sdk.Scope, attribute: str, value: object) -> None:
+        try:
+            name = str(project_structure(attribute))
+            owned = project_structure(value)
+        except Exception:  # noqa: BLE001 - unsupported attribute carriers are refused
+            return
+        previous_attribute(self, name, cast("Any", owned))
+
+    sdk_logger._capture_log = capture_log  # noqa: SLF001
+    for name, severity, number in (
+        ("trace", "trace", 1),
+        ("debug", "debug", 5),
+        ("info", "info", 9),
+        ("warning", "warn", 13),
+        ("error", "error", 17),
+        ("fatal", "fatal", 21),
+    ):
+        setattr(sdk_logger, name, partial(capture_log, severity, number))
+    type.__setattr__(sentry_sdk.Scope, "set_attribute", set_attribute)
+
+
+def _install_sdk_carriers() -> None:
+    previous_log = sentry_sdk.Client._capture_log  # noqa: SLF001 - before scope merging
+    previous_breadcrumb = sentry_sdk.Scope.add_breadcrumb
+
+    def capture_log(
+        self: sentry_sdk.Client, log: Log | None, scope: sentry_sdk.Scope
+    ) -> None:
+        if self.get_integration(CredentialLoggingBoundary) is None:
+            previous_log(self, log, scope)
+            return
+        try:
+            if log is None:
+                return
+            source = _plain_storage(log)
+            source["attributes"] = _project_mapping(source.get("attributes", {}))
+            previous_log(self, cast("Log", project_structure(source)), scope)
+        except Exception:  # noqa: BLE001 - no carrier enters SDK telemetry rendering
+            return
+
+    def add_breadcrumb(
+        self: sentry_sdk.Scope,
+        crumb: Breadcrumb | None = None,
+        hint: BreadcrumbHint | None = None,
+        **kwargs: object,
+    ) -> None:
+        if self.get_client().get_integration(CredentialLoggingBoundary) is None:
+            previous_breadcrumb(self, crumb, hint, **kwargs)
+            return
+        try:
+            source = _plain_storage(crumb) if crumb is not None else {}
+            source.update(_plain_storage(kwargs))
+            previous_breadcrumb(
+                self,
+                cast("Breadcrumb", project_structure(source)),
+                _safe_capture_hint(hint),
+            )
+        except Exception:  # noqa: BLE001 - before dict(crumb), bool and accessor calls
+            return
+
+    type.__setattr__(sentry_sdk.Client, "_capture_log", capture_log)
+    type.__setattr__(sentry_sdk.Scope, "add_breadcrumb", add_breadcrumb)
+
+
+def _install_sdk_stack_projection() -> None:
+    previous = cast(
+        "Callable[..., dict[str, Any]]",
+        sentry_logging.__dict__["current_stacktrace"],
+    )
+    emit_code = sentry_logging.EventHandler.__dict__["_emit"].__code__
+
+    def current_stacktrace(*args: object, **kwargs: object) -> dict[str, Any]:
+        if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+            return previous(*args, **kwargs)
+        frame: FrameType | None = sys._getframe(1)  # noqa: SLF001 - SDK frame only
+        while frame is not None:
+            if frame.f_code is emit_code:
+                # This is the SDK's own argument, not application frame locals.
+                # Its handlers already applied the production ingress filter.
+                record = frame.f_locals.get("record")
+                if type(record) is not logging.LogRecord:
+                    break
+                rows = project_structure(
+                    _plain_storage(record.__dict__).get(_RECORD_STACK, [])
+                )
+                return {
+                    "frames": [
+                        {"filename": row[0], "function": row[1], "lineno": row[2]}
+                        for row in cast("list[list[Any]]", rows)
+                    ]
+                }
+            frame = frame.f_back
+        return {"frames": []}
+
+    sentry_logging.__dict__["current_stacktrace"] = current_stacktrace
+
+
+# Record construction precedes every console/SDK formatter, including workers
+# without a DSN. Integration setup adds an outer dispatch guard after the SDK's
+# own callHandlers patch has been installed.
+_install_record_creation()
+_install_record_dispatch()
+_install_sdk_logger_projection()
 
 
 # Logger.callHandlers' SDK patch processes the original record independently of

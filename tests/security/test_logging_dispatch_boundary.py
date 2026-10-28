@@ -202,7 +202,9 @@ def test_direct_sdk_logs_freeze_opaque_attributes_before_the_private_context_exi
         for item in json.loads(envelope_item.payload.get_bytes())["items"]
     ]
     assert [item["body"] for item in logs] == ["ordinary direct sdk diagnostic"]
-    assert logs[0]["attributes"]["opaque"]["value"] == "[Filtered]"
+    assert logs[0]["attributes"]["opaque"]["value"] == (
+        "<tests.security.test_logging_dispatch_boundary._OpaqueSecret>"
+    )
 
 
 class _InjectingRecordUpdate(dict[str, object]):

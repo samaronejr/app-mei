@@ -4,14 +4,18 @@ import ast
 import json
 import re
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Final, cast
+from uuid import UUID
 
 MARKER: Final = "[Filtered]"
 # Bound both discovery text and trie nodes, not a prefix of private input.
 _MAX_SCAN_CHARACTERS: Final = 512 * 1024
 _SCAN_BUDGET_ERROR: Final = "redaction diagnostic exceeds its character budget"
+_PAIR_LENGTH: Final = 2
 
 
 class RedactionBudgetError(ValueError):
@@ -116,7 +120,7 @@ def _tokens(text: str) -> list[_Token]:
 
 def field_name(name: str | bytes) -> str:
     """Normalize actual bytes keys and the SDK's serialized bytes-key literals."""
-    text = name.decode("latin-1") if isinstance(name, bytes) else name
+    text = name.decode("latin-1") if type(name) is bytes else cast("str", name)
     return _literal(text).lower()
 
 
@@ -131,7 +135,7 @@ def provider_field(name: str | bytes) -> bool:
 def _sensitive(value: object, fields: frozenset[str] | None) -> bool:
     return (
         fields is not None
-        and isinstance(value, (str, bytes))
+        and (type(value) is str or type(value) is bytes)
         and (provider_field(value) or field_name(value) in fields)
     )
 
@@ -227,37 +231,99 @@ def _remember(text: str, credentials: set[str]) -> None:
 def _children(
     value: object, hidden: bool, fields: frozenset[str] | None
 ) -> list[tuple[object, bool]]:
-    match value:
-        case Mapping():
-            return [
-                child
-                for key, item in value.items()
-                for child in ((key, hidden), (item, hidden or _sensitive(key, fields)))
-            ]
-        case [key, item] if _sensitive(key, fields):
-            return [(key, hidden), (item, True)]
-        case list() | tuple():
-            return [(item, hidden) for item in value]
-        case set() | frozenset():
-            return [(item, hidden) for item in value]
-        case _:
-            return []
+    if type(value) is dict:
+        return [
+            child
+            for key, item in value.items()
+            for child in ((key, hidden), (item, hidden or _sensitive(key, fields)))
+        ]
+    if type(value) is list or type(value) is tuple:
+        if len(value) == _PAIR_LENGTH and _sensitive(value[0], fields):
+            return [(value[0], hidden), (value[1], True)]
+        return [(item, hidden) for item in value]
+    if type(value) is set or type(value) is frozenset:
+        return [(item, hidden) for item in value]
+    return []
 
 
 def _rebuild(value: object, items: list[object]) -> object:
-    match value:
-        case Mapping():
-            return dict(zip(items[::2], items[1::2], strict=True))
-        case list():
-            return items
-        case tuple():
-            return tuple(items)
-        case set():
-            return set(items)
-        case frozenset():
-            return frozenset(items)
-        case _:
-            return value
+    if type(value) is dict:
+        return dict(zip(items[::2], items[1::2], strict=True))
+    if type(value) is list:
+        return items
+    if type(value) is tuple:
+        return tuple(items)
+    if type(value) is set:
+        return set(items)
+    if type(value) is frozenset:
+        return frozenset(items)
+    return value
+
+
+def diagnostic_type(value: object) -> tuple[str, str]:
+    """Read type metadata without consulting an instance or its metaclass."""
+    kind = type(value)
+    namespace = type.__dict__["__dict__"].__get__(kind)
+    module = next(
+        (
+            item
+            for key, item in namespace.items()
+            if type(key) is str and key == "__module__" and type(item) is str
+        ),
+        "builtins",
+    )
+    return module, type.__dict__["__name__"].__get__(kind)
+
+
+def project_structure(value: object) -> object:
+    """Own inert primitives; opaque objects supply only their type, never code."""
+
+    def project(item: object, _hidden: bool) -> object:
+        kind = type(item)
+        if (
+            item is None
+            or kind is str
+            or kind is bytes
+            or kind is bool
+            or kind is int
+            or kind is float
+            or kind is dict
+            or kind is list
+            or kind is tuple
+            or kind is set
+            or kind is frozenset
+        ):
+            return item
+        if kind is Decimal:
+            return Decimal.__str__(cast("Decimal", item))
+        if kind is UUID:
+            number = UUID.__dict__["int"].__get__(item)
+            if type(number) is int:
+                digits = f"{number:032x}"
+                return "-".join(
+                    (
+                        digits[:8],
+                        digits[8:12],
+                        digits[12:16],
+                        digits[16:20],
+                        digits[20:],
+                    )
+                )
+        if kind is datetime:
+            stamp = cast("datetime", item)
+            zone = datetime.__dict__["tzinfo"].__get__(stamp)
+            # A custom tzinfo can run application code even on an exact datetime.
+            if zone is not None and type(zone) is not timezone:
+                stamp = datetime.replace(stamp, tzinfo=None)
+            return datetime.isoformat(stamp)
+        # A nested dict subclass cannot safely reach the SDK serializer. Unlike an
+        # opaque scalar, a carrier claims structure: refuse it rather than call it.
+        if issubclass(kind, dict):
+            raise TypeError
+        module, name = diagnostic_type(item)
+        return f"<{module}.{name}>"
+
+    return _walk(value, project, None)
 
 
 def _walk(
@@ -365,14 +431,14 @@ def discover_structure(
 
     def discover(item: object, hidden: bool) -> object:
         nonlocal characters
-        if isinstance(item, (str, bytes)):
+        if type(item) is str or type(item) is bytes:
             characters += len(item)
             if characters > _MAX_SCAN_CHARACTERS:
                 raise RedactionBudgetError(_SCAN_BUDGET_ERROR)
             text = (
                 item.decode("utf-8", "surrogateescape")
-                if isinstance(item, bytes)
-                else item
+                if type(item) is bytes
+                else cast("str", item)
             )
             if hidden:
                 _remember(text, credentials)
@@ -382,7 +448,7 @@ def discover_structure(
             plans[text] = (redacted, spans)
         return item
 
-    _walk(value, discover, fields)
+    _walk(project_structure(value), discover, fields)
     return plans
 
 
@@ -394,6 +460,7 @@ def redact_structure(
     urls: Callable[[str], tuple[str, set[str]]] | None = None,
 ) -> object:
     """Discover first, replace second, across the entire record and all its keys."""
+    value = project_structure(value)
     plans = discover_structure(value, credentials, fields=fields, urls=urls)
     # Include the marker itself, without exempting marker-prefixed credentials.
     known = _KnownValues((credentials - {""}) | {MARKER})
@@ -401,10 +468,12 @@ def redact_structure(
     def replace(item: object, hidden: bool) -> object:
         if hidden:
             return MARKER
-        if not isinstance(item, (str, bytes)):
+        if type(item) is not str and type(item) is not bytes:
             return item
         text = (
-            item.decode("utf-8", "surrogateescape") if isinstance(item, bytes) else item
+            item.decode("utf-8", "surrogateescape")
+            if type(item) is bytes
+            else cast("str", item)
         )
         redacted, spans = plans[text]
         # Merge known-value matches with structural spans in original coordinates.
@@ -419,7 +488,7 @@ def redact_structure(
         redacted = "".join(pieces)
         return (
             redacted.encode("utf-8", "surrogateescape")
-            if isinstance(item, bytes)
+            if type(item) is bytes
             else redacted
         )
 
@@ -443,21 +512,15 @@ def render_structure(value: object) -> str:
     """Render a deep diagnostic with the stack walker, not recursive repr."""
 
     def render(item: object, _hidden: bool) -> object:
-        match item:
-            case Mapping():
-                return (
-                    "{"
-                    + ", ".join(f"{key}: {part}" for key, part in item.items())
-                    + "}"
-                )
-            case list():
-                return "[" + ", ".join(str(part) for part in item) + "]"
-            case tuple():
-                content = ", ".join(str(part) for part in item)
-                return "(" + content + ("," if len(item) == 1 else "") + ")"
-            case set() | frozenset():
-                return "{" + ", ".join(sorted(str(part) for part in item)) + "}"
-            case _:
-                return repr(item)
+        if type(item) is dict:
+            return "{" + ", ".join(f"{key}: {part}" for key, part in item.items()) + "}"
+        if type(item) is list:
+            return "[" + ", ".join(str(part) for part in item) + "]"
+        if type(item) is tuple:
+            content = ", ".join(str(part) for part in item)
+            return "(" + content + ("," if len(item) == 1 else "") + ")"
+        if type(item) is set or type(item) is frozenset:
+            return "{" + ", ".join(sorted(str(part) for part in item)) + "}"
+        return repr(item)
 
-    return str(_walk(value, render, frozenset()))
+    return str(_walk(project_structure(value), render, frozenset()))

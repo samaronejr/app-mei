@@ -155,8 +155,30 @@ _CANARY_ERROR: type[RuntimeError] = type(CANARY, (RuntimeError,), {})
 
 
 class _PrivateErrorName:
+    rendered = False
+
     def __str__(self) -> str:
+        type(self).rendered = True
         raise _CANARY_ERROR
+
+
+def test_withholding_never_uses_a_redactor_failure_type_as_diagnostic_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise _CANARY_ERROR
+
+    with _sinks(monkeypatch, logs=True) as (logger, stream, client, transport):
+        with monkeypatch.context() as broken:
+            broken.setattr(prod, "redact_structure", fail)
+            logger.error("ordinary forced withholding")
+        sentry_sdk.capture_message("ordinary following event")
+        client.flush()
+    assert prod.SENTRY_REDACTION_MARKER in stream.getvalue()
+    assert CANARY not in stream.getvalue() + b"".join(transport.payloads).decode()
+    assert any(
+        event.get("message") == "ordinary following event" for event in transport.events
+    )
 
 
 @pytest.mark.parametrize("source", ["error-name", "numeric-level"])
@@ -180,5 +202,9 @@ def test_withholding_cannot_reintroduce_private_error_names_or_numeric_levels(
         sentry_sdk.capture_message("ordinary following event")
         client.flush()
     # Then reconstruction cannot turn an original credential into metadata.
-    assert prod.SENTRY_REDACTION_MARKER in stream.getvalue()
+    if source == "error-name":
+        assert "_PrivateErrorName" in stream.getvalue()
+        assert _PrivateErrorName.rendered is False
+    else:
+        assert prod.SENTRY_REDACTION_MARKER in stream.getvalue()
     assert canary not in stream.getvalue() + b"".join(transport.payloads).decode()
