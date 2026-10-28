@@ -352,14 +352,14 @@ class _KnownValues:
         return merged
 
 
-def redact_structure(
+def discover_structure(
     value: object,
     credentials: set[str],
     *,
     fields: frozenset[str] | None = frozenset(),
     urls: Callable[[str], tuple[str, set[str]]] | None = None,
-) -> object:
-    """Discover first, replace second, across the entire record and all its keys."""
+) -> dict[str, tuple[str, list[tuple[int, int]]]]:
+    """Learn raw leaves and text ranges without rendering opaque objects."""
     plans: dict[str, tuple[str, list[tuple[int, int]]]] = {}
     characters = 0
 
@@ -383,6 +383,18 @@ def redact_structure(
         return item
 
     _walk(value, discover, fields)
+    return plans
+
+
+def redact_structure(
+    value: object,
+    credentials: set[str],
+    *,
+    fields: frozenset[str] | None = frozenset(),
+    urls: Callable[[str], tuple[str, set[str]]] | None = None,
+) -> object:
+    """Discover first, replace second, across the entire record and all its keys."""
+    plans = discover_structure(value, credentials, fields=fields, urls=urls)
     # Include the marker itself, without exempting marker-prefixed credentials.
     known = _KnownValues((credentials - {""}) | {MARKER})
 

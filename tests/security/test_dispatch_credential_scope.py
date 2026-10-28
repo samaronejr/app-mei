@@ -285,7 +285,10 @@ def test_a_check_in_scrub_failure_cannot_escape_through_carrier_mutators(
     with _sinks(monkeypatch) as (_, _, client, transport):
         with monkeypatch.context() as broken:
             broken.setattr(prod, "_task_stack", _MissingStack())
-            # When its scrub fails inside the real client.
+            # Exercise the in-place SDK hook too: capture ingress normally owns
+            # this carrier before processors or that hook can inspect it.
+            prod.SENTRY_OPTIONS["event_scrubber"].scrub_event(event)
+            # When the application submits the resulting husk to the real client.
             sentry_sdk.capture_event(event)
         sentry_sdk.capture_message("ordinary control event")
         client.flush()
@@ -306,6 +309,7 @@ def test_a_check_in_scrub_commits_without_the_carriers_update(
     # Given a check-in carrier whose own update injects a field.
     event: Any = _check_in(_InjectingUpdate)
     with _sinks(monkeypatch) as (_, _, client, transport):
+        prod.SENTRY_OPTIONS["event_scrubber"].scrub_event(event)
         # When the scrubber hook replaces its contents after a successful scrub.
         sentry_sdk.capture_event(event)
         client.flush()
@@ -330,9 +334,9 @@ def test_a_foreign_check_in_mapping_never_reaches_a_dict_primitive(
     )
     with _sinks(monkeypatch) as (_, _, client, transport):
         with delivery_secrets(CANARY):
+            prod.SENTRY_OPTIONS["event_scrubber"].scrub_event(event)
             # When it is captured through the real client.
             sentry_sdk.capture_event(event)
         client.flush()
-    # Then the hook left it untouched rather than raising, and before_send still
-    # scrubbed the SDK's serialized plain copy.
+    # Then the raw hook left it untouched, and capture ingress safely refused it.
     assert CANARY not in b"".join(transport.payloads).decode()

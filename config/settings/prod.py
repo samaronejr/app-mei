@@ -19,14 +19,18 @@ from sentry_sdk.integrations import Integration
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
-from sentry_sdk.scope import add_global_event_processor
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 from sentry_sdk.types import Breadcrumb, BreadcrumbHint, Event, Hint, Log
 from sentry_sdk.utils import format_attribute
 
 from apps.core.release import UNKNOWN_RELEASE, current_release
 from apps.delivery.privacy import sensitive_values
-from apps.integrations.privacy import redact_structure, render_structure, scrub_text
+from apps.integrations.privacy import (
+    discover_structure,
+    redact_structure,
+    render_structure,
+    scrub_text,
+)
 from config.settings.base import *  # noqa: F403
 from config.settings.base import LOGGING as BASE_LOGGING
 from config.settings.base import env
@@ -241,8 +245,8 @@ class CredentialEventScrubber(EventScrubber):
         # Event is a TypedDict statically; the SDK's in-place hook owns its dict.
         if not issubclass(type(cast("object", event)), dict):
             # Only a dict can be rewritten without calling the carrier's methods.
-            # The boundary's processor refuses other carriers before this hook;
-            # check-ins skip processors, so here they are left untouched.
+            # Capture ingress refuses other carriers; a direct hook call leaves
+            # them untouched rather than passing them to a dict primitive.
             return
         husk = cast("dict[str, object]", cast("object", event))
         try:
@@ -317,8 +321,8 @@ _TASK_SUCCESS_FIELDS: Final = frozenset(
 
 
 def _task_failure_context(
-    producer: object, context: object, credentials: set[str]
-) -> dict[str, object] | None:
+    producer: object, context: object
+) -> tuple[dict[str, object], tuple[object, ...]] | None:
     """Keep Celery task identity visible and hide arguments, results and failures.
 
     Celery logs each failure's context under ``extra["data"]``, a provider-body name,
@@ -338,16 +342,13 @@ def _task_failure_context(
         secrets = ("args", "kwargs", "return_value")
     else:
         return None
-    # A pair under a hidden name remembers its value, and the literals inside it.
-    redact_structure(
-        [["token", str(context[name])] for name in secrets],
-        credentials,
-        fields=SENTRY_CREDENTIAL_FIELDS,
+    return (
+        {
+            name: SENTRY_REDACTION_MARKER if name in secrets else item
+            for name, item in context.items()
+        },
+        tuple(context[name] for name in secrets),
     )
-    return {
-        name: SENTRY_REDACTION_MARKER if name in secrets else item
-        for name, item in context.items()
-    }
 
 
 def _withhold(record: logging.LogRecord, _error: Exception) -> None:
@@ -441,11 +442,14 @@ _RECORD_DISPATCH: Final[ContextVar[set[str] | None]] = ContextVar(
 
 
 def _known_values() -> set[str]:
-    return {
+    credentials = {
         *sensitive_values.get(),
         *_task_known_values(),
         *(_RECORD_DISPATCH.get() or ()),
     }
+    _share_with_dispatch(credentials)
+    dispatch = _RECORD_DISPATCH.get()
+    return credentials if dispatch is None else dispatch
 
 
 def _share_with_dispatch(credentials: set[str]) -> None:
@@ -474,7 +478,6 @@ class CredentialURLLogFilter(logging.Filter):
                 record.levelno = logging.ERROR
             if type(record.name) is not str or type(record.levelno) is not int:
                 _withhold(record, TypeError())
-            record.levelname = str(record.levelname)
             self._scrub(record)
             # Probe the actual console formatter before StreamHandler.handleError
             # could serialize an invalid original record to stderr.
@@ -490,28 +493,18 @@ class CredentialURLLogFilter(logging.Filter):
         return True
 
     def _scrub(self, record: logging.LogRecord) -> None:
-        credentials = _request_credentials(record) | _known_values()
-        # Interpolation is in-memory only. Scrubbing a template's %s first would
-        # destroy its placeholders and orphan the unlabelled argument values.
+        credentials = _known_values()
+        credentials.update(_request_credentials(record))
         template = record.msg
-        message = template
-        if isinstance(message, str):
-            try:
-                message = record.getMessage()
-            except (TypeError, ValueError, KeyError, RecursionError):
-                message = f"{record.msg} {render_structure(record.args)}"
-        # One record-wide discovery includes arguments, extras and every exception
-        # before rendering can lose structure or a sibling field can be discarded.
         chain = _exception_chain(record.exc_info[1]) if record.exc_info else []
-        extras = {**record.__dict__, "msg": message}
-        task_context = _task_failure_context(
-            record.name, extras.get("data"), credentials
-        )
+        extras = {**record.__dict__}
+        context = _task_failure_context(record.name, extras.get("data"))
+        task_context, private = context if context is not None else (None, ())
         if task_context is not None:
             extras["data"] = task_context
-        # Fields travel as positional [name, value] pairs, so a name that discovery
-        # rewrites or merges ("exc" inside "exception_arguments") can neither lose a
-        # field nor leave its original value in place.
+        # Raw discovery must finish before getMessage, str, exception formatting
+        # or an opaque attribute can log. Its credential set is the dispatch's
+        # live set, including reentrant calls and copies of the current Context.
         pairs: list[list[object]] = [
             [
                 _TASK_FAILURE_ALIAS
@@ -528,6 +521,33 @@ class CredentialURLLogFilter(logging.Filter):
                 [getattr(error, "__notes__", ()) for error in chain],
             ]
         )
+        discover_structure(
+            [*pairs, ["token", private]],
+            credentials,
+            fields=SENTRY_CREDENTIAL_FIELDS,
+        )
+        _share_with_dispatch(credentials)
+        # Keep the same discovery of Celery's rendered private fields, but only
+        # after their raw leaves and all the other record credentials are known.
+        redact_structure(
+            [["token", str(value)] for value in private],
+            credentials,
+            fields=SENTRY_CREDENTIAL_FIELDS,
+        )
+        record.levelname = str(record.levelname)
+        # Interpolate before replacing the template's placeholders. Rendering can
+        # reenter logging; discovery above has already published its credentials.
+        message = template
+        if isinstance(message, str):
+            try:
+                message = record.getMessage()
+            except (TypeError, ValueError, KeyError, RecursionError):
+                message = f"{record.msg} {render_structure(record.args)}"
+        pairs[list(extras).index("msg")][1] = message
+        pairs[list(extras).index("levelname")][1] = record.levelname
+        # Fields travel as positional [name, value] pairs, so a name that discovery
+        # rewrites or merges ("exc" inside "exception_arguments") can neither lose a
+        # field nor leave its original value in place.
         scrubbed = cast(
             "list[list[object]]",
             redact_structure(pairs, credentials, fields=SENTRY_CREDENTIAL_FIELDS),
@@ -555,7 +575,54 @@ class CredentialURLLogFilter(logging.Filter):
         if record.exc_text is not None:
             # The whole rendered chain, including causes and contexts.
             record.exc_text = scrub_text(str(record.exc_text), credentials)
-        _share_with_dispatch(credentials)
+
+
+def _install_capture_boundary() -> None:
+    previous_capture = sentry_sdk.Client.capture_event
+    previous_scoped_capture = sentry_sdk.Scope.capture_event
+
+    def capture_event(
+        self: sentry_sdk.Client,
+        event: Event,
+        hint: Hint | None = None,
+        scope: sentry_sdk.Scope | None = None,
+    ) -> str | None:
+        if self.get_integration(CredentialLoggingBoundary) is None:
+            return previous_capture(self, event, hint=hint, scope=scope)
+        try:
+            owned = _own_event_carrier(event)
+            if owned is None:
+                return None
+            return previous_capture(self, owned, hint=hint, scope=scope)
+        except Exception:  # noqa: BLE001 - production telemetry fails closed
+            return None
+
+    def scoped_capture_event(
+        self: sentry_sdk.Scope,
+        event: Event,
+        hint: Hint | None = None,
+        scope: sentry_sdk.Scope | None = None,
+        **scope_kwargs: object,
+    ) -> str | None:
+        if self.get_client().get_integration(CredentialLoggingBoundary) is None:
+            return previous_scoped_capture(
+                self, event, hint=hint, scope=scope, **scope_kwargs
+            )
+        try:
+            owned = _own_event_carrier(event)
+            if owned is None:
+                return None
+            return previous_scoped_capture(
+                self, owned, hint=hint, scope=scope, **scope_kwargs
+            )
+        except Exception:  # noqa: BLE001 - includes the SDK's post-capture read
+            return None
+
+    # Check-ins skip event processors, and scope-less calls skip scopes.
+    # Own carriers at both capture entry points, before the SDK can call any
+    # application accessor or serialize a supposedly irrevocable husk.
+    type.__setattr__(sentry_sdk.Client, "capture_event", capture_event)
+    type.__setattr__(sentry_sdk.Scope, "capture_event", scoped_capture_event)
 
 
 class CredentialLoggingBoundary(Integration):
@@ -565,7 +632,7 @@ class CredentialLoggingBoundary(Integration):
 
     @staticmethod
     def setup_once() -> None:
-        add_global_event_processor(_own_event_carrier)
+        _install_capture_boundary()
         previous = logging.Logger.callHandlers
 
         def call_handlers(self: logging.Logger, record: logging.LogRecord) -> None:
@@ -581,7 +648,10 @@ class CredentialLoggingBoundary(Integration):
             try:
                 # Every sink of this record shares what its first pass discovered;
                 # a record logged during the dispatch inherits it as well.
-                known = _RECORD_DISPATCH.set(set(_RECORD_DISPATCH.get() or ()))
+                dispatch = _RECORD_DISPATCH.get()
+                known = _RECORD_DISPATCH.set(
+                    dispatch if dispatch is not None else set()
+                )
                 try:
                     if not CredentialURLLogFilter().filter(record):
                         return
@@ -594,7 +664,7 @@ class CredentialLoggingBoundary(Integration):
         type.__setattr__(logging.Logger, "callHandlers", call_handlers)
 
 
-def _own_event_carrier(event: Event, _hint: Hint) -> Event | None:
+def _own_event_carrier(event: Event) -> Event | None:
     """Continue with a plain dict the hooks own, or refuse the carrier.
 
     The scrubber hook rewrites through unbound dict primitives, but the SDK then
@@ -604,13 +674,17 @@ def _own_event_carrier(event: Event, _hint: Hint) -> Event | None:
     original keeps only the withheld marker.
     """
     carrier = cast("object", event)
-    if type(carrier) is dict:
-        return event
-    if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
-        return event
     if not issubclass(type(carrier), dict):
         return None
     original = cast("dict[str, object]", carrier)
+    if dict.get(original, _WITHHELD_EVENT):
+        return None
+    if type(carrier) is dict:
+        # The public cron API reads check_in_id after capture returns. A failed
+        # scrub must husk only our copy, not destroy that caller's return value.
+        if dict.get(original, "type") == "check_in":
+            return cast("Event", cast("object", dict.copy(original)))
+        return event
     owned = dict(dict.items(original))
     dict.clear(original)
     dict.update(original, {_WITHHELD_EVENT: True})

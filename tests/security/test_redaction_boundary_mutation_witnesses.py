@@ -74,6 +74,7 @@ def test_an_already_withheld_event_cannot_lose_its_drop_marker_on_a_second_captu
             sentry_sdk.capture_event(event)
         # When another capture could redact even the marker's own schema key.
         with delivery_secrets(prod._WITHHELD_EVENT):
+            prod.SENTRY_OPTIONS["event_scrubber"].scrub_event(event)
             sentry_sdk.capture_event(event)
         client.flush()
     # Then withholding is irrevocable rather than dependent on the next scrub.

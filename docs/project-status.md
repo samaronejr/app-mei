@@ -619,6 +619,45 @@ other; that implementation is outside this follow-up's allowed paths.
 Independent review, provider qualification, operator and owner activation gates
 remain open; this repair authorizes no push, merge or activation.
 
+`AXRM-011` boundary follow-up, fix attempt 5 (2026-10-28). Review 10 rejected
+`9aaf0c4`: exception rendering could log a nested record before the outer record's
+credentials reached its dispatch, and check-ins bypassed the event processor
+that owned hostile carriers. A carrier could therefore revive a withheld
+check-in and raise out of the SDK's public capture call.
+
+Raw record, argument and exception-chain discovery now precedes message,
+attribute, stack and exception rendering. Discovery and every nested dispatch
+use the same mutable credential set, including contexts copied before discovery;
+the outer dispatch restores its context when it ends. The structural discovery
+pass is shared with the existing redactor rather than implemented separately.
+Celery's private context values are discovered raw before their rendered forms,
+while the existing task-identity exemption stays in place.
+
+Carrier ownership now precedes both scoped and direct SDK capture, not only
+event processors. Dictionary subclasses are copied through base dictionary
+storage, their originals keep only the withheld marker, and an already withheld
+carrier is refused without calling its accessors. Other mapping carriers are
+refused. Plain check-in dictionaries are copied too, so withholding cannot erase
+the return ID read afterward by the public cron API. Clients without the
+production boundary retain their own capture policy. Patching the locked SDK's
+capture entry points adds upgrade coupling alongside the existing logging guard.
+
+All **47** new real-console/full-SDK witnesses fail during their call phase on
+the complete `9aaf0c4` settings/privacy source, with no setup or teardown errors.
+They pass on this repair in **three** consecutive runs, and **93** inherited
+boundary witnesses pass. The original RV10 attacks, carrier probes and all four
+current comparison cases pass after correcting a local repro-driver entry-point
+error; the first unit's harness exit is not called a passing gate.
+Current default collection is **6,849 selected**: **2,101** in group 1 and
+**4,748** in group 2, including the 47 new witnesses. These are collection counts,
+not default-suite passing results. The final-head ledger is
+`.evidence/AXRM-011-fix5-gates.txt`; no final3/final4 stage is carried forward.
+The complete campaigns contain **17** scan and **85** filter mutants, with
+delayed-sharing, copied-context, nested-dispatch and check-in ownership mutants.
+Final results and owned-container/volume teardown belong to
+`.evidence/AXRM-011-perf-doneclaim.json`. Independent review and all provider,
+operator and activation gates remain open.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),
