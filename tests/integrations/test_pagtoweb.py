@@ -6,13 +6,17 @@ budget policy and the real transport against a loopback `FakeSerpro`.
 
 import json
 import logging
+import threading
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from django.db import DatabaseError, connection, transaction
+from django.db import DatabaseError, connection, connections, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -26,12 +30,16 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.completion_sources import source_subjects
 from apps.integrations.authority import head_record
 from apps.integrations.budget_models import ProviderBudget
+from apps.integrations.call_protocol import reserve
 from apps.integrations.models import IntegrationIssue
+from apps.integrations.serpro import payments as payment_service
+from apps.integrations.serpro import tasks
 from apps.integrations.serpro.models import PaymentQuery
 from apps.integrations.serpro.pagtoweb import PaymentRange
 from apps.integrations.serpro.payments import (
     PaymentQueryConflictError,
     emit_payment_receipt,
+    open_payment_query,
     queue_payment_consultation,
     receipt_request_key,
     run_payment_query,
@@ -308,6 +316,7 @@ def _profile(client: ClientCompany, regime: str, valid_from: date) -> None:
         ("timeline-says-simples", False),
         ("timeline-gap-is-unknown", False),
         ("no-das-obligation", False),
+        ("another-obligation-type-same-month", False),
     ],
 )
 def test_match_truth_table(world: World, case: str, matched: bool) -> None:
@@ -327,6 +336,10 @@ def test_match_truth_table(world: World, case: str, matched: bool) -> None:
                 _profile(client, TaxRegime.MEI, date(2026, 10, 1))
             case "no-das-obligation":
                 Obligation.objects.filter(pk=world.obligation.pk).delete()
+            case "another-obligation-type-same-month":
+                Obligation.objects.filter(pk=world.obligation.pk).update(
+                    obligation_type_id="DASN"
+                )
         fresh = ClientCompany.objects.get(pk=client.pk)
         with CaptureQueriesContext(connection) as queries:
             [result] = match_das_payments(fresh, [record])  # type: ignore[list-item]
@@ -692,6 +705,214 @@ def test_a_redelivered_run_continues_and_never_rebills_a_page(world: World) -> N
     again = run_payment_query(world.termo.tenant.pk, query.pk)
     assert again.state == query.state == "encontrado"
     assert len(world.sent()) == 2
+
+
+@dataclass
+class Hold:
+    """Park one runner thread at its `at`-th reservation until released."""
+
+    at: int = 1
+    entered: threading.Event = field(default_factory=threading.Event)
+    release: threading.Event = field(default_factory=threading.Event)
+    calls: int = 0
+
+
+def hold_reservations(monkeypatch: pytest.MonkeyPatch, **holds: Hold) -> None:
+    """Gate the real `reserve` per runner thread (named `<hold>_<n>`)."""
+
+    def gated(*args: object, **kwargs: object) -> object:
+        hold = holds.get(threading.current_thread().name.split("_")[0])
+        if hold is not None:
+            hold.calls += 1
+            if hold.calls == hold.at:
+                hold.entered.set()
+                assert hold.release.wait(timeout=20)
+        return reserve(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(payment_service, "reserve", gated)
+
+
+def runner(name: str, run: Callable[[], str]) -> tuple[ThreadPoolExecutor, Future[str]]:
+    """Start `run` on its own thread and its own runtime-role connection."""
+
+    def own_connection() -> str:
+        db = connections["default"]
+        try:
+            with db.cursor() as cursor:
+                cursor.execute("SET ROLE app_runtime")
+            return run()
+        finally:
+            db.close()
+
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
+    return pool, pool.submit(own_connection)
+
+
+def scheduled_query(world: World) -> PaymentQuery:
+    with tenant_context(world.termo.tenant.pk):
+        return open_payment_query(
+            world.termo.client, WINDOW, actor=None, cadence=COMPETENCE
+        )
+
+
+def settled(world: World, query_id: UUID) -> dict[str, object]:
+    """Everything a later settlement could rewrite: row, receipts, work, wire."""
+    with tenant_context(world.termo.tenant.pk):
+        stored = PaymentQuery.objects.get(pk=query_id)
+        head = head_record(world.termo.client.pk, "pagtoweb")
+        return {
+            "query": (
+                stored.state,
+                stored.failure_code,
+                stored.pages_fetched,
+                stored.payments_found,
+                stored.matched_count,
+                stored.version,
+                stored.finished_at,
+            ),
+            "receipts": receipts(world),
+            "finished_events": Event.objects.filter(
+                action="integrations.payment_consultation_finished"
+            ).count(),
+            "issues": sorted(
+                IntegrationIssue.objects.values_list("reason", "state", "service")
+            ),
+            "authority": head and (head.status, head.source_call_ref),
+            "payments": FederalPayment.objects.count(),
+            "calls": [(call.state, call.billed) for call in world.calls()],
+            "requests": len(world.sent()),
+        }
+
+
+def _das_page(world: World) -> None:
+    world.script(page([item("DAS-CONCURRENT-01")]))
+
+
+def _malformed(world: World) -> None:
+    world.script(Reply(body=b'{"status":200,"mensagens":[],"dados":"{}"}'))
+
+
+def _denied(world: World) -> None:
+    world.script(denied())
+
+
+def _no_budget(world: World) -> None:
+    with tenant_context(world.termo.tenant.pk):
+        ProviderBudget.objects.update(cap_microbrl=0)
+
+
+@pytest.mark.parametrize(
+    ("arrange", "outcome"),
+    [
+        (_das_page, "encontrado"),
+        (_malformed, "falha"),
+        (_denied, "sem_procuracao"),
+        (_no_budget, "cota_esgotada"),
+    ],
+    ids=["after-success", "after-billed-failure", "after-403", "after-refusal"],
+)
+def test_an_overlapping_runner_never_rewrites_a_finished_consultation(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    arrange: Callable[[World], None],
+    outcome: str,
+) -> None:
+    # Given runner B has read the active consultation and waits at its reservation.
+    query = scheduled_query(world)
+    stale = Hold()
+    hold_reservations(monkeypatch, stale=stale)
+    arrange(world)
+    pool, late = runner(
+        "stale", lambda: run_payment_query(query.tenant_id, query.pk).state
+    )
+    try:
+        assert stale.entered.wait(timeout=10)
+        # When runner A finishes the same consultation first.
+        finished = run_payment_query(query.tenant_id, query.pk)
+        assert finished.state == outcome
+        before = settled(world, query.pk)
+    finally:
+        stale.release.set()
+        pool.shutdown(wait=True)
+    # Then B, released, reports A's outcome and rewrites nothing A recorded.
+    assert late.result(timeout=25) == outcome
+    assert settled(world, query.pk) == before
+
+
+def test_a_runner_behind_an_applied_page_leaves_the_consultation_to_its_owner(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given B waits at page 1's reservation while A has applied page 1 and
+    # waits at page 2's.
+    query = scheduled_query(world)
+    stale, first = Hold(), Hold(at=2)
+    hold_reservations(monkeypatch, stale=stale, first=first)
+    world.script(page(darfs(100)), page(darfs(1, start=100)))
+    pools: list[ThreadPoolExecutor] = []
+    try:
+        pool, late = runner(
+            "stale", lambda: run_payment_query(query.tenant_id, query.pk).state
+        )
+        pools.append(pool)
+        assert stale.entered.wait(timeout=10)
+        pool, owner = runner(
+            "first", lambda: run_payment_query(query.tenant_id, query.pk).state
+        )
+        pools.append(pool)
+        assert first.entered.wait(timeout=10)
+        # When B is released first.
+        stale.release.set()
+        # Then it stops without settling: page 1 stays applied, nothing is incerto.
+        assert late.result(timeout=25) == "em_andamento"
+        with tenant_context(query.tenant_id):
+            during = PaymentQuery.objects.get(pk=query.pk)
+            assert not IntegrationIssue.objects.filter(
+                reason="consulta_pagamentos_falhou"
+            ).exists()
+        assert (during.state, during.failure_code, during.pages_fetched) == (
+            "em_andamento",
+            "",
+            1,
+        )
+        # And A, released, completes the consultation alone.
+        first.release.set()
+        assert owner.result(timeout=25) == "encontrado"
+    finally:
+        stale.release.set()
+        first.release.set()
+        for pool in pools:
+            pool.shutdown(wait=True)
+    view = settled(world, query.pk)
+    assert view["query"][:5] == ("encontrado", "", 2, 101, 0)  # type: ignore[index]
+    assert view["receipts"] == [("encontrado", 100), ("encontrado", 1)]
+    assert (view["finished_events"], view["requests"]) == (1, 2)
+
+
+def test_a_redelivered_task_never_rewrites_the_finished_consultation(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the broker redelivered the task while the first delivery was running.
+    query = scheduled_query(world)
+    args = (str(query.tenant_id), str(query.pk))
+    stale = Hold()
+    hold_reservations(monkeypatch, stale=stale)
+    _das_page(world)
+    pool, redelivered = runner(
+        "stale", lambda: tasks.run_payment_query_task.apply(args=args).get()
+    )
+    try:
+        assert stale.entered.wait(timeout=10)
+        assert tasks.run_payment_query_task.apply(args=args).get() == "encontrado"
+        before = settled(world, query.pk)
+    finally:
+        stale.release.set()
+        pool.shutdown(wait=True)
+    # Then the overlapping delivery and one more after completion change nothing.
+    assert redelivered.result(timeout=25) == "encontrado"
+    assert tasks.run_payment_query_task.apply(args=args).get() == "encontrado"
+    assert settled(world, query.pk) == before
+    assert before["receipts"] == [("encontrado", 1)]
+    assert before["requests"] == 1
 
 
 def test_receipt_is_issued_once_and_stored_privately(world: World) -> None:

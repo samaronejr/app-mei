@@ -363,6 +363,26 @@ def _locked(query_id: UUID) -> PaymentQuery:
     )
 
 
+def _settling(query_id: UUID, index: int) -> PaymentQuery | None:
+    """Lock the consultation to settle page `index`; None when that is not ours.
+
+    The condition belongs to the locking query, so Postgres evaluates it on the
+    row's newest version once the lock is granted. A runner that read the
+    consultation before another one finished it, or applied this page, finds
+    nothing to settle: a terminal outcome is final.
+    """
+    return (
+        PaymentQuery.objects.select_for_update(of=("self",))
+        .select_related("client", "link__connection", "requested_by")
+        .filter(pk=query_id, state__in=ACTIVE_QUERY_STATES, pages_fetched=index)
+        .first()
+    )
+
+
+def _stored(query_id: UUID) -> PaymentQuery:
+    return PaymentQuery.objects.select_related("client").get(pk=query_id)
+
+
 def _receipt(
     query: PaymentQuery, digest: str, provider_ref: str = ""
 ) -> ConsultationCall:
@@ -381,7 +401,10 @@ def _refused(
 ) -> PaymentQuery:
     """Admission refused this page before any byte was sent."""
     with tenant_context(query.tenant_id):
-        query = _locked(query.pk)
+        settling = _settling(query.pk, index)
+        if settling is None:
+            return _stored(query.pk)
+        query = settling
         row = ProviderCall.objects.filter(
             client_id=query.client_id, request_key=key
         ).first()
@@ -425,7 +448,10 @@ def _settle_page(  # noqa: PLR0911 - one outcome per finalized call state
 ) -> PaymentQuery | None:
     """Turn one finalized page call into receipts and payments; None = next page."""
     with tenant_context(query.tenant_id):
-        query = _locked(query.pk)
+        settling = _settling(query.pk, index)
+        if settling is None:
+            return _stored(query.pk)
+        query = settling
         call = ProviderCall.objects.get(pk=call_id, client_id=query.client_id)
         receipt = _receipt(query, digest, str(call.pk))
         if call.state == CallState.SUCCESS and adapter.records is not None:
@@ -504,7 +530,9 @@ def _page(query: PaymentQuery, parties: Parties, index: int) -> PaymentQuery | N
     key = _page_key(query, index)
     request = CallRequest(PAGE_OPERATION, key, digest, key)
     with tenant_context(query.tenant_id):
-        current = _locked(query.pk)
+        current = _settling(query.pk, index)
+        if current is None:
+            return _stored(query.pk)
         if not _initiator_allowed(current):
             return _finish(
                 current, PaymentQueryState.FALHA, "solicitante_sem_permissao"
