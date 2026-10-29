@@ -829,6 +829,12 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
         "task": "apps.integrations.serpro.tasks.schedule_payment_consultations",
         "schedule": crontab(hour=6, minute=30),
     },
+    # AXRM-015: a kept (paid, not yet applied) PAGTOWEB page is deleted once applied
+    # or once its consultation ends; this sweep removes any left past retention.
+    "purge-payment-pages": {
+        "task": "apps.integrations.serpro.tasks.purge_payment_pages",
+        "schedule": crontab(hour=4, minute=15),
+    },
     "generate-cycles": {
         "task": "apps.cycles.tasks.generate_monthly_cycles",
         "schedule": crontab(day_of_month=1, hour=5, minute=0),

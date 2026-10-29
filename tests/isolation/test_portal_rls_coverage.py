@@ -82,7 +82,8 @@ RUNTIME_ROLE = "app_runtime"
 # AXRM-014 adds three client-paired private federal tables (consultation receipts,
 # payment documents, fiscal-situation reports; both policies): 79 + 3 = 82.
 # AXRM-013 adds client-less firm work and zero-cost attempt reservations: 82 + 2.
-EXPECTED_TENANT_TABLE_COUNT = 85
+# AXRM-015 adds PAGTOWEB consultations (85) and their kept paid pages: 85 + 1.
+EXPECTED_TENANT_TABLE_COUNT = 86
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -114,8 +115,9 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "obligations_federalconsultation",
         "obligations_federalpayment",
         "obligations_fiscalsituationreport",
-        # AXRM-015: PAGTOWEB consultations.
+        # AXRM-015: PAGTOWEB consultations and their kept paid pages.
         "integrations_paymentquery",
+        "integrations_paymentpage",
     }
 )
 
@@ -622,8 +624,9 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "obligations_fiscalsituationreport",
         "integrations_firmintegrationissue",
         "integrations_firmproviderreservation",
-        # AXRM-015: PAGTOWEB consultations are portal NONE.
+        # AXRM-015: PAGTOWEB consultations and their kept paid pages are portal NONE.
         "integrations_paymentquery",
+        "integrations_paymentpage",
     },
 )
 

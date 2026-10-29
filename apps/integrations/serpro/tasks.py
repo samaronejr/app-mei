@@ -18,6 +18,7 @@ from apps.integrations.serpro.payments import (
     PaymentQueryConflictError,
     emit_payment_receipt,
     open_payment_query,
+    purge_kept_pages,
     run_payment_query,
 )
 
@@ -48,6 +49,17 @@ def run_payment_query_task(tenant_id: str, query_id: str) -> str:
             ignore_result=True,
         )
     return query.state
+
+
+@shared_task(base=PlatformTask, bind=True)
+def purge_payment_pages(self: PlatformTask) -> int:
+    """Daily retention for kept PAGTOWEB pages, one firm at a time.
+
+    Inactive firms are visited too: retention does not wait for a firm to return.
+    """
+    return sum(
+        purge_kept_pages() for _tenant in self.each_tenant(include_inactive=True)
+    )
 
 
 @shared_task(base=PhasedTenantTask)

@@ -386,13 +386,14 @@ def test_a_dead_owners_consultation_resumes_on_redelivery_once_its_lease_ends(
     resumed = redeliver(query)
     view = settled(world, query.pk)
     if dies_at == "after-paid-page":
-        # The paid page's records died with A; it is never fetched again.
-        assert resumed == "incerto"
-        lost = ("incerto", "pagina_nao_registrada", 0)
-        assert view["query"][:3] == lost  # type: ignore[index]
-        assert (view["payments"], view["requests"]) == (0, 1)
+        # The page A paid for was kept with its call's success: it is adopted,
+        # never lost to incerto and never fetched again (review 5).
+        assert resumed == "encontrado"
+        assert view["query"][:4] == ("encontrado", "", 1, 1)  # type: ignore[index]
+        assert view["receipts"] == [("encontrado", 1)]
+        assert (view["payments"], view["requests"]) == (1, 1)
         with tenant_context(world.termo.tenant.pk):
-            assert IntegrationIssue.objects.filter(reason=FAILED).count() == 1
+            assert IntegrationIssue.objects.filter(reason=FAILED).count() == 0
     else:
         assert resumed == "encontrado"
         assert view["query"][:4] == ("encontrado", "", 2, 101)  # type: ignore[index]
@@ -430,12 +431,13 @@ def test_an_owner_whose_lease_ran_out_yields_to_the_runner_that_took_over(
         successor.release.set()
         for pool in pools:
             pool.shutdown(wait=True)
-    # And the new owner settles the page whose records it never received.
-    assert taken.result(timeout=25) == "incerto"
+    # And the new owner adopts the page A paid for and kept (review 5): one
+    # payment from one paid request, never incerto.
+    assert taken.result(timeout=25) == "encontrado"
     view = settled(world, query.pk)
-    lost = ("incerto", "pagina_nao_registrada", 0)
-    assert view["query"][:3] == lost  # type: ignore[index]
-    assert view["requests"] == 1
+    assert view["query"][:4] == ("encontrado", "", 1, 1)  # type: ignore[index]
+    assert view["receipts"] == [("encontrado", 1)]
+    assert (view["payments"], view["requests"]) == (1, 1)
 
 
 def test_a_stale_runner_never_resettles_an_applied_page_once_the_lease_ends(
@@ -868,3 +870,154 @@ def test_a_stale_runner_behind_a_dead_owners_applied_page_leaves_it_to_resume(
     assert view["query"][:4] == ("encontrado", "", 2, 101)  # type: ignore[index]
     assert view["requests"] == 2
     assert world.offsets() == [0, 100]
+
+
+# Review 5 (AXRM015-RV5-LIVE-SESSION-LOSS): a paid page is kept with its call's
+# success and adopted by whoever settles the consultation next, whatever became of
+# the runner that paid for it.
+
+
+def dies_right_after_paying(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """The `name` runner's process ends as soon as its page call is final and paid.
+
+    Nothing of that runner runs after the protocol's finalize commits: not its
+    settlement, not even the rest of `perform`.
+    """
+    from apps.integrations import call_protocol  # noqa: PLC0415
+
+    real = call_protocol.finalize
+
+    def dying(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401 - finalize's own
+        done = real(*args, **kwargs)
+        if done and threading.current_thread().name.startswith(name):
+            raise WorkerDiedError
+        return done
+
+    monkeypatch.setattr(call_protocol, "finalize", dying)
+
+
+def test_a_live_owner_whose_session_dropped_keeps_its_paid_page(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given A paid for its page and holds its parsed records, and then its
+    # database session ends and reconnects while its process lives on.
+    query = scheduled_query(world)
+    owner = Stop(drops_session=True)
+    stop_at(monkeypatch, "_settle_page", owner=owner)
+    world.script(page([item("RV5-LIVE-SESSION-LOSS")]))
+    pool, first = runner("owner", lambda: run(query))
+    try:
+        assert owner.entered.wait(timeout=10)
+        assert owner.records == 1
+        # When A's lease runs out and B runs the consultation meanwhile.
+        lease_runs_out(world, query.pk)
+        late_pool, late = runner("late", lambda: run(query))
+        taken = late.result(timeout=25)
+        late_pool.shutdown(wait=True)
+        assert not first.done()
+    finally:
+        owner.release.set()
+        pool.shutdown(wait=True)
+    # Then the page A paid for is recorded once, whoever settled it, and nothing
+    # is paid for again.
+    assert (taken, first.result(timeout=25)) == ("encontrado", "encontrado")
+    view = settled(world, query.pk)
+    assert view["query"][:4] == ("encontrado", "", 1, 1)  # type: ignore[index]
+    assert view["receipts"] == [("encontrado", 1)]
+    assert (view["payments"], view["requests"], view["finished_events"]) == (1, 1, 1)
+
+
+def test_an_owner_dying_right_after_its_page_is_paid_leaves_it_to_be_adopted(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given A's process ends the moment its paid page call is finalized.
+    query = scheduled_query(world)
+    dies_right_after_paying(monkeypatch, "owner")
+    world.script(page([item("DAS-ADOPTED-01")]))
+    pool, first = runner("owner", lambda: run(query))
+    with pytest.raises(WorkerDiedError):
+        first.result(timeout=25)
+    pool.shutdown(wait=True)
+    assert [(call.state, call.billed) for call in world.calls()] == [
+        (CallState.SUCCESS, "sim")
+    ]
+    # When a delivery arrives while A's lease is live, it yields.
+    before = untouched(world, query.pk)
+    assert redeliver(query) == "em_andamento"
+    assert untouched(world, query.pk) == before
+    # And once the lease has run out, the next delivery adopts the paid page.
+    lease_runs_out(world, query.pk)
+    assert redeliver(query) == "encontrado"
+    view = settled(world, query.pk)
+    assert view["query"][:4] == ("encontrado", "", 1, 1)  # type: ignore[index]
+    assert view["receipts"] == [("encontrado", 1)]
+    assert (view["payments"], view["requests"]) == (1, 1)
+
+
+def staff_query(world: World, capture: Any, nonce: str) -> PaymentQuery:  # noqa: ANN401
+    with tenant_context(world.termo.tenant.pk), capture():
+        return queue_payment_consultation(
+            world.termo.actor,
+            world.termo.client.pk,
+            WINDOW,
+            expected_latest=None,
+            nonce=nonce,
+        )
+
+
+def test_a_paid_page_is_adopted_even_after_its_initiator_lost_access(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Any,  # noqa: ANN401 - pytest-django fixture
+) -> None:
+    # Given A paid for a staff consultation's page and died before settling it.
+    query = staff_query(world, django_capture_on_commit_callbacks, "adopt-access")
+    dead = Stop(dies=True)
+    stop_at(monkeypatch, "_settle_page", owner=dead)
+    world.script(page([item("DAS-ADOPTED-02")]))
+    pool, first = runner("owner", lambda: run(query))
+    assert dead.entered.wait(timeout=10)
+    with pytest.raises(WorkerDiedError):
+        first.result(timeout=25)
+    pool.shutdown(wait=True)
+    # When the initiator loses access and a later delivery takes over.
+    access(world, TenantRole.STAFF_ACCOUNTANT)
+    lease_runs_out(world, query.pk)
+    # Then the page already paid for is recorded; nothing new is sent.
+    assert run(query) == "encontrado"
+    view = settled(world, query.pk)
+    assert view["query"][:4] == ("encontrado", "", 1, 1)  # type: ignore[index]
+    assert (view["payments"], view["requests"]) == (1, 1)
+
+
+def test_a_runner_reaching_a_kept_page_adopts_it_whoever_asked(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    django_capture_on_commit_callbacks: Any,  # noqa: ANN401 - pytest-django fixture
+) -> None:
+    # Given B started the staff consultation and waits before fetching page 1.
+    query = staff_query(world, django_capture_on_commit_callbacks, "adopt-page")
+    behind, dead = Stop(), Stop(dies=True)
+    stop_at(monkeypatch, "_page", late=behind)
+    stop_at(monkeypatch, "_settle_page", owner=dead)
+    world.script(page([item("DAS-ADOPTED-03")]))
+    pool, late = runner("late", lambda: run(query))
+    try:
+        assert behind.entered.wait(timeout=10)
+        # And A then paid for page 1 and died before settling it.
+        owner_pool, first = runner("owner", lambda: run(query))
+        assert dead.entered.wait(timeout=10)
+        with pytest.raises(WorkerDiedError):
+            first.result(timeout=25)
+        owner_pool.shutdown(wait=True)
+        # When the initiator loses access, A's lease runs out and B goes on.
+        access(world, TenantRole.STAFF_ACCOUNTANT)
+        lease_runs_out(world, query.pk)
+    finally:
+        behind.release.set()
+        pool.shutdown(wait=True)
+    # Then B adopts the paid page instead of failing the consultation.
+    assert late.result(timeout=25) == "encontrado"
+    view = settled(world, query.pk)
+    assert view["query"][:4] == ("encontrado", "", 1, 1)  # type: ignore[index]
+    assert (view["payments"], view["requests"]) == (1, 1)

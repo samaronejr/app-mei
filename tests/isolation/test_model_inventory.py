@@ -70,6 +70,8 @@ SWEEP_LABELS: Final = frozenset(
         "integrations.IntegrationIssue",
         # AXRM-015 PAGTOWEB consultations: tests/integrations/test_pagtoweb.py.
         "integrations.PaymentQuery",
+        # AXRM-015 kept paid pages: tests/integrations/test_pagtoweb_paid_pages.py.
+        "integrations.PaymentPage",
         "integrations.ProviderConnection",
         "integrations.ProviderBudget",
         "integrations.ProviderReservation",

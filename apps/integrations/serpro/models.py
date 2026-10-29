@@ -223,3 +223,44 @@ class PaymentQuery(ClientRecord):
         from apps.integrations.serpro.pagtoweb import PaymentRange  # noqa: PLC0415
 
         return PaymentRange(self.range_start, self.range_end, tuple(self.revenue_codes))
+
+
+class PaymentPage(ClientRecord):
+    """A paid PAGTOWEB page its consultation has not settled yet (A7.4).
+
+    Written in the transaction that finalizes the page call as paid, so the page
+    outlives the runner that paid for it: whichever runner settles the consultation
+    next adopts it, and nothing is paid for twice. It holds only the normalized
+    payment fields PAGTOWEB returned for this firm's own consultation, the same
+    fields `FederalPayment` keeps. Deleted when its page is applied or its
+    consultation ends; the daily sweep removes anything left past `PAGE_RETENTION`.
+    """
+
+    query = models.ForeignKey(PaymentQuery, on_delete=models.PROTECT, related_name="+")
+    call = models.ForeignKey(
+        "integrations.ProviderCall", on_delete=models.PROTECT, related_name="+"
+    )
+    index = models.PositiveSmallIntegerField()
+    records = models.JSONField(default=list)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(ClientRecord.Meta):
+        """One kept page per consultation page and per paid call."""
+
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            *ClientRecord.Meta.constraints,
+            models.UniqueConstraint(
+                fields=("tenant", "client", "query", "index"),
+                name="paymentpage_query_index_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("tenant", "client", "call"), name="paymentpage_call_uniq"
+            ),
+            models.CheckConstraint(
+                condition=Q(index__lt=MAX_PAYMENT_PAGES), name="paymentpage_index_cap"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        """Identify the kept page by its position, never by taxpayer."""
+        return f"PAGTOWEB page {self.index}"

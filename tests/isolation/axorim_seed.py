@@ -1089,6 +1089,9 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
         ("integrations_providercall", "retry_of_id", "providercall_retry_fk"),
         # AXRM-015: a PAGTOWEB consultation names its client's own SERPRO link.
         ("integrations_paymentquery", "link_id", "paymentquery_link_fk"),
+        # AXRM-015: a kept page names its own client's consultation and page call.
+        ("integrations_paymentpage", "query_id", "paymentpage_query_fk"),
+        ("integrations_paymentpage", "call_id", "paymentpage_call_fk"),
         (
             "integrations_providercallattempt",
             "call_id",

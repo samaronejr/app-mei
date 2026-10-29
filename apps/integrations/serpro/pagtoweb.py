@@ -30,6 +30,7 @@ import binascii
 import re
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
 from django.core.exceptions import ValidationError
@@ -225,6 +226,52 @@ def parse_receipt(response: ProviderResponse) -> bytes:
     if not pdf.startswith(_PDF_MAGIC):
         raise _invalid(response.status)
     return pdf
+
+
+# The normalized fields a kept page stores (`PaymentPage.records`): exactly what
+# `FederalPayment` keeps of each document, never the provider's envelope or text.
+_KEPT_TEXT: Final = ("numero_documento", "tipo", "receita_codigo", "receita_descricao")
+_KEPT_DATES: Final = ("periodo_apuracao", "data_arrecadacao", "data_vencimento")
+_KEPT_AMOUNTS: Final = ("valor_total", "valor_principal", "valor_multa", "valor_juros")
+
+
+def page_rows(records: tuple[PaymentRecord, ...]) -> list[dict[str, str | None]]:
+    """Return the stored form of a parsed page: ISO dates, exact decimal strings."""
+    return [
+        {
+            name: None if (value := getattr(record, name)) is None else str(value)
+            for name in (*_KEPT_TEXT, *_KEPT_DATES, *_KEPT_AMOUNTS)
+        }
+        for record in records
+    ]
+
+
+def _kept_day(value: str | None) -> date | None:
+    return None if value is None else date.fromisoformat(value)
+
+
+def _kept_amount(value: str | None) -> Decimal | None:
+    return None if value is None else Decimal(value)
+
+
+def page_records(rows: list[dict[str, str | None]]) -> tuple[PaymentRecord, ...]:
+    """Rebuild the parsed page `page_rows` stored, unmatched as it was parsed."""
+    return tuple(
+        PaymentRecord(
+            numero_documento=str(row["numero_documento"]),
+            tipo=str(row["tipo"]),
+            periodo_apuracao=date.fromisoformat(str(row["periodo_apuracao"])),
+            data_arrecadacao=date.fromisoformat(str(row["data_arrecadacao"])),
+            data_vencimento=_kept_day(row["data_vencimento"]),
+            receita_codigo=str(row["receita_codigo"]),
+            receita_descricao=str(row["receita_descricao"]),
+            valor_total=Decimal(str(row["valor_total"])),
+            valor_principal=_kept_amount(row["valor_principal"]),
+            valor_multa=_kept_amount(row["valor_multa"]),
+            valor_juros=_kept_amount(row["valor_juros"]),
+        )
+        for row in rows
+    )
 
 
 class PageAdapter:

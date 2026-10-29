@@ -240,6 +240,9 @@ $$;
 -- AXRM-015: a PAGTOWEB consultation (who asked, which window, pages fetched, outcome)
 -- is firm-side (INV-R10); integrations.0007 adds the client-anchored policy and
 -- DenyPortalAccess, so a grant added by mistake would still read nothing.
+-- PORTAL_NONE: integrations_paymentpage
+-- AXRM-015: a paid PAGTOWEB page kept until its consultation settles it is
+-- firm-side too; integrations.0010 adds the same policies.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
 -- PORTAL_NONE: tenants_notificationpreference

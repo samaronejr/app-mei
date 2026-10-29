@@ -22,6 +22,15 @@ becomes todo 14's per-call `FederalConsultation` receipt. Rules:
   is gone (the owner died, `integrations.0009`) may a redelivered runner take over
   and resume, never re-fetching a page another runner paid for. A runner merely
   stalled past its lease keeps its consultation and the page it paid for.
+* A paid page is kept (`PaymentPage`) in the very transaction that finalizes its
+  call as paid, before any lock is released. Whichever runner settles the
+  consultation next, the payer or one that took over (its owner's session looked
+  gone, or it really died), adopts the kept page: it is never lost to `incerto`
+  and never paid for again. A kept page is deleted once applied or once its
+  consultation ends; the daily sweep removes anything left after PAGE_RETENTION.
+  Session liveness is not what prevents a second payment (the page call's own
+  fenced claim and the page predicate do); it only spares a live owner from
+  being displaced, and a wrong verdict now costs a handoff, never a page.
 * A page reserved but never claimed is cancelled and its reservation released as
   soon as the consultation is final, so no abandoned page holds the firm's cap.
 """
@@ -78,6 +87,7 @@ from apps.integrations.models import (
 from apps.integrations.serpro.adapter import Parties, SerproAdapter, build_request
 from apps.integrations.serpro.models import (
     ACTIVE_QUERY_STATES,
+    PaymentPage,
     PaymentQuery,
     PaymentQueryState,
 )
@@ -90,6 +100,8 @@ from apps.integrations.serpro.pagtoweb import (
     PaymentRange,
     ReceiptAdapter,
     page_data,
+    page_records,
+    page_rows,
 )
 from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.services import IntegrationConflictError
@@ -108,13 +120,14 @@ from apps.obligations.payment_matching import match_das_payments
 from apps.obligations.system_ingest import ingest_system_document
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from datetime import date
     from uuid import UUID
 
     from django.db.models import QuerySet
 
     from apps.integrations.transport_types import Environment, JSONValue
+    from apps.obligations.federal import PaymentRecord
 
 logger = getLogger(__name__)
 
@@ -124,6 +137,9 @@ FLAG: Final = "federal_checks"
 # SERPRO 401 and the page's settlement, with margin. Past it, an owner whose
 # database session is gone too is dead.
 SETTLEMENT_LEASE: Final = timedelta(minutes=10)
+# A kept page lives until its consultation applies it or ends; one still here after
+# this long belongs to a consultation stuck far beyond any continuation and goes.
+PAGE_RETENTION: Final = timedelta(days=7)
 OWNER_SETTING: Final = "app.payment_settlement_owner"
 # Session-level advisory lock keyed by the runner's token; `integrations.0009`'s
 # `integrations_payment_runner_alive` derives the same key from the stored owner.
@@ -355,6 +371,8 @@ def _finish(
     query.settlement_until = None
     query.save()
     _release_unused(query)
+    # Nothing settles a finished consultation any more: its kept pages go.
+    PaymentPage.objects.filter(query_id=query.pk).delete()
     record_event(
         action="integrations.payment_consultation_finished",
         tenant_id=query.tenant_id,
@@ -597,7 +615,7 @@ def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call sta
     index: int,
     digest: str,
     call_id: UUID,
-    adapter: PageAdapter,
+    adapter: PageAdapter | None,
     *,
     runner: UUID,
 ) -> PaymentQuery | None:
@@ -609,13 +627,16 @@ def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call sta
         query = settling
         call = ProviderCall.objects.get(pk=call_id, client_id=query.client_id)
         receipt = _receipt(query, digest, str(call.pk))
-        if call.state == CallState.SUCCESS and adapter.records is not None:
+        page = _paid_page(query, index, call, adapter)
+        if call.state == CallState.SUCCESS and page is not None:
             try:
                 with transaction.atomic():
                     # Matching may bind a document already on file; it shares the
                     # page's transaction, so a refused page binds nothing.
-                    records = match_das_payments(query.client, adapter.records)
+                    records = match_das_payments(query.client, page)
                     record_payment_consultation(query.client, receipt, records)
+                    # Applied: the page is no longer kept.
+                    PaymentPage.objects.filter(query_id=query.pk, index=index).delete()
             except (FederalRecordConflictError, ValidationError):
                 return _finish(query, PaymentQueryState.FALHA, "documento_divergente")
             query.pages_fetched = index + 1
@@ -636,8 +657,9 @@ def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call sta
             query.save()
             return None
         if call.state == CallState.SUCCESS:
-            # Billed and finalized, but its transient page did not reach us. It is
-            # never fetched again automatically: repeating it is a staff decision.
+            # Billed and finalized without a kept page (only a journal replay
+            # finalizes a call without its runner's page). It is never fetched
+            # again automatically: repeating it is a staff decision.
             return _finish(query, PaymentQueryState.INCERTO, "pagina_nao_registrada")
         if call.state == CallState.DENIED:
             record_authority_denial(
@@ -690,7 +712,8 @@ def _page(  # noqa: PLR0911 - each step may end the consultation or yield it
         current = _settling(query.pk, index, runner)
         if current is None:
             return _stored(query.pk)
-        if not _initiator_allowed(current):
+        # A kept page costs nothing more: it is adopted below whoever asked.
+        if _kept_page(current, index) is None and not _initiator_allowed(current):
             return _finish(
                 current, PaymentQueryState.FALHA, "solicitante_sem_permissao"
             )
@@ -721,8 +744,82 @@ def _page(  # noqa: PLR0911 - each step may end the consultation or yield it
     adapter = PageAdapter(
         SerproAdapter(_transport(cast("Environment", query.environment)), parties, data)
     )
-    perform(ticket, adapter)
+    perform(ticket, adapter, keep=_keeper(query, index, adapter))
     return _settle_page(query, index, digest, row.pk, adapter, runner=runner)
+
+
+def _paid_page(
+    query: PaymentQuery, index: int, call: ProviderCall, adapter: PageAdapter | None
+) -> tuple[PaymentRecord, ...] | None:
+    """Return the page to settle: the one kept with its call's success.
+
+    This runner's own parse stands in only when none was kept.
+    """
+    kept = _kept_page(query, index)
+    if kept is not None and kept.call_id == call.pk:
+        return page_records(kept.records)
+    return adapter.records if adapter is not None else None
+
+
+def _kept_page(query: PaymentQuery, index: int) -> PaymentPage | None:
+    return (
+        PaymentPage.objects.select_related("call")
+        .filter(query_id=query.pk, index=index)
+        .first()
+    )
+
+
+def _keeper(
+    query: PaymentQuery, index: int, adapter: PageAdapter
+) -> Callable[[ProviderCall], None]:
+    """Keep the parsed page in the transaction that finalizes its call as paid.
+
+    The page then belongs to the consultation, not to this runner: whoever
+    settles the consultation next adopts it, even if this runner never returns.
+    """
+
+    def keep(call: ProviderCall) -> None:
+        if adapter.records is not None:
+            PaymentPage.objects.create(
+                tenant_id=query.tenant_id,
+                client_id=query.client_id,
+                query_id=query.pk,
+                call=call,
+                index=index,
+                records=page_rows(adapter.records),
+            )
+
+    return keep
+
+
+def _adopt(tenant_id: UUID, query_id: UUID, runner: UUID) -> PaymentQuery | None:
+    """Settle a page another runner paid for and kept; None means carry on.
+
+    Nothing is sent, so neither the initiator's access nor the termo is asked
+    again: the page was paid for while both held. The lease is taken first, so
+    the runner that paid yields to this one if it ever comes back.
+    """
+    with _as_runner(tenant_id, runner):
+        query = _unowned(query_id, runner)
+        kept = None if query is None else _kept_page(query, query.pages_fetched)
+    if query is None or kept is None or not _own(query, kept.index, runner):
+        return None
+    return _settle_page(
+        query, kept.index, kept.call.request_digest, kept.call_id, None, runner=runner
+    )
+
+
+def purge_kept_pages() -> int:
+    """Delete the current firm's kept pages that nothing will settle any more.
+
+    A page outlives its settlement only when its consultation ended without it
+    (a late finalize) or is stuck past PAGE_RETENTION; either way it goes.
+    """
+    cutoff = timezone.now() - PAGE_RETENTION
+    deleted, _ = PaymentPage.objects.filter(
+        Q(created_at__lt=cutoff) | ~Q(query__state__in=ACTIVE_QUERY_STATES)
+    ).delete()
+    return deleted
 
 
 def run_payment_query(tenant_id: UUID, query_id: UUID) -> PaymentQuery:
@@ -739,6 +836,9 @@ def run_payment_query(tenant_id: UUID, query_id: UUID) -> PaymentQuery:
 
 
 def _run(tenant_id: UUID, query_id: UUID, runner: UUID) -> PaymentQuery:
+    adopted = _adopt(tenant_id, query_id, runner)
+    if adopted is not None:
+        return adopted
     with _as_runner(tenant_id, runner):
         query = _unowned(query_id, runner)
         if query is None:
