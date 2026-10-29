@@ -172,10 +172,29 @@ def test_descriptor_returned_class_names_are_inert(
                 error("ordinary_code"), extras={"password": CANARY}
             )
         _assert_sinks(stream, client, transport, calls)
-        assert any(
-            OUTER in json.dumps(event) or "PrimitiveCodeError" in json.dumps(event)
-            for event in transport.events
-        )
+        events = cast("list[dict[str, Any]]", transport.events)
+        if position == "argument":
+            label = f"{OUTER} <{opaque.__module__}.Opaque>"
+            assert any(
+                (event.get("logentry") or {}).get("message") == label
+                for event in events
+            )
+            assert label in stream.getvalue()
+        else:
+            assert any(
+                [
+                    (value["type"], value["value"])
+                    for value in (event.get("exception") or {}).get("values", [])
+                ]
+                == [("PrimitiveCodeError", "ordinary_code")]
+                for event in events
+            )
+        if position == "exception":
+            assert any(
+                (event.get("logentry") or {}).get("message") == OUTER
+                and "exception" in event
+                for event in events
+            )
 
 
 @pytest.mark.parametrize("logs", [False, True])
@@ -290,7 +309,12 @@ def test_record_creation_control_fields_are_exact_native_values(
         arm[0] = True
         logger._log(**options)
         _assert_sinks(stream, client, transport, calls)
-        assert OUTER in stream.getvalue() or "[Filtered]" in stream.getvalue()
+        # None of these opaque controls has a native value: the record is withheld.
+        assert (
+            f"{prod.SENTRY_REDACTION_MARKER} log record withheld: redaction failed"
+            in stream.getvalue()
+        )
+        assert OUTER not in stream.getvalue()
 
 
 @pytest.mark.parametrize("logs", [False, True])
