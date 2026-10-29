@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import sys
+from collections import deque
 from collections.abc import Mapping
 from contextlib import suppress
 from functools import partial
@@ -24,6 +25,7 @@ from django.core.handlers.wsgi import WSGIRequest
 from django.http import HttpRequest
 from django.urls import Resolver404, resolve
 from sentry_sdk import logger as sdk_logger
+from sentry_sdk import scope as sentry_scope
 from sentry_sdk import utils as sentry_utils
 from sentry_sdk.integrations import Integration
 from sentry_sdk.integrations import celery as sentry_celery
@@ -31,7 +33,11 @@ from sentry_sdk.integrations import logging as sentry_logging
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.scope import ScopeType
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
+from sentry_sdk.session import Session
+from sentry_sdk.tracing import Span, Transaction
+from sentry_sdk.tracing_utils import Baggage, PropagationContext, has_tracing_enabled
 from sentry_sdk.types import Breadcrumb, BreadcrumbHint, Event, Hint, Log
 from sentry_sdk.utils import format_attribute
 
@@ -879,6 +885,11 @@ class CredentialURLLogFilter(logging.Filter):
         object.__setattr__(record, "__dict__", updates)
 
 
+def _native_int(value: object) -> object:
+    """An int subclass's value (bool, IntEnum) copied without calling its methods."""
+    return int.__index__(cast("int", value)) if issubclass(type(value), int) else value
+
+
 def _install_record_creation() -> None:
     previous_log = logging.Logger.__dict__["_log"]
 
@@ -904,9 +915,12 @@ def _install_record_creation() -> None:
             )
         )
         fields.update(_plain_storage(options))
-        level = fields["level"]
+        level = _native_int(fields["level"])
         stack_info = fields.get("stack_info", False)
-        stacklevel = fields.get("stacklevel", 1)
+        if stack_info is None or issubclass(type(stack_info), int):
+            # The stdlib only tests its truth, which for an int is its value.
+            stack_info = stack_info is not None and _native_int(stack_info) != 0
+        stacklevel = _native_int(fields.get("stacklevel", 1))
         args = cast("tuple[object, ...]", fields["args"])
         if any(
             type(value) is not expected
@@ -1016,28 +1030,267 @@ def _project_capture_kwargs(values: dict[str, object]) -> dict[str, Any]:
     }
 
 
-def _project_capture_scope(scope: sentry_sdk.Scope | None) -> sentry_sdk.Scope | None:
-    """Refuse foreign scope protocols and freeze native scope diagnostic data."""
-    if scope is None:
-        return None
+_SCOPE_SLOTS: Final = {
+    name: sentry_sdk.Scope.__dict__[name] for name in sentry_sdk.Scope.__slots__
+}
+# The only scope data a capture may carry, each slot copied as a projection into a
+# fresh SDK scope. Every other slot keeps that scope's own empty default, so the
+# SDK never reads attachments (raw payloads and callables no scrubber sees),
+# feature flags, profiles, gen-AI ids or a live span or session protocol.
+_SCOPE_VALUES: Final = ("_level", "_fingerprint", "_transaction")
+_SCOPE_MAPPINGS: Final = (
+    "_transaction_info",
+    "_tags",
+    "_contexts",
+    "_extras",
+    "_attributes",
+    "_gen_ai_original_message_count",
+)
+_SCOPE_TRACING: Final = ("_span", "_propagation_context", "_session")
+
+
+def _scope_slot(scope: object, name: str) -> object:
+    """Read a native Scope slot without any attribute, truth or container hook."""
     if type(scope) is not sentry_sdk.Scope:
         raise TypeError
-    for name in (
-        "_extras",
-        "_contexts",
-        "_tags",
-        "_attributes",
-        "_user",
-        "_transaction_info",
+    return _SCOPE_SLOTS[name].__get__(scope)
+
+
+def _scope_items(value: object) -> list[object]:
+    """A breadcrumb buffer's items, read from native deque or list storage."""
+    if value is None:
+        return []
+    if issubclass(type(value), deque):
+        return list(deque.__iter__(cast("deque[object]", value)))
+    if issubclass(type(value), list):
+        return list.copy(cast("list[object]", value))
+    raise TypeError
+
+
+def _trace_ids(owner: type, value: object) -> tuple[str, str, str | None] | None:
+    """Trace and span ids from native slots; the SDK itself fills an empty one."""
+    ids: list[str] = []
+    for name in ("trace_id", "span_id"):
+        stored = owner.__dict__["_" + name].__get__(value)
+        if stored is None or (type(stored) is str and not stored):
+            stored = owner.__dict__[name].fget(value)
+        if type(stored) is not str:
+            return None
+        ids.append(stored)
+    parent = owner.__dict__["parent_span_id"].__get__(value)
+    return ids[0], ids[1], parent if type(parent) is str else None
+
+
+def _owned_baggage(value: object, *, frozen: bool) -> Baggage | None:
+    """Dynamic sampling items, copied as projections into a new frozen baggage."""
+    if type(value) is not Baggage or (
+        frozen and Baggage.__dict__["mutable"].__get__(value) is not False
     ):
-        value = object.__getattribute__(scope, name)
-        if value is not None:
-            object.__setattr__(scope, name, _project_mapping(value))
-    for name in ("_level", "_fingerprint", "_transaction"):
-        object.__setattr__(
-            scope, name, project_structure(object.__getattribute__(scope, name))
+        return None
+    return Baggage(
+        _project_mapping(Baggage.__dict__["sentry_items"].__get__(value)),
+        mutable=False,
+    )
+
+
+def _owned_trace(span: object, propagation: object) -> PropagationContext:
+    """Trace linkage rebuilt from ids, so the SDK keeps no live tracing object.
+
+    With an active SDK span these are the ids Span.get_trace_context reports, with
+    its transaction's frozen sampling baggage; otherwise the propagation context's.
+    The SDK derives the trace context and its sampling items from them alone.
+    """
+    if (type(span) is Span or type(span) is Transaction) and has_tracing_enabled(
+        sentry_sdk.get_client().options
+    ):
+        ids = _trace_ids(Span, span)
+        if ids is not None:
+            owner = (
+                span
+                if type(span) is Transaction
+                else Span.__dict__["_containing_transaction"].__get__(span)
+            )
+            baggage = (
+                _owned_baggage(
+                    Transaction.__dict__["_baggage"].__get__(owner), frozen=True
+                )
+                if type(owner) is Transaction
+                else None
+            )
+            trace_id, span_id, parent = ids
+            return PropagationContext(trace_id, span_id, parent, baggage=baggage)
+    if type(propagation) is PropagationContext:
+        ids = _trace_ids(PropagationContext, propagation)
+        if ids is not None:
+            sampled = PropagationContext.__dict__["parent_sampled"].__get__(propagation)
+            trace_id, span_id, parent = ids
+            return PropagationContext(
+                trace_id,
+                span_id,
+                parent,
+                parent_sampled=sampled if type(sampled) is bool else None,
+                baggage=_owned_baggage(
+                    PropagationContext.__dict__["baggage"].__get__(propagation),
+                    frozen=False,
+                ),
+            )
+    return PropagationContext()
+
+
+def _native_session(value: object) -> bool:
+    """Release health may count the error on the SDK's own native session."""
+    if type(value) is not Session:
+        return False
+    state = _plain_storage(object.__getattribute__(value, "__dict__"))
+    agent = state.get("user_agent")
+    return type(state.get("errors")) is int and (agent is None or type(agent) is str)
+
+
+def _ambient_scopes() -> list[object]:
+    """The global, isolation and current scopes, in the SDK's merge order."""
+    return [
+        scope
+        for scope in (
+            sentry_scope._global_scope,  # noqa: SLF001 - the SDK's merge sources
+            sentry_scope._isolation_scope.get(),  # noqa: SLF001
+            sentry_scope._current_scope.get(),  # noqa: SLF001
         )
-    return scope
+        if scope is not None
+    ]
+
+
+def _require_native_processors() -> None:
+    """The SDK runs the ambient scopes' processors; the lists must be its own."""
+    lists = [
+        _scope_slot(scope, name)
+        for scope in _ambient_scopes()
+        for name in ("_event_processors", "_error_processors")
+    ]
+    lists.append(sentry_scope.global_event_processors)
+    if any(type(value) is not list for value in lists):
+        raise TypeError
+
+
+def _fold_scope(state: dict[str, Any], source: object) -> None:
+    """Fold one source in as Scope.update_from_scope would, from native slots."""
+    for name in (*_SCOPE_VALUES, "_user", *_SCOPE_TRACING):
+        value = _scope_slot(source, name)
+        if value is not None:
+            state[name] = value
+    for name in _SCOPE_MAPPINGS:
+        value = _scope_slot(source, name)
+        if value is not None:
+            dict.update(state[name], _project_mapping(value))
+    state["_breadcrumbs"].extend(
+        _project_mapping(crumb)
+        for crumb in _scope_items(_scope_slot(source, "_breadcrumbs"))
+    )
+    count = _scope_slot(source, "_n_breadcrumbs_truncated")
+    if type(count) is int and count > 0:
+        state["_n_breadcrumbs_truncated"] += count
+
+
+def _owned_scope(
+    sources: list[object], keywords: dict[str, object] | None = None
+) -> sentry_sdk.Scope:
+    """A fresh SDK scope holding only projections of allowlisted source data.
+
+    Sources are read through native Scope slots, never mutated and never handed
+    to the SDK. Later sources win, as in Scope.update_from_scope, then keywords,
+    as in Scope.update_from_kwargs.
+    """
+    _require_native_processors()
+    state: dict[str, Any] = {name: {} for name in _SCOPE_MAPPINGS}
+    state.update(_breadcrumbs=[], _n_breadcrumbs_truncated=0)
+    for source in sources:
+        _fold_scope(state, source)
+    merged = sentry_sdk.Scope(ty=ScopeType.MERGED)
+    for name in _SCOPE_VALUES:
+        if name in state:
+            _SCOPE_SLOTS[name].__set__(merged, project_structure(state[name]))
+    if "_user" in state:
+        _SCOPE_SLOTS["_user"].__set__(merged, _project_mapping(state["_user"]))
+    for name in (*_SCOPE_MAPPINGS, "_n_breadcrumbs_truncated"):
+        _SCOPE_SLOTS[name].__set__(merged, state[name])
+    _SCOPE_SLOTS["_breadcrumbs"].__set__(merged, deque(state["_breadcrumbs"]))
+    _SCOPE_SLOTS["_propagation_context"].__set__(
+        merged, _owned_trace(state.get("_span"), state.get("_propagation_context"))
+    )
+    if _native_session(state.get("_session")):
+        _SCOPE_SLOTS["_session"].__set__(merged, state["_session"])
+    if keywords:
+        merged.update_from_kwargs(**_project_capture_kwargs(keywords))
+    return merged
+
+
+def _refused_scope() -> sentry_sdk.Scope:
+    """A merged scope the SDK will not capture with or apply data from."""
+    refused = sentry_sdk.Scope(ty=ScopeType.MERGED)
+    object.__setattr__(refused, "_should_capture", False)
+    return refused
+
+
+def _native_copy(value: object) -> object:
+    """Copy a native container natively; every other value is shared, as fork()."""
+    if type(value) is dict:
+        return dict.copy(value)
+    if type(value) is list:
+        return list.copy(value)
+    if type(value) is deque:
+        return deque.copy(value)
+    return value
+
+
+def _capture_scope(scope: object) -> sentry_sdk.Scope:
+    """Own a scope handed to the client; one the merge refused stays refused."""
+    if _scope_slot(scope, "_should_capture") is not True:
+        raise TypeError
+    return _owned_scope([scope])
+
+
+def _install_scope_merge() -> None:
+    previous = sentry_sdk.Scope._merge_scopes  # noqa: SLF001 - every capture merges here
+    previous_copy = sentry_sdk.Scope.__copy__
+
+    def merge_scopes(
+        self: sentry_sdk.Scope,
+        additional_scope: sentry_sdk.Scope | None = None,
+        additional_scope_kwargs: dict[str, Any] | None = None,
+    ) -> sentry_sdk.Scope:
+        if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+            return previous(self, additional_scope, additional_scope_kwargs)
+        # The SDK drops events and skips scope data for a non-capturing scope, and
+        # the client boundaries refuse it, so no caller sees an error.
+        if additional_scope is not None and additional_scope_kwargs:
+            return _refused_scope()
+        try:
+            isolation = sentry_scope._isolation_scope.get()  # noqa: SLF001
+            current = sentry_scope._current_scope.get()  # noqa: SLF001
+            sources = _ambient_scopes()
+            if self is not current and self is not isolation:
+                sources.append(self)
+            if additional_scope is not None:
+                sources.append(additional_scope)
+            return _owned_scope(sources, additional_scope_kwargs)
+        except Exception:  # noqa: BLE001 - an unowned source refuses the capture
+            return _refused_scope()
+
+    def copy_scope(self: sentry_sdk.Scope) -> sentry_sdk.Scope:
+        if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+            return previous_copy(self)
+        # The SDK forks the ambient scopes whenever a thread starts, including its
+        # own batcher and transport threads inside a capture. Copy native storage
+        # only: a replaced container is shared, never asked to copy itself.
+        forked = object.__new__(type(self))
+        for slot in _SCOPE_SLOTS.values():
+            slot.__set__(forked, _native_copy(slot.__get__(self)))
+        # Feature flags never reach a capture, so a fork starts without them
+        # rather than sharing or deep-copying application flag values.
+        _SCOPE_SLOTS["_flags"].__set__(forked, None)
+        return forked
+
+    type.__setattr__(sentry_sdk.Scope, "_merge_scopes", merge_scopes)
+    type.__setattr__(sentry_sdk.Scope, "__copy__", copy_scope)
 
 
 def _install_capture_boundary() -> None:
@@ -1060,7 +1313,7 @@ def _install_capture_boundary() -> None:
                 self,
                 owned,
                 hint=_safe_capture_hint(hint),
-                scope=_project_capture_scope(scope),
+                scope=None if scope is None else _capture_scope(scope),
             )
         except Exception:  # noqa: BLE001 - production telemetry fails closed
             return None
@@ -1084,7 +1337,7 @@ def _install_capture_boundary() -> None:
                 self,
                 owned,
                 hint=_safe_capture_hint(hint),
-                scope=_project_capture_scope(scope),
+                scope=None if scope is None else _owned_scope([scope]),
                 **_project_capture_kwargs(scope_kwargs),
             )
         except Exception:  # noqa: BLE001 - includes the SDK's post-capture read
@@ -1105,6 +1358,7 @@ class CredentialLoggingBoundary(Integration):
     @staticmethod
     def setup_once() -> None:
         _install_capture_boundary()
+        _install_scope_merge()
         _install_record_dispatch()
         _install_exception_capture()
         _install_sdk_carriers()
@@ -1160,7 +1414,7 @@ def _install_exception_capture() -> None:
             return previous(
                 self,
                 cast("Any", _safe_exception_info(error)),
-                scope=_project_capture_scope(scope),
+                scope=None if scope is None else _owned_scope([scope]),
                 **_project_capture_kwargs(scope_kwargs),
             )
         except Exception:  # noqa: BLE001 - never render a failing capture
@@ -1291,9 +1545,8 @@ def _install_sdk_carriers() -> None:
                 return
             source = _plain_storage(log)
             source["attributes"] = _project_mapping(source.get("attributes", {}))
-            owned_scope = _project_capture_scope(scope)
-            if owned_scope is not None:
-                previous_log(self, cast("Log", project_structure(source)), owned_scope)
+            owned_scope = _capture_scope(scope)
+            previous_log(self, cast("Log", project_structure(source)), owned_scope)
         except Exception:  # noqa: BLE001 - no carrier enters SDK telemetry rendering
             return
 
@@ -1307,6 +1560,12 @@ def _install_sdk_carriers() -> None:
             previous_breadcrumb(self, crumb, hint, **kwargs)
             return
         try:
+            # The SDK appends, measures and counts through these two containers.
+            if (
+                type(_scope_slot(self, "_breadcrumbs")) is not deque
+                or type(_scope_slot(self, "_n_breadcrumbs_truncated")) is not int
+            ):
+                return
             source = _plain_storage(crumb) if crumb is not None else {}
             source.update(_plain_storage(kwargs))
             previous_breadcrumb(
