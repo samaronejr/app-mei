@@ -833,3 +833,38 @@ def test_the_database_refuses_another_writer_while_the_owners_session_lives(
     assert session.result(timeout=25) == "closed"
     overwrite(world, query.pk)
     assert stored(world, query.pk).failure_code == "sobrescrito"
+
+
+def test_a_stale_runner_behind_a_dead_owners_applied_page_leaves_it_to_resume(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given B waits at page 1's reservation, A applied page 1 and died before
+    # page 2, and A's lease has run out: A is really gone this time.
+    query = scheduled_query(world)
+    stale, dead = Stop(), Stop(at=2, dies=True)
+    stop_at(monkeypatch, "reserve", late=stale, owner=dead)
+    world.script(page(darfs(100)), page(darfs(1, start=100)))
+    pool, late = runner("late", lambda: run(query))
+    try:
+        assert stale.entered.wait(timeout=10)
+        owner_pool, first = runner("owner", lambda: run(query))
+        assert dead.entered.wait(timeout=10)
+        with pytest.raises(WorkerDiedError):
+            first.result(timeout=25)
+        owner_pool.shutdown(wait=True)
+        lease_runs_out(world, query.pk)
+        before = untouched(world, query.pk)
+        # When B resumes behind the applied page.
+        stale.release.set()
+        # Then it takes nothing: page 1 was settled and is never settled again.
+        assert late.result(timeout=25) == "em_andamento"
+        assert untouched(world, query.pk) == before
+    finally:
+        stale.release.set()
+        pool.shutdown(wait=True)
+    # And the next delivery resumes at page 2.
+    assert run(query) == "encontrado"
+    view = settled(world, query.pk)
+    assert view["query"][:4] == ("encontrado", "", 2, 101)  # type: ignore[index]
+    assert view["requests"] == 2
+    assert world.offsets() == [0, 100]
