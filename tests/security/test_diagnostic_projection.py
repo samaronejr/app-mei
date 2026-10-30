@@ -8,6 +8,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
+from pathlib import Path
 from types import FunctionType
 from typing import TYPE_CHECKING, NoReturn
 from uuid import UUID
@@ -231,10 +232,14 @@ def test_the_sdk_celery_ingress_preserves_declared_exception_policy(
 
 
 def test_production_console_is_inert_without_a_sentry_dsn() -> None:
+    # The probe runs as a module of the repository, never from the caller's path.
+    root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        ["./.venv/bin/python", "tests/security/inert_import_probe.py"],
+        [sys.executable, "-m", "tests.security.inert_import_probe"],
+        cwd=root,
         env={
             **os.environ,
+            "PYTHONPATH": str(root),
             "DJANGO_SETTINGS_MODULE": "config.settings.prod",
             "SENTRY_DSN": "",
         },
