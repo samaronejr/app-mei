@@ -31,6 +31,14 @@ GUARD_STEPS: Final = (
 )
 SUITE_STEP: Final = "Tests with coverage"
 CEILING_MINUTES: Final = 75
+TIMING_STEP: Final = "Timing budgets without coverage"
+# Wall-clock budgets measure the code only without coverage tracing and xdist load.
+TIMING_TESTS: Final = (
+    (
+        "tests/integrations/test_privacy_scan.py::"
+        "test_repetitive_known_value_scan_completes_under_one_second"
+    ),
+)
 
 
 def load_workflow() -> dict[Any, Any]:
@@ -138,6 +146,24 @@ def test_both_jobs_gate_the_deploy_under_the_unchanged_ceiling() -> None:
     }
     assert jobs[GROUP_JOB]["timeout-minutes"] == CEILING_MINUTES
     assert jobs[REST_JOB]["timeout-minutes"] == CEILING_MINUTES
+
+
+def test_timing_budgets_run_once_and_never_under_coverage() -> None:
+    jobs = load_workflow()["jobs"]
+    for job in (GROUP_JOB, REST_JOB):
+        arguments = suite_arguments(jobs[job])
+        deselected = [
+            arguments[index + 1]
+            for index, argument in enumerate(arguments)
+            if argument == "--deselect"
+        ]
+        assert deselected == list(TIMING_TESTS), job
+    timing = shlex.split(step(jobs[GROUP_JOB], TIMING_STEP)["run"])
+
+    assert timing[:3] == ["uv", "run", "pytest"]
+    assert [a for a in timing[3:] if not a.startswith("-")] == list(TIMING_TESTS)
+    assert not [a for a in timing if a.startswith(("--cov", "-n", "--numprocesses"))]
+    assert TIMING_STEP not in [s.get("name") for s in jobs[REST_JOB]["steps"]]
 
 
 def test_each_job_uploads_its_own_coverage_artifact() -> None:
