@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -260,9 +262,12 @@ def test_a_breadcrumb_is_scrubbed_before_its_known_values_leave_scope(
 def test_a_private_stack_rename_does_not_crash_settings_import() -> None:
     # Given a fresh interpreter in which Celery's private stack name is unavailable.
     # When settings import, console output and the real SDK all run.
+    # The probe runs as a module of the repository, never from the caller's path.
+    root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        ["./.venv/bin/python", "tests/security/redaction_import_probe.py"],
-        cwd=Path(__file__).resolve().parents[2],
+        [sys.executable, "-m", "tests.security.redaction_import_probe"],
+        cwd=root,
+        env={**os.environ, "PYTHONPATH": str(root)},
         capture_output=True,
         text=True,
         check=False,
