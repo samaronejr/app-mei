@@ -9,8 +9,10 @@ import sys
 from collections import deque
 from collections.abc import Mapping
 from contextlib import suppress
+from contextvars import ContextVar
+from datetime import datetime
 from functools import partial
-from types import TracebackType
+from types import MemberDescriptorType, TracebackType
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 from weakref import ref
@@ -25,18 +27,21 @@ from django.core.handlers.wsgi import WSGIRequest
 from django.http import HttpRequest
 from django.urls import Resolver404, resolve
 from sentry_sdk import logger as sdk_logger
+from sentry_sdk import metrics as sentry_metrics
 from sentry_sdk import scope as sentry_scope
 from sentry_sdk import utils as sentry_utils
+from sentry_sdk.consts import DEFAULT_MAX_BREADCRUMBS
 from sentry_sdk.integrations import Integration
 from sentry_sdk.integrations import celery as sentry_celery
 from sentry_sdk.integrations import logging as sentry_logging
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.profiler.transaction_profiler import Profile
 from sentry_sdk.scope import ScopeType
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 from sentry_sdk.session import Session
-from sentry_sdk.tracing import Span, Transaction
+from sentry_sdk.tracing import Span, Transaction, _SpanRecorder
 from sentry_sdk.tracing_utils import Baggage, PropagationContext, has_tracing_enabled
 from sentry_sdk.types import Breadcrumb, BreadcrumbHint, Event, Hint, Log
 from sentry_sdk.utils import format_attribute
@@ -1248,6 +1253,216 @@ def _capture_scope(scope: object) -> sentry_sdk.Scope:
     return _owned_scope([scope])
 
 
+# What Span.finish, Transaction.finish and the span JSON, trace context and
+# sampling baggage they build read from a span (sentry_sdk/tracing.py and
+# tracing_utils.py). The SDK tests, compares or formats these values before any
+# capture boundary runs, so each is replaced by its inert projection first.
+_SPAN_VALUES: Final = (
+    "_trace_id",
+    "_span_id",
+    "parent_span_id",
+    "same_process_as_parent",
+    "sampled",
+    "op",
+    "description",
+    "status",
+    "origin",
+    "start_timestamp",
+    "timestamp",
+    "_start_timestamp_monotonic_ns",
+)
+_SPAN_MAPPINGS: Final = ("_tags", "_data", "_flags", "_measurements")
+_TRANSACTION_VALUES: Final = ("name", "source", "sample_rate", "_sample_rand")
+_TRANSACTION_MAPPINGS: Final = ("_contexts",)
+
+
+def _finish_value(value: object) -> object:
+    """A value the SDK may test, compare or format at finish, made inert."""
+    kind = type(value)
+    if (
+        value is None
+        or kind is str
+        or kind is bool
+        or kind is int
+        or kind is float
+        or kind is datetime
+    ):
+        return value
+    return project_structure(value)
+
+
+def _finish_time(value: object) -> object:
+    """An end timestamp the SDK can use without calling it; anything else refuses."""
+    kind = type(value)
+    if value is None or kind is float or kind is int or kind is datetime:
+        return value
+    raise TypeError
+
+
+def _finish_baggage(value: object) -> Baggage | None:
+    """Sampling baggage copied as projections, so the SDK reads no carrier."""
+    if value is None:
+        return None
+    if type(value) is not Baggage:
+        raise TypeError
+    return Baggage(
+        _project_mapping(Baggage.__dict__["sentry_items"].__get__(value)),
+        third_party_items=str(
+            project_structure(Baggage.__dict__["third_party_items"].__get__(value))
+        ),
+        mutable=Baggage.__dict__["mutable"].__get__(value) is True,
+    )
+
+
+def _member(kind: type, name: str) -> MemberDescriptorType:
+    """The slot descriptor that the SDK's own attribute access resolves."""
+    return cast(
+        "MemberDescriptorType",
+        next(base.__dict__[name] for base in kind.__mro__ if name in base.__dict__),
+    )
+
+
+_SPAN_FIELDS: Final = (
+    *((_member(Span, name), _finish_value) for name in _SPAN_VALUES),
+    *((_member(Span, name), _project_mapping) for name in _SPAN_MAPPINGS),
+)
+_TRANSACTION_FIELDS: Final = (
+    *(
+        (_member(Transaction, name), _finish_value)
+        for name in (*_SPAN_VALUES, *_TRANSACTION_VALUES)
+    ),
+    *(
+        (_member(Transaction, name), _project_mapping)
+        for name in (*_SPAN_MAPPINGS, *_TRANSACTION_MAPPINGS)
+    ),
+    (_member(Transaction, "_baggage"), _finish_baggage),
+)
+_SPAN_TIMESTAMP: Final = Span.__dict__["timestamp"]
+_SPAN_SCOPE: Final = Span.__dict__["scope"]
+_SPAN_PARENT: Final = Span.__dict__["_containing_transaction"]
+_TRANSACTION_LABELS: Final = (
+    Transaction.__dict__["name"],
+    Transaction.__dict__["source"],
+)
+_SPAN_RECORDER: Final = Span.__dict__["_span_recorder"]
+_TRANSACTION_PROFILE: Final = Transaction.__dict__["_profile"]
+
+
+def _span_fields(
+    span: object,
+) -> "tuple[tuple[MemberDescriptorType, Callable[[object], object]], ...]":
+    if type(span) is Span:
+        return _SPAN_FIELDS
+    if type(span) is Transaction:
+        return _TRANSACTION_FIELDS
+    raise TypeError
+
+
+def _own_span(span: object) -> None:
+    """Replace what the SDK reads from a finishing span with inert projections.
+
+    Native values stay as they are; anything else becomes the projection the
+    capture boundary would send. A slot the SDK never set stays unset.
+    """
+    for slot, own in _span_fields(span):
+        try:
+            value = slot.__get__(span)
+        except AttributeError:
+            continue
+        slot.__set__(span, own(value))
+
+
+def _own_parent_labels(span: object) -> None:
+    """A child's end makes its transaction active again, testing these two.
+
+    Span.__exit__ runs Scope.span's setter right after this finish.
+    """
+    parent = _SPAN_PARENT.__get__(span)
+    if type(parent) is Transaction:
+        for slot in _TRANSACTION_LABELS:
+            slot.__set__(parent, _finish_value(slot.__get__(parent)))
+
+
+def _own_transaction(transaction: Transaction) -> None:
+    """A finishing transaction and every finished span the SDK serializes with it.
+
+    The SDK reads only the timestamp of a recorded span that has not finished.
+    """
+    profile = _TRANSACTION_PROFILE.__get__(transaction)
+    recorder = _SPAN_RECORDER.__get__(transaction)
+    if profile is not None and type(profile) is not Profile:
+        raise TypeError
+    spans: list[object] = []
+    if recorder is not None:
+        if type(recorder) is not _SpanRecorder:
+            raise TypeError
+        recorded = _SpanRecorder.__dict__["spans"].__get__(recorder)
+        dropped = _SpanRecorder.__dict__["dropped_spans"].__get__(recorder)
+        if type(recorded) is not list or type(dropped) is not int:
+            raise TypeError
+        spans = list.copy(recorded)
+    if any(type(span) is not Span and type(span) is not Transaction for span in spans):
+        raise TypeError
+    _own_span(transaction)
+    for span in spans:
+        if _SPAN_TIMESTAMP.__get__(span) is not None:
+            _own_span(span)
+
+
+def _finish_scopes(
+    span: object, scope: object
+) -> tuple[sentry_sdk.Scope | None, sentry_sdk.Scope]:
+    """The scope the SDK would finish a span on, and the owned scope it reads.
+
+    Span.finish uses the given scope or the current one, and Transaction.finish
+    also its own. The SDK reads only the conversation id there, adds the span's
+    breadcrumbs to it and captures a transaction through it. An ambient scope is
+    merged as itself at capture, so the SDK gets a fresh scope; any other is
+    copied as projections, like an explicit capture scope, and never written to.
+    """
+    if scope is None and type(span) is Transaction:
+        scope = _SPAN_SCOPE.__get__(span)
+    if scope is None:
+        scope = sentry_sdk.get_current_scope()
+    conversation = _scope_slot(scope, "_gen_ai_conversation_id")
+    ambient = (
+        scope is sentry_scope._current_scope.get()  # noqa: SLF001
+        or scope is sentry_scope._isolation_scope.get()  # noqa: SLF001
+    )
+    owned = sentry_sdk.Scope() if ambient else _owned_scope([scope])
+    _SCOPE_SLOTS["_gen_ai_conversation_id"].__set__(
+        owned, conversation if type(conversation) is str else None
+    )
+    return (cast("sentry_sdk.Scope", scope) if ambient else None), owned
+
+
+def _keep_span_breadcrumbs(
+    owned: sentry_sdk.Scope, target: sentry_sdk.Scope | None
+) -> None:
+    """Keep the span's breadcrumbs on the ambient scope the SDK finished it on.
+
+    The SDK built them on the owned scope, through before_breadcrumb; the target
+    retains them under the SDK's limit, as Scope.add_breadcrumb would.
+    """
+    if target is None:
+        return
+    made = list(
+        deque.__iter__(cast("deque[object]", _scope_slot(owned, "_breadcrumbs")))
+    )
+    crumbs = _scope_slot(target, "_breadcrumbs")
+    count = _scope_slot(target, "_n_breadcrumbs_truncated")
+    if not made or type(crumbs) is not deque or type(count) is not int:
+        return
+    crumbs.extend(made)
+    limit = sentry_sdk.get_client().options.get(
+        "max_breadcrumbs", DEFAULT_MAX_BREADCRUMBS
+    )
+    while len(crumbs) > limit:
+        crumbs.popleft()
+        count += 1
+    _SCOPE_SLOTS["_n_breadcrumbs_truncated"].__set__(target, count)
+
+
 def _install_scope_merge() -> None:
     previous = sentry_sdk.Scope._merge_scopes  # noqa: SLF001 - every capture merges here
     previous_copy = sentry_sdk.Scope.__copy__
@@ -1291,6 +1506,94 @@ def _install_scope_merge() -> None:
 
     type.__setattr__(sentry_sdk.Scope, "_merge_scopes", merge_scopes)
     type.__setattr__(sentry_sdk.Scope, "__copy__", copy_scope)
+
+
+# The owned scope a transaction's own finish hands to Span.finish through super().
+_FINISHING: Final[ContextVar[sentry_sdk.Scope | None]] = ContextVar(
+    "axrm011_finishing_scope", default=None
+)
+
+
+def _install_trace_finish() -> None:
+    previous_span = Span.finish
+    previous_transaction = Transaction.finish
+
+    def finish_span(
+        self: Span,
+        scope: sentry_sdk.Scope | None = None,
+        end_timestamp: float | datetime | None = None,
+    ) -> str | None:
+        if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+            return previous_span(self, scope, end_timestamp)
+        if scope is not None and scope is _FINISHING.get():
+            # Transaction.finish's own super().finish, owned by its wrapper below.
+            return previous_span(self, scope, end_timestamp)
+        try:
+            if _SPAN_TIMESTAMP.__get__(self) is not None:
+                return None
+            target, owned = _finish_scopes(self, scope)
+            end = _finish_time(end_timestamp)
+            _own_span(self)
+            _own_parent_labels(self)
+            previous_span(self, owned, cast("float | datetime | None", end))
+            _keep_span_breadcrumbs(owned, target)
+        except Exception:  # noqa: BLE001 - a span that cannot be owned is not recorded
+            return None
+        return None
+
+    def finish_transaction(
+        self: Transaction,
+        scope: sentry_sdk.Scope | None = None,
+        end_timestamp: float | datetime | None = None,
+        *,
+        hub: object = None,
+    ) -> str | None:
+        if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+            return previous_transaction(
+                self, scope, end_timestamp, hub=cast("Any", hub)
+            )
+        try:
+            # A deprecated Hub is a scope source the boundary does not own.
+            if hub is not None or _SPAN_TIMESTAMP.__get__(self) is not None:
+                return None
+            target, owned = _finish_scopes(self, scope)
+            end = _finish_time(end_timestamp)
+            _own_transaction(self)
+            finishing = _FINISHING.set(owned)
+            try:
+                event_id = previous_transaction(
+                    self, owned, cast("float | datetime | None", end)
+                )
+            finally:
+                _FINISHING.reset(finishing)
+            _keep_span_breadcrumbs(owned, target)
+        except Exception:  # noqa: BLE001 - a transaction that cannot be owned is not sent
+            return None
+        return event_id
+
+    type.__setattr__(Span, "finish", finish_span)
+    type.__setattr__(Transaction, "finish", finish_transaction)
+
+
+def _install_metric_refusal() -> None:
+    previous = sentry_metrics._capture_metric  # noqa: SLF001 - reads attributes first
+
+    def capture_metric(
+        name: str,
+        metric_type: str,
+        value: float,
+        unit: str | None = None,
+        attributes: object = None,
+    ) -> None:
+        if sentry_sdk.get_client().get_integration(CredentialLoggingBoundary) is None:
+            previous(
+                name, cast("Any", metric_type), value, unit, cast("Any", attributes)
+            )
+        # Production turns SDK metrics off and nothing would scrub their attributes.
+        # The SDK formats them before it checks that option, so the boundary
+        # returns before reading any argument.
+
+    sentry_metrics._capture_metric = capture_metric  # noqa: SLF001
 
 
 def _install_capture_boundary() -> None:
@@ -1359,6 +1662,8 @@ class CredentialLoggingBoundary(Integration):
     def setup_once() -> None:
         _install_capture_boundary()
         _install_scope_merge()
+        _install_trace_finish()
+        _install_metric_refusal()
         _install_record_dispatch()
         _install_exception_capture()
         _install_sdk_carriers()
@@ -1745,6 +2050,8 @@ SENTRY_OPTIONS: dict[str, Any] = {
     "before_send_transaction": drop_unscrubbable_event,
     "before_breadcrumb": drop_unscrubbable_breadcrumb,
     "before_send_log": drop_unscrubbable_log,
+    # Nothing scrubs SDK metric attributes, and the application records no metrics.
+    "enable_metrics": False,
 }
 _release = current_release()
 if _release != UNKNOWN_RELEASE:
