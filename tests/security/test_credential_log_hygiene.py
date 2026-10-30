@@ -17,6 +17,7 @@ from django.test import Client, RequestFactory, override_settings
 from django.urls import path
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from sentry_sdk.integrations.celery import CeleryIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.scrubber import EventScrubber
 from sentry_sdk.transport import Transport
 
@@ -161,6 +162,17 @@ def _capture_real_exception_events(
     *,
     hardened: bool,
 ) -> tuple[list[Event], tuple[int, int]]:
+    # The helper's own http.client requests add breadcrumbs to this thread's scope;
+    # they must not outlive it and ride along with a later test's events.
+    with sentry_sdk.isolation_scope(), sentry_sdk.new_scope():
+        return _run_real_exception_events(live_server, hardened=hardened)
+
+
+def _run_real_exception_events(
+    live_server: LiveServer,
+    *,
+    hardened: bool,
+) -> tuple[list[Event], tuple[int, int]]:
     transport = _CaptureTransport()
     options = {
         **prod_settings.SENTRY_OPTIONS,
@@ -173,8 +185,19 @@ def _capture_real_exception_events(
             {
                 "include_local_variables": True,
                 "event_scrubber": EventScrubber(),
+                "integrations": [
+                    integration
+                    for integration in options["integrations"]
+                    if not isinstance(
+                        integration,
+                        (prod_settings.CredentialLoggingBoundary, LoggingIntegration),
+                    )
+                ]
+                + [LoggingIntegration()],
+                "before_breadcrumb": None,
                 "before_send": None,
                 "before_send_transaction": None,
+                "before_send_log": None,
             }
         )
 
@@ -254,9 +277,12 @@ def test_production_console_filter_redacts_credential_request_records() -> None:
     )
 
     assert prod_settings.CredentialURLLogFilter().filter(record) is True
-    rendered = f"{record.getMessage()} {exception}"
+    rendered = logging.Formatter().format(record)
     assert LOG_CANARY not in rendered
     assert rendered.count(prod_settings.SENTRY_REDACTION_MARKER) == 2
+    assert record.exc_info is not None
+    assert record.exc_info[1] is not exception
+    assert exception.args == (f"request failed at {path}",)
     assert prod_settings.LOGGING["handlers"]["console"]["filters"] == [
         "credential_urls",
     ]
@@ -390,6 +416,36 @@ def test_sentry_scrubs_real_exception_events_and_transactions(
     assert SENTRY_RECOVERY_PATH_CANARY not in serialized
     assert SENTRY_RECOVERY_CODE_CANARY not in serialized
     assert prod_settings.SENTRY_REDACTION_MARKER in serialized
+
+
+@override_settings(
+    ROOT_URLCONF=__name__,
+    MIDDLEWARE=["django.middleware.security.SecurityMiddleware"],
+)
+@pytest.mark.django_db(transaction=True)
+def test_real_event_capture_leaves_no_breadcrumbs_on_the_thread_scope(
+    live_server: LiveServer,
+) -> None:
+    # Given the helper's own client-side requests, made on this thread.
+    _capture_real_exception_events(live_server, hardened=True)
+    transport = _CaptureTransport()
+    client = sentry_sdk.Client(dsn=SENTRY_TEST_DSN, transport=transport)
+    # When a later, unrelated event is captured here.
+    with sentry_sdk.isolation_scope() as scope:
+        scope.set_client(client)
+        sentry_sdk.capture_message("later event")
+        client.flush()
+    client.close()
+    # Then nothing from that capture rides along with it.
+    assert transport.events
+    crumbs = [
+        crumb
+        for event in transport.events
+        for crumb in cast("dict[str, Any]", event.get("breadcrumbs") or {}).get(
+            "values", []
+        )
+    ]
+    assert crumbs == []
 
 
 def test_referrer_policy_is_strict_origin_globally() -> None:

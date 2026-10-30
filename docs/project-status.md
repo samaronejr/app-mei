@@ -462,6 +462,266 @@ proof passes. Owned lane `axrm-pg-011fix7`/`axrm-redis-011fix7` is removed with
 an empty receipt. Evidence is under `AXRM-011-fix7-*`. Independent review and
 all activation gates remain open.
 
+`AXRM-011` redaction-scan performance follow-up (review 7 NOTE, fixed before the
+wave-2 merge). The attempt-7 lookahead rescanned a long repetitive alternative at
+every position: 64 KiB took 3.3 s and 256 KiB 52 s. The known-value scan is now
+one Aho-Corasick pass that keeps only merged coverage intervals, so work is linear
+in the text plus the known values and every overlapping or self-overlapping
+occurrence is still covered before `_union()`; 256 KiB takes 0.17 s. Redaction
+semantics within the resource envelope below are unchanged: a frozen copy of the
+`329a98c` redactor is compared
+byte for byte, including a second scrub, on the rv7 range corpus and seeded
+overlapping inputs, and a latency test bounds 256 KiB of repetitive input at one
+second under an exclusive slot. Oversized diagnostics are withheld in full,
+never scanned only up to a private prefix. Mutants of the scan run in an exclusive
+slot. Gate totals,
+mutation results and the lane receipt are in `AXRM-011-perf-gates.txt` and the
+DoneClaim; review and the activation gates remain open.
+
+`AXRM-011` log-filter follow-up. Celery logs every failed task's context under
+`extra["data"]`, a provider-body name, so `CredentialURLLogFilter` hid all of it
+and remembered even its key names as credentials. The known-value scan then
+rewrote the filter's own `exception_arguments` field name and the filter raised
+`KeyError` from inside logging, so any failed task could break its caller, and the
+task name and id were redacted. The filter now scrubs fields as positional pairs,
+withholds a record it cannot scrub instead of raising, and keeps the task name and
+id visible while hiding what the task carried or raised. Sentry's Celery
+integration ignores that logger, so only the console path needed it. Separately, a
+running task's string arguments of eight characters or more become known values
+for the length of the run, so an exception message or breadcrumb that embeds them
+no longer reaches Sentry; a transformed secret is not recognized. The witnesses
+fail on the unmodified filter and every mutant of the new guard is killed.
+Evidence is under `AXRM-011-perf-filter-*` and `AXRM-011-perf-args-red.txt`; gate
+totals are in the DoneClaim.
+
+`AXRM-011` boundary follow-up, fix attempt 4 (2026-10-27). Review 8 replaced
+signal-owned task secrets and partial-record withholding; review 9 still found
+three blockers at `f4d629d`: a directly nested execution inherited its parent's
+request cache, a console-rejected record bypassed filtering through Sentry's
+logging integration, and hostile event mutators raised inside the husk fallback.
+Unmodified reviewer probes reproduce all three before the repair. Request caches
+now carry weak ownership identities, so copying a request cannot copy authority
+to reuse its parent's cache. Parent and child values still compose, and request
+stack removal cleans them up without a signal or a process-global task-ID map.
+The private Celery stack name is resolved at use time; its absence does not break
+settings import and instead withholds console diagnostics and drops SDK events.
+
+Every console and Sentry logging handler now uses the same ingress filter,
+including the SDK's optional Logs handler. A separate production integration
+filters before the SDK's outer `callHandlers` wrapper can inspect a rejected
+record, and contains client-selection and dispatch failures. Unsupported record
+subclasses are rejected rather than passed to an overridable formatter. Standard
+factory defaults are normalized, malformed dispatch fields are withheld, and the
+actual console formatter is checked before a handler can print a formatting
+error. Successful scrubs replace the record mapping from a safe snapshot without
+calling its original mutators. A rejected standard record is permanently marked,
+and event/breadcrumb hints cannot revive it. Plain clients retain their own
+logging policy, including handler exceptions. `before_breadcrumb` scrubs before
+transient known values leave scope. `before_send_log` freezes opaque SDK
+attributes and scrubs their rendered values before the background batcher,
+without hiding an ordinary diagnostic body.
+The raw event scrubber replaces the source from its safe snapshot with unbound
+dict primitives; secondary clear/marker overrides cannot escape, and a withheld
+event cannot become deliverable on a later capture. Events and transactions share
+the fail-closed outgoing callback; the unused transaction wrapper was removed.
+
+Additional real-sink witnesses found that withholding could reintroduce a secret
+as an exception class name or an arbitrary numeric level. Withholding now reads
+none of that metadata: it emits a constant marker at ERROR severity and loses
+the original error class, logger identity and source. Successfully scrubbed
+records retain their diagnostics. Celery's exact success context is recognized
+alongside its failure context, preserving the success task name/ID while hiding
+arguments and the separately returned provider result.
+
+Discovery text and aggregate known-value characters are each bounded at
+512 Ki-characters (bytes count by their input length), before tokenization or trie
+construction. Exceeding either budget withholds the whole console diagnostic or
+SDK event; public rendered-text callers receive only `[Filtered]`.
+The same fresh-process 5 MiB body/echo case peaks at **1,309,884 KiB** before the
+limit and **31,088 KiB** after it. Approved small-input equivalence and the
+256 KiB exclusive latency witness remain separate gates.
+
+Current default collection is **6,800 selected**: **2,101** in CI group 1 and
+**4,699** in group 2; isolation selects **944**, CNPJ **29**. These are collection
+totals, not passing results. Committed-head runs and exits are recorded in
+`.evidence/AXRM-011-fix4-final3-gates.txt` and the rewritten
+`.evidence/AXRM-011-perf-doneclaim.json`. The incomplete inherited `rv9final` log
+is excluded. The corrected breadcrumb helper fails against the actual
+`9f4dd6b` helper with two retained breadcrumbs and passes with scoped capture.
+Mutation reconciliation retains 13 scan mutants plus four resource-budget
+mutants; of the previous 26 filter mutants, the obsolete original-mapping getter
+mutant is retired because withholding no longer reads it, and the remaining
+25 are retargeted alongside 38 new boundary mutants. Every child uses a fresh
+bytecode root and in-memory source loading; source digests must remain unchanged.
+
+Nine additional dispatch/rendering probes failed at `3fd7953`, including SDK
+name introspection after console rejection, invalid standard fields, opaque
+console text and late SDK Log attribute serialization. The expanded precommit
+selection now passes **79 boundary witnesses** and **14 HTTP/logging controls**;
+Ruff, format and mypy pass across **1,152 files**. Compile inventory checks
+**17 scan** and **63 filter** mutants without counting any kills (76 filter
+mutants after the audit below).
+
+The first committed-head privacy/security run at `78eb7bc` reported **615 passed,
+1 failed**: the deliberately unhardened control inherited the newly configured
+`before_breadcrumb` hook, so its planted breadcrumb was scrubbed. The helper now
+explicitly disables all production hooks and uses a plain logging integration
+only for the unhardened client. No control assertion changed. The obsolete
+run and its registered child scope were stopped before editing; its partial
+group-1 run is not a result. All final gates are rerun at the new local head.
+
+An audit at `f825e45` found two more boundary defects (red receipts
+`AXRM-011-fix4s3-red.txt`, `AXRM-011-fix4s3-tests-red.txt`); its final run was
+stopped and none of its stages count. With Sentry active a record passes the
+filter at the dispatch boundary and again at each handler. A credential found
+only in the record's own fields (a `password` extra) was hidden by the first
+pass, but the console handler's pass rendered the live exception again from
+`exc_info`, so a note or an attribute-based `__str__` printed it; Sentry's
+exception value and opaque extras had leaked it before this follow-up as well.
+The values a record is scrubbed with now stay known for its whole dispatch, in
+a context variable read by every later filter pass, the scrubber hook,
+`before_send`, `before_breadcrumb` and `before_send_log`; a record logged during
+the dispatch inherits them, and they end with it. Separately, the scrubber hook
+raised `TypeError` into `capture_event` for a non-dict mapping, and a dict
+subclass could revive a withheld husk because the SDK serializes through the
+carrier's own accessors. The boundary integration now registers an event
+processor that hands every later hook a plain dict read from a subclass's
+storage through `dict.items`, leaves the original holding only the withheld
+marker and refuses other carriers; plain clients keep the SDK's behaviour.
+Check-ins skip processors by SDK design, so the hook leaves a non-dict check-in
+untouched and `before_send` scrubs the serialized copy. Twelve new witnesses
+(eight red at `f825e45`) and 13 new filter mutants cover these guards; three
+existing husk mutants are now witnessed through check-ins, where the hook still
+sees a subclass.
+
+The `29b4ad2` final3 run completed both default groups (**2,093** and **4,648
+passed, 51 skipped**) and all **8** partitioned timing cases: **6,749 passed,
+51 skipped** in total. Isolation passed **893/51**, the privacy/security selection
+**646**, CNPJ **29**, and all **17** scan mutants were killed. The filter campaign
+stopped at an ownerless-request-cache survivor: removing the missing-owner check
+withheld or dropped diagnostics rather than relearning the execution's values.
+Two added real-console/Sentry cases cover copied and constructed ownerless
+caches; both fail on that mutant and pass on the unchanged product source
+(`AXRM-011-fix4-final4-witness.txt`). The four surveyed mutants left behind the
+stop were killed by existing witnesses (`AXRM-011-fix4s3-survey.txt`).
+The final4 evidence reruns the complete scan/filter campaigns and every selection
+containing the new cases; the DoneClaim identifies each byte-identical final3
+stage reused. The filter harness evaluates every mutant before failing on any
+unresolved result, retaining its original application, exit-code, assertion and
+invalid-run criteria.
+
+Residual diagnostic loss is intentional where an argument equals an event schema
+key (`exception`) or the task's own name: exempting those bytes would exempt a
+credential too. The real-sink impact probe records both cases and a normal
+argument control. Transformed or short task secrets are not recognized as known
+values. Nested `delivery_secrets` scopes still replace rather than extend each
+other; that implementation is outside this follow-up's allowed paths.
+Independent review, provider qualification, operator and owner activation gates
+remain open; this repair authorizes no push, merge or activation.
+
+`AXRM-011` boundary follow-up, fix attempt 5 (2026-10-28). Review 10 rejected
+`9aaf0c4`: exception rendering could log a nested record before the outer record's
+credentials reached its dispatch, and check-ins bypassed the event processor
+that owned hostile carriers. A carrier could therefore revive a withheld
+check-in and raise out of the SDK's public capture call.
+
+Raw record, argument and exception-chain discovery now precedes message,
+attribute, stack and exception rendering. Discovery and every nested dispatch
+use the same mutable credential set, including contexts copied before discovery;
+the outer dispatch restores its context when it ends. The structural discovery
+pass is shared with the existing redactor rather than implemented separately.
+Celery's private context values are discovered raw before their rendered forms,
+while the existing task-identity exemption stays in place.
+
+Carrier ownership now precedes both scoped and direct SDK capture, not only
+event processors. Dictionary subclasses are copied through base dictionary
+storage, their originals keep only the withheld marker, and an already withheld
+carrier is refused without calling its accessors. Other mapping carriers are
+refused. Plain check-in dictionaries are copied too, so withholding cannot erase
+the return ID read afterward by the public cron API. Clients without the
+production boundary retain their own capture policy. Patching the locked SDK's
+capture entry points adds upgrade coupling alongside the existing logging guard.
+
+All **47** new real-console/full-SDK witnesses fail during their call phase on
+the complete `9aaf0c4` settings/privacy source, with no setup or teardown errors.
+They pass on this repair in **three** consecutive runs, and **93** inherited
+boundary witnesses pass. The original RV10 attacks, carrier probes and all four
+current comparison cases pass after correcting a local repro-driver entry-point
+error; the first unit's harness exit is not called a passing gate.
+Current default collection is **6,849 selected**: **2,101** in group 1 and
+**4,748** in group 2, including the 47 new witnesses. These are collection counts,
+not default-suite passing results. The final-head ledger is
+`.evidence/AXRM-011-fix5-gates.txt`; no final3/final4 stage is carried forward.
+The complete campaigns contain **17** scan and **85** filter mutants, with
+delayed-sharing, copied-context, nested-dispatch and check-in ownership mutants.
+Final results and owned-container/volume teardown belong to
+`.evidence/AXRM-011-perf-doneclaim.json`. Independent review and all provider,
+operator and activation gates remain open.
+
+`AXRM-011` boundary follow-up, fix attempt 6 (2026-10-28). Review 11 rejected
+`5bd1b2e`: running an application's renderer could emit an unlabelled credential
+from a copied context, a thread, another sink or a stack-local value, and sharing
+the record's credential set could outlive its dispatch. Production diagnostics
+now freeze their inputs instead of running that code. Exact native containers
+are walked without instance checks; opaque values become `<module.Type>`.
+Dictionary carrier storage is read through base dictionary primitives, not
+overridable accessors. No original exception is mutated.
+
+The console record-creation guard is installed without requiring a Sentry DSN.
+The full production SDK paths also project public log parameters and attributes,
+scope attributes, event and breadcrumb carriers, and direct SDK log carriers
+before SDK formatting. Exception conversion reads native args, notes, links,
+group membership, errno and traceback code metadata through builtin descriptors.
+It supplies an inert exception graph and primitive SDK values. Non-exception SDK
+stack snapshots use frames frozen and redacted with the record, rather than
+re-reading live frames after the record's private fields have been removed.
+Raw primitive exception/event text is redacted only after scope fields merge,
+so a later credential crossing a quoted field still receives one complete range
+union. There is no record credential context variable or shared mutable set.
+
+Diagnostic loss is intentional: custom `str`, `repr`, formatting and attribute
+hooks do not supply text. Accessor-only object details disappear; an unsupported
+structural carrier is refused. Custom datetime timezones are omitted without
+calling them, while their wall time remains visible. Exception types, primitive
+arguments and codes, notes, cause/context/group relationships, stable grouping
+and file/line/function frames remain available; frame locals and source text do
+not. Existing malformed control metadata is still withheld at ERROR.
+
+**Accepted gap P3:** Celery core/billiard can render a task exception before
+calling either logging or SDK capture. That earlier rendering can still run
+application code and emit an unlabelled stack-local credential. This repair does
+not patch Celery internals and does not close P3. The gap must remain explicit
+before any real-provider work. The locked Sentry entry-point and conversion
+patches add upgrade coupling and require their real-path canaries on upgrades.
+
+The complete baseline settings/privacy modules produce **386 call-phase
+failures** for the hostile-data witnesses; **12** already-safe invalid-name
+controls remain passing. The initial focused repair selection passed **957** tests, and
+Ruff, format and mypy pass across **1,158 files**. Current default collection is
+**7,264 selected**: **2,101** in group 1 and **5,163** in group 2, including
+**411** new real-sink/projection cases. Collection is not passing-suite evidence.
+The new strict campaigns contain **25 scan** and **89 filter** mutants.
+Twelve obsolete sharing/render-order guards are explicitly retired; new
+mutants restore original-object rendering, unsafe instance dispatch, omitted SDK
+ingress projection, live stack reads and retained credential contexts.
+Every child reports all selected node IDs and call outcomes; incomplete calls,
+setup/teardown/import/thread failures, missing application and timeouts cannot
+count as kills. Final clean-head gates, complete campaign results and owned
+container/volume teardown are recorded under `.evidence/AXRM-011-fix6-*` and
+`.evidence/AXRM-011-doneclaim.json`, with no earlier final stage reused.
+Independent review and all provider, operator and activation gates remain open.
+
+The first full run at `ab24df4` passed its ordinary gates and all 25 scan
+mutants, but only 85 of 89 filter mutants were killed, so it is not a final
+passing run. Two additional real-sink witnesses cover malformed scrub field
+counts and a raw credential template whose percent interpolation changes the
+labelled value while leaving an unlabelled original echo. The two hinted-record
+mutants now disable both the early capture rejection and the equivalent later
+hook, rather than being masked by the earlier guard. Their existing public-path
+witnesses remain unchanged. The complete 939-call targeted baseline passes and
+all four former survivors are killed with no invalid children. No mutant was
+retired to resolve these survivors; fresh full-head verification is still required.
+
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.
 The collecting red now fails on assertions (**22 failed, 2 passed**, exit 1),
