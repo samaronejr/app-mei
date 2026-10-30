@@ -686,23 +686,28 @@ def test_sdk_trace_objects_holding_application_values_are_read_natively(
             finally:
                 isolation._propagation_context = saved
         else:
-            with (
-                sentry_sdk.start_transaction(name="fix8-trace-holder") as started,
-                sentry_sdk.start_span(op="fix8.holder") as span,
-            ):
-                transaction = cast("Transaction", started)
-                span.status = text("ok")
-                span.description = text("ordinary")
-                transaction.name = text("fix8-trace-holder")
-                transaction._baggage = Baggage(items, mutable=False)
-                try:
+            try:
+                with (
+                    sentry_sdk.start_transaction(name="fix8-trace-holder") as started,
+                    sentry_sdk.start_span(op="fix8.holder") as span,
+                ):
+                    transaction = cast("Transaction", started)
+                    span.status = text("ok")
+                    span.description = text("ordinary")
+                    transaction.name = text("fix8-trace-holder")
+                    transaction._baggage = Baggage(items, mutable=False)
                     _hostile_trace_captures(wire, logger)
-                finally:
-                    span.status = "ok"
-                    span.description = "ordinary"
-                    transaction.name = "fix8-trace-holder"
-                    transaction._baggage = None
+                    # The planted values stay in place while the span and the
+                    # transaction finish and the transaction is captured.
+                    wire.armed = True
+            finally:
+                wire.armed = False
             expected = transaction.trace_id
+            assert [
+                event["transaction"]
+                for event in transport.events
+                if event.get("type") == "transaction"
+            ] == ["fix8-trace-holder"]
         _assert_clean(stream, client, transport, wire.calls)
         assert {OUTER + " message", OUTER + " exception"} <= _messages(transport)
         assert {
