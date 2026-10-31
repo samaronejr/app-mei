@@ -39,6 +39,7 @@ from apps.cycles.services.cycle import open_cycle
 from apps.delivery.models import MessageState, OutboundMessage
 from apps.delivery.notice_authority import NoticeOrigin, bind_notice, lock_notice_scope
 from apps.delivery.policy import content_digest
+from apps.integrations.models import IntegrationIssue
 from apps.obligations.models import (
     Document,
     Obligation,
@@ -196,6 +197,13 @@ def provider_graph(
             verdict=ScanVerdict.CLEAN,
             scanned_at=NOW,
         )
+        issue = IntegrationIssue.objects.create(
+            tenant=setup.tenant,
+            client=setup.client,
+            reason="consulta_pagamentos_falhou",
+            owner=setup.actor,
+            review_on=NOW.date(),
+        )
         assert_fact(
             tenant_id=setup.tenant.pk,
             client_id=setup.client.pk,
@@ -234,6 +242,7 @@ def provider_graph(
             "approval": proposal.pk,
             "delivery": message.pk,
             "document": intake.pk,
+            "integration": issue.pk,
             "coverage": setup.engagement.pk,
         },
         proposal,

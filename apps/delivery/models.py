@@ -171,6 +171,10 @@ class AutomationPause(TenantScopedModel):
     reminder_cursor = models.UUIDField(null=True, blank=True)
     # A partial request resumes after this contact before the request cursor moves.
     reminder_contact_cursor = models.UUIDField(null=True, blank=True)
+    # AXRM-018: the last client each monthly federal sweep finished for this firm.
+    # A run takes the next 20 after it (wrapping), so no client is starved.
+    federal_sitfis_cursor = models.UUIDField(null=True, blank=True)
+    federal_payments_cursor = models.UUIDField(null=True, blank=True)
 
     class Meta(TenantScopedModel.Meta):
         """One dispatcher coordination row per firm."""

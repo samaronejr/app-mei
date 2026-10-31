@@ -106,4 +106,4 @@ def test_each_provider_excludes_an_unassigned_client_in_the_same_tenant() -> Non
     assert {item.kind for item in page.items} == set(own.subjects)
     assert {item.client_id for item in page.items} == {setup.client.pk}
     assert all(count.total == 1 for count in page.counts)
-    assert sum(count.total for count in page.counts) == page.total == 7
+    assert sum(count.total for count in page.counts) == page.total == 8

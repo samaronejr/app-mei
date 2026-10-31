@@ -47,7 +47,7 @@ def test_one_failed_provider_preserves_other_scoped_sources(
 
     assert page.failed_providers == ("delivery",)
     assert {item.kind for item in page.items} == set(graph.subjects) - {"delivery"}
-    assert page.total == 6
+    assert page.total == 7
     assert "delivery" not in {count.kind for count in page.counts}
 
 
@@ -61,7 +61,7 @@ def test_coverage_failure_preserves_the_other_six_sources(
         page = queries.briefing(setup.actor, scope="team", filters=BriefingFilters())
 
     assert page.failed_providers == ("coverage",)
-    assert page.total == 6
+    assert page.total == 7
     assert all(item.kind != "coverage" for item in page.items)
 
 

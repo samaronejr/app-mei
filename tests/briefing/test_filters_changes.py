@@ -22,22 +22,25 @@ ALL_KINDS = {
     "approval",
     "delivery",
     "document",
+    "integration",
     "coverage",
 }
+# An integration issue carries no service line, regime or competence month.
+SERVICE_AND_PERIOD_ITEMS = ALL_KINDS - {"integration"}
 
 
 @pytest.mark.parametrize(
     ("filters", "expected"),
     [
-        (BriefingFilters(service="mei_mensal"), ALL_KINDS),
+        (BriefingFilters(service="mei_mensal"), SERVICE_AND_PERIOD_ITEMS),
         (BriefingFilters(service="documentos_mensal"), set()),
-        (BriefingFilters(regime="mei"), ALL_KINDS),
+        (BriefingFilters(regime="mei"), SERVICE_AND_PERIOD_ITEMS),
         (BriefingFilters(regime="simples"), set()),
         (BriefingFilters(uf="SP"), ALL_KINDS),
         (BriefingFilters(uf="RJ"), set()),
         (BriefingFilters(municipality="3550308"), ALL_KINDS),
         (BriefingFilters(municipality="3304557"), set()),
-        (BriefingFilters(period=date(2026, 9, 1)), ALL_KINDS),
+        (BriefingFilters(period=date(2026, 9, 1)), SERVICE_AND_PERIOD_ITEMS),
         (BriefingFilters(period=date(2026, 10, 1)), set()),
         (BriefingFilters(work_state="due"), {"obligation"}),
         (BriefingFilters(risk_reason="request_overdue"), {"request"}),
@@ -70,7 +73,7 @@ def test_personal_queue_and_responsible_filter_follow_the_live_owner() -> None:
         ClientAssignment.objects.create(
             tenant=setup.tenant, client=setup.client, user=setup.staff
         )
-        assert briefing(setup.staff, scope="team", filters=BriefingFilters()).total == 7
+        assert briefing(setup.staff, scope="team", filters=BriefingFilters()).total == 8
         assert briefing(setup.staff, scope="me", filters=BriefingFilters()).total == 0
         ServiceCycle.objects.filter(pk=graph.cycle.pk).update(owner=setup.staff)
         Engagement.objects.filter(pk=setup.engagement.pk).update(

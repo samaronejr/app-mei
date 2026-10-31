@@ -89,8 +89,9 @@ def test_hoje_keeps_the_budget_when_every_provider_has_items(
         "approval": 1,
         "delivery": 1,
         "document": 1,
+        "integration": 1,
         "coverage": 2,
     }
-    assert page.total == 1_007
+    assert page.total == 1_008
     assert page.failed_providers == ()
     assert len(page.items) == 50

@@ -25,7 +25,7 @@ def test_each_users_feedback_changes_only_their_items_and_counts() -> None:
         )
         initial = briefing(setup.actor, scope="team", filters=BriefingFilters())
         colleague = briefing(setup.staff, scope="team", filters=BriefingFilters())
-        assert initial.total == colleague.total == 7
+        assert initial.total == colleague.total == 8
         obligation = next(item for item in initial.items if item.kind == "obligation")
         delivery = next(item for item in colleague.items if item.kind == "delivery")
         dismiss(
@@ -63,7 +63,7 @@ def test_each_users_feedback_changes_only_their_items_and_counts() -> None:
         assert {row.kind: row.total for row in staff_page.counts} == expected | {
             "delivery": 0,
         }
-        assert owner_page.total == staff_page.total == 6
+        assert owner_page.total == staff_page.total == 7
 
         Obligation.objects.filter(pk=obligation.subject_ref).update(
             resolved_due_date=NOW.date() + timedelta(days=1)
@@ -73,9 +73,9 @@ def test_each_users_feedback_changes_only_their_items_and_counts() -> None:
             setup.staff, scope="team", filters=BriefingFilters()
         )
 
-    assert resurfaced.total == 7
+    assert resurfaced.total == 8
     assert {row.kind: row.total for row in resurfaced.counts} == expected
-    assert unchanged_colleague.total == 6
+    assert unchanged_colleague.total == 7
     assert {row.kind: row.total for row in unchanged_colleague.counts} == expected | {
         "delivery": 0,
     }
