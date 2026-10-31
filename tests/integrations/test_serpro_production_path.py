@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from apps.integrations.serpro.adapter import Parties, SerproAdapter, build_reque
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
 from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.integrations.serpro.qualification import SyntheticTermo, synthetic_termo
+from apps.integrations.serpro.termo import TermoInvalidoError
 from apps.integrations.serpro.termo_state import termo_head
 from apps.integrations.serpro.work import PROC_MISSING, own_firm_condition
 from apps.integrations.transport import ProviderTransport
@@ -63,6 +65,8 @@ from tests.integrations.serpro_support import FIRM, broker_module
 pytestmark = pytest.mark.django_db(transaction=True)
 
 RECOVERED_PROCURADOR = "synthetic-procurador-recovered-013"
+OTHER_FIRM = "11444777000161"
+OTHER_PROCURADOR = "synthetic-procurador-other-firm-013"
 DATA: JSONValue = {"periodoApuracao": "202610"}
 DAS_REPLY = Reply(body=b'{"status":200,"mensagens":[],"dados":"{}"}')
 
@@ -402,3 +406,63 @@ def test_client_calls_need_this_connections_termo_in_force(
             production.call("after-expiry")
         # Then only the termo itself ever reached SERPRO.
         assert [request.path for request in gateway.requests] == ["/Apoiar"]
+
+
+def test_client_call_cannot_use_another_firms_broker_tokens(
+    production: Production,
+) -> None:
+    # Given another firm's procurador token held in the same broker's memory.
+    production.broker.store_procurador(OTHER_FIRM, OTHER_PROCURADOR, time.time() + 3600)
+    with FakeSerpro((termo_reply(PROCURADOR), DAS_REPLY)) as gateway:
+        production.route(gateway.origin)
+        # And this tenant's own signed termo, which names its own firm, in force.
+        assert production.submit().state == "sucesso"
+        # When a caller builds a client call that names the other firm.
+        parties = Parties(
+            production.world.parties.contratante,
+            OTHER_FIRM,
+            production.world.client.cnpj,
+        )
+        wire = build_request("SP-DAS", parties, DATA)
+        identity = sha256(b"other-firm").hexdigest()
+        row = reserve(
+            production.world.tenant.pk,
+            production.link.pk,
+            CallRequest("SP-DAS", identity, sha256(wire.body).hexdigest(), identity),
+        )
+        ticket = claim(production.world.tenant.pk, row.pk)
+        assert ticket is not None
+        result = perform(
+            ticket,
+            SerproAdapter(ProviderTransport("serpro", "producao"), parties, DATA),
+        )
+        paths = [request.path for request in gateway.requests]
+    # Then nothing left under the other firm's identity or with its token.
+    assert paths == ["/Apoiar"]
+    assert (result.state, result.provider_code) == ("incerta", "escritorio_divergente")
+    assert production.broker.procurador_for(FIRM) == PROCURADOR
+
+
+def test_termo_cannot_file_a_token_under_a_firm_it_does_not_name(
+    production: Production,
+) -> None:
+    with FakeSerpro((termo_reply(PROCURADOR),)) as gateway:
+        production.route(gateway.origin)
+        # When a caller submits this tenant's signed termo as another firm.
+        with pytest.raises(TermoInvalidoError):
+            submit_termo(
+                production.world.actor,
+                production.world.tenant.pk,
+                TermoSubmission(
+                    production.world.connection.pk,
+                    production.world.document.pk,
+                    production.version(),
+                    Parties(
+                        production.world.parties.contratante, OTHER_FIRM, OTHER_FIRM
+                    ),
+                ),
+            )
+        # Then nothing was sent and no firm's broker partition holds a token.
+        assert gateway.requests == []
+    assert production.broker.procurador_for(OTHER_FIRM) == ""
+    assert production.broker.procurador_for(FIRM) == ""

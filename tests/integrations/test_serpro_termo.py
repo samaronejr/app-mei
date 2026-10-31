@@ -3,7 +3,7 @@
 import base64
 import hashlib
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 from xml.etree.ElementTree import Element
@@ -21,8 +21,15 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake, IntakeState, ScanVerdict
 from apps.cycles.openers import TENANT_EVALUATORS, evaluate_tenant_exceptions
 from apps.integrations.call_models import FirmProviderCall
-from apps.integrations.firm_calls import firm_claim
+from apps.integrations.firm_calls import (
+    FirmAdapter,
+    FirmClaim,
+    firm_claim,
+    firm_perform,
+)
 from apps.integrations.models import ClientProviderLink, FirmAuthorization
+from apps.integrations.serpro import authorization
+from apps.integrations.serpro.adapter import SerproAdapter
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
 from apps.integrations.serpro.codec import Parties
 from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
@@ -45,7 +52,6 @@ from apps.integrations.serpro.work import (
     own_firm_condition,
 )
 from apps.integrations.services import IntegrationConflictError
-from apps.integrations.transport_types import TransportFailure
 from apps.obligations.models import AcquisitionOrigin, Document
 from apps.tenants.models import Membership, TenantRole
 from tests.fakes.provider import Reply
@@ -343,14 +349,17 @@ def test_malformed_successful_termo_is_owned_without_another_submission(
     # Given a complete 200 without the promised token or expiration fields.
     malformed = Reply(body=b'{"status":200,"mensagens":[],"dados":"{}"}')
     with FakeSerpro((malformed, accepted())) as peer:
-        # When the normal signed-termo service cannot complete domain acceptance.
-        with pytest.raises(TransportFailure) as failure:
-            submit(world, peer.origin)
-        assert failure.value.code == "resposta_termo_invalida"
+        # When the normal signed-termo service cannot complete domain acceptance,
+        # then the unresolved outcome is returned; nothing raises once it is final.
+        assert submit(world, peer.origin) == "incerta"
         assert len(peer.requests) == 1
     # Then its unresolved outcome is owned, never accepted or automatically resent.
     with tenant_context(world.tenant.pk):
         call = FirmProviderCall.objects.get()
+        assert (call.state, call.provider_code) == (
+            "incerta",
+            "resposta_termo_invalida",
+        )
         assert not FirmAuthorization.objects.filter(status="aceito").exists()
         issues = list(FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES))
         assert len(issues) == 1
@@ -358,6 +367,113 @@ def test_malformed_successful_termo_is_owned_without_another_submission(
         assert (issue.reason, issue.owner_id) == (UNCERTAIN, world.actor.pk)
         assert issue.connection_id == world.connection.pk
         assert issue.evidence_refs == [str(call.pk)]
+    assert firm_claim(world.tenant.pk, call.pk) is None
+
+
+def issued(dados: object) -> Reply:
+    return Reply(
+        body=json.dumps({"status": 200, "mensagens": [], "dados": dados}).encode()
+    )
+
+
+def with_expiry(expiry: str, value: str = SYNTHETIC_PROCURADOR) -> Reply:
+    return issued(
+        json.dumps(
+            {"autenticar_procurador_token": value, "data_hora_expiracao": expiry}
+        )
+    )
+
+
+def cached(*headers: tuple[str, str]) -> Reply:
+    return Reply(status=304, body=b"", headers=headers)
+
+
+ETAG = ("etag", f'"autenticar_procurador_token:{SYNTHETIC_PROCURADOR}"')
+UNUSABLE = {
+    "dados-array": issued("[]"),
+    "dados-null": issued(None),
+    "token-not-a-token": with_expiry("2027-01-01T00:00:00", value="not a token!"),
+    "expiry-garbage": with_expiry("amanha"),
+    "body-not-json": Reply(body=b"<html>ok</html>"),
+    "304-without-etag": cached(("expires", "Fri, 01 Jan 2027 00:00:00 GMT")),
+    "expiry-beyond-datetime-range": with_expiry("9999-12-31T23:59:59-03:00"),
+    "expiry-before-datetime-range": with_expiry("0001-01-01T00:00:00+14:00"),
+    "304-expires-beyond-datetime-range": cached(
+        ETAG, ("expires", "Fri, 31 Dec 9999 23:59:59 -0300")
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(UNUSABLE))
+def test_unusable_complete_termo_success_is_owned_and_returned(
+    world: SyntheticTermo, name: str
+) -> None:
+    # Given a complete reply whose token or expiry cannot be used or represented.
+    with FakeSerpro((UNUSABLE[name], accepted())) as peer:
+        # When it is submitted, then the unresolved outcome is returned, not raised.
+        assert submit(world, peer.origin) == "incerta"
+        assert len(peer.requests) == 1
+    # Then it was never accepted, and it is owned firm work naming the call.
+    with tenant_context(world.tenant.pk):
+        call = FirmProviderCall.objects.get()
+        assert (call.state, call.provider_code) == (
+            "incerta",
+            "resposta_termo_invalida",
+        )
+        assert not FirmAuthorization.objects.filter(status="aceito").exists()
+        owned = FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES)
+        assert [(i.reason, i.owner_id, i.evidence_refs) for i in owned] == [
+            (UNCERTAIN, world.actor.pk, [str(call.pk)])
+        ]
+    assert firm_claim(world.tenant.pk, call.pk) is None
+
+
+def test_latest_representable_expiry_is_accepted_up_to_the_signed_vigencia(
+    world: SyntheticTermo,
+) -> None:
+    # Given a token valid until the last representable UTC second.
+    with FakeSerpro((with_expiry("9999-12-31T20:59:59-03:00"),)) as peer:
+        assert submit(world, peer.origin) == "sucesso"
+    # Then the signed termo's own vigencia bounds the accepted validity.
+    with tenant_context(world.tenant.pk):
+        head = termo_head(world.connection.pk)
+        assert head is not None
+        assert (head.status, head.valid_until) == (
+            "aceito",
+            timezone.localdate() + timedelta(days=365),
+        )
+
+
+@pytest.mark.parametrize("age", ["an-hour-ago", "2020-01-01"])
+def test_already_expired_termo_success_is_owned_as_expired_not_accepted(
+    world: SyntheticTermo, age: str
+) -> None:
+    # Given open firm work for the missing authorization.
+    with tenant_context(world.tenant.pk):
+        own_firm_condition(world.connection, PROC_MISSING, [])
+    expiry = (
+        (timezone.now() - timedelta(hours=1)).astimezone(UTC).isoformat()
+        if age == "an-hour-ago"
+        else "2020-01-01T00:00:00"
+    )
+    with FakeSerpro((with_expiry(expiry), accepted())) as peer:
+        # When SERPRO answers with a token that has already expired.
+        assert submit(world, peer.origin) == "falhou"
+        assert len(peer.requests) == 1
+    # Then it is recorded expired, not in force, and the firm work stays open.
+    with tenant_context(world.tenant.pk):
+        call = FirmProviderCall.objects.get()
+        assert (call.state, call.http_status, call.provider_code) == (
+            "falhou",
+            200,
+            "termo_expirado",
+        )
+        head = termo_head(world.connection.pk)
+        assert head is not None
+        assert head.status == "expirado"
+        assert not FirmAuthorization.objects.filter(status="aceito").exists()
+        assert not termo_in_force(world.connection.pk, timezone.localdate())
+    assert active_issues(world) == [PROC_MISSING]
     assert firm_claim(world.tenant.pk, call.pk) is None
 
 
@@ -420,3 +536,69 @@ def test_daily_sweep_owns_a_missing_or_expired_termo_for_a_connection_in_use(
     assert active_issues(world) == []
     sweep(world, expiry + timedelta(days=1))
     assert active_issues(world) == [PROC_MISSING]
+
+
+class CrashError(Exception):
+    """The worker process dying at a chosen point of a termo submission."""
+
+
+@pytest.mark.parametrize(
+    "case", ["after-final", "renewal-after-final", "renewal-interrupted-send"]
+)
+def test_daily_sweep_owns_a_submission_that_reached_serpro_but_never_settled(
+    world: SyntheticTermo, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    today = timezone.localdate()
+    renewal = case.startswith("renewal")
+    with FakeSerpro((accepted(expiry=today + timedelta(days=10)), accepted())) as peer:
+        if renewal:
+            # Given a termo in force for a connection a client uses.
+            assert submit(world, peer.origin) == "sucesso"
+            with tenant_context(world.tenant.pk):
+                ClientProviderLink.objects.create(
+                    tenant=world.tenant,
+                    client=world.client,
+                    connection=world.connection,
+                    provider_company_ref="synthetic-renewal",
+                    status="ativa",
+                )
+        # When the worker dies after the reply is final, or during the send,
+        # before the submission's outcome is settled.
+        if case.endswith("after-final"):
+
+            def perform_then_die(ticket: FirmClaim, adapter: FirmAdapter) -> None:
+                firm_perform(ticket, adapter)
+                raise CrashError
+
+            monkeypatch.setattr(authorization, "firm_perform", perform_then_die)
+        else:
+
+            def die(*_args: object) -> None:
+                raise CrashError
+
+            monkeypatch.setattr(SerproAdapter, "send", die)
+        with pytest.raises(CrashError):
+            submit(world, peer.origin, version=2 if renewal else 1)
+        assert len(peer.requests) == (2 if case == "renewal-after-final" else 1)
+    with tenant_context(world.tenant.pk):
+        stuck = FirmProviderCall.objects.order_by("-authorization__submitted_at")[0]
+        if case == "renewal-interrupted-send":
+            assert stuck.state == "despacho_iniciado"
+            # The lease the dead worker held runs out.
+            FirmProviderCall.objects.filter(pk=stuck.pk).update(
+                lease_until=timezone.now() - timedelta(seconds=1)
+            )
+        else:
+            assert stuck.state == "sucesso"
+        assert termo_in_force(world.connection.pk, today) is renewal
+    assert active_issues(world) == []
+    # Then the daily sweep owns it once, even while an older termo stays in force.
+    sweep(world, today)
+    sweep(world, today)
+    with tenant_context(world.tenant.pk):
+        owned = FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES)
+        assert [(i.reason, i.evidence_refs) for i in owned] == [
+            (UNCERTAIN, [str(stuck.pk)])
+        ]
+        assert termo_in_force(world.connection.pk, today) is renewal
+    assert firm_claim(world.tenant.pk, stuck.pk) is None
