@@ -34,7 +34,7 @@ from apps.integrations.models import (
 )
 from apps.integrations.serpro import tasks
 from apps.integrations.serpro.models import PaymentQuery
-from apps.obligations.models import SchedulerHeartbeat
+from apps.obligations.models import FederalPayment, SchedulerHeartbeat
 from apps.tenants.models import Tenant
 from tests.integrations import pagtoweb_support as pagto
 from tests.integrations.pagtoweb_support import World, page, world
@@ -381,10 +381,24 @@ def test_five_clients_with_authority_get_five_consultations(
 ) -> None:
     add_clients(world, 2, mei=True)
     add_clients(world, 2, mei=False)
-    world.script(page([pagto.item("DAS000000000010")]), *[page([]) for _ in range(4)])
+    das = "DAS000000000010"
+    world.script(
+        page([pagto.item(das), *pagto.darfs(1)]), *[page([]) for _ in range(4)]
+    )
     assert fire(DAY) == 5
     assert paid(world) == 5
     assert len(states(world)) == 5
+    # The MEI DAS payment is matched to its obligation; the DARF is only listed.
+    with tenant_context(world.termo.tenant.pk):
+        stored = {
+            row.numero_documento: row
+            for row in FederalPayment.objects.filter(client_id=world.termo.client.pk)
+        }
+    assert len(stored) == 2
+    assert stored[das].matched_obligation_id == world.obligation.pk
+    assert all(
+        row.matched_obligation_id is None for n, row in stored.items() if n != das
+    )
     beat = stamp()
     assert beat is not None
     assert beat.last_success_at is not None

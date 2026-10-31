@@ -7,10 +7,11 @@ what was queued, so no provider byte is involved in the scheduling decision.
 
 import importlib
 import importlib.util
-from datetime import date
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pytest
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
@@ -19,14 +20,27 @@ from apps.integrations.authority import head_record, revoke_authority
 from apps.integrations.serpro import sitfis_tasks, tasks
 from apps.obligations.models import FiscalSituationReport, SchedulerHeartbeat
 from apps.tenants.models import Tenant
-from tests.integrations.sitfis_support import Clock, World, clock, world
+from tests.integrations.sitfis_support import Clock, World, world
 
-__all__ = ["clock", "world"]
+__all__ = ["world"]
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
 DAY = date(2026, 10, 15)
 SITFIS = "schedule_situation_reports"
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    """A fixed mid-month clock, replacing the shared one for these tests.
+
+    The shared fixture starts an hour after the real time, which on the last UTC
+    hours of a month lands in the next month, where the firm budget window (opened
+    by local date) and the firm-call reservation (read by UTC date) disagree.
+    """
+    current = Clock(datetime(2026, 10, 15, 15, 0, tzinfo=UTC))
+    monkeypatch.setattr(timezone, "now", current.now)
+    return current
 
 
 @pytest.fixture

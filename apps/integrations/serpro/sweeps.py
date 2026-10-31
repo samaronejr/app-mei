@@ -204,14 +204,12 @@ def report_candidates(today: date) -> QuerySet[ClientCompany]:
 def _pick(
     tenant_id: UUID, field: str, candidates: Callable[[], QuerySet[ClientCompany]]
 ) -> tuple[UUID, list[ClientCompany]]:
-    """The firm's next turn: CLIENT_LIMIT clients after its cursor, wrapping."""
+    """Pick the firm's next CLIENT_LIMIT clients after its cursor, wrapping."""
     control, _ = AutomationPause.objects.get_or_create(tenant_id=tenant_id)
     cursor = getattr(control, field)
     # Built here: a scoped queryset binds the tenant it is created under.
     ordered = candidates().order_by("pk")
-    picked = list(
-        (ordered.filter(pk__gt=cursor) if cursor else ordered)[:CLIENT_LIMIT]
-    )
+    picked = list((ordered.filter(pk__gt=cursor) if cursor else ordered)[:CLIENT_LIMIT])
     if cursor and len(picked) < CLIENT_LIMIT:
         picked += list(ordered.filter(pk__lte=cursor)[: CLIENT_LIMIT - len(picked)])
     return control.pk, picked
