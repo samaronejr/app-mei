@@ -113,6 +113,10 @@ def client_workspace(
             "authority_panel": authority_panel(
                 request.user, workspace.client, timezone.localdate()
             ),
+            # AXRM-015: the Receita Federal section loads from its own endpoint.
+            "federal_payments_enabled": tenant_has(
+                workspace.client.tenant_id, "federal_checks"
+            ),
         },
         status=status,
     )

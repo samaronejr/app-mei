@@ -33,6 +33,8 @@ NONE_TABLES = (
     "obligations_fiscalsituationreport",
     "integrations_firmintegrationissue",
     "integrations_firmproviderreservation",
+    "integrations_paymentquery",
+    "integrations_paymentpage",
     "cycles_federalreportreview",
 )
 

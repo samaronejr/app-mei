@@ -571,6 +571,11 @@ class IssueReason(models.TextChoices):
         "autorizacao_procurador_ausente",
         "Autorizacao do procurador ausente",
     )
+    # AXRM-015: a PAGTOWEB consultation ended incomplete, failed or uncertain.
+    CONSULTA_PAGAMENTOS_FALHOU = (
+        "consulta_pagamentos_falhou",
+        "Consulta de pagamentos na Receita falhou",
+    )
     # AXRM-016: a SITFIS report ended without being obtained (A7.3 alternatives).
     SITUACAO_FISCAL_NAO_OBTIDA = (
         "situacao_fiscal_nao_obtida",
