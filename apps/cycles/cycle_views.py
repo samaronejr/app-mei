@@ -354,6 +354,7 @@ def _render_detail(
             "das_guide": guide_panel(
                 cycle,
                 allowed=reads.allowed,
+                profile=reads.profile,
                 requests=reads.requests,
                 links=reads.links,
             ),

@@ -33,8 +33,7 @@ from django.utils import timezone
 from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.services import can
-from apps.clients.models import TaxProfile
-from apps.clients.services import claim_at, profile_at
+from apps.clients.services import profile_at
 from apps.core.flags import tenant_has
 from apps.core.retention import RetentionClass
 from apps.core.tasks import assert_no_transaction
@@ -112,6 +111,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from apps.accounts.models import User
+    from apps.clients.models import TaxProfile
     from apps.integrations.call_dispatch import Dispatch
     from apps.tenants.models import Tenant
 
@@ -865,12 +865,14 @@ def guide_panel(
     cycle: ServiceCycle,
     *,
     allowed: frozenset[str],
+    profile: TaxProfile | None,
     requests: Sequence[EvidenceRequest],
     links: Sequence[EvidenceLink],
 ) -> dict[str, object] | None:
     """Context for the cycle page's guide section, from reads the page already holds.
 
-    One query at most (the regime at the competence); the service re-checks every
+    No query of its own: the regime comes from the page's coverage read (None when
+    the engagement does not cover the competence). The service re-checks every
     gate, including the SERPRO link and the termo, when the action runs.
     """
     if cycle.engagement.service_kind != "mei_mensal" or not tenant_has(
@@ -882,12 +884,8 @@ def guide_panel(
         reason = "sem_permissao"
     elif cycle.state not in OPEN_STATES:
         reason = "ciclo_encerrado"
-    else:
-        profile = claim_at(
-            TaxProfile.objects.filter(client_id=cycle.client_id), cycle.period_start
-        )
-        if profile is None or profile.regime != "mei":
-            reason = "nao_mei"
+    elif profile is None or profile.regime != "mei":
+        reason = "nao_mei"
     guide_requests = {
         row.pk
         for row in requests

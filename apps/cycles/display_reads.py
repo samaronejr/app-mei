@@ -99,6 +99,8 @@ class CycleDetailReads:
     obligations: tuple[Obligation, ...]
     observations: tuple[SourceObservation, ...]
     coverage: tuple[CoverageItem, ...]
+    # AXRM-017: the regime claim at the competence, already read for coverage.
+    profile: TaxProfile | None
     recipients: tuple[RecipientPreview, ...]
     allowed: frozenset[str]
     valid_waivers: frozenset[UUID]
@@ -155,12 +157,12 @@ def _coverage(
     cycle: ServiceCycle,
     obligations: tuple[Obligation, ...],
     observations: tuple[SourceObservation, ...],
-) -> tuple[CoverageItem, ...]:
+) -> tuple[tuple[CoverageItem, ...], TaxProfile | None]:
     engagement = cycle.engagement
     if engagement.starts_on > cycle.period_start or (
         engagement.ends_on is not None and engagement.ends_on <= cycle.period_start
     ):
-        return ()
+        return (), None
     profile = claim_at(
         list(TaxProfile.objects.filter(client_id=cycle.client_id)), cycle.period_start
     )
@@ -180,7 +182,7 @@ def _coverage(
             rows,
             timezone.now(),
         ),
-    )
+    ), profile
 
 
 def load_cycle_detail(actor: "User", cycle_id: UUID) -> CycleDetailReads:
@@ -231,6 +233,7 @@ def load_cycle_detail(actor: "User", cycle_id: UUID) -> CycleDetailReads:
             client_id=cycle.client_id,
         ).order_by("observed_at", "pk")
     )
+    coverage, profile = _coverage(cycle, obligations, observations)
     reads = CycleDetailReads(
         cycle=cycle,
         steps=tuple(cycle.playbook_version.steps.all()),
@@ -251,7 +254,8 @@ def load_cycle_detail(actor: "User", cycle_id: UUID) -> CycleDetailReads:
         else (),
         obligations=obligations,
         observations=observations,
-        coverage=_coverage(cycle, obligations, observations),
+        coverage=coverage,
+        profile=profile,
         recipients=display_recipients(cycle.client),
         allowed=frozenset(
             slug for slug, level in levels.items() if level == GrantLevel.FULL
