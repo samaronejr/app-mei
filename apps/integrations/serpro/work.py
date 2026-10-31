@@ -16,7 +16,12 @@ from apps.cycles.services.exceptions import ExceptionReason
 from apps.integrations.authority import Problem, raise_problem
 from apps.integrations.call_contracts import Claim
 from apps.integrations.call_models import CallState, FirmProviderCall, ProviderCall
-from apps.integrations.models import ClientProviderLink, ProviderConnection
+from apps.integrations.models import (
+    ClientProviderLink,
+    FirmAuthorization,
+    FirmAuthorizationStatus,
+    ProviderConnection,
+)
 from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.integrations.serpro.termo_state import termo_head, termo_in_force
 from apps.tenants.models import Tenant
@@ -24,6 +29,15 @@ from apps.tenants.models import Tenant
 AUTH_FAILED: Final = "autenticacao_serpro_recusada"
 PROC_MISSING: Final = "autorizacao_procurador_ausente"
 UNCERTAIN: Final = "chamada_provedor_incerta"
+IN_FLIGHT: Final = frozenset(
+    {
+        CallState.QUEUED,
+        CallState.RESERVED,
+        CallState.CLAIMED,
+        CallState.STARTED,
+        CallState.RETRY,
+    }
+)
 REASONS: Final = {
     AUTH_FAILED: ExceptionReason(
         "Confira as credenciais do SERPRO. A segunda recusa de autenticacao "
@@ -145,6 +159,56 @@ def own_firm_result(call: FirmProviderCall) -> None:
     _converge(call.tenant_id, call.connection_id, reason, [str(call.pk)], call)
 
 
+def _settled(submission: FirmAuthorization) -> bool:
+    return (
+        FirmAuthorization.objects.filter(
+            signed_document_id=submission.signed_document_id,
+            submitted_at=submission.submitted_at,
+        )
+        .exclude(status=FirmAuthorizationStatus.ENVIADO)
+        .exists()
+    )
+
+
+def _own_unsettled_submission(connection: ProviderConnection) -> None:
+    """Own every termo submission that reached SERPRO but never settled.
+
+    `termo_head` ignores `enviado` rows, so a submission whose call is final, or
+    whose dead worker's lease ran out, would otherwise stay unowned, even while an
+    older termo keeps the connection in force. Only a call that began dispatch
+    (`attempts > 0`) counts: one never sent has no reply to own, and a later retry
+    refused or abandoned before its first byte must not hide an earlier one that
+    was sent. A submission older than the latest settled outcome is superseded:
+    its reply can no longer change which termo is in force.
+    """
+    calls = (
+        FirmProviderCall.objects.filter(connection=connection, attempts__gt=0)
+        .select_related("authorization")
+        .order_by("authorization__submitted_at", "pk")
+    )
+    head = termo_head(connection.pk)
+    if head is not None:
+        calls = calls.filter(authorization__submitted_at__gte=head.submitted_at)
+    now = timezone.now()
+    unsettled = [
+        call
+        for call in calls
+        if not (
+            call.state in IN_FLIGHT
+            and (call.lease_until is None or call.lease_until > now)
+        )
+        and not _settled(call.authorization)
+    ]
+    if unsettled:
+        _converge(
+            connection.tenant_id,
+            connection.pk,
+            UNCERTAIN,
+            [str(call.pk) for call in unsettled],
+            unsettled[0],
+        )
+
+
 def evaluate_termo_conditions(tenant: Tenant, today: date) -> None:
     """Own a missing, refused or expired termo on each live SERPRO connection in use."""
     if not tenant_has(tenant.pk, "federal_checks"):
@@ -156,6 +220,7 @@ def evaluate_termo_conditions(tenant: Tenant, today: date) -> None:
         status="ativa",
     ).order_by("pk")
     for connection in connections:
+        _own_unsettled_submission(connection)
         in_use = ClientProviderLink.objects.filter(
             connection=connection, status="ativa", disablement_state="ativa"
         ).exists()

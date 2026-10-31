@@ -44,6 +44,8 @@ class BrokerSettings(TypedDict):
 class BrokerInstance(Protocol):
     def procurador_for(self, firm_cnpj: str) -> str: ...
 
+    def store_procurador(self, firm: str, value: str, expires_at: float) -> None: ...
+
 
 def oauth_reply(access: str = ACCESS) -> bytes:
     return json.dumps(

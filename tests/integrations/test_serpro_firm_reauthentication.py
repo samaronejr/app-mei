@@ -1,5 +1,7 @@
 """Firm termo submissions receive the same single definitive-401 exception."""
 
+import json
+
 import pytest
 
 from apps.core.tenancy import tenant_context
@@ -18,6 +20,21 @@ from tests.integrations.test_firm_termo_journal import reserve, termo, termo_req
 
 pytestmark = pytest.mark.django_db(transaction=True)
 __all__ = ["termo"]
+# A complete termo success carries a usable token; one without it is unresolved.
+ISSUED = Reply(
+    body=json.dumps(
+        {
+            "status": 200,
+            "mensagens": [],
+            "dados": json.dumps(
+                {
+                    "autenticar_procurador_token": "synthetic-retry-procurador",
+                    "data_hora_expiracao": "2099-12-31T00:00:00",
+                }
+            ),
+        }
+    ).encode()
+)
 
 
 @pytest.mark.parametrize(("second", "state"), [(200, "sucesso"), (401, "falhou")])
@@ -32,7 +49,8 @@ def test_firm_401_retry_is_fresh_bounded_and_clientless(
     row = reserve(termo, termo_request(body=wire.body.decode()))
     ticket = firm_claim(termo.tenant_id, row.pk)
     assert ticket is not None
-    with FakeSerpro((Reply(status=401), Reply(status=second), Reply())) as peer:
+    reply = ISSUED if second == 200 else Reply(status=second)
+    with FakeSerpro((Reply(status=401), reply, Reply())) as peer:
         adapter = module.SerproAdapter(
             ProviderTransport("serpro", "fake", peer.origin),
             parties,

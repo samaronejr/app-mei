@@ -174,9 +174,10 @@ def test_extras_named_like_the_filters_bookkeeping_survive_scrubbing() -> None:
     assert record.__dict__["exception_arguments"] == ["kept-unchanged"]
     assert record.levelname == "WARNING"
     assert record.exc_info is not None
-    rendered = f"{record.getMessage()} {record.exc_text} {exception}"
+    rendered = f"{record.getMessage()} {record.exc_text} {record.exc_info[1]}"
     assert all(canary not in rendered for canary in CANARIES)
     assert MARKER in rendered
+    assert exception.args == (EXC_CANARY,)
 
 
 def test_task_context_from_another_logger_stays_hidden_whole() -> None:
