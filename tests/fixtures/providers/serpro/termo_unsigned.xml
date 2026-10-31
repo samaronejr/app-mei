@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic parties and notices; structure pinned from the official model, 2026-10-25.
+     Real drafts require the firm's current official authorization, LGPD and purpose texts. -->
+<termoDeAutorizacao>
+  <dados>
+    <sistema id="API Integra Contador"/>
+    <termo texto="Autorizacao sintetica para teste local, sem validade juridica."/>
+    <avisoLegal texto="Somente dados ficticios; nenhum contribuinte real e consultado."/>
+    <finalidade texto="Qualificar o formato da integracao simulada, sem conceder poderes reais."/>
+    <dataAssinatura data="20261025"/>
+    <vigencia data="20271025"/>
+    <destinatario numero="12345678000195" nome="Contratante sintetico" tipo="PJ" papel="contratante"/>
+    <assinadoPor numero="11222333000181" nome="Escritorio sintetico" tipo="PJ" papel="autor pedido de dados"/>
+  </dados>
+</termoDeAutorizacao>

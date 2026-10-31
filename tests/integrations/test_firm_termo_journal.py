@@ -149,7 +149,9 @@ def restore_before_submission() -> None:
         try:
             cursor.execute(
                 "TRUNCATE integrations_firmprovidercallattempt, "
-                "integrations_firmprovidercall"
+                "integrations_firmprovidercall, "
+                "integrations_firmintegrationissue, "
+                "integrations_firmproviderreservation"
             )
         finally:
             cursor.execute("SET ROLE app_runtime")

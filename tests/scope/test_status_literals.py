@@ -150,6 +150,11 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         '.select_related("owner", "engagement__responsible")',
     ): "AXRM-010: ORM cycle owner relation for the quota exception owner chain.",
     LiteralPin(
+        "apps/integrations/authority.py",
+        "owner",
+        '"owner": owner,',
+    ): "AXRM-013 B2: ORM issue owner field in creation defaults, not a role literal.",
+    LiteralPin(
         "apps/cycles/records.py",
         "blocked",
         'BLOCKED = "blocked", "Bloqueada"',

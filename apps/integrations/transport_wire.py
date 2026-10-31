@@ -29,7 +29,7 @@ SITFIS_TIMEOUT: Final = 60.0
 XML_LIMIT: Final = 5 * 1024 * 1024
 PDF_LIMIT: Final = 10 * 1024 * 1024
 SAFE_HEADERS: Final = frozenset(
-    {"content-type", "x-max-version", "x-total-count", "retry-after"}
+    {"content-type", "x-max-version", "x-total-count", "retry-after", "etag", "expires"}
 )
 
 

@@ -96,7 +96,7 @@ class ProviderResponse:
 
     status: int
     body: bytes = field(repr=False)
-    headers: tuple[tuple[str, str], ...] = ()
+    headers: tuple[tuple[str, str], ...] = field(default=(), repr=False)
 
     def json(self) -> JSONValue:
         """Parse only already-bounded bytes, without echoing invalid contents."""
