@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -26,7 +27,13 @@ from apps.integrations.serpro.codec import (
     build_request,
     parse_response,
 )
-from apps.integrations.serpro.termo_response import parse_termo_response
+from apps.integrations.serpro.termo import (
+    TermoInvalidoError,
+    read_signed_termo,
+    stored_termo,
+)
+from apps.integrations.serpro.termo_response import TermoToken, parse_termo_response
+from apps.integrations.serpro.termo_state import termo_head
 from apps.integrations.serpro.work import PROC_MISSING, own_firm_condition
 from apps.integrations.services import IntegrationConflictError
 from apps.integrations.token_broker import TokenBrokerClient
@@ -58,6 +65,7 @@ __all__ = [
 FREE: Final = frozenset({"SP-TERMO", "SP-SIT-P"})
 PROC_DENIED: Final = "AcessoNegado-ICGERENCIADOR-016"
 COMPLETE_401: Final = "serpro_401"
+TERMO_EXPIRED: Final = "termo_expirado"
 # Every way the nested termo re-submission can refuse before or during its send.
 RECOVERY_REFUSALS: Final = (
     TransportFailure,
@@ -128,6 +136,8 @@ class SerproAdapter:
         self.parties = parties
         self.data = data
         self.response: ProviderResponse | None = None
+        # Set only for a termo success whose token is usable; see `_termo_outcome`.
+        self.termo: TermoToken | None = None
 
     def _request(self, dispatch: Dispatch | FirmDispatch) -> ProviderRequest:
         operation = dispatch.receipt.operation
@@ -147,9 +157,28 @@ class SerproAdapter:
                 connection_id = link.connection_id
         return replace(request, headers=self._headers(dispatch, connection_id))
 
+    def _bind_firm(self, tenant_id: UUID, connection_id: UUID) -> None:
+        """Key broker tokens only by the firm this tenant's own signed termo names.
+
+        The caller's `Parties` cannot choose another firm's broker partition: the
+        stored termo governing this connection must name the same firm (INV-R1).
+        """
+        with tenant_context(tenant_id):
+            head = termo_head(connection_id)
+            document = None if head is None else head.signed_document
+        code = "escritorio_divergente"
+        if document is None:
+            raise TransportFailure(code)
+        try:
+            read_signed_termo(stored_termo(document), self.parties)
+        except TermoInvalidoError:
+            raise TransportFailure(code) from None
+
     def _production_tokens(
         self, dispatch: Dispatch | FirmDispatch, connection_id: UUID | None
     ) -> BrokerTokens:
+        if connection_id is not None:
+            self._bind_firm(dispatch.claim.tenant_id, connection_id)
         client = TokenBrokerClient(os.environ.get("SERPRO_BROKER_SECRET", ""))
         tokens = client.tokens(
             self.parties.firm, refresh=dispatch.receipt.attempt_number > 1
@@ -214,10 +243,36 @@ class SerproAdapter:
     def send(self, dispatch: Dispatch | FirmDispatch) -> CallResult:
         """Get per-attempt credentials, then consume exactly one issued wire permit."""
         self.response = None
+        self.termo = None
         try:
             self.response = self.transport.send(
                 dispatch.receipt.operation, self._request(dispatch)
             )
-            return classify(dispatch.receipt.operation, self.response)
+            result = classify(dispatch.receipt.operation, self.response)
         except TransportFailure as error:
             return error.result()
+        if (
+            dispatch.receipt.operation == "SP-TERMO"
+            and result.state == CallState.SUCCESS
+        ):
+            return self._termo_outcome(result, self.response)
+        return result
+
+    def _termo_outcome(
+        self, result: CallResult, response: ProviderResponse
+    ) -> CallResult:
+        """Decide a termo success before it is final: usable, expired or unresolved.
+
+        Nothing after finalization can then fail on the reply: an unusable token or
+        expiry is an owned `incerta` registration, never accepted or resent, and an
+        already expired token is a failed authorization, never an accepted one.
+        """
+        try:
+            token = parse_termo_response(response)
+        except TransportFailure:
+            code = "resposta_termo_invalida"
+            return replace(result, state=CallState.UNCERTAIN, provider_code=code)
+        if token.expires_at <= time.time():
+            return replace(result, state=CallState.FAILED, provider_code=TERMO_EXPIRED)
+        self.termo = token
+        return result

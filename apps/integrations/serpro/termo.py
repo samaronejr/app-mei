@@ -1,18 +1,23 @@
 """Unsigned XML generation and safe inspection; signing never happens in Axorim."""
 
 import base64
+import hashlib
 import re
 from dataclasses import dataclass
 from datetime import date
 from html import escape
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from xml.etree.ElementTree import Element
 
 from defusedxml import ElementTree
 from defusedxml.common import DefusedXmlException
+from django.core.files.storage import default_storage
 
 from apps.integrations.serpro.codec import Parties
 from apps.integrations.transport_types import JSONValue
+
+if TYPE_CHECKING:
+    from apps.obligations.models import Document
 
 MAX_XML: Final = 5 * 1024 * 1024
 SIGNATURE_NS: Final = "http://www.w3.org/2000/09/xmldsig#"
@@ -143,6 +148,15 @@ def _check_signature(root: Element) -> None:
         if value is None or not value.text:
             raise TermoInvalidoError
         base64.b64decode("".join(value.text.split()), validate=True)
+
+
+def stored_termo(document: "Document") -> bytes:
+    """Read a scanned signed termo's stored bytes, refusing a changed artifact."""
+    with default_storage.open(document.storage_key, "rb") as source:
+        raw: bytes = source.read(MAX_XML + 1)
+    if hashlib.sha256(raw).hexdigest() != document.sha256:
+        raise TermoInvalidoError
+    return raw
 
 
 def read_signed_termo(raw: bytes, parties: Parties) -> SignedTermo:

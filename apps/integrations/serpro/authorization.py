@@ -3,13 +3,12 @@
 import base64
 import hashlib
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from http import HTTPStatus
 from uuid import UUID
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
-from django.core.files.storage import default_storage
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -33,7 +32,12 @@ from apps.integrations.models import (
     FirmAuthorizationStatus,
     ProviderConnection,
 )
-from apps.integrations.serpro.adapter import Parties, SerproAdapter, build_request
+from apps.integrations.serpro.adapter import (
+    TERMO_EXPIRED,
+    Parties,
+    SerproAdapter,
+    build_request,
+)
 from apps.integrations.serpro.broker_handoff import store_procurador
 from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.integrations.serpro.registration import (
@@ -42,12 +46,11 @@ from apps.integrations.serpro.registration import (
     scanned_private_document,
 )
 from apps.integrations.serpro.termo import (
-    MAX_XML,
     TermoInvalidoError,
     read_signed_termo,
+    stored_termo,
 )
-from apps.integrations.serpro.termo_response import parse_termo_response
-from apps.integrations.serpro.work import PROC_MISSING, UNCERTAIN, own_firm_condition
+from apps.integrations.serpro.work import PROC_MISSING, own_firm_condition
 from apps.integrations.services import STALE_MESSAGE, IntegrationConflictError
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import Environment, JSONValue, TransportFailure
@@ -110,10 +113,7 @@ def _prepare(
             or not tenant_row_has(tenant, "federal_checks")
         ):
             raise AdmissionDeniedError(CallState.PAUSED)
-    with default_storage.open(document.storage_key, "rb") as source:
-        raw = source.read(MAX_XML + 1)
-    if hashlib.sha256(raw).hexdigest() != document.sha256:
-        raise TermoInvalidoError
+    raw = stored_termo(document)
     signed = read_signed_termo(raw, submission.parties)
     if (
         signed.signed_on > timezone.localdate()
@@ -193,7 +193,11 @@ def submit_termo(
         prepared.data,
     )
     result = firm_perform(ticket, adapter)
-    if result.state != CallState.SUCCESS:
+    # The adapter decided the reply before the call became final: only a usable,
+    # unexpired token is a success here, so nothing below can fail on the reply.
+    # A success without one is left `enviado` for the daily sweep to own.
+    token = adapter.termo
+    if result.state != CallState.SUCCESS or token is None:
         if result.state in {CallState.DENIED, CallState.FAILED}:
             with tenant_context(tenant_id):
                 FirmAuthorization.objects.create(
@@ -202,7 +206,11 @@ def submit_termo(
                     signed_document=document,
                     submitted_at=authorization.submitted_at,
                     valid_until=prepared.valid_until,
-                    status=FirmAuthorizationStatus.RECUSADO,
+                    status=(
+                        FirmAuthorizationStatus.EXPIRADO
+                        if result.provider_code == TERMO_EXPIRED
+                        else FirmAuthorizationStatus.RECUSADO
+                    ),
                 )
                 # A second 401 is already owned as autenticacao_serpro_recusada.
                 if result.http_status != HTTPStatus.UNAUTHORIZED:
@@ -212,22 +220,7 @@ def submit_termo(
                         [str(row.pk)],
                     )
         return result
-    if adapter.response is None:
-        raise TermoInvalidoError
-    try:
-        token = parse_termo_response(adapter.response)
-    except TransportFailure:
-        # The HTTP receipt is final, but domain acceptance is still unresolved.
-        with tenant_context(tenant_id):
-            own_firm_condition(
-                ProviderConnection.objects.get(pk=submission.connection_id),
-                UNCERTAIN,
-                [str(row.pk)],
-            )
-        raise
-    valid_until = min(
-        prepared.valid_until, datetime.fromtimestamp(token.expires_at, tz=UTC).date()
-    )
+    valid_until = min(prepared.valid_until, token.expires_on)
     with tenant_context(tenant_id):
         ProviderConnection.objects.select_for_update().get(pk=submission.connection_id)
         accepted = FirmAuthorization.objects.create(

@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from typing import Final
@@ -28,9 +28,11 @@ class TermoToken:
 
     procurador_token: str = field(repr=False)
     expires_at: float
+    # The UTC calendar date of `expires_at`, converted inside the parser's refusals.
+    expires_on: date
 
 
-def _cached(response: ProviderResponse) -> tuple[str, float]:
+def _cached(response: ProviderResponse) -> tuple[str, datetime]:
     headers = {name.lower(): value for name, value in response.headers}
     prefix, separator, value = headers.get("etag", "").strip('"').partition(":")
     if prefix != "autenticar_procurador_token" or not separator:
@@ -40,13 +42,10 @@ def _cached(response: ProviderResponse) -> tuple[str, float]:
         expiry = re.sub(rf"\b{portuguese}\b", english, expiry, flags=re.IGNORECASE)
     if "," in expiry:
         expiry = expiry.split(",", 1)[1].strip()
-    parsed = parsedate_to_datetime(expiry)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return value, parsed.timestamp()
+    return value, parsedate_to_datetime(expiry)
 
 
-def _issued(response: ProviderResponse) -> tuple[str, float]:
+def _issued(response: ProviderResponse) -> tuple[str, datetime]:
     data = parse_response(response).data
     if not isinstance(data, dict):
         raise TypeError
@@ -56,26 +55,30 @@ def _issued(response: ProviderResponse) -> tuple[str, float]:
     )
     if not isinstance(value, str) or not isinstance(expiry, str):
         raise TypeError
-    parsed = datetime.fromisoformat(expiry)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return value, parsed.timestamp()
+    return value, datetime.fromisoformat(expiry)
 
 
 def parse_termo_response(response: ProviderResponse) -> TermoToken:
-    """Read both documented success formats without relying on the process locale."""
+    """Read both documented success formats without relying on the process locale.
+
+    The expiry is converted to UTC here: an instant outside the representable range
+    is an unusable reply, refused like any other, never a later conversion error.
+    """
     code = "resposta_termo_invalida"
     if response.status not in {HTTPStatus.OK, HTTPStatus.NOT_MODIFIED}:
         raise TransportFailure(code, response.status)
     try:
-        value, expires_at = (
+        value, expiry = (
             _cached(response)
             if response.status == HTTPStatus.NOT_MODIFIED
             else _issued(response)
         )
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        moment = expiry.astimezone(UTC)
     except (KeyError, TypeError, ValueError, OverflowError):
         raise TransportFailure(code, response.status) from None
     if TOKEN_PATTERN.fullmatch(value) is None:
         code = "resposta_termo_invalida"
         raise TransportFailure(code, response.status)
-    return TermoToken(value, expires_at)
+    return TermoToken(value, moment.timestamp(), moment.date())
