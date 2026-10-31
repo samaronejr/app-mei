@@ -1231,6 +1231,16 @@ in an unlabelled echo. This round does not change `privacy.py` or
 close independent-review/operator gates. The owner's separately authorized
 AXRM-011 attempt 5 has not been absorbed or independently confirmed here.
 
+#### AXRM-017: official MEI DAS guide (PGMEI)
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-017` | Staff action "Obter guia DAS oficial" on MEI cycles (`das.generate`, flag `federal_checks`, MEI profile at the competence), queued after commit; `GERARDASPDF21` runs through the AXRM-013 adapter, the AXRM-009 phased protocol and an AXRM-010 reservation per item. The reply is decided before finality (one documented `Das` for this taxpayer and period); its PDF is ingested as a private, quarantined `provedor_federal` original before the fenced finalize. Idempotent per client, competence and local consolidation day. The guide is linked by a staff-origin link on a firm-only, non-required "Guia DAS oficial" request (new request state `interno`, kept through review), so the existing publication form offers it; the exact-approved publication releases the approved private original to the client. Production-only verified `guide_issued` fact. Refusals and linking failures open registered owned work (`guia_das_nao_obtida`, `guia_das_nao_vinculada`); ambiguous replies stay AXRM-009 uncertain work; a daily evaluator settles calls a dead worker left unsettled. Bulk variant through the existing preview with a per-item cost line; qualification scenario `pgmei`. No new table (tenant tables unchanged); choice-only migrations `cycles.0021` and `integrations.0007`. | Behind `federal_checks` and `das.generate`, `SERPRO_ENVIRONMENT=fake` by default; never scheduled. Recovery: flag off or `SERPRO_PAUSED`; generated guides stay as private documents; publications follow the R1 withdraw path. PQ-SERPRO-3 and LQ-5 stay open. |
+
+Tests first: `.evidence/AXRM-017-red.txt` at `e44ad90` (44 failing, none on an import
+error). Green runs, committed-head gate totals per stage, the deliberate breaks and
+the QA, adversarial and teardown receipts are recorded in `.evidence/AXRM-017-*`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
