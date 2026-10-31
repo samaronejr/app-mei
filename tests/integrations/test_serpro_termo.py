@@ -20,6 +20,8 @@ from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake, IntakeState, ScanVerdict
 from apps.cycles.openers import TENANT_EVALUATORS, evaluate_tenant_exceptions
+from apps.integrations import firm_calls
+from apps.integrations.call_contracts import AdmissionDeniedError
 from apps.integrations.call_models import FirmProviderCall
 from apps.integrations.firm_calls import (
     FirmAdapter,
@@ -27,7 +29,11 @@ from apps.integrations.firm_calls import (
     firm_claim,
     firm_perform,
 )
-from apps.integrations.models import ClientProviderLink, FirmAuthorization
+from apps.integrations.models import (
+    ClientProviderLink,
+    FirmAuthorization,
+    ProviderConnection,
+)
 from apps.integrations.serpro import authorization
 from apps.integrations.serpro.adapter import SerproAdapter
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
@@ -51,7 +57,10 @@ from apps.integrations.serpro.work import (
     evaluate_termo_conditions,
     own_firm_condition,
 )
-from apps.integrations.services import IntegrationConflictError
+from apps.integrations.services import (
+    IntegrationConflictError,
+    transition_connection_status,
+)
 from apps.obligations.models import AcquisitionOrigin, Document
 from apps.tenants.models import Membership, TenantRole
 from tests.fakes.provider import Reply
@@ -474,6 +483,10 @@ def test_already_expired_termo_success_is_owned_as_expired_not_accepted(
         assert not FirmAuthorization.objects.filter(status="aceito").exists()
         assert not termo_in_force(world.connection.pk, timezone.localdate())
     assert active_issues(world) == [PROC_MISSING]
+    # The expired reply itself owns the work: the issue now names its call.
+    with tenant_context(world.tenant.pk):
+        [issue] = FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES)
+        assert issue.evidence_refs == [str(call.pk)]
     assert firm_claim(world.tenant.pk, call.pk) is None
 
 
@@ -602,3 +615,193 @@ def test_daily_sweep_owns_a_submission_that_reached_serpro_but_never_settled(
         ]
         assert termo_in_force(world.connection.pk, today) is renewal
     assert firm_claim(world.tenant.pk, stuck.pk) is None
+
+
+def connection_version(world: SyntheticTermo) -> int:
+    with tenant_context(world.tenant.pk):
+        return ProviderConnection.objects.get(pk=world.connection.pk).version
+
+
+def set_connection_status(world: SyntheticTermo, to: str) -> None:
+    transition_connection_status(
+        world.tenant.pk,
+        world.connection.pk,
+        to=to,
+        expected_version=connection_version(world),
+    )
+
+
+def use_connection(world: SyntheticTermo) -> None:
+    with tenant_context(world.tenant.pk):
+        ClientProviderLink.objects.create(
+            tenant=world.tenant,
+            client=world.client,
+            connection=world.connection,
+            provider_company_ref="synthetic-retry",
+            status="ativa",
+        )
+
+
+def crash_after_final(world: SyntheticTermo, origin: str) -> None:
+    """Submit once; the reply becomes final and the worker dies before settling."""
+    with pytest.MonkeyPatch.context() as patch:
+
+        def perform_then_die(ticket: FirmClaim, adapter: FirmAdapter) -> None:
+            firm_perform(ticket, adapter)
+            raise CrashError
+
+        patch.setattr(authorization, "firm_perform", perform_then_die)
+        with pytest.raises(CrashError):
+            submit(world, origin, version=connection_version(world))
+
+
+UNSENT_RETRIES = [
+    ("renewal", "paused-at-claim"),
+    ("renewal", "paused-at-dispatch"),
+    ("first-termo", "paused-at-claim"),
+    ("first-termo", "paused-at-dispatch"),
+    ("renewal", "connection-paused-at-claim"),
+    ("renewal", "connection-paused-at-dispatch"),
+    ("renewal", "worker-died-before-dispatch"),
+    ("first-termo", "worker-died-before-dispatch"),
+]
+UNSENT_STATE = {
+    "paused-at-claim": "reservada",
+    "paused-at-dispatch": "pausada",
+    "connection-paused-at-claim": "reservada",
+    "connection-paused-at-dispatch": "pausada",
+    "worker-died-before-dispatch": "reivindicada",
+}
+
+
+def submit_unsent_retry(
+    world: SyntheticTermo,
+    origin: str,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: SettingsWrapper,
+    retry: str,
+) -> None:
+    """Submit a retry that is refused, or whose worker dies, before its first byte."""
+    if retry == "worker-died-before-dispatch":
+
+        def die(*_args: object) -> None:
+            raise CrashError
+
+        monkeypatch.setattr(authorization, "firm_perform", die)
+        with pytest.raises(CrashError):
+            submit(world, origin, version=connection_version(world))
+        return
+
+    def pause() -> None:
+        if retry.startswith("connection"):
+            set_connection_status(world, "pausada")
+        else:
+            settings.SERPRO_PAUSED = True
+
+    if retry.endswith("claim"):
+
+        def claim_after_pause(tenant_id: UUID, call_id: UUID) -> object:
+            pause()
+            return firm_claim(tenant_id, call_id)
+
+        monkeypatch.setattr(authorization, "firm_claim", claim_after_pause)
+    else:
+        begin_io = firm_calls.firm_begin_io
+
+        def begin_after_pause(ticket: FirmClaim) -> object:
+            pause()
+            return begin_io(ticket)
+
+        monkeypatch.setattr(firm_calls, "firm_begin_io", begin_after_pause)
+    with pytest.raises(AdmissionDeniedError):
+        submit(world, origin, version=connection_version(world))
+
+
+@pytest.mark.parametrize(
+    ("start", "retry"), UNSENT_RETRIES, ids=[f"{s}-{r}" for s, r in UNSENT_RETRIES]
+)
+def test_daily_sweep_owns_an_unsettled_submission_behind_a_retry_never_sent(
+    world: SyntheticTermo,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: SettingsWrapper,
+    start: str,
+    retry: str,
+) -> None:
+    today = timezone.localdate()
+    renewal = start == "renewal"
+    replies = (accepted(expiry=today + timedelta(days=10)), accepted(), accepted())
+    with FakeSerpro(replies) as peer:
+        if renewal:
+            # Given a termo in force for a connection a client uses.
+            assert submit(world, peer.origin) == "sucesso"
+            use_connection(world)
+        # When submission A reaches SERPRO and its worker dies before settling it.
+        crash_after_final(world, peer.origin)
+        sends = len(peer.requests)
+        # And the operator's retry B is refused, or its worker dies, before any byte.
+        submit_unsent_retry(world, peer.origin, monkeypatch, settings, retry)
+        assert len(peer.requests) == sends
+    settings.SERPRO_PAUSED = False
+    if retry.startswith("connection"):
+        set_connection_status(world, "ativa")
+    with tenant_context(world.tenant.pk):
+        unsent, stuck = FirmProviderCall.objects.order_by(
+            "-authorization__submitted_at"
+        )[:2]
+        assert (stuck.state, stuck.attempts) == ("sucesso", 1)
+        assert (unsent.state, unsent.attempts) == (UNSENT_STATE[retry], 0)
+        if retry == "worker-died-before-dispatch":
+            # The lease the dead worker held runs out.
+            FirmProviderCall.objects.filter(pk=unsent.pk).update(
+                lease_until=timezone.now() - timedelta(seconds=1)
+            )
+        assert termo_in_force(world.connection.pk, today) is renewal
+    assert active_issues(world) == []
+    # Then the daily sweep owns A once, on every day, even with an older termo in force.
+    sweep(world, today)
+    sweep(world, today)
+    sweep(world, today + timedelta(days=1))
+    with tenant_context(world.tenant.pk):
+        owned = FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES)
+        assert [(i.reason, i.evidence_refs) for i in owned] == [
+            (UNCERTAIN, [str(stuck.pk)])
+        ]
+        assert termo_in_force(world.connection.pk, today) is renewal
+    assert firm_claim(world.tenant.pk, stuck.pk) is None
+
+
+@pytest.mark.parametrize("later", ["settled", "unsettled"])
+def test_daily_sweep_owns_unsettled_submissions_after_the_latest_settled_one(
+    world: SyntheticTermo, later: str
+) -> None:
+    today = timezone.localdate()
+    with FakeSerpro((accepted(), accepted())) as peer:
+        # Given submission A reached SERPRO and its worker died before settling it.
+        crash_after_final(world, peer.origin)
+        # When a later submission B is sent and settles, or also dies unsettled.
+        if later == "settled":
+            assert submit(world, peer.origin, version=connection_version(world)) == (
+                "sucesso"
+            )
+        else:
+            crash_after_final(world, peer.origin)
+        assert len(peer.requests) == 2
+    with tenant_context(world.tenant.pk):
+        first, second = FirmProviderCall.objects.order_by("authorization__submitted_at")
+    sweep(world, today)
+    sweep(world, today)
+    with tenant_context(world.tenant.pk):
+        owned = [
+            (i.reason, i.evidence_refs)
+            for i in FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES)
+        ]
+        head = termo_head(world.connection.pk)
+    if later == "settled":
+        # Then B decides which termo is in force, so A's outcome opens no stale work.
+        assert head is not None
+        assert head.status == "aceito"
+        assert owned == []
+    else:
+        # Then both unknown outcomes are owned by one item, once.
+        assert head is None
+        assert owned == [(UNCERTAIN, [str(first.pk), str(second.pk)])]
