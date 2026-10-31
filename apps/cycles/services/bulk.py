@@ -107,6 +107,18 @@ def load_operation(
     return operation
 
 
+def _estimated_cost(op: BulkKind, items: list[SnapshotItem]) -> JSONValue:
+    """Sum the frozen per-item provider reservations (AXRM-017); others cost none."""
+    if op != BulkKind.OBTAIN_DAS_GUIDES:
+        return None
+    total = 0
+    for item in items:
+        cost = item.effect.get("estimated_cost_microbrl")
+        if item.eligible and isinstance(cost, int):
+            total += cost
+    return total
+
+
 @transaction.atomic
 def preview_bulk(actor: User, op: BulkKind, selection: Selection) -> BulkOperation:
     """Persist a rehearsal, but create no cycles, requests, items or approvals."""
@@ -143,7 +155,7 @@ def preview_bulk(actor: User, op: BulkKind, selection: Selection) -> BulkOperati
             for item in items
             if item.eligible and op == BulkKind.SEND_REQUEST_NOTICES
         ),
-        "estimated_cost": None,
+        "estimated_cost": _estimated_cost(op, items),
     }
     operation.snapshot_json = snapshot
     operation.snapshot_digest = digest(snapshot)

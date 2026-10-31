@@ -571,6 +571,12 @@ class IssueReason(models.TextChoices):
         "autorizacao_procurador_ausente",
         "Autorizacao do procurador ausente",
     )
+    # AXRM-017: the official DAS guide was refused, or emitted but not attached.
+    GUIA_DAS_NAO_OBTIDA = "guia_das_nao_obtida", "Guia DAS oficial não obtida"
+    GUIA_DAS_NAO_VINCULADA = (
+        "guia_das_nao_vinculada",
+        "Guia DAS oficial não anexada",
+    )
 
 
 class ProviderOperationCode(models.TextChoices):

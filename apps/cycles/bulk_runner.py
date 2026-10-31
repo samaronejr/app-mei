@@ -12,12 +12,14 @@ from django.http import Http404
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.authz.services import can
 from apps.core.flags import tenant_has
 from apps.core.refusal import sentences
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.cycles.bulk import (
     ACTIVE_OPERATIONS,
+    BULK_CAPABILITY,
     UNFINISHED_ITEMS,
     BulkItem,
     BulkItemState,
@@ -136,9 +138,115 @@ def claim_next(tenant_id: UUID, operation_id: UUID) -> BulkClaim | None:
         )
 
 
+def _claimed_item(claim: BulkClaim) -> tuple[BulkOperation, BulkItem]:
+    """Lock the operation and the exact fenced item this claim still owns."""
+    operation = BulkOperation.objects.select_for_update().get(pk=claim.operation_id)
+    item = (
+        BulkItem.objects.select_for_update()
+        .filter(
+            pk=claim.item_id,
+            client_id=claim.client_id,
+            operation_id=claim.operation_id,
+            subject_ref=claim.subject_ref,
+        )
+        .first()
+    )
+    if (
+        item is None
+        or item.state != BulkItemState.CLAIMED
+        or item.fence != claim.fence
+        or item.lease_owner != claim.owner
+        or item.lease_until is None
+        or item.lease_until <= timezone.now()
+    ):
+        msg = "A reserva deste item não pertence mais a este processo."
+        raise StaleBulkClaimError(msg)
+    return operation, item
+
+
+def _finish_item(
+    operation: BulkOperation, item: BulkItem, state: str, result: dict[str, object]
+) -> None:
+    item.state = state
+    item.result_json = result
+    item.finished_at = timezone.now()
+    item.save(update_fields=["state", "result_json", "finished_at"])
+    record_bulk(
+        operation,
+        "bulk.item_finished",
+        metadata={"item_id": str(item.pk), "state": state, "fence": item.fence},
+    )
+    _finish(operation)
+
+
+GUIDE_DONE: Final = frozenset({"guia_obtida", "guia_existente", "em_andamento"})
+
+
+def _execute_guide_claim(claim: BulkClaim) -> None:
+    """AXRM-017: verify the claim, send outside any transaction, then record it.
+
+    The guide service re-checks authority, eligibility, flags, pauses and the
+    budget at send time, reserves per item and is idempotent per client,
+    competence and day, so a resumed item never sends twice.
+    """
+    from apps.integrations.serpro import pgmei  # noqa: PLC0415
+
+    with tenant_context(claim.tenant_id):
+        operation, item = _claimed_item(claim)
+        if operation.state == BulkOperationState.CANCELLING:
+            _finish(operation)
+            return
+        if not tenant_has(claim.tenant_id, "cycles_r1") or not tenant_has(
+            claim.tenant_id, "bulk_r1"
+        ):
+            return
+        selected = checked_items(operation)[item.position]
+        if (
+            str(selected.subject_ref) != item.subject_ref
+            or selected.client_id != item.client_id
+            or not selected.eligible
+        ):
+            msg = "O item não corresponde à prévia confirmada."
+            raise VersionConflict(msg)
+        actor = User.objects.get(pk=operation.requested_by_id)
+        expired = timezone.now() >= operation.valid_until
+        allowed = actor.is_active and can(actor, BULK_CAPABILITY)
+    result: dict[str, object]
+    if expired:
+        state, result = BulkItemState.SKIPPED_CHANGED, {"code": "subject_changed"}
+    elif not allowed:
+        state, result = BulkItemState.SKIPPED_FORBIDDEN, {"code": "access_revoked"}
+    else:
+        try:
+            outcome = pgmei.obtain_das_guide(
+                actor, claim.tenant_id, selected.subject_ref
+            )
+        except pgmei.GuideRefused as refused:
+            state, result = BulkItemState.FAILED, {"code": refused.code}
+        except (PermissionDenied, Http404):
+            state, result = BulkItemState.SKIPPED_FORBIDDEN, {"code": "access_revoked"}
+        else:
+            state = (
+                BulkItemState.DONE
+                if outcome.code in GUIDE_DONE
+                else BulkItemState.FAILED
+            )
+            result = {"code": outcome.code, "call_id": str(outcome.call_id)}
+    with tenant_context(claim.tenant_id):
+        operation, item = _claimed_item(claim)
+        _finish_item(operation, item, state, result)
+
+
 def execute_claim(claim: BulkClaim) -> None:
     """Commit the database effect with its receipt, or persist one honest refusal."""
     assert_no_transaction()
+    with tenant_context(claim.tenant_id):
+        kind = BulkOperation.objects.values_list("kind", flat=True).get(
+            pk=claim.operation_id
+        )
+    if kind == BulkKind.OBTAIN_DAS_GUIDES:
+        _execute_guide_claim(claim)
+        return
     with tenant_context(claim.tenant_id):
         operation = BulkOperation.objects.select_for_update().get(pk=claim.operation_id)
         item = (

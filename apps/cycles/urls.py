@@ -12,6 +12,7 @@ from apps.cycles import (
     views,
 )
 from apps.cycles.publication_views import publication_withdraw
+from apps.integrations.serpro.pgmei_views import cycle_das_guide
 
 urlpatterns = [
     path(
@@ -54,6 +55,11 @@ urlpatterns = [
     path("gestao/aprovacoes/", approval_views.approval_policy, name="approval-policy"),
     path("ciclos/", cycle_views.cycle_list, name="cycle-list"),
     path("ciclos/<uuid:pk>/", cycle_views.cycle_detail, name="cycle-detail"),
+    path(
+        "ciclos/<uuid:pk>/guia-das-oficial/",
+        cycle_das_guide,
+        name="cycle-das-guide",
+    ),
     path(
         "ciclos/<uuid:pk>/solicitacoes/",
         cycle_views.cycle_request_action,

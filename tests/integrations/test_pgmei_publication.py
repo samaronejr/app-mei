@@ -5,168 +5,64 @@ from __future__ import annotations
 import io
 import json
 import re
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
-from apps.clients.models import ClientContact, TaxProfile
+from apps.clients.models import TaxProfile
 from apps.core.tenancy import tenant_context
 from apps.cycles.bulk import BulkKind, BulkOperation
 from apps.cycles.bulk_contracts import PreviewExpectation, Selection
 from apps.cycles.bulk_runner import claim_next, execute_claim
-from apps.cycles.effects.executors import execute
-from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
-from apps.cycles.effects.manifest import ActionKind
 from apps.cycles.evidence import (
-    DocumentIntake,
     EvidenceLink,
-    EvidenceRequest,
-    IntakeState,
-    ReviewDecision,
 )
-from apps.cycles.extraction.service import extract_intake
-from apps.cycles.models import ActionProposal, ClientPublication
-from apps.cycles.scanning import FakeScanner
-from apps.cycles.services.approvals import approve, propose
+from apps.cycles.models import ClientPublication
 from apps.cycles.services.bulk import preview_bulk, run_bulk
-from apps.cycles.services.review import record_review
-from apps.cycles.tasks import scan_quarantine
 from apps.integrations.budget_models import ProviderReservation
 from apps.integrations.call_models import ProviderCall
 from apps.obligations.models import Document
-from apps.tenants.models import Membership, Tenant, TenantRole
-from tests.browser.harness import mfa_session_cookie
+from apps.tenants.models import Tenant
 from tests.fakes.serpro import FakeSerpro
 from tests.integrations.pgmei_support import (
     GUIDE_PDF,
     PRICE_MICROBRL,
     GuideWorld,
     LazyModule,
+    Portal,
     das_reply,
     guide_world,
+    portal_member,
+    publish,
+    scan_and_review,
+    session,
 )
 from tests.support import enrol_totp
-from tests.ui.factories import add_member
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from uuid import UUID
 
     from pytest_django.fixtures import SettingsWrapper
 
-    from apps.accounts.models import User
+    from apps.integrations import tasks
     from apps.integrations.serpro import pgmei
 else:
     pgmei = LazyModule("apps.integrations.serpro.pgmei")
+    tasks = LazyModule("apps.integrations.tasks")
 
 pytestmark = pytest.mark.django_db(transaction=True)
 __all__ = ["guide_world"]
-
-
-@dataclass(frozen=True)
-class Portal:
-    user: User
-    contact: ClientContact
-
-
-def portal_member(world: GuideWorld) -> Portal:
-    tenant = world.termo.tenant
-    user = add_member(
-        tenant, "cliente@pgmei.test", TenantRole.CLIENT_OWNER, client=world.termo.client
-    )
-    with tenant_context(tenant.pk):
-        # PLATFORM_QUERY_OK: test setup reads the seat it just created.
-        member = Membership.objects.get(tenant=tenant, user=user)
-        contact = ClientContact.objects.create(
-            tenant=tenant,
-            client=world.termo.client,
-            membership=member,
-            name="Pessoa MEI",
-            email=user.email,
-            channel_email_allowed=True,
-        )
-    return Portal(user, contact)
-
-
-def session(world: GuideWorld, user: User, *, portal: bool) -> Client:
-    host = f"{world.termo.tenant.slug}{'-portal' if portal else ''}.localhost"
-    client = Client(SERVER_NAME=host)
-    cookie = mfa_session_cookie(user, f"http://{host}/")
-    client.cookies[cookie["name"]] = cookie["value"]  # type: ignore[typeddict-item]
-    return client
 
 
 def obtain(world: GuideWorld, origin: str) -> pgmei.GuideOutcome:
     return pgmei.obtain_das_guide(
         world.owner, world.tenant_id, world.cycle.pk, origin=origin
     )
-
-
-def scan_and_review(world: GuideWorld, link_id: UUID) -> None:
-    with patch("apps.cycles.tasks.scanner_from_settings", return_value=FakeScanner()):
-        assert scan_quarantine.apply().get() >= 1
-    with tenant_context(world.tenant_id):
-        link = EvidenceLink.objects.get(pk=link_id)
-        intake = DocumentIntake.objects.get(document_id=link.document_id)
-    extract_intake(world.tenant_id, intake.pk, now=timezone.now())
-    with tenant_context(world.tenant_id):
-        intake.refresh_from_db()
-        assert intake.state != IntakeState.QUARANTINED
-        request = EvidenceRequest.objects.get(pk=link.request_id)
-        record_review(
-            world.staff,
-            link.pk,
-            decision=ReviewDecision.ACCEPTED,
-            client_reason="",
-            corrections=[],
-            expected_version=request.version,
-        )
-        request.refresh_from_db()
-        # Accepting the guide never turns the firm-only request client-visible.
-        assert request.state == pgmei.FIRM_ONLY_STATE
-
-
-def publish(
-    world: GuideWorld,
-    portal: Portal,
-    link_id: UUID,
-    *,
-    occurrence: int = 1,
-    supersedes: UUID | None = None,
-) -> ActionProposal:
-    with tenant_context(world.tenant_id):
-        world.cycle.refresh_from_db()
-        proposal = propose(
-            world.staff,
-            world.cycle.pk,
-            ProposalDraft(
-                ProposalInput(
-                    action_kind=ActionKind.CLIENT_PUBLICATION,
-                    step_key="publicar-guia-das",
-                    occurrence=occurrence,
-                    recipient_ids=(portal.contact.pk,),
-                    document_link_ids=(link_id,),
-                    subject="Guia DAS de outubro",
-                    body="A guia DAS do mês está disponível.",
-                    supersedes_publication_id=supersedes,
-                ),
-                timezone.now() + timedelta(days=1),
-            ),
-            expected_version=world.cycle.version,
-        )
-        approved = approve(world.owner, proposal.pk, expected_version=1).proposal
-        assert execute(
-            world.owner, approved.pk, expected_version=approved.version
-        ).executed
-        return ActionProposal.objects.get(pk=proposal.pk)
 
 
 @pytest.fixture
@@ -185,6 +81,7 @@ def test_approval_digest_binds_the_guide_hash_and_the_portal_receives_it(
     assert outcome.link_id is not None
     scan_and_review(world, outcome.link_id)
     proposal = publish(world, portal, outcome.link_id)
+    assert outcome.document_id is not None
     with tenant_context(world.tenant_id):
         document = Document.objects.get(pk=outcome.document_id)
         manifest = json.loads(bytes(proposal.manifest_bytes))
@@ -202,7 +99,7 @@ def test_approval_digest_binds_the_guide_hash_and_the_portal_receives_it(
         f"/publicacoes/{publication.pk}/documentos/{outcome.link_id}/"
     )
     assert download.status_code == 200
-    assert b"".join(download.streaming_content) == GUIDE_PDF  # type: ignore[attr-defined]
+    assert download.content == GUIDE_PDF
 
 
 def test_unpublished_guide_stays_invisible_to_the_portal(
@@ -213,6 +110,7 @@ def test_unpublished_guide_stays_invisible_to_the_portal(
         outcome = obtain(world, peer.origin)
     assert outcome.link_id is not None
     scan_and_review(world, outcome.link_id)
+    assert outcome.document_id is not None
     with tenant_context(world.tenant_id):
         assert Document.objects.get(pk=outcome.document_id).portal_visible is False
         request_id = EvidenceLink.objects.get(pk=outcome.link_id).request_id
@@ -271,7 +169,6 @@ def test_post_enqueues_the_guide_after_commit_and_operations_is_refused(
     django_capture_on_commit_callbacks: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tasks = LazyModule("apps.integrations.tasks")
     enrol_totp(guide_world.owner)
     enrol_totp(guide_world.ops)
     queued: list[tuple[str, str, str]] = []
@@ -367,10 +264,12 @@ def test_fake_pgmei_qualification_writes_secret_free_evidence(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     settings.MEDIA_ROOT = tmp_path / "media"
+    settings.CLAMAV_ENABLED = True
     stdout = io.StringIO()
     from tests.integrations.pgmei_support import termo_reply  # noqa: PLC0415
 
-    with FakeSerpro((termo_reply(), das_reply())) as peer:
+    period = timezone.localdate().strftime("%Y%m")
+    with FakeSerpro((termo_reply(), das_reply(period=period))) as peer:
         settings.SERPRO_FAKE_ORIGIN = peer.origin
         call_command(
             "qualify_provider",

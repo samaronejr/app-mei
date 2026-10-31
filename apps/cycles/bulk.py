@@ -11,12 +11,17 @@ from apps.cycles.records import ClientRecord
 
 
 class BulkKind(models.TextChoices):
-    """The four bounded R1 operations; none performs external I/O."""
+    """Four bounded R1 database operations, plus the staff PGMEI guide (AXRM-017).
+
+    `obtain_das_guides` is the only kind with provider I/O: each item runs the
+    ordinary guide service, outside any transaction, with its own reservation.
+    """
 
     OPEN_CYCLES = "open_cycles", "Abrir ciclos"
     SEND_REQUEST_NOTICES = "send_request_notices", "Enviar avisos de solicitações"
     MIGRATE_OPEN_CYCLES = "migrate_open_cycles_to_version", "Migrar ciclos abertos"
     APPROVE_ITEMS = "approve_items", "Aprovar efeitos por item"
+    OBTAIN_DAS_GUIDES = "obtain_das_guides", "Obter guias DAS oficiais"
 
 
 class BulkOperationState(models.TextChoices):

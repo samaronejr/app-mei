@@ -76,6 +76,7 @@ from apps.cycles.workspace import (
     portal_projection,
 )
 from apps.cycles.workspace_views import client_workspace
+from apps.integrations.serpro.pgmei import guide_panel
 from apps.obligations.observations import (
     StaffFact,
     StaleObservationError,
@@ -350,6 +351,7 @@ def _render_detail(
                 )
             ],
             "may_operate": CYCLES_OPERATE in reads.allowed,
+            "das_guide": guide_panel(request.user, cycle),
             "unmet": unmet,
             "completion_checklist": checklist,
             "completion_items": missing_items,

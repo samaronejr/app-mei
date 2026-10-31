@@ -8,9 +8,19 @@ from typing import TYPE_CHECKING
 from playwright.sync_api import expect
 
 from apps.accounts.models import User
-from tests.browser.harness import BrowserPage, LiveFirm, axe_check
+from apps.core.tenancy import tenant_context
+from apps.cycles.evidence import EvidenceLink
+from apps.cycles.models import ClientPublication
+from tests.browser.harness import BrowserPage, LiveFirm, axe_check, mfa_session_cookie
 from tests.fakes.serpro import FakeSerpro
-from tests.integrations.pgmei_support import LazyModule, build_world, das_reply
+from tests.integrations.pgmei_support import (
+    LazyModule,
+    build_world,
+    das_reply,
+    portal_member,
+    publish,
+    scan_and_review,
+)
 from tests.support import enrol_totp
 from tests.ui.factories import Firm
 
@@ -88,3 +98,24 @@ def test_staff_obtain_the_guide_and_select_it_for_publication(
     staff.screenshot("axrm017-publication-form-lists-guide")
     axe_check(staff.page)
     staff.assert_clean_console()
+    # Scanned, reviewed and exact-approved by a second person, the guide reaches
+    # the client's portal through the publication alone.
+    portal = portal_member(world)
+    with tenant_context(world.tenant_id):
+        link = EvidenceLink.objects.get(request__cycle=world.cycle)
+    scan_and_review(world, link.pk)
+    proposal = publish(world, portal, link.pk)
+    with tenant_context(world.tenant_id):
+        publication = ClientPublication.objects.get(proposal=proposal)
+    client = open_page(live, portal.user)
+    client.page.context.add_cookies(
+        [mfa_session_cookie(portal.user, live.url("/", portal=True))]
+    )
+    client.goto(live.url(f"/publicacoes/{publication.pk}/", portal=True))
+    expect(
+        client.page.get_by_text(pgmei.GUIDE_FILENAME_PREFIX, exact=False).first
+    ).to_be_visible()
+    assert client.page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    client.screenshot("axrm017-portal-publication-with-guide")
+    axe_check(client.page)
+    client.assert_clean_console()

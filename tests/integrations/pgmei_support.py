@@ -9,29 +9,49 @@ import base64
 import importlib
 import importlib.util
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
+from uuid import UUID
 
 import pytest
+from django.test import Client
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
-from apps.clients.models import ClientAssignment, Engagement, TaxProfile
+from apps.clients.models import ClientAssignment, ClientContact, Engagement, TaxProfile
 from apps.core.tenancy import tenant_context
-from apps.cycles.models import PlaybookVersion, ServiceCycle
+from apps.cycles.effects.executors import execute
+from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
+from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.evidence import (
+    DocumentIntake,
+    EvidenceLink,
+    EvidenceRequest,
+    IntakeState,
+    ReviewDecision,
+)
+from apps.cycles.extraction.service import extract_intake
+from apps.cycles.models import ActionProposal, PlaybookVersion, ServiceCycle
 from apps.cycles.packs import install_system_packs
+from apps.cycles.scanning import FakeScanner
+from apps.cycles.services.approvals import approve, propose
 from apps.cycles.services.cycle import open_cycle
+from apps.cycles.services.review import record_review
+from apps.cycles.tasks import scan_quarantine
 from apps.integrations.budget_models import ProviderBudget
 from apps.integrations.models import ClientProviderLink
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
 from apps.integrations.serpro.qualification import SyntheticTermo, synthetic_termo
 from apps.obligations.models import Obligation
 from apps.tenants.models import Membership, TenantRole
+from tests.browser.harness import mfa_session_cookie
 from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
+from tests.ui.factories import add_member
 
 
 class LazyModule:
@@ -54,6 +74,7 @@ class LazyModule:
         setattr(self._module(), attribute, value)
 
 
+FIRM_ONLY = "interno"
 PERIOD = date(2026, 10, 1)
 COMPETENCE = "202610"
 GUIDE_PDF = b"%PDF-1.4\n% synthetic DAS-MEI guide AXRM-017\n%%EOF\n"
@@ -119,7 +140,7 @@ class GuideWorld:
     media: Path
 
     @property
-    def tenant_id(self):  # noqa: ANN201 - UUID, kept short for the tests
+    def tenant_id(self) -> UUID:
         return self.termo.tenant.pk
 
     @property
@@ -228,14 +249,14 @@ def build_world(
 
 
 @pytest.fixture
-def guide_world(settings: SettingsWrapper, tmp_path: Path) -> Iterator[GuideWorld]:
+def guide_world(settings: SettingsWrapper, tmp_path: Path) -> GuideWorld:
     return build_world(settings, tmp_path)
 
 
 @pytest.fixture
 def production_world(
     settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[tuple[GuideWorld, Callable[[str], None]]]:
+) -> tuple[GuideWorld, Callable[[str], None]]:
     """Production mode against loopback fakes; broker tokens are per-call stubs."""
     from apps.integrations import transport  # noqa: PLC0415
     from apps.integrations.serpro import authorization  # noqa: PLC0415
@@ -256,3 +277,95 @@ def production_world(
         monkeypatch.setitem(transport.ORIGINS, ("serpro", "producao"), origin)
 
     return build_world(settings, tmp_path, environment="producao", route=route), route
+
+
+@dataclass(frozen=True)
+class Portal:
+    user: User
+    contact: ClientContact
+
+
+def portal_member(world: GuideWorld) -> Portal:
+    tenant = world.termo.tenant
+    user = add_member(
+        tenant, "cliente@pgmei.test", TenantRole.CLIENT_OWNER, client=world.termo.client
+    )
+    with tenant_context(tenant.pk):
+        # PLATFORM_QUERY_OK: test setup reads the seat it just created.
+        member = Membership.objects.get(tenant=tenant, user=user)
+        contact = ClientContact.objects.create(
+            tenant=tenant,
+            client=world.termo.client,
+            membership=member,
+            name="Pessoa MEI",
+            email=user.email,
+            channel_email_allowed=True,
+        )
+    return Portal(user, contact)
+
+
+def session(world: GuideWorld, user: User, *, portal: bool) -> Client:
+    host = f"{world.termo.tenant.slug}{'-portal' if portal else ''}.localhost"
+    client = Client(SERVER_NAME=host)
+    cookie = mfa_session_cookie(user, f"http://{host}/")
+    client.cookies[cookie["name"]] = cookie["value"]
+    return client
+
+
+def scan_and_review(world: GuideWorld, link_id: UUID) -> None:
+    with patch("apps.cycles.tasks.scanner_from_settings", return_value=FakeScanner()):
+        assert scan_quarantine.apply().get() >= 1
+    with tenant_context(world.tenant_id):
+        link = EvidenceLink.objects.get(pk=link_id)
+        intake = DocumentIntake.objects.get(document_id=link.document_id)
+    extract_intake(world.tenant_id, intake.pk, now=timezone.now())
+    with tenant_context(world.tenant_id):
+        intake.refresh_from_db()
+        assert intake.state != IntakeState.QUARANTINED
+        request = EvidenceRequest.objects.get(pk=link.request_id)
+        record_review(
+            world.staff,
+            link.pk,
+            decision=ReviewDecision.ACCEPTED,
+            client_reason="",
+            corrections=[],
+            expected_version=request.version,
+        )
+        request.refresh_from_db()
+        # Accepting the guide never turns the firm-only request client-visible.
+        assert request.state == FIRM_ONLY
+
+
+def publish(
+    world: GuideWorld,
+    portal: Portal,
+    link_id: UUID,
+    *,
+    occurrence: int = 1,
+    supersedes: UUID | None = None,
+) -> ActionProposal:
+    with tenant_context(world.tenant_id):
+        world.cycle.refresh_from_db()
+        proposal = propose(
+            world.staff,
+            world.cycle.pk,
+            ProposalDraft(
+                ProposalInput(
+                    action_kind=ActionKind.CLIENT_PUBLICATION,
+                    step_key="publicar-guia-das",
+                    occurrence=occurrence,
+                    recipient_ids=(portal.contact.pk,),
+                    document_link_ids=(link_id,),
+                    subject="Guia DAS de outubro",
+                    body="A guia DAS do mês está disponível.",
+                    supersedes_publication_id=supersedes,
+                ),
+                timezone.now() + timedelta(days=1),
+            ),
+            expected_version=world.cycle.version,
+        )
+        approved = approve(world.owner, proposal.pk, expected_version=1).proposal
+        assert execute(
+            world.owner, approved.pk, expected_version=approved.version
+        ).executed
+        return ActionProposal.objects.get(pk=proposal.pk)

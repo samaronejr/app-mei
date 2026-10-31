@@ -153,6 +153,7 @@ def test_guide_is_private_quarantined_and_linked_on_a_firm_only_request(
             "sim",
             200,
         )
+        assert outcome.document_id is not None
         document = Document.objects.get(pk=outcome.document_id)
         assert document.acquisition_origin == AcquisitionOrigin.FEDERAL_PROVIDER
         assert document.acquisition_receipt_ref == str(call.pk)
@@ -165,6 +166,7 @@ def test_guide_is_private_quarantined_and_linked_on_a_firm_only_request(
         assert request.required is False
         assert request.state == pgmei.FIRM_ONLY_STATE
         assert request.state not in CLIENT_VISIBLE_STATES
+        assert outcome.link_id is not None
         link = EvidenceLink.objects.get(pk=outcome.link_id)
         assert (link.request_id, link.document_id) == (request.pk, document.pk)
         assert link.origin == LinkOrigin.STAFF
