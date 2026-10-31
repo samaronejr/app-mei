@@ -16,7 +16,7 @@ from django.conf import settings
 from django.test import override_settings
 from django.utils import timezone
 
-from apps.clients.models import Engagement, TaxProfile
+from apps.clients.models import ClientStatus, Engagement, TaxProfile
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake, EvidenceLink
 from apps.cycles.models import PlaybookVersion
@@ -73,7 +73,7 @@ def _mei_cycle(world: SyntheticTermo) -> tuple[ClientProviderLink, UUID]:
     with tenant_context(world.tenant.pk):
         ProviderBudget.objects.update(cap_microbrl=SYNTHETIC_CAP_MICROBRL)
         install_system_packs(world.tenant)
-        world.client.status = "active"
+        world.client.status = ClientStatus.ACTIVE
         world.client.save(update_fields=["status"])
         engagement = Engagement.objects.create(
             tenant=world.tenant,

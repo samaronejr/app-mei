@@ -33,7 +33,8 @@ from django.utils import timezone
 from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.services import can
-from apps.clients.services import profile_at
+from apps.clients.models import TaxProfile
+from apps.clients.services import claim_at, profile_at
 from apps.core.flags import tenant_has
 from apps.core.retention import RetentionClass
 from apps.core.tasks import assert_no_transaction
@@ -108,6 +109,8 @@ from apps.obligations.system_ingest import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from apps.accounts.models import User
     from apps.integrations.call_dispatch import Dispatch
     from apps.tenants.models import Tenant
@@ -858,50 +861,39 @@ def evaluate_guide_conditions(tenant: Tenant, today: date) -> None:
     del today
 
 
-def latest_guide(cycle: ServiceCycle) -> GuideOutcome | None:
-    """Summarize the newest guide call requested for this cycle."""
-    keys = list(
-        Event.objects.filter(
-            action=REQUESTED_EVENT,
-            object_type="ServiceCycle",
-            object_id=str(cycle.pk),
-        ).values_list("metadata__request_key", flat=True)
-    )
-    call = (
-        ProviderCall.objects.filter(
-            client_id=cycle.client_id, operation=OPERATION, request_key__in=keys
-        )
-        .order_by("-created_at", "-pk")
-        .first()
-    )
-    if call is None:
-        return None
-    if call.state in IN_FLIGHT:
-        code = "em_andamento"
-    elif call.state == CallState.SUCCESS:
-        document = _guide_document(call)
-        linked = (
-            document is not None
-            and EvidenceLink.objects.filter(
-                document=document, request__cycle=cycle
-            ).exists()
-        )
-        code = "guia_obtida" if linked else "guia_nao_vinculada"
-    elif call.state == CallState.UNCERTAIN:
-        code = "resultado_incerto"
-    else:
-        code = REFUSED_CODES.get(call.state, "guia_nao_obtida")
-    return GuideOutcome(code, call.pk)
+def guide_panel(
+    cycle: ServiceCycle,
+    *,
+    allowed: frozenset[str],
+    requests: Sequence[EvidenceRequest],
+    links: Sequence[EvidenceLink],
+) -> dict[str, object] | None:
+    """Context for the cycle page's guide section, from reads the page already holds.
 
-
-def guide_panel(actor: User, cycle: ServiceCycle) -> dict[str, object] | None:
-    """Context for the cycle page's guide section; None outside MEI federal checks."""
+    One query at most (the regime at the competence); the service re-checks every
+    gate, including the SERPRO link and the termo, when the action runs.
+    """
     if cycle.engagement.service_kind != "mei_mensal" or not tenant_has(
         cycle.tenant_id, "federal_checks"
     ):
         return None
-    reason = guide_eligibility(actor, cycle)
-    latest = latest_guide(cycle)
+    reason = ""
+    if CAPABILITY not in allowed:
+        reason = "sem_permissao"
+    elif cycle.state not in OPEN_STATES:
+        reason = "ciclo_encerrado"
+    else:
+        profile = claim_at(
+            TaxProfile.objects.filter(client_id=cycle.client_id), cycle.period_start
+        )
+        if profile is None or profile.regime != "mei":
+            reason = "nao_mei"
+    guide_requests = {
+        row.pk
+        for row in requests
+        if row.title == GUIDE_TITLE and row.state == FIRM_ONLY_STATE
+    }
+    obtained = any(link.request_id in guide_requests for link in links)
     try:
         cost = brl(estimated_cost_microbrl())
     except GuideRefused:
@@ -909,7 +901,7 @@ def guide_panel(actor: User, cycle: ServiceCycle) -> dict[str, object] | None:
     return {
         "eligible": not reason,
         "reason": REFUSAL_LABELS.get(reason, ""),
-        "code": latest.code if latest is not None else "",
-        "status": OUTCOME_LABELS.get(latest.code, "") if latest is not None else "",
+        "code": "guia_obtida" if obtained else "",
+        "status": OUTCOME_LABELS["guia_obtida"] if obtained else "",
         "cost": cost,
     }

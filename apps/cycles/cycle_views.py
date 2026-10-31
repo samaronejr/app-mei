@@ -351,7 +351,12 @@ def _render_detail(
                 )
             ],
             "may_operate": CYCLES_OPERATE in reads.allowed,
-            "das_guide": guide_panel(request.user, cycle),
+            "das_guide": guide_panel(
+                cycle,
+                allowed=reads.allowed,
+                requests=reads.requests,
+                links=reads.links,
+            ),
             "unmet": unmet,
             "completion_checklist": checklist,
             "completion_items": missing_items,

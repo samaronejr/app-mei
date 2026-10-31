@@ -186,7 +186,13 @@ def _coverage(
 def load_cycle_detail(actor: "User", cycle_id: UUID) -> CycleDetailReads:
     """Load once for display, leaving decorators, navigation and commands live."""
     cycle = _cycle(actor, cycle_id)
-    gates: tuple[str, ...] = (CYCLES_OPERATE, CYCLES_REVIEW, CYCLES_COMPLETE)
+    # AXRM-017: das.generate rides the same batched grant read for the guide panel.
+    gates: tuple[str, ...] = (
+        CYCLES_OPERATE,
+        CYCLES_REVIEW,
+        CYCLES_COMPLETE,
+        "das.generate",
+    )
     if cycle.state in {CycleState.COMPLETED, CycleState.WITH_PENDING}:
         gates += (CYCLES_REOPEN,)
     levels = granted_levels(
