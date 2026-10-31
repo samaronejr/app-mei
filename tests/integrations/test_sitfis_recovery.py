@@ -152,14 +152,20 @@ def test_p1b_a_live_runner_stalled_before_dispatch_start_does_not_livelock(
     mod = sitfis()
     real = mod.perform
 
+    stalled: list[bool] = []
+
     def stall_then_perform(*args: object, **kwargs: object) -> object:
-        world.clock.advance(seconds=121)
+        # One stall only (review 1's P1b): the lease runs out before this
+        # attempt's dispatch start; a later attempt is not stalled.
+        if not stalled:
+            stalled.append(True)
+            world.clock.advance(seconds=121)
         return real(*args, **kwargs)
 
+    world.script(report_reply())
     monkeypatch.setattr(mod, "perform", stall_then_perform)
     first = world.advance(report)
     monkeypatch.setattr(mod, "perform", real)
-    world.script(report_reply())
     states = [(first.state, first.emission_attempts)]
     for _ in range(8):
         if states[-1][0] in FINAL:
@@ -486,6 +492,33 @@ def test_a_paid_pdf_whose_finalization_raised_is_adopted_not_rebought(
     assert final.state == "emitido"
     assert _documents(world) == 1
     assert len(world.sent("/Emitir")) == 1
+
+
+def test_a_received_protocol_whose_finalization_died_is_adopted(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apps.integrations import call_protocol  # noqa: PLC0415
+
+    real_finalize = call_protocol.finalize
+
+    def broken(*_a: object, **_k: object) -> bool:
+        message = "worker died inside the finalize transaction"
+        raise SystemExit(message)
+
+    world.script(protocol_reply(30_000))
+    report = world.request()
+    monkeypatch.setattr(call_protocol, "finalize", broken)
+    with pytest.raises(SystemExit):
+        world.advance(report)
+    monkeypatch.setattr(call_protocol, "finalize", real_finalize)
+    adopted = world.advance(report)
+    assert adopted.state == "aguardando"
+    assert _wait_left(world, report) == 30.0
+    assert len(world.sent("/Apoiar")) == 1
+    world.clock.advance(seconds=30)
+    world.script(report_reply())
+    assert world.advance(report).state == "emitido"
+    assert len(world.sent("/Apoiar")) == 1
 
 
 # --- Same class: one coherent PDF size limit ----------------------------------------

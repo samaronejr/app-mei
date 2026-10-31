@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, cast
 
+from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
@@ -79,6 +80,7 @@ from apps.integrations.serpro.codec import build_request, parse_response
 from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import TransportFailure
+from apps.integrations.transport_wire import XML_LIMIT
 from apps.obligations.models import (
     AcquisitionOrigin,
     FederalConsultation,
@@ -110,8 +112,15 @@ PROTOCOL_OPERATION: Final = "SP-SIT-P"
 EMISSION_OPERATION: Final = "SP-SIT-R"
 CHECKS_RUN: Final = "fiscal.checks.run"
 DEFAULT_WAIT: Final = timedelta(seconds=60)
-# A provider estimate beyond one hour is not trusted; the default applies.
-MAX_WAIT_MS: Final = 3_600_000
+# A provider estimate is honoured up to one day; longer ones are clamped, never
+# shortened to the default (a shorter wait would be a premature, billed poll).
+MAX_WAIT_MS: Final = 86_400_000
+# The SP-SIT-R reply is JSON under AXRM-011's 5 MiB wire cap and carries the PDF as
+# base64 (4/3 larger) inside an escaped envelope: this is the largest report the
+# wire can deliver, and the one PDF limit the adapter enforces.
+ENVELOPE_MARGIN: Final = 4096
+MAX_REPORT_BYTES: Final = (XML_LIMIT - ENVELOPE_MARGIN) // 4 * 3
+NOT_STORED: Final = "relatorio_nao_armazenado"
 # Rescheduling a delivery that found another runner's live lease.
 LEASE_MARGIN: Final = timedelta(seconds=30)
 INVALID_REPLY: Final = "resposta_sitfis_invalida"
@@ -202,9 +211,9 @@ def _scanner_off(tenant_id: UUID) -> bool:
 
 def _wait_from(value: object) -> timedelta | None:
     """`tempoEspera` is an integer number of milliseconds; anything else is absent."""
-    if type(value) is not int or not 0 <= value <= MAX_WAIT_MS:
+    if type(value) is not int or value < 0:
         return None
-    return timedelta(milliseconds=value)
+    return timedelta(milliseconds=min(value, MAX_WAIT_MS))
 
 
 @dataclass(slots=True)
@@ -214,37 +223,51 @@ class SitfisReply:
     protocol: str = field(default="", repr=False)
     wait: timedelta | None = None
     pdf: bytes | None = field(default=None, repr=False)
+    document_id: UUID | None = None
 
 
 class SitfisAdapter:
-    """Decide every SITFIS reply before the protocol makes it final.
+    """Decide every SITFIS reply, and record it durably, before it is final.
 
     A malformed success is a failed call (billed by its HTTP status), never a
-    success whose processing could raise after finalization.
+    success whose processing could raise after finalization. A valid reply is
+    written to the report before the protocol finalizes the call: the protocol,
+    SERPRO's wait, and the paid PDF stored as a private original. Whoever applies
+    the call later (this runner, a redelivery, a runner taking over an expired
+    lease) uses that record, so a received reply is never lost or bought again.
     """
 
-    def __init__(self, inner: SerproAdapter) -> None:
-        """Wrap the AXRM-013 adapter; its transient response is read once here."""
+    def __init__(self, inner: SerproAdapter, tenant_id: UUID, report_id: UUID) -> None:
+        """Wrap the AXRM-013 adapter for one report's call."""
         self.inner = inner
+        self.tenant_id = tenant_id
+        self.report_id = report_id
         self.reply = SitfisReply()
 
     def send(self, dispatch: Dispatch) -> CallResult:
-        """Send once through the AXRM-013 adapter, then validate what came back."""
+        """Send once through the AXRM-013 adapter, then validate and record."""
         self.reply = SitfisReply()
         result = self.inner.send(dispatch)
         response = self.inner.response
         if response is None:
             return result
         operation = dispatch.receipt.operation
+        call_id = dispatch.receipt.call_id
         if operation == PROTOCOL_OPERATION and result.state == CallState.SUCCESS:
-            return self._protocol(result, response)
+            result = self._protocol(result, response)
+            if self.reply.protocol:
+                _receive(self.tenant_id, self.report_id, call_id, self.reply)
+            return result
         if operation == EMISSION_OPERATION:
             if result.state == CallState.SUCCESS and response.status == 200:  # noqa: PLR2004
-                return self._report(result, response)
+                result = self._report(result, response)
+                return self._keep_pdf(result, call_id)
             if result.state == CallState.SUCCESS:
                 self.reply.wait = _etag_wait(response)
             elif result.state == CallState.WAITING:
                 self.reply.wait = _dados_wait(response)
+            if result.state in {CallState.SUCCESS, CallState.WAITING}:
+                _receive(self.tenant_id, self.report_id, call_id, self.reply)
         return result
 
     def _protocol(self, result: CallResult, response: ProviderResponse) -> CallResult:
@@ -270,10 +293,81 @@ class SitfisAdapter:
             pdf = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError):
             return _invalid(result)
-        if not pdf.startswith(b"%PDF-") or len(pdf) > settings.PORTAL_UPLOAD_MAX_BYTES:
+        if not pdf.startswith(b"%PDF-") or len(pdf) > MAX_REPORT_BYTES:
             return _invalid(result)
         self.reply.pdf = pdf
         return result
+
+    def _keep_pdf(self, result: CallResult, call_id: UUID) -> CallResult:
+        """Store the paid PDF privately now; a storage failure is a billed failure."""
+        if self.reply.pdf is None:
+            return result
+        try:
+            document = ingest_system_document(
+                tenant_id=self.tenant_id,
+                client_id=_client_of(self.tenant_id, self.report_id),
+                origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+                receipt_ref=str(call_id),
+                payload=self.reply.pdf,
+                filename=f"situacao-fiscal-{self.report_id}.pdf",
+                content_type="application/pdf",
+                retention_class=RetentionClass.FISCAL_EVIDENCE,
+            )
+        except (
+            UploadScannerOff,
+            UploadRejected,
+            OSError,
+            BotoCoreError,
+            ClientError,
+        ) as error:
+            # Billed (by the HTTP 200) and never requested again automatically.
+            logger.warning(
+                "SITFIS report not stored",
+                extra={"sitfis_event": NOT_STORED, "code": type(error).__name__},
+            )
+            return CallResult(
+                CallState.FAILED,
+                result.http_status,
+                NOT_STORED,
+                result.billed,
+                result.response_digest,
+            )
+        self.reply.document_id = document.pk
+        _receive(self.tenant_id, self.report_id, call_id, self.reply)
+        return result
+
+
+def _client_of(tenant_id: UUID, report_id: UUID) -> UUID:
+    with tenant_context(tenant_id):
+        client_id: UUID = FiscalSituationReport.objects.values_list(
+            "client_id", flat=True
+        ).get(pk=report_id)
+    return client_id
+
+
+def _receive(
+    tenant_id: UUID, report_id: UUID, call_id: UUID, reply: SitfisReply
+) -> None:
+    """Record a received reply on the report before its call is final.
+
+    Plain guarded UPDATEs in a short transaction of their own: they never touch the
+    report state, and the row lock serializes them with every runner's decision.
+    """
+    wait_ms = int(reply.wait.total_seconds() * 1000) if reply.wait is not None else None
+    now = timezone.now()
+    with tenant_context(tenant_id):
+        rows = FiscalSituationReport.objects.filter(pk=report_id).exclude(
+            state__in=FINAL_STATES
+        )
+        rows.update(reply_call=str(call_id), reply_wait_ms=wait_ms)
+        if reply.protocol:
+            rows.filter(state=FiscalReportState.SOLICITADO, protocol="").update(
+                protocol=reply.protocol, protocol_date=now
+            )
+        if reply.document_id is not None:
+            rows.filter(document__isnull=True).update(
+                document_id=reply.document_id, emitted_at=now
+            )
 
 
 def _invalid(result: CallResult) -> CallResult:
@@ -384,68 +478,57 @@ def _emitted_event(report: FiscalSituationReport) -> None:
         )
 
 
-def _store_protocol(
-    report: FiscalSituationReport, reply: SitfisReply, now: datetime
-) -> None:
-    report.protocol = reply.protocol
-    report.protocol_date = now
-    wait = reply.wait or _default_wait(report, PROTOCOL_OPERATION)
-    report.wait_until = now + wait
+def _stored_wait(
+    report: FiscalSituationReport, call_id: UUID, operation: str
+) -> timedelta:
+    """SERPRO's own wait for this call's reply; the default only when it had none."""
+    if report.reply_call == str(call_id) and report.reply_wait_ms is not None:
+        return timedelta(milliseconds=report.reply_wait_ms)
+    return _default_wait(report, operation)
+
+
+def _accept_protocol(report: FiscalSituationReport) -> None:
+    """Move a report whose protocol was received on to its wait (any runner)."""
+    received = report.protocol_date or timezone.now()
+    if report.reply_wait_ms is not None:
+        wait = timedelta(milliseconds=report.reply_wait_ms)
+    else:
+        wait = _default_wait(report, PROTOCOL_OPERATION)
+    report.wait_until = received + wait
     report.state = FiscalReportState.PROTOCOLO_RECEBIDO
     _save(report)
 
 
-def _store_report(
-    report: FiscalSituationReport, call: ProviderCall, pdf: bytes, attempt: int
-) -> None:
-    report.emission_attempts = attempt
-    try:
-        document = ingest_system_document(
-            tenant_id=report.tenant_id,
-            client_id=report.client_id,
-            origin=AcquisitionOrigin.FEDERAL_PROVIDER,
-            receipt_ref=str(call.pk),
-            payload=pdf,
-            filename=f"situacao-fiscal-{report.pk}.pdf",
-            content_type="application/pdf",
-            retention_class=RetentionClass.FISCAL_EVIDENCE,
+def _attempt_of(report: FiscalSituationReport, call: ProviderCall) -> int:
+    for attempt in range(1, MAX_EMISSION_ATTEMPTS + 1):
+        if call.request_key == emission_request_key(report.pk, attempt):
+            return attempt
+    return report.emission_attempts
+
+
+def _adopt(report: FiscalSituationReport, call: ProviderCall | None) -> None:
+    """End a report whose paid PDF was received and stored: never buy it again."""
+    if call is not None:
+        report.emission_attempts = max(
+            report.emission_attempts, _attempt_of(report, call)
         )
-    except (UploadScannerOff, UploadRejected) as error:
-        # Billed and never requested again automatically; owned for staff.
-        logger.warning(
-            "SITFIS report not stored",
-            extra={
-                "sitfis_event": "relatorio_nao_armazenado",
-                "code": type(error).__name__,
-            },
-        )
-        _finish(report, FiscalReportState.FALHA, EMISSION_OPERATION, call)
-        return
-    report.document = document
-    report.emitted_at = call.finalized_at or timezone.now()
+    report.emitted_at = report.emitted_at or timezone.now()
     _finish(report, FiscalReportState.EMITIDO, EMISSION_OPERATION, call)
     _emitted_event(report)
 
 
-def _keeper(
-    report_id: UUID, step: _Step, adapter: SitfisAdapter
-) -> Callable[[ProviderCall], None]:
-    """Write the validated reply in the transaction that finalizes the success."""
+def _keeper(report_id: UUID, step: _Step) -> Callable[[ProviderCall], None]:
+    """Apply the recorded reply in the transaction that finalizes the success."""
 
     def keep(call: ProviderCall) -> None:
         report = FiscalSituationReport.objects.select_for_update().get(pk=report_id)
-        if call.request_key != step.key:
+        if call.request_key != step.key or report.state in FINAL_STATES:
             return
-        reply = adapter.reply
         if step.operation == PROTOCOL_OPERATION:
-            if reply.protocol and report.state == FiscalReportState.SOLICITADO:
-                _store_protocol(report, reply, call.finalized_at or timezone.now())
-        elif (
-            reply.pdf is not None
-            and report.state == FiscalReportState.EMITINDO
-            and report.emission_attempts + 1 == step.attempt
-        ):
-            _store_report(report, call, reply.pdf, step.attempt)
+            if report.protocol and report.state == FiscalReportState.SOLICITADO:
+                _accept_protocol(report)
+        elif report.document_id is not None:
+            _adopt(report, call)
 
     return keep
 
@@ -592,14 +675,69 @@ def _step(
     )
 
 
+def _received_pdf(report: FiscalSituationReport) -> _Step | None:
+    """Adopt a paid PDF that was received and stored; never buy it again.
+
+    Its own call is left to finish first: a live owner is waited for, and an
+    expired lease is handed to the claim (which quarantines it) before adoption.
+    """
+    paid = (
+        ProviderCall.objects.filter(
+            client_id=report.client_id, pk=report.reply_call
+        ).first()
+        if report.reply_call
+        else None
+    )
+    if paid is not None and paid.state in {CallState.CLAIMED, CallState.STARTED}:
+        if paid.lease_until is not None and paid.lease_until > timezone.now():
+            return None
+        operation, key, attempt = _next(report)
+        if paid.request_key == key:
+            return _step(report, operation, key, attempt)
+    _adopt(report, paid)
+    return None
+
+
+def _first_call(
+    report: FiscalSituationReport, operation: str, key: str, attempt: int
+) -> _Step | None:
+    """Name a call not made yet; an emission only at or after `wait_until`."""
+    if operation == EMISSION_OPERATION:
+        if report.wait_until is not None and timezone.now() < report.wait_until:
+            if report.state != FiscalReportState.AGUARDANDO:
+                report.state = FiscalReportState.AGUARDANDO
+                _save(report)
+            return None
+        report.state = FiscalReportState.EMITINDO
+        _save(report)
+    return _step(report, operation, key, attempt)
+
+
+def _after_apply(report: FiscalSituationReport) -> _Step | None:
+    """Go on to the next identity at once; the wait gate still applies to it."""
+    if report.state in FINAL_STATES:
+        return None
+    operation, key, attempt = _next(report)
+    if ProviderCall.objects.filter(
+        client_id=report.client_id, request_key=key
+    ).exists():
+        return None
+    return _first_call(report, operation, key, attempt)
+
+
 def _decide(  # noqa: PLR0911 - each return names one A7.3 waiting point
-    tenant_id: UUID, report_id: UUID, waits: dict[UUID, timedelta | None]
+    tenant_id: UUID, report_id: UUID
 ) -> _Step | None:
     """Apply the newest final call to the report, then name the next call, if any."""
     with tenant_context(tenant_id), transaction.atomic():
         report = _locked(report_id)
         if report.state in FINAL_STATES:
             return None
+        if report.state == FiscalReportState.SOLICITADO and report.protocol:
+            # The protocol reply was recorded; its call may never have finalized.
+            _accept_protocol(report)
+        if report.state != FiscalReportState.SOLICITADO and report.document_id:
+            return _received_pdf(report)
         if report.state == FiscalReportState.PROTOCOLO_RECEBIDO:
             report.state = FiscalReportState.AGUARDANDO
             _save(report)
@@ -609,15 +747,7 @@ def _decide(  # noqa: PLR0911 - each return names one A7.3 waiting point
         ).first()
         now = timezone.now()
         if call is None:
-            if operation == EMISSION_OPERATION:
-                if report.wait_until is not None and now < report.wait_until:
-                    if report.state != FiscalReportState.AGUARDANDO:
-                        report.state = FiscalReportState.AGUARDANDO
-                        _save(report)
-                    return None
-                report.state = FiscalReportState.EMITINDO
-                _save(report)
-            return _step(report, operation, key, attempt)
+            return _first_call(report, operation, key, attempt)
         if call.state == CallState.RESERVED:
             return _step(report, operation, key, attempt)
         if call.state in {CallState.CLAIMED, CallState.STARTED}:
@@ -625,8 +755,8 @@ def _decide(  # noqa: PLR0911 - each return names one A7.3 waiting point
                 return None
             # The claim quarantines the expired lease; the next pass applies it.
             return _step(report, operation, key, attempt)
-        _apply(report, call, operation, attempt, waits)
-        return None
+        _apply(report, call, operation, attempt)
+        return _after_apply(report)
 
 
 def _apply(
@@ -634,7 +764,6 @@ def _apply(
     call: ProviderCall,
     operation: str,
     attempt: int,
-    waits: dict[UUID, timedelta | None],
 ) -> None:
     """Map one final call onto the report; the call row is the only input."""
     state = call.state
@@ -663,11 +792,22 @@ def _apply(
         state == CallState.SUCCESS and call.http_status == 204  # noqa: PLR2004
     )
     if pending:
+        # Every emission identity counts toward the cap, sent or not: an identity
+        # is never reused, so the report always reaches a final state.
+        report.emission_attempts = attempt
         if attempt >= MAX_EMISSION_ATTEMPTS:
             _finish(report, FiscalReportState.LIMITE_DE_TENTATIVAS, operation, call)
             return
-        wait = waits.get(call.pk) or _default_wait(report, operation)
-        report.wait_until = timezone.now() + wait
+        if transmitted:
+            wait = _stored_wait(report, call.pk, operation)
+            report.wait_until = timezone.now() + wait
+        else:
+            # Never sent, so nothing was paid and SERPRO asked for no wait: the
+            # next identity may go at once (the existing wait_until has passed).
+            logger.info(
+                "SITFIS emission never sent; trying the next attempt",
+                extra={"sitfis_event": "emissao_nao_enviada", "report": str(report.pk)},
+            )
         report.state = FiscalReportState.AGUARDANDO
         _save(report)
         return
@@ -725,12 +865,7 @@ def _conflicted(tenant_id: UUID, report_id: UUID, step: _Step) -> None:
             _finish(report, FiscalReportState.FALHA, step.operation, None)
 
 
-def _run(
-    tenant_id: UUID,
-    report_id: UUID,
-    step: _Step,
-    waits: dict[UUID, timedelta | None],
-) -> None:
+def _run(tenant_id: UUID, report_id: UUID, step: _Step) -> None:
     """Make (or resume) the one call; each protocol phase owns its transaction."""
     body = build_request(step.operation, step.parties, step.data).body
     request = CallRequest(
@@ -758,13 +893,14 @@ def _run(
             _transport(cast("Environment", step.environment)),
             step.parties,
             step.data,
-        )
+        ),
+        tenant_id,
+        report_id,
     )
     try:
-        perform(ticket, adapter, keep=_keeper(report_id, step, adapter))
+        perform(ticket, adapter, keep=_keeper(report_id, step))
     except (AdmissionDeniedError, StaleClaimError):
         return  # Recorded on the call (pausada, bloqueada_*, incerta); applied next.
-    waits[row.pk] = adapter.reply.wait
 
 
 def advance_situation_report(tenant_id: UUID, report_id: UUID) -> FiscalSituationReport:
@@ -774,12 +910,11 @@ def advance_situation_report(tenant_id: UUID, report_id: UUID) -> FiscalSituatio
     runner that finds another's live lease leaves the report untouched.
     """
     assert_no_transaction()
-    waits: dict[UUID, timedelta | None] = {}
     for _ in range(MAX_STEPS):
-        step = _decide(tenant_id, report_id, waits)
+        step = _decide(tenant_id, report_id)
         if step is None:
             break
-        _run(tenant_id, report_id, step, waits)
+        _run(tenant_id, report_id, step)
     with tenant_context(tenant_id):
         return FiscalSituationReport.objects.get(pk=report_id)
 
@@ -792,11 +927,28 @@ def next_run_at(report: FiscalSituationReport) -> datetime | None:
     if report.state == FiscalReportState.AGUARDANDO and report.wait_until:
         return max(report.wait_until, now)
     with tenant_context(report.tenant_id):
-        operation, key, _attempt = _next(report)
+        _operation, key, _attempt = _next(report)
         lease = (
             ProviderCall.objects.filter(client_id=report.client_id, request_key=key)
             .values_list("lease_until", flat=True)
             .first()
         )
-    del operation
     return max(lease or now, now) + LEASE_MARGIN
+
+
+def own_stalled_report(tenant_id: UUID, report_id: UUID) -> None:
+    """Own a report whose deliveries keep failing; its state is left as it is.
+
+    Idempotent (raise_problem converges) and sends nothing: a later delivery that
+    succeeds still continues the report from its durable rows.
+    """
+    with tenant_context(tenant_id), transaction.atomic():
+        report = _locked(report_id)
+        if report.state in FINAL_STATES:
+            return
+        operation = (
+            PROTOCOL_OPERATION
+            if report.state == FiscalReportState.SOLICITADO
+            else EMISSION_OPERATION
+        )
+        _own(report, operation)

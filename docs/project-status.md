@@ -1186,6 +1186,18 @@ cases then pass in three consecutive runs. Evidence:
 `AXRM-016-adversarial.txt`, `AXRM-016-teardown.txt` and
 `AXRM-016-doneclaim.json`.
 
+Repair 1 (review 1 of `bebff5a`) closes three ownership gaps and two of the same class.
+Every emission identity counts toward the cap of three, sent or not: one that never
+reached the wire is retried at once (nothing was paid), so a report can no longer wait
+forever. Each validated reply is recorded on the report before its call is final
+(`obligations.0027`: the reply's call and SERPRO's wait, plus the protocol, and the
+paid PDF already stored as a private original), so any runner applies SERPRO's own
+wait and adopts a received PDF instead of buying it again. A storage failure on a paid
+PDF ends billed and owned; any other failed delivery schedules a bounded continuation
+(1, 5, 30 min) and then opens owned work. A wait above one day is clamped, never
+shortened. The PDF limit is the largest report the 5 MiB JSON wire can carry
+(`MAX_REPORT_BYTES`, about 3.75 MiB). Evidence: `.evidence/AXRM-016-fix1-*`.
+
 #### AXRM-013: SERPRO adapter and authorization
 
 | Todo | Engineering delivery | Rollout and recovery |
