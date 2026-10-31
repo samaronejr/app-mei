@@ -57,6 +57,8 @@ EXPECTED_TENANT_TASKS = frozenset(
         "apps.cycles.tasks.scan_tenant_quarantine",
         "apps.delivery.tasks.dispatch_tenant",
         "apps.delivery.tasks.sweep_tenant_reminders",
+        # AXRM-016: the SITFIS worker (PhasedTenantTask), registered by integrations.
+        "apps.integrations.serpro.sitfis_tasks.advance_situation_report_task",
         "apps.tenants.export_tasks.build_account_export",
         "clients.commit_import",
     }
