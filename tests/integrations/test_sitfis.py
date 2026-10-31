@@ -313,13 +313,14 @@ def test_a_final_202_whose_runner_died_is_applied_by_the_next_runner(
         world.advance(report)
     monkeypatch.setattr(module, "perform", real)
     assert [c.state for c in world.calls("SP-SIT-R")] == [CallState.WAITING]
-    # When the next delivery runs, then the attempt counts with the default wait.
+    # When the next delivery runs, then the attempt counts with SERPRO's own wait
+    # (4 000 ms from the 202), never the 60 s default reserved for an absent one.
     caplog.set_level(logging.INFO, logger="apps.integrations.serpro.sitfis")
     recovered = world.advance(report)
     assert (recovered.state, recovered.emission_attempts) == ("aguardando", 1)
-    assert recovered.wait_until == world.clock.now() + timedelta(seconds=60)
+    assert recovered.wait_until == world.clock.now() + timedelta(seconds=4)
     assert len(world.sent("/Emitir")) == 1
-    assert any(
+    assert not any(
         getattr(record, "sitfis_event", "") == "espera_padrao"
         for record in caplog.records
     )
