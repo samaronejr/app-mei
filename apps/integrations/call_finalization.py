@@ -1,5 +1,6 @@
 """Monotonic fenced finalization and idempotent attempt settlement."""
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
 
@@ -42,8 +43,23 @@ def _record_superseded(
         meter(call, ticket.owner, result, late.occurred_at)
 
 
-def finalize(ticket: Claim, result: CallResult) -> bool:
-    """Keep stale replies as observations without rewriting a newer outcome."""
+def _keep_success(
+    call: ProviderCall, keep: Callable[[ProviderCall], None] | None
+) -> None:
+    if keep is not None and call.state == CallState.SUCCESS:
+        keep(call)
+
+
+def finalize(
+    ticket: Claim,
+    result: CallResult,
+    keep: Callable[[ProviderCall], None] | None = None,
+) -> bool:
+    """Keep stale replies as observations without rewriting a newer outcome.
+
+    `keep` stores the caller's transient result in the same transaction that
+    records this attempt's success, so a success never commits without it.
+    """
     assert_no_transaction()
     with tenant_context(ticket.tenant_id):
         call = ProviderCall.objects.select_for_update().get(
@@ -111,6 +127,7 @@ def finalize(ticket: Claim, result: CallResult) -> bool:
         call.version += 1
         call.updated_at = now
         call.save()
+        _keep_success(call, keep)
         if call.state == CallState.UNCERTAIN:
             uncertain(call)
         return True

@@ -1231,6 +1231,28 @@ in an unlabelled echo. This round does not change `privacy.py` or
 close independent-review/operator gates. The owner's separately authorized
 AXRM-011 attempt 5 has not been absorbed or independently confirmed here.
 
+#### AXRM-015: federal payments (PAGTOWEB)
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-015` | `consult_payments` runs one `PaymentQuery` (new client-scoped, firm-only table in `integrations.0007`: who asked, arrecadacao window, environment, state, pages fetched, payments found and matched) as ordinary protocol calls: authority 00004 through admission, one budget reservation per page, `tamanhoDaPagina=100`, zero-based `primeiroDaPagina`, stop at the first page under 100 and never an eleventh page (ten full pages end `falha`/`limite_de_paginas`). Each finalized page keeps todo 14's own `FederalConsultation` receipt; a malformed HTTP 200 is a billed `falha`, never an empty success. A budget refusal on page 1 is `cota_esgotada`; later it is `falha` with the fetched pages kept. A complete 403 records `ausente_detectada` from that call and opens owned work; admission then refuses the client until 00004 is declared and verified again. The deterministic DAS-MEI rule (`apps/obligations/payment_matching.py`: DAS family, MEI at the payment month by the effective tax timeline, same-month DAS obligation of the same client; never amount) feeds `matched_obligation`; a document first recorded before its DAS obligation existed is bound when a later consultation returns it (`obligations.0026`: the payment table's trigger admits only `matched_obligation_id` going from NULL to an obligation, once, with every reported field unchanged; re-pointing, unbinding, rewriting and deleting stay refused for every role); everything else is listed under "Pagamentos encontrados (nao associados)". `COMPARRECADACAO72` runs once per payment on a staff click and stores the PDF through `ingest_system_document` (`provedor_federal`, receipt = call id, portal-private). The "Receita Federal" section sits under Cobertura in the workspace and the cycle detail and loads from its own endpoint (`client-federal-payments-section`, constant query count), so both reads stay inside the pinned 25-query budget; failures are Hoje pendencias of the open cycle (`consulta_pagamentos_falhou`, `autorizacao_ausente`). Scenario `pagtoweb` is registered for `qualify_provider` (fake and trial). | Flag `federal_checks` off, `SERPRO_ENVIRONMENT=fake` and providers paused by default; the monthly schedule after the 20th is inert while the flag is off, and its consultation is identified by client and competence month, so the daily beat opens at most one per client and month whatever its outcome (a further consultation is a staff decision). Apply `integrations.0007` and `obligations.0026` (reverses cleanly with rows: the strict trigger returns and the column grant is revoked); it reverses while empty and refuses once any consultation exists (forward repair). Recovery is flag off or `SERPRO_PAUSED`; billed calls and their usage stay recorded. PQ-SERPRO-2 and LQ-4 remain open; no real SERPRO request was made. |
+
+Wire shapes were rebuilt from SERPRO's public Integra Contador pages for
+`PAGAMENTOS71`, `COMPARRECADACAO72` and the PAGTOWEB domain table (fetched
+2026-10-27; `.evidence/AXRM-015-serpro-docs/`). Baseline at `f7f8f2a`: default
+**6876 passed, 53 skipped** (group 1 **2260**; group 2 **4616 passed, 53
+skipped**). Tests first: `AXRM-015-red.txt` (the new modules fail to collect
+without the implementation). Targeted: the AXRM-015 modules and every isolation
+and scope guard they touch pass **424, 53 skipped** (`AXRM-015-recheck2.txt`);
+manual QA `AXRM-015-happy.txt` (100 + 3 -> 103 payments, one matched DAS-MEI,
+two billed pages) and `AXRM-015-failure.txt` (one billed 403, authority
+`ausente_detectada`, owned work, the rerun refused before any request).
+STD-GATES at `668241b`: default **6976 passed, 53 skipped**, isolation **918
+passed, 53 skipped**, portal 319, CNPJ 29, browser 197, 9/9 mutants killed
+(`AXRM-015-gates-r3-*.txt`, `AXRM-015-gates-r4-*.txt`). Review 1 fixes (monthly
+identity, late DAS binding): red-first `AXRM-015-fix1-red.txt`, gates
+`AXRM-015-fix1-gates*.txt`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

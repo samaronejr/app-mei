@@ -101,6 +101,9 @@ class RegionalWorld:
                 marker = f'data-authority-service="{service}"'.encode()
                 assert marker in response.content, service
             assert b"data-provider-certificate=" in response.content
+        # AXRM-015: the Receita Federal section loads from its own endpoint; the
+        # read carries only its placeholder (bounded in test_pagtoweb_panel.py).
+        assert b"data-federal-payments-placeholder" in response.content
 
 
 def _populate_authority(owner: User, client: ClientCompany) -> None:

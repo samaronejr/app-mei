@@ -33,6 +33,8 @@ JOB_LABELS: Final = {
     "record_scheduler_heartbeat": "Sinal do agendador",
     "refresh_das_calendars": "Atualização do calendário DAS",
     "record_usage": "Registro diário de uso",
+    "schedule_payment_consultations": "Consulta mensal de pagamentos na Receita",
+    "purge_payment_pages": "Retenção de páginas de pagamentos da Receita",
     "offboard_expired_engagements": "Encerramentos após o prazo",
     "queue_daily_summaries": "Resumo diário por e-mail",
     "dispatch_firm_outbox": "Envios de avisos do escritório",

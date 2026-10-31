@@ -236,6 +236,13 @@ $$;
 -- fiscal-situation reports are firm-side (INV-R10); each carries the client-anchored
 -- policy and DenyPortalAccess from obligations.0024. obligations_federalpayment is
 -- append-only: the receipt loop below keeps it SELECT/INSERT on re-applied bootstrap.
+-- PORTAL_NONE: integrations_paymentquery
+-- AXRM-015: a PAGTOWEB consultation (who asked, which window, pages fetched, outcome)
+-- is firm-side (INV-R10); integrations.0007 adds the client-anchored policy and
+-- DenyPortalAccess, so a grant added by mistake would still read nothing.
+-- PORTAL_NONE: integrations_paymentpage
+-- AXRM-015: a paid PAGTOWEB page kept until its consultation settles it is
+-- firm-side too; integrations.0010 adds the same policies.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
 -- PORTAL_NONE: tenants_notificationpreference
@@ -272,6 +279,18 @@ BEGIN
             EXECUTE format('GRANT SELECT, INSERT ON %I TO app_runtime', receipt_table);
         END IF;
     END LOOP;
+END
+$$;
+-- AXRM-015: a payment recorded before its DAS obligation existed is bound once.
+-- The REVOKE ALL above also drops column grants, so the one column UPDATE that
+-- obligations.0026 grants is re-applied here; that migration's trigger admits only
+-- matched_obligation_id going from NULL to an obligation.
+DO $$
+BEGIN
+    IF to_regclass('public.obligations_federalpayment') IS NOT NULL THEN
+        GRANT UPDATE (matched_obligation_id) ON obligations_federalpayment
+            TO app_runtime;
+    END IF;
 END
 $$;
 
