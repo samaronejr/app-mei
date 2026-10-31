@@ -571,6 +571,11 @@ class IssueReason(models.TextChoices):
         "autorizacao_procurador_ausente",
         "Autorizacao do procurador ausente",
     )
+    # AXRM-016: a SITFIS report ended without being obtained (A7.3 alternatives).
+    SITUACAO_FISCAL_NAO_OBTIDA = (
+        "situacao_fiscal_nao_obtida",
+        "Relatório de situação fiscal não obtido",
+    )
 
 
 class ProviderOperationCode(models.TextChoices):

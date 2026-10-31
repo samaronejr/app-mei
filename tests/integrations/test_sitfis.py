@@ -111,6 +111,7 @@ def test_protocol_is_free_and_nothing_is_emitted_before_wait_until(
     assert emitted.state == "emitido"
     assert emitted.emission_attempts == 1
     assert emitted.emitted_at == world.clock.now()
+    assert emitted.document_id is not None
     with tenant_context(world.tenant_id):
         document = Document.objects.get(pk=emitted.document_id)
         intake = DocumentIntake.objects.get(document=document)
@@ -369,6 +370,7 @@ def test_concurrent_runners_send_one_emission(world: World) -> None:
     report = _protocol_received(world)
     world.clock.advance(seconds=30)
     world.script(Reply(body=report_reply().body, held=True))
+    world.gateway.received.clear()
     outcome: dict[str, Any] = {}
 
     def first() -> None:
@@ -379,7 +381,9 @@ def test_concurrent_runners_send_one_emission(world: World) -> None:
 
     runner = threading.Thread(target=first)
     runner.start()
+    # The emission request itself has reached the held peer.
     assert world.gateway.received.wait(timeout=10)
+    assert len(world.sent("/Emitir")) == 1
     try:
         # The second runner sees the live in-flight emission and leaves it alone.
         second = world.advance(report)
@@ -540,13 +544,24 @@ def test_the_task_reschedules_itself_at_wait_until(
         "apps.integrations.serpro.sitfis_tasks"
     )
     scheduled: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-    monkeypatch.setattr(
-        tasks.advance_situation_report_task,
-        "apply_async",
-        lambda args, **kwargs: scheduled.append((args, kwargs)),
-    )
+
+    def capture(
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any] | None = None,
+        **options: Any,  # noqa: ANN401
+    ) -> None:
+        # Celery's own signature: `delay(*a)` calls `apply_async(a, {})`.
+        del kwargs
+        scheduled.append((tuple(args), options))
+
+    monkeypatch.setattr(tasks.advance_situation_report_task, "apply_async", capture)
     world.script(protocol_reply(30_000))
     report = world.request()
+    # The committed request queued the first run once, with no delay.
+    [(queued, options)] = scheduled
+    assert queued == (str(world.tenant_id), str(report.pk))
+    assert "eta" not in options
+    scheduled.clear()
     state = tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
     assert state == "aguardando"
     [(args, kwargs)] = scheduled
@@ -603,6 +618,7 @@ def test_scan_sweep_verifies_the_stored_report(world: World, clock: Clock) -> No
     world.script(report_reply())
     emitted = world.advance(report)
     world.scan()
+    assert emitted.document_id is not None
     with tenant_context(world.tenant_id):
         intake = DocumentIntake.objects.get(document_id=emitted.document_id)
     assert intake.state == IntakeState.VERIFIED

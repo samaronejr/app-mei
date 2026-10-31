@@ -22,7 +22,7 @@ from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.accounts.models import User
-from apps.clients.models import Engagement, TaxProfile
+from apps.clients.models import ClientAssignment, Engagement, TaxProfile
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import PlaybookVersion, ServiceCycle
 from apps.cycles.packs import install_system_packs
@@ -41,7 +41,8 @@ from tests.fakes.provider import Received, Reply
 from tests.fakes.serpro import FakeSerpro
 
 PERIOD = date(2026, 10, 1)
-START = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)
+# After every real-time model default (created_at, next_scan_at) of this run.
+START = datetime.now(UTC).replace(second=0, microsecond=0) + timedelta(hours=1)
 PDF = b"%PDF-1.7\n% synthetic SITFIS report AXRM-016\n%%EOF\n"
 EMISSAO_MICROBRL = 320_000
 PROTOCOL = "+S7N6c04XNZUVzmxWT7SzpkZA4xeDQC9Z2T2GBJ5usn8LyouyWX/synthetic=="
@@ -163,10 +164,16 @@ class World:
 
     def request(self) -> FiscalSituationReport:
         with tenant_context(self.tenant_id):
-            return sitfis().request_situation_report(self.termo.client)
+            report: FiscalSituationReport = sitfis().request_situation_report(
+                self.termo.client
+            )
+        return report
 
     def advance(self, report: FiscalSituationReport) -> FiscalSituationReport:
-        return sitfis().advance_situation_report(self.tenant_id, report.pk)
+        advanced: FiscalSituationReport = sitfis().advance_situation_report(
+            self.tenant_id, report.pk
+        )
+        return advanced
 
     def reload(self, report: FiscalSituationReport) -> FiscalSituationReport:
         with tenant_context(self.tenant_id):
@@ -214,6 +221,8 @@ def _open_cycle(termo: SyntheticTermo, responsible: User) -> ServiceCycle:
         install_system_packs(tenant)
         client.status = "active"
         client.save(update_fields=["status"])
+        # The responsible staff accountant's portfolio holds this client.
+        ClientAssignment.objects.create(tenant=tenant, client=client, user=responsible)
         engagement = Engagement.objects.create(
             tenant=tenant,
             client=client,

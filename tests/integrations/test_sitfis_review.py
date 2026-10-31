@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404
+from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -123,7 +124,7 @@ def test_no_pendencias_review_records_and_uses_the_dated_copy(world: World) -> N
     assert event.actor_id == world.responsible.pk
     assert event.payload["outcome"] == "sem_pendencias_nas_fontes"
     statement = review_module().review_statement(stored, report)
-    emitted_on = report.emitted_at.astimezone().strftime("%d/%m/%Y")
+    emitted_on = timezone.localtime(report.emitted_at).strftime("%d/%m/%Y")
     assert statement is not None
     assert emitted_on in statement
     assert not _exceptions(world)

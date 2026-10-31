@@ -57,6 +57,15 @@ class CyclesConfig(AppConfig):
         # T14: the deterministic openers the daily sweep runs.
         for code, reason in REASONS.items():
             register_exception_reason(code, reason)
+        # AXRM-016: one owned exception per pendencia a SITFIS review records.
+        from apps.cycles.services.federal_review import (  # noqa: PLC0415
+            PENDENCIA_REASON,
+        )
+        from apps.cycles.services.federal_review import (  # noqa: PLC0415
+            REASON as PENDENCIA,
+        )
+
+        register_exception_reason(PENDENCIA_REASON, PENDENCIA)
         register_exception_reason(
             "approval_invalidated",
             ExceptionReason(

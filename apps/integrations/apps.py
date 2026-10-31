@@ -27,6 +27,9 @@ class IntegrationsConfig(AppConfig):
         from apps.integrations.serpro.registration import (  # noqa: PLC0415
             register_serpro_operations,
         )
+        from apps.integrations.serpro.sitfis import (  # noqa: PLC0415
+            REASONS as SITFIS_REASONS,
+        )
         from apps.integrations.serpro.work import (  # noqa: PLC0415
             REASONS as SERPRO_REASONS,
         )
@@ -35,9 +38,15 @@ class IntegrationsConfig(AppConfig):
         )
 
         register(check_provider_settings)
-        for code, reason in (REASONS | BUDGET_REASONS | SERPRO_REASONS).items():
+        for code, reason in (
+            REASONS | BUDGET_REASONS | SERPRO_REASONS | SITFIS_REASONS
+        ).items():
             register_exception_reason(code, reason)
         TENANT_EVALUATORS.extend(
             (evaluate_provider_conditions, evaluate_termo_conditions)
         )
         register_serpro_operations()
+        # AXRM-016: the SITFIS worker task and the `sitfis` qualification scenario
+        # (todo 13's extension point) register on import.
+        import apps.integrations.serpro.sitfis_qualification  # noqa: PLC0415
+        import apps.integrations.serpro.sitfis_tasks  # noqa: F401, PLC0415

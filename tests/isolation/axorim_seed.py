@@ -180,6 +180,13 @@ _SEEDED_PARENT: Final = object()
 
 # Required-by-constraint-but-nullable columns the generic seeder leaves blank.
 _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
+    # federalreportreview_pendencias_by_outcome / _input_digest: an unreadable
+    # report carries no pendencias, and the digest is a synthetic SHA-256 shape.
+    "cycles.FederalReportReview": {
+        "outcome": "ilegivel",
+        "pendencias": [],
+        "input_digest": "a" * 64,
+    },
     "obligations.Document": {
         # AXRM-012: uploaded_by may be NULL only for provider origins
         # (document_human_or_provider_origin); the generic seed stays a human upload.
@@ -1027,6 +1034,17 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
         ),
         ("cycles_exportattempt", "export_id", "exportattempt_export_scope_fk"),
         ("cycles_extractedfield", "document_id", "extractedfield_document_pair_fk"),
+        # AXRM-016: a SITFIS review names its own client's report and cycle.
+        (
+            "cycles_federalreportreview",
+            "cycle_id",
+            "federalreportreview_cycle_client_fk",
+        ),
+        (
+            "cycles_federalreportreview",
+            "report_id",
+            "federalreportreview_report_client_fk",
+        ),
         ("cycles_internalnote", "cycle_id", "internalnote_cycle_pair_fk"),
         ("cycles_requestinternal", "request_id", "requestinternal_request_pair_fk"),
         ("cycles_review", "link_id", "review_link_pair_fk"),

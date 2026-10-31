@@ -102,6 +102,9 @@ PORTAL_DENIED_TABLES = (
     "obligations_fiscalsituationreport",
     "integrations_firmintegrationissue",
     "integrations_firmproviderreservation",
+    # AXRM-016: the SITFIS review is firm-side; DenyPortalAccess from cycles.0021.
+    # Mirrors `-- PORTAL_NONE: cycles_federalreportreview` in ops/sql/roles.sql.
+    "cycles_federalreportreview",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -138,6 +141,8 @@ APPEND_ONLY_TABLES = (
     "integrations_firmauthorization",
     # AXRM-014: federal payment documents are append-only.
     "obligations_federalpayment",
+    # AXRM-016: SITFIS reviews are append-only.
+    "cycles_federalreportreview",
 )
 
 # AXR1-023: writable-but-undeletable tables — UPDATE stays (revocation sets

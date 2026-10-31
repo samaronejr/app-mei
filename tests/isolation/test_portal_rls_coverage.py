@@ -82,7 +82,8 @@ RUNTIME_ROLE = "app_runtime"
 # AXRM-014 adds three client-paired private federal tables (consultation receipts,
 # payment documents, fiscal-situation reports; both policies): 79 + 3 = 82.
 # AXRM-013 adds client-less firm work and zero-cost attempt reservations: 82 + 2.
-EXPECTED_TENANT_TABLE_COUNT = 84
+# AXRM-016 adds the client-paired private SITFIS review (both policies): 84 + 1.
+EXPECTED_TENANT_TABLE_COUNT = 85
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -114,6 +115,8 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "obligations_federalconsultation",
         "obligations_federalpayment",
         "obligations_fiscalsituationreport",
+        # AXRM-016: the accountant's SITFIS review.
+        "cycles_federalreportreview",
     }
 )
 
@@ -620,6 +623,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "obligations_fiscalsituationreport",
         "integrations_firmintegrationissue",
         "integrations_firmproviderreservation",
+        # AXRM-016: SITFIS reviews are portal NONE.
+        "cycles_federalreportreview",
     },
 )
 
