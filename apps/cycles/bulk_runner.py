@@ -179,7 +179,9 @@ def _finish_item(
     _finish(operation)
 
 
-GUIDE_DONE: Final = frozenset({"guia_obtida", "guia_existente", "em_andamento"})
+GUIDE_DONE: Final = frozenset(
+    {"guia_obtida", "guia_existente", "guia_recuperada", "em_andamento"}
+)
 
 
 def _execute_guide_claim(claim: BulkClaim) -> None:

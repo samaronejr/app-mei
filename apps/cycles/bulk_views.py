@@ -82,6 +82,7 @@ REASONS = {
     "guia_nao_obtida": "A Receita recusou a guia; há uma pendência no ciclo.",
     "guia_nao_vinculada": "Guia emitida, mas não anexada; há uma pendência.",
     "resultado_incerto": "Resultado incerto; nada será reenviado automaticamente.",
+    "guia_recuperada": "Guia de um pedido anterior recuperada; nenhuma nova emissão.",
 }
 SERVICE_LABELS = dict(SERVICE_KIND_CHOICES)
 

@@ -20,7 +20,6 @@ import base64
 import binascii
 import hashlib
 from dataclasses import dataclass
-from datetime import date, timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
@@ -67,6 +66,7 @@ from apps.integrations.call_contracts import (
 )
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
+from apps.integrations.call_state import lock_controls, uncertain
 from apps.integrations.models import (
     ClientProviderLink,
     IntegrationIssue,
@@ -109,6 +109,7 @@ from apps.obligations.system_ingest import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import date
 
     from apps.accounts.models import User
     from apps.clients.models import TaxProfile
@@ -125,8 +126,6 @@ FIRM_ONLY_STATE: Final = RequestState.INTERNAL
 REQUESTED_EVENT: Final = "integrations.das_guide_requested"
 GUIDE_NOT_OBTAINED: Final = "guia_das_nao_obtida"
 GUIDE_NOT_LINKED: Final = "guia_das_nao_vinculada"
-# The evaluator settles only recent calls; an older one was settled or owned long ago.
-SWEEP_WINDOW: Final = timedelta(days=7)
 # A request refused before any I/O (quota, pause, authority) sent nothing and set no
 # effect barrier, so the same day may ask again under a new key, a bounded number
 # of times. A request that reached dispatch is never repeated the same day.
@@ -138,6 +137,20 @@ IN_FLIGHT: Final = frozenset(
         CallState.CLAIMED,
         CallState.STARTED,
         CallState.RETRY,
+    }
+)
+# A claimed or started call carries a lease; once it has run out its worker is gone.
+LEASED: Final = frozenset({CallState.CLAIMED, CallState.STARTED})
+# States the evaluator may still have to settle (never a pre-send refusal).
+SETTLEABLE: Final = frozenset(
+    {
+        CallState.CLAIMED,
+        CallState.STARTED,
+        CallState.SUCCESS,
+        CallState.UNCERTAIN,
+        CallState.FAILED,
+        CallState.DENIED,
+        CallState.AUTHORITY,
     }
 )
 REFUSED_CODES: Final[dict[str, str]] = {
@@ -183,6 +196,7 @@ OUTCOME_LABELS: Final = {
     "guia_nao_obtida": "Guia não obtida",
     "guia_nao_vinculada": "Guia emitida, não anexada",
     "resultado_incerto": "Resultado incerto",
+    "guia_recuperada": "Guia recuperada de um pedido anterior",
 }
 
 
@@ -526,6 +540,9 @@ def obtain_das_guide(
                 obj=ObjectRef("ServiceCycle", str(prepared.cycle_id)),
                 metadata={"request_key": prepared.request.request_key},
             )
+    earlier = _earlier_outcome(prepared, actor, tenant_id)
+    if earlier is not None:
+        return earlier
     try:
         call = reserve(tenant_id, prepared.link_id, prepared.request)
     except AdmissionDeniedError as error:
@@ -606,6 +623,100 @@ def _send(  # noqa: PLR0913 - one claimed attempt and its frozen request
     except StaleClaimError:
         # Lost before the first byte or quarantined as uncertain: settle reports it.
         return
+
+
+def _lease_expired(call: ProviderCall) -> bool:
+    return call.state in LEASED and (
+        call.lease_until is None or call.lease_until <= timezone.now()
+    )
+
+
+def _recover(tenant_id: UUID, call: ProviderCall) -> None:
+    """Own a call whose worker died: AXRM-009 quarantines it as uncertain.
+
+    Same lock order as `claim()`. A started call may have reached SERPRO, so it is
+    never resent: its exposure stays uncertain until reconciled. A claimed call
+    never sent anything, so its reservation is released.
+    """
+    with tenant_context(tenant_id):
+        lock_controls(tenant_id, call.link_id)
+        locked = ProviderCall.objects.select_for_update().get(pk=call.pk)
+        if _lease_expired(locked):
+            locked.link = ClientProviderLink.objects.get(pk=locked.link_id)
+            uncertain(locked)
+
+
+def _unsettled(call: ProviderCall) -> bool:
+    """Whether a guide call still needs a link or owned work (caller's context)."""
+    if call.state in LEASED:
+        return True
+    if call.state in {CallState.SUCCESS, CallState.UNCERTAIN}:
+        document = _guide_document(call)
+        if document is None:
+            return call.state == CallState.SUCCESS and not _owned(
+                call, GUIDE_NOT_LINKED
+            )
+        return not (
+            EvidenceLink.objects.filter(document=document).exists()
+            or _owned(call, GUIDE_NOT_LINKED)
+        )
+    if call.state in {CallState.FAILED, CallState.DENIED, CallState.AUTHORITY}:
+        return not _owned(call, GUIDE_NOT_OBTAINED)
+    return False
+
+
+def _earlier_outcome(
+    prepared: _Prepared, actor: User, tenant_id: UUID
+) -> GuideOutcome | None:
+    """Rule: never emit again while an earlier emission for the competence is open.
+
+    An earlier guide call for the same client and competence (another day's key)
+    that is still in flight with a live lease answers `em_andamento`; one that is
+    unsettled (expired lease, stored PDF not adopted, refusal not owned) is settled
+    by this click instead of a new emission. Only once every earlier emission is
+    linked or owned may a click buy a new guide.
+    """
+    with tenant_context(tenant_id):
+        cycle = ServiceCycle.objects.get(pk=prepared.cycle_id)
+        cycles = ServiceCycle.objects.filter(
+            client_id=cycle.client_id, period_start=cycle.period_start
+        ).values_list("pk", flat=True)
+        keys = set(
+            Event.objects.filter(
+                action=REQUESTED_EVENT,
+                object_type="ServiceCycle",
+                object_id__in=[str(pk) for pk in cycles],
+            ).values_list("metadata__request_key", flat=True)
+        ) - {prepared.request.request_key}
+        earlier = list(
+            ProviderCall.objects.filter(
+                client_id=cycle.client_id, operation=OPERATION, request_key__in=keys
+            ).order_by("created_at", "pk")
+        )
+        pending = [call for call in earlier if _unsettled(call)]
+    for call in pending:
+        if call.state in LEASED and not _lease_expired(call):
+            return GuideOutcome("em_andamento", call.pk)
+    for call in pending:
+        code = settle_guide(tenant_id, call.pk, cycle_id=prepared.cycle_id, actor=actor)
+        if code == "guia_obtida":
+            code = "guia_recuperada"
+        with tenant_context(tenant_id):
+            document = _guide_document(call)
+            link = (
+                EvidenceLink.objects.filter(
+                    document=document, request__cycle_id=prepared.cycle_id
+                ).first()
+                if document is not None
+                else None
+            )
+        return GuideOutcome(
+            code,
+            call.pk,
+            document.pk if document is not None else None,
+            link.pk if link is not None else None,
+        )
+    return None
 
 
 def _guide_document(call: ProviderCall) -> Document | None:
@@ -786,7 +897,15 @@ def settle_guide(
     cycle_id: UUID | None = None,
     actor: User | None = None,
 ) -> str:
-    """Converge one guide call on a linked guide or owned work; never raise on it."""
+    """Converge one guide call on a linked guide or owned work; never raise on it.
+
+    A claimed or started call whose lease ran out belongs to a dead worker: it is
+    owned as uncertain work first, and a PDF it already stored is adopted.
+    """
+    with tenant_context(tenant_id):
+        call = ProviderCall.objects.get(pk=call_id, operation=OPERATION)
+    if _lease_expired(call):
+        _recover(tenant_id, call)
     with tenant_context(tenant_id):
         call = ProviderCall.objects.select_related("client", "link").get(
             pk=call_id, operation=OPERATION
@@ -798,7 +917,10 @@ def settle_guide(
                 _own(call, GUIDE_NOT_OBTAINED)
             return REFUSED_CODES[call.state]
         if call.state == CallState.UNCERTAIN:
-            return "resultado_incerto"
+            if _guide_document(call) is None:
+                return "resultado_incerto"
+            code = _settle_success(call, cycle_id, actor)
+            return "guia_recuperada" if code == "guia_obtida" else code
         if call.state != CallState.SUCCESS:
             _own(call, GUIDE_NOT_OBTAINED)
             return "guia_nao_obtida"
@@ -838,26 +960,21 @@ def _settle_success(
 
 
 def evaluate_guide_conditions(tenant: Tenant, today: date) -> None:
-    """Daily: settle guide calls a dead worker left final but unsettled."""
-    if not tenant_has(tenant.pk, "federal_checks"):
-        return
-    since = timezone.now() - SWEEP_WINDOW
-    candidates = (
-        ProviderCall.objects.filter(
-            tenant_id=tenant.pk, operation=OPERATION, updated_at__gte=since
-        )
-        .exclude(state__in=IN_FLIGHT)
-        .order_by("pk")
-    )
+    """Daily: settle every guide emission a dead worker left unsettled.
+
+    No time window and no flag gate: an emission already sent (and possibly
+    billed) is linked or owned whenever the sweep next runs, even after a week
+    with `federal_checks` off. The flag gates new emissions only. Claimed or
+    started calls are taken only once their lease has run out (AXRM-013's rule).
+    """
+    candidates = ProviderCall.objects.filter(
+        tenant_id=tenant.pk, operation=OPERATION, state__in=SETTLEABLE
+    ).order_by("pk")
     for call in candidates:
-        if call.state == CallState.SUCCESS:
-            document = _guide_document(call)
-            if (
-                document is not None
-                and EvidenceLink.objects.filter(document=document).exists()
-            ):
-                continue
-        settle_guide(tenant.pk, call.pk)
+        if call.state in LEASED and not _lease_expired(call):
+            continue
+        if _unsettled(call):
+            settle_guide(tenant.pk, call.pk)
     del today
 
 
