@@ -635,7 +635,7 @@ def _recover(tenant_id: UUID, call: ProviderCall) -> None:
     """Own a call whose worker died: AXRM-009 quarantines it as uncertain.
 
     Same lock order as `claim()`. A started call may have reached SERPRO, so it is
-    never resent: its exposure stays uncertain until reconciled. A claimed call
+    never resent: its exposure stays uncertain and owned. A claimed call
     never sent anything, so its reservation is released.
     """
     with tenant_context(tenant_id):
