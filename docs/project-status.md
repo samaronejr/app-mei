@@ -1194,8 +1194,11 @@ forever. Each validated reply is recorded on the report before its call is final
 paid PDF already stored as a private original), so any runner applies SERPRO's own
 wait and adopts a received PDF instead of buying it again. A storage failure on a paid
 PDF ends billed and owned; any other failed delivery schedules a bounded continuation
-(1, 5, 30 min) and then opens owned work. A wait above one day is clamped, never
-shortened. The PDF limit is the largest report the 5 MiB JSON wire can carry
+(1, 5, 30 min) and then opens owned work. A wait above one day is clamped to one day (that
+shortens such an estimate; it is never replaced by the 60 s default). Repair 2 records
+a reply's call and wait only for the report's current attempt, under the report row
+lock, so a stale runner's late reply cannot replace a newer attempt's wait; a late
+paid PDF is still kept and adopted. The PDF limit is the largest report the 5 MiB JSON wire can carry
 (`MAX_REPORT_BYTES`, about 3.75 MiB). Evidence: `.evidence/AXRM-016-fix1-*`.
 
 #### AXRM-013: SERPRO adapter and authorization

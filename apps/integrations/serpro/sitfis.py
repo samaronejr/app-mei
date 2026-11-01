@@ -350,24 +350,51 @@ def _receive(
 ) -> None:
     """Record a received reply on the report before its call is final.
 
-    Plain guarded UPDATEs in a short transaction of their own: they never touch the
-    report state, and the row lock serializes them with every runner's decision.
+    A short transaction of its own under the report row lock, serialized with every
+    runner's decision. It never touches the report state, and it records a reply's
+    call and wait only for the report's current attempt (compare-and-set).
     """
     wait_ms = int(reply.wait.total_seconds() * 1000) if reply.wait is not None else None
     now = timezone.now()
-    with tenant_context(tenant_id):
-        rows = FiscalSituationReport.objects.filter(pk=report_id).exclude(
-            state__in=FINAL_STATES
+    with tenant_context(tenant_id), transaction.atomic():
+        report = (
+            FiscalSituationReport.objects.select_for_update(of=("self",))
+            .exclude(state__in=FINAL_STATES)
+            .filter(pk=report_id)
+            .first()
         )
-        rows.update(reply_call=str(call_id), reply_wait_ms=wait_ms)
-        if reply.protocol:
-            rows.filter(state=FiscalReportState.SOLICITADO, protocol="").update(
-                protocol=reply.protocol, protocol_date=now
-            )
-        if reply.document_id is not None:
-            rows.filter(document__isnull=True).update(
-                document_id=reply.document_id, emitted_at=now
-            )
+        if report is None:
+            return
+        key = (
+            ProviderCall.objects.filter(pk=call_id)
+            .values_list("request_key", flat=True)
+            .first()
+        )
+        # Compare-and-set: only the report's current attempt records its reply. A
+        # stale runner's late reply never replaces a newer attempt's recorded wait.
+        current = key is not None and key == _next(report)[1]
+        fields: list[str] = []
+        if reply.document_id is not None and report.document_id is None:
+            # A paid PDF is kept from any attempt, current or late, and adopted.
+            report.document_id = reply.document_id
+            report.emitted_at = now
+            report.reply_call = str(call_id)
+            report.reply_wait_ms = None
+            fields += ["document", "emitted_at", "reply_call", "reply_wait_ms"]
+        elif current:
+            report.reply_call = str(call_id)
+            report.reply_wait_ms = wait_ms
+            fields += ["reply_call", "reply_wait_ms"]
+            if (
+                reply.protocol
+                and report.state == FiscalReportState.SOLICITADO
+                and not report.protocol
+            ):
+                report.protocol = reply.protocol
+                report.protocol_date = now
+                fields += ["protocol", "protocol_date"]
+        if fields:
+            report.save(update_fields=fields)
 
 
 def _invalid(result: CallResult) -> CallResult:

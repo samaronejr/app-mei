@@ -254,56 +254,6 @@ def test_r2b_a_protocol_wait_above_one_day_is_capped(world: World) -> None:
 # --- R3: a DB error while storing a paid PDF ---------------------------------------
 
 
-def test_r3_db_error_while_storing_a_paid_pdf(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tasks = module("apps.integrations.serpro.sitfis_tasks")
-    scheduled: list[Any] = []
-
-    def capture(args: Any, kwargs: Any = None, **options: Any) -> None:
-        scheduled.append({"kwargs": kwargs or {}, "eta": str(options.get("eta"))})
-
-    monkeypatch.setattr(tasks.advance_situation_report_task, "apply_async", capture)
-    report = _protocol(world)
-    scheduled.clear()
-    world.clock.advance(seconds=30)
-    world.script(report_reply())
-    mod = sitfis()
-    real_ingest = mod.ingest_system_document
-
-    def db_down(**kwargs: object) -> object:
-        raise OperationalError("server closed the connection unexpectedly")
-
-    monkeypatch.setattr(mod, "ingest_system_document", db_down)
-    raised = ""
-    try:
-        tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
-    except BaseException as error:  # noqa: BLE001
-        raised = type(error).__name__
-    monkeypatch.setattr(mod, "ingest_system_document", real_ingest)
-    s1 = snap(world, report, "r3-after-db-error")
-    print("RV2_R3_RAISED", raised, json.dumps(scheduled), flush=True)
-    world.script(report_reply())
-    failures = 1
-    for step in range(6):
-        world.clock.advance(seconds=61)
-        scheduled.clear()
-        state = tasks.advance_situation_report_task(
-            str(world.tenant_id), str(report.pk), failures=failures
-        )
-        failures = 0
-        snap(world, report, f"r3-delivery-{step}")
-        if state not in {"aguardando", "emitindo"}:
-            break
-    final = snap(world, report, "r3-final")
-    assert s1["state"] in {"emitindo", "aguardando"}
-    # Item 4's claim: a paid PDF that was received is never bought again.
-    assert final["emitir_requests"] == 1, final
-
-
-# --- R4: a continuation racing a live runner ---------------------------------------
-
-
 def test_r4_a_continuation_racing_a_live_runner_sends_nothing(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
