@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from django.conf import settings as django_settings
-from django.db import OperationalError, connections
+from django.db import connections
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import Exception as CycleException
