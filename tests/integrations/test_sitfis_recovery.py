@@ -360,6 +360,36 @@ def test_p3a2_a_storage_failure_on_a_paid_pdf_is_billed_and_owned(
     assert len(world.sent("/Emitir")) == 1
 
 
+def test_an_s3_error_on_a_paid_pdf_is_billed_and_owned(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tasks, scheduled = _capture(monkeypatch)
+    report = _protocol(world)
+    scheduled.clear()
+    world.clock.advance(seconds=30)
+    world.script(report_reply())
+    mod = sitfis()
+
+    def storage_down(**kwargs: object) -> object:
+        from botocore.exceptions import ClientError  # noqa: PLC0415
+
+        raise ClientError({"Error": {"Code": "SlowDown"}}, "PutObject")
+
+    monkeypatch.setattr(mod, "ingest_system_document", storage_down)
+    # The delivery does not raise: the paid reply is recorded and owned.
+    state = tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
+    assert state == "falha"
+    assert _calls(world) == [("falhou", 1, 200, "sim")]
+    assert world.budget().known_liability == EMISSAO_MICROBRL
+    assert world.budget().reserved == 0
+    assert _problems(world) == ["aberta"]
+    assert scheduled == []
+    # Never re-bought automatically.
+    world.clock.advance(days=3)
+    world.advance(report)
+    assert len(world.sent("/Emitir")) == 1
+
+
 def test_p3b2_a_db_error_after_a_final_202_schedules_a_bounded_continuation(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
