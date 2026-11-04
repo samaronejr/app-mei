@@ -25,7 +25,7 @@ def test_each_users_feedback_changes_only_their_items_and_counts() -> None:
         )
         initial = briefing(setup.actor, scope="team", filters=BriefingFilters())
         colleague = briefing(setup.staff, scope="team", filters=BriefingFilters())
-        assert initial.total == colleague.total == 8
+        assert initial.total == colleague.total == 7
         obligation = next(item for item in initial.items if item.kind == "obligation")
         delivery = next(item for item in colleague.items if item.kind == "delivery")
         dismiss(
@@ -56,14 +56,14 @@ def test_each_users_feedback_changes_only_their_items_and_counts() -> None:
         assert obligation.id in {item.id for item in staff_page.items}
         assert delivery.id in {item.id for item in owner_page.items}
         assert delivery.id not in {item.id for item in staff_page.items}
-        expected = dict.fromkeys(graph.subjects, 1)
+        expected = dict.fromkeys(graph.subjects, 1) | {"integration": 0}
         assert {row.kind: row.total for row in owner_page.counts} == expected | {
             "obligation": 0,
         }
         assert {row.kind: row.total for row in staff_page.counts} == expected | {
             "delivery": 0,
         }
-        assert owner_page.total == staff_page.total == 7
+        assert owner_page.total == staff_page.total == 6
 
         Obligation.objects.filter(pk=obligation.subject_ref).update(
             resolved_due_date=NOW.date() + timedelta(days=1)
@@ -73,9 +73,9 @@ def test_each_users_feedback_changes_only_their_items_and_counts() -> None:
             setup.staff, scope="team", filters=BriefingFilters()
         )
 
-    assert resurfaced.total == 8
+    assert resurfaced.total == 7
     assert {row.kind: row.total for row in resurfaced.counts} == expected
-    assert unchanged_colleague.total == 7
+    assert unchanged_colleague.total == 6
     assert {row.kind: row.total for row in unchanged_colleague.counts} == expected | {
         "delivery": 0,
     }

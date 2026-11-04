@@ -197,7 +197,9 @@ def provider_graph(
             verdict=ScanVerdict.CLEAN,
             scanned_at=NOW,
         )
-        issue = IntegrationIssue.objects.create(
+        # This pre-cycle issue remains stored but must not duplicate the open
+        # cycle's work on Hoje (AXRM-018 review 1).
+        IntegrationIssue.objects.create(
             tenant=setup.tenant,
             client=setup.client,
             reason="consulta_pagamentos_falhou",
@@ -242,7 +244,6 @@ def provider_graph(
             "approval": proposal.pk,
             "delivery": message.pk,
             "document": intake.pk,
-            "integration": issue.pk,
             "coverage": setup.engagement.pk,
         },
         proposal,

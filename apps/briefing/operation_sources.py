@@ -2,13 +2,23 @@
 
 from datetime import timedelta
 
-from django.db.models import CharField, DateField, F, OuterRef, Q, Subquery, Value
+from django.db.models import (
+    CharField,
+    DateField,
+    Exists,
+    F,
+    OuterRef,
+    Q,
+    Subquery,
+    Value,
+)
 from django.db.models.functions import Cast, Coalesce, Concat
 
 from apps.briefing.source_rows import SourceContext, SourceQuery, project
 from apps.clients.models import AssignmentRole, ClientAssignment, Engagement
 from apps.clients.models.engagement import ServiceKind
-from apps.cycles.models import DocumentIntake, EvidenceLink, IntakeState
+from apps.cycles.models import DocumentIntake, EvidenceLink, IntakeState, ServiceCycle
+from apps.cycles.openers import CLOSED_STATES
 from apps.delivery.models import MessageState, OutboundMessage
 from apps.integrations.models import ACTIVE_ISSUE_STATES, IntegrationIssue
 from apps.obligations.queries import DUE_SOON_HORIZON_DAYS, unsettled_for
@@ -122,11 +132,16 @@ def documents(context: SourceContext) -> SourceQuery:
 
 
 def integrations(context: SourceContext) -> SourceQuery:
-    """Owned provider problems (failed or unauthorized) of clients with no cycle."""
+    """Owned provider problems of clients with no open cycle."""
+    opened = ServiceCycle.objects.filter(client_id=OuterRef("client_id")).exclude(
+        state__in=CLOSED_STATES
+    )
     return project(
         IntegrationIssue.objects.filter(
             client_id__in=context.clients.values("pk"), state__in=ACTIVE_ISSUE_STATES
-        ).annotate(
+        )
+        .filter(~Exists(opened))
+        .annotate(
             brief_kind=Value("integration"),
             brief_period=Value(None, output_field=DateField()),
             brief_owner=F("owner_id"),

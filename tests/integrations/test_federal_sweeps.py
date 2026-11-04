@@ -286,6 +286,38 @@ def test_the_flag_off_runs_nothing(world: World, fire: Fire) -> None:
     assert states(world) == []
 
 
+@pytest.mark.parametrize("status", ["suspended", "closed"])
+def test_blocked_clients_are_never_consulted(
+    world: World, fire: Fire, status: str
+) -> None:
+    with tenant_context(world.termo.tenant.pk):
+        ClientCompany.objects.filter(pk=world.termo.client.pk).update(status=status)
+    world.script(page([]))
+    assert fire(DAY) == 0
+    assert paid(world) == 0
+    assert states(world) == []
+
+
+def test_staff_consultation_does_not_cancel_the_scheduled_month(
+    world: World, fire: Fire
+) -> None:
+    from apps.integrations.serpro.pagtoweb import PaymentRange  # noqa: PLC0415
+    from apps.integrations.serpro.payments import consult_payments  # noqa: PLC0415
+
+    world.script(page([]), page([]))
+    query = consult_payments(
+        world.termo.client,
+        PaymentRange(pagto.COMPETENCE, DAY),
+        actor=world.termo.actor,
+        nonce="staff-before-sweep",
+    )
+    assert query.trigger == "equipe"
+    assert query.state == "nada_localizado"
+    assert fire(DAY) == 1
+    assert paid(world) == 2
+    assert fire(DAY) == 0
+
+
 def test_an_unapproved_production_environment_runs_nothing(
     world: World, fire: Fire, settings: SettingsWrapper
 ) -> None:

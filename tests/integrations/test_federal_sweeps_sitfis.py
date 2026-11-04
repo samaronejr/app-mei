@@ -15,6 +15,7 @@ from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
+from apps.cycles.models import Exception as CycleException
 from apps.delivery.jobs import registered_jobs
 from apps.integrations.authority import head_record, revoke_authority
 from apps.integrations.serpro import sitfis_tasks, tasks
@@ -76,6 +77,10 @@ def test_a_client_whose_cycle_opened_this_month_gets_one_report_and_no_second(
     beat = SchedulerHeartbeat.objects.get(name=SITFIS)
     assert beat.last_success_at is not None
     assert beat.last_error_code == ""
+    # A received report is owned by the phased worker. The sweep must not
+    # re-enqueue it; a never-received solicitado is covered by the repair tests.
+    with tenant_context(world.tenant_id):
+        FiscalSituationReport.objects.update(state="protocolo_recebido")
     # Later days of the month find the report and request nothing new.
     assert fire(monkeypatch) == 0
     assert fire(monkeypatch, date(2026, 10, 16)) == 0
@@ -135,6 +140,21 @@ def test_a_client_without_verified_authority_is_not_requested(
     assert fire(monkeypatch) == 0
     assert reports(world) == 0
     assert queued == []
+    with tenant_context(world.tenant_id):
+        assert (
+            CycleException.objects.filter(
+                client_id=world.termo.client.pk, reason_code="autorizacao_ausente"
+            ).count()
+            == 1
+        )
+    assert fire(monkeypatch) == 0
+    with tenant_context(world.tenant_id):
+        assert (
+            CycleException.objects.filter(
+                client_id=world.termo.client.pk, reason_code="autorizacao_ausente"
+            ).count()
+            == 1
+        )
 
 
 def test_a_failed_turn_never_stamps_success(

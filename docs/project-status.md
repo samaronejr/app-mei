@@ -1188,6 +1188,17 @@ cases then pass in three consecutive runs. Evidence:
 
 #### AXRM-018: fair monthly federal sweeps
 
+Review 1 repair keeps never-received `solicitado` SITFIS reports in the monthly
+sweep, calling the existing request entry point again with the same report identity.
+Received reports and billed outcomes remain excluded. The Hoje integration source
+now excludes clients with any open cycle, whose work uses the exception source.
+Regression tests cover lost broker publication, worker death after commit, duplicate
+Hoje items, resolved issues, blocked clients, staff versus scheduled competence,
+and missing SITFIS authority. The existing briefing fixture retains its old issue
+and now asserts zero integration items for its open cycle; the scale test keeps
+every source populated using a client without an open cycle. Repair evidence is
+recorded under `.evidence/AXRM-018-fix1-*`.
+
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |
 | `AXRM-018` | Beat entries `federal-sitfis-monthly` (06:10, task `schedule_situation_reports`) and `federal-payments-monthly` (06:20, from day 21, the existing `schedule_payment_consultations`) now go through `apps/integrations/serpro/sweeps.py`. Each firm gets a bounded turn: at most 20 clients per firm per run, taken after a per-firm cursor (`delivery.0009`: `federal_sitfis_cursor` and `federal_payments_cursor` on `AutomationPause`, two nullable columns, no new table) and wrapping, so with 3 firms x 50 clients every client is reached in three runs. Each client is one short transaction holding its work and the cursor move, so a worker that dies resumes at the client in flight and a refused or failing client never holds the others back. Every claim is refused before any row or provider I/O unless `PROVIDERS_PAUSED`/`SERPRO_PAUSED` are off, the environment is approved, the firm holds `federal_checks` and the client's authority is active (a missing one opens owned work); the budget is admitted by the call protocol. SITFIS candidates are linked clients whose cycle opened this month and that have no report requested this month; payments candidates are linked clients without a settled scheduled consultation for the month (its identity is the client and the competence month, so a second run, or another day, pays nothing). Provider-bound runs are queued only after each client's transaction commits. Heartbeats (`schedule_situation_reports`, `schedule_payment_consultations`) stamp an attempt first and `last_success_at` only when every firm's turn completed; a pause stamps `pausado`. The automations page labels both jobs and shows "Pausado" while a switch is on. The Hoje queue gains the `integration` source (open `IntegrationIssue` rows: failed consultations and missing authority of clients with no open cycle; open cycles keep using the exception source). | Beat entries are inert while `federal_checks` is off for the firm, `SERPRO_PAUSED`/`PROVIDERS_PAUSED` is on, or the production environment is unapproved. Recovery is the pause switch or the flag; cursors are harmless to keep. `delivery.0009` reverses (two nullable columns). No retry limit or billing of todos 15/16 changed. |

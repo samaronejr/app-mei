@@ -22,10 +22,9 @@ ALL_KINDS = {
     "approval",
     "delivery",
     "document",
-    "integration",
     "coverage",
 }
-# An integration issue carries no service line, regime or competence month.
+# A client with an open cycle has no integration projection.
 SERVICE_AND_PERIOD_ITEMS = ALL_KINDS - {"integration"}
 
 
@@ -73,7 +72,7 @@ def test_personal_queue_and_responsible_filter_follow_the_live_owner() -> None:
         ClientAssignment.objects.create(
             tenant=setup.tenant, client=setup.client, user=setup.staff
         )
-        assert briefing(setup.staff, scope="team", filters=BriefingFilters()).total == 8
+        assert briefing(setup.staff, scope="team", filters=BriefingFilters()).total == 7
         assert briefing(setup.staff, scope="me", filters=BriefingFilters()).total == 0
         ServiceCycle.objects.filter(pk=graph.cycle.pk).update(owner=setup.staff)
         Engagement.objects.filter(pk=setup.engagement.pk).update(

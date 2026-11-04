@@ -63,7 +63,11 @@ from apps.integrations.serpro.sitfis import (
     SituationReportRefusedError,
     request_situation_report,
 )
-from apps.obligations.models import FiscalSituationReport, SchedulerHeartbeat
+from apps.obligations.models import (
+    FiscalReportState,
+    FiscalSituationReport,
+    SchedulerHeartbeat,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -189,7 +193,7 @@ def payment_candidates(window: PaymentRange) -> QuerySet[ClientCompany]:
 
 
 def report_candidates(today: date) -> QuerySet[ClientCompany]:
-    """Linked clients whose cycle opened this month and that have no report yet."""
+    """Clients whose monthly report is absent or has not reached its worker yet."""
     month = today.replace(day=1)
     opened = ServiceCycle.objects.filter(
         client_id=OuterRef("pk"), period_start=month
@@ -197,7 +201,7 @@ def report_candidates(today: date) -> QuerySet[ClientCompany]:
     asked = FiscalSituationReport.objects.filter(
         client_id=OuterRef("pk"),
         requested_at__gte=timezone.make_aware(datetime.combine(month, time.min)),
-    )
+    ).exclude(state=FiscalReportState.SOLICITADO)
     return _linked().filter(Exists(opened), ~Exists(asked))
 
 
