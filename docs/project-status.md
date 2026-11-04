@@ -1244,6 +1244,11 @@ repair 2 red: `.evidence/AXRM-017-fix2-red.txt` (four original review-2 failures
 rounds, committed-head gate totals per stage, deliberate breaks and
 the QA, adversarial and teardown receipts are recorded in `.evidence/AXRM-017-*`.
 
+The complete state classification names the protocol's `RECONCILED` state, so
+`pgmei.py` is registered in the scope guard's exact provider-recovery file set.
+The guard's assertions stay unchanged; negative controls prove that OFX inside
+the registered module and recovery vocabulary in an unregistered module still fail.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
