@@ -93,7 +93,7 @@ def test_previous_day_reserved_runner_blocks_a_new_paid_click(
     guide_world: GuideWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     world = guide_world
-    real_claim = pgmei.claim
+    real_claim = call_protocol.claim
     first_id: UUID | None = None
     nested: list[pgmei.GuideOutcome] = []
     sends_during_first_reservation: list[int] = []
