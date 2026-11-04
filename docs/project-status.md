@@ -1169,6 +1169,24 @@ The committed repair head still requires full standard gates, manual/adversarial
 QA and cleanup before fresh independent review; no approval is claimed here.
 #### AXRM-013: SERPRO adapter and authorization
 
+Budget-month follow-up (2026-11-04): synthetic qualification opens its explicit
+SERPRO budget in the UTC month used by admission, while signed termo dates keep
+the local calendar. Four clock-pinned cases cover 22:30 BRT on October 31 and
+00:30 BRT on November 1 through submission and operator qualification. The base
+fails both late-October cases with `cota_ausente`; both November controls pass.
+The existing SERPRO/qualification selection has **190 passing tests**; adding
+the four regressions gives **194**, green in three consecutive pre-commit runs.
+Restoring the local budget month in memory is killed by both late-October cases,
+with both controls still passing. Clean committed-head repetitions and full
+gate totals are recorded separately in the budget-month evidence receipts.
+Adjacent pinned probes confirm risks in local-cycle quota alerts, date-only
+termo expiry and the shared local-period Focus estimate; those require calendar
+contracts beyond this UTC budget-key correction. Recovery is a code revert;
+no schema, budget policy, provider flag or production authorization changes.
+Evidence: `.evidence/AXRM-013-budgetmonth-red.txt`,
+`AXRM-013-budgetmonth-green.txt`, `AXRM-013-budgetmonth-mutation.txt`,
+`AXRM-013-budgetmonth-adjacent.md` and `AXRM-013-budgetmonth-gates.txt`.
+
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |
 | `AXRM-013` | Allowlisted SERPRO adapter, isolated memory-only mTLS token broker, externally signed termo intake and submission, and the fake/trial qualification registry and command. Client and firm calls use the existing claim, journal, fence and budget protocol; only a complete first 401 permits one fresh attempt. Firm uncertainty and missing procurador authority have owned client-less work (`FirmIntegrationIssue`), with explicit zero-price attempt reservations (`FirmProviderReservation`). Contratante PEM secrets mount only in the broker; tokens never enter persistent state. | Default environment remains `fake`, flags off and providers paused. Apply `integrations.0005` and `0006`; empty tables reverse, while populated work or reservation history refuses reversal and requires forward repair. Recovery is provider pause plus dropping the broker's process memory. OG-R2, OG-R3, OG-R5 and PQ-SERPRO-4 remain open; no real provider request or independent-review approval is claimed. |
