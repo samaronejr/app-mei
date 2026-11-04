@@ -1027,7 +1027,8 @@ def _apply(
             return
         if transmitted:
             wait = _stored_wait(report, call.pk, operation)
-            report.wait_until = timezone.now() + wait
+            deadline = timezone.now() + wait
+            report.wait_until = max(deadline, _announced_until(report) or deadline)
         else:
             # Never sent, so nothing was paid and SERPRO asked for no wait: the
             # next identity may go at once (the existing wait_until has passed).
