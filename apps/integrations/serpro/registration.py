@@ -85,10 +85,15 @@ def client_authority(call: ProviderCall) -> bool:
         state__in=ACTIVE_STATES,
     ).exists():
         return False
-    return (
+    authorized = (
         termo_in_force(connection_id, timezone.localdate())
         and authority_for(call.client, call.operation, link=call.link).usable
     )
+    if authorized and call.operation == "SP-SIT-R":
+        from apps.integrations.serpro.sitfis import admit_emission  # noqa: PLC0415
+
+        admit_emission(call)
+    return authorized
 
 
 def register_serpro_operations() -> None:

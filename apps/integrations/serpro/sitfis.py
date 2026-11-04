@@ -16,10 +16,12 @@ AXRM-016 (plan todo 16; A6 SP-SIT-P/SP-SIT-R, A7.3, A7.4).
   `dados`; a 204 (not billed) carries it in the `ETag` header. Each emission
   attempt is its own call and identity; at most three, then
   `limite_de_tentativas`.
-* Every reply is decided before the protocol makes it final, and the protocol
-  or the PDF is written in the same transaction that finalizes the call as a
-  success, so nothing raises after finality and no paid result is lost. Every
-  ending other than `emitido` opens owned work.
+* Each call retains its own received-at timestamp and wait, independently of
+  finalization, quarantine and report progress. The fenced admission hook checks
+  the maximum announced deadline at reserve, claim and dispatch start.
+* A paid PDF and its report association commit together before finalization.
+  Every report state can adopt it, including `limite_de_tentativas`. A failure
+  before that private commit remains the disclosed pre-durable window.
 
 The PDF is never parsed: it is stored as an actor-less, portal-invisible
 `provedor_federal` original through `ingest_system_document` and must pass the
@@ -35,7 +37,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, cast
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -53,10 +55,11 @@ from apps.core.retention import RetentionClass
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.cycles.intake import UploadRejected, UploadScannerOff
-from apps.cycles.models import CycleEvent, ServiceCycle
+from apps.cycles.models import CycleEvent, ExceptionState, ServiceCycle
+from apps.cycles.models import Exception as CycleException
 from apps.cycles.openers import CLOSED_STATES
 from apps.cycles.scanning import scan_required
-from apps.cycles.services.exceptions import ExceptionReason
+from apps.cycles.services.exceptions import ACTIVE_STATES, ExceptionReason
 from apps.integrations.authority import (
     Problem,
     authority_for,
@@ -69,12 +72,20 @@ from apps.integrations.call_contracts import (
     AdmissionDeniedError,
     CallRequest,
     CallResult,
+    Claim,
     IntentConflictError,
     StaleClaimError,
 )
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
-from apps.integrations.models import ClientProviderLink, IssueReason, LinkStatus
+from apps.integrations.models import (
+    ACTIVE_ISSUE_STATES,
+    ClientProviderLink,
+    IntegrationIssue,
+    IssueReason,
+    IssueState,
+    LinkStatus,
+)
 from apps.integrations.serpro.adapter import SerproAdapter
 from apps.integrations.serpro.codec import build_request, parse_response
 from apps.integrations.serpro.parties import termo_parties
@@ -83,6 +94,7 @@ from apps.integrations.transport_types import TransportFailure
 from apps.integrations.transport_wire import XML_LIMIT
 from apps.obligations.models import (
     AcquisitionOrigin,
+    Document,
     FederalConsultation,
     FederalConsultationKind,
     FederalConsultationOutcome,
@@ -94,7 +106,6 @@ from apps.obligations.system_ingest import ingest_system_document
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime
     from uuid import UUID
 
     from apps.accounts.models import User
@@ -167,6 +178,17 @@ class SituationReportRefusedError(ValidationError):
         super().__init__("Relatório de situação fiscal indisponível.", code=code)
 
 
+class EmissionDeferredError(Exception):
+    """A domain veto rolls back admission before any dispatch-start or spending."""
+
+    def __init__(self, call: ProviderCall) -> None:
+        """Carry the actual fenced claim, including an internal 401 retry."""
+        super().__init__()
+        self.call_id = call.pk
+        self.fence = call.fence
+        self.owner = call.lease_owner
+
+
 def _digest(*parts: str) -> str:
     return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
 
@@ -224,6 +246,7 @@ class SitfisReply:
     wait: timedelta | None = None
     pdf: bytes | None = field(default=None, repr=False)
     document_id: UUID | None = None
+    received_at: datetime | None = None
 
 
 class SitfisAdapter:
@@ -251,6 +274,7 @@ class SitfisAdapter:
         response = self.inner.response
         if response is None:
             return result
+        self.reply.received_at = timezone.now()
         operation = dispatch.receipt.operation
         call_id = dispatch.receipt.call_id
         if operation == PROTOCOL_OPERATION and result.state == CallState.SUCCESS:
@@ -303,16 +327,21 @@ class SitfisAdapter:
         if self.reply.pdf is None:
             return result
         try:
-            document = ingest_system_document(
-                tenant_id=self.tenant_id,
-                client_id=_client_of(self.tenant_id, self.report_id),
-                origin=AcquisitionOrigin.FEDERAL_PROVIDER,
-                receipt_ref=str(call_id),
-                payload=self.reply.pdf,
-                filename=f"situacao-fiscal-{self.report_id}.pdf",
-                content_type="application/pdf",
-                retention_class=RetentionClass.FISCAL_EVIDENCE,
-            )
+            # A durable private original always has its report association, even
+            # when intake reused existing bytes with another acquisition receipt.
+            with tenant_context(self.tenant_id):
+                document = ingest_system_document(
+                    tenant_id=self.tenant_id,
+                    client_id=_client_of(self.tenant_id, self.report_id),
+                    origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+                    receipt_ref=str(call_id),
+                    payload=self.reply.pdf,
+                    filename=f"situacao-fiscal-{self.report_id}.pdf",
+                    content_type="application/pdf",
+                    retention_class=RetentionClass.FISCAL_EVIDENCE,
+                )
+                self.reply.document_id = document.pk
+                _store_reply(_locked(self.report_id), call_id, self.reply)
         except (
             UploadScannerOff,
             UploadRejected,
@@ -332,7 +361,6 @@ class SitfisAdapter:
                 result.billed,
                 result.response_digest,
             )
-        self.reply.document_id = document.pk
         _receive(self.tenant_id, self.report_id, call_id, self.reply)
         return result
 
@@ -348,53 +376,57 @@ def _client_of(tenant_id: UUID, report_id: UUID) -> UUID:
 def _receive(
     tenant_id: UUID, report_id: UUID, call_id: UUID, reply: SitfisReply
 ) -> None:
-    """Record a received reply on the report before its call is final.
+    """Record this call's receipt in every call and report state."""
+    with tenant_context(tenant_id):
+        _store_reply(_locked(report_id), call_id, reply)
 
-    A short transaction of its own under the report row lock, serialized with every
-    runner's decision. It never touches the report state, and it records a reply's
-    call and wait only for the report's current attempt (compare-and-set).
-    """
+
+def _store_reply(
+    report: FiscalSituationReport, call_id: UUID, reply: SitfisReply
+) -> None:
+    """Append an idempotent call-scoped receipt under the report row lock."""
     wait_ms = int(reply.wait.total_seconds() * 1000) if reply.wait is not None else None
-    now = timezone.now()
-    with tenant_context(tenant_id), transaction.atomic():
-        report = (
-            FiscalSituationReport.objects.select_for_update(of=("self",))
-            .exclude(state__in=FINAL_STATES)
-            .filter(pk=report_id)
-            .first()
-        )
-        if report is None:
-            return
-        key = (
-            ProviderCall.objects.filter(pk=call_id)
-            .values_list("request_key", flat=True)
-            .first()
-        )
-        # Compare-and-set: only the report's current attempt records its reply. A
-        # stale runner's late reply never replaces a newer attempt's recorded wait.
-        current = key is not None and key == _next(report)[1]
-        fields: list[str] = []
-        if reply.document_id is not None and report.document_id is None:
-            # A paid PDF is kept from any attempt, current or late, and adopted.
-            report.document_id = reply.document_id
-            report.emitted_at = now
-            report.reply_call = str(call_id)
-            report.reply_wait_ms = None
-            fields += ["document", "emitted_at", "reply_call", "reply_wait_ms"]
-        elif current:
-            report.reply_call = str(call_id)
-            report.reply_wait_ms = wait_ms
-            fields += ["reply_call", "reply_wait_ms"]
-            if (
-                reply.protocol
-                and report.state == FiscalReportState.SOLICITADO
-                and not report.protocol
-            ):
-                report.protocol = reply.protocol
-                report.protocol_date = now
-                fields += ["protocol", "protocol_date"]
-        if fields:
-            report.save(update_fields=fields)
+    received = reply.received_at or timezone.now()
+    key = (
+        ProviderCall.objects.filter(pk=call_id, client_id=report.client_id)
+        .values_list("request_key", flat=True)
+        .first()
+    )
+    if key not in _call_keys(report):
+        return
+    receipt = {"received_at": received.isoformat(), "wait_ms": wait_ms}
+    receipts = report.call_replies.setdefault(str(call_id), [])
+    if receipt not in receipts:
+        receipts.append(receipt)
+    # Preserve the old current-attempt projection for receipts and diagnostics.
+    # It is deliberately separate from the append-only timing ledger above.
+    current = key is not None and key == _next(report)[1]
+    fields = ["call_replies"]
+    if reply.document_id is not None and report.document_id is None:
+        report.document_id = reply.document_id
+        report.emitted_at = received
+        report.reply_call = str(call_id)
+        report.reply_wait_ms = None
+        fields += ["document", "emitted_at", "reply_call", "reply_wait_ms"]
+    elif current and report.document_id is None:
+        report.reply_call = str(call_id)
+        report.reply_wait_ms = wait_ms
+        fields += ["reply_call", "reply_wait_ms"]
+        if (
+            reply.protocol
+            and report.state == FiscalReportState.SOLICITADO
+            and not report.protocol
+        ):
+            report.protocol = reply.protocol
+            report.protocol_date = received
+            fields += ["protocol", "protocol_date"]
+    deadline = _announced_until(report)
+    if deadline is not None and (
+        report.wait_until is None or deadline > report.wait_until
+    ):
+        report.wait_until = deadline
+        fields.append("wait_until")
+    report.save(update_fields=fields)
 
 
 def _invalid(result: CallResult) -> CallResult:
@@ -509,9 +541,103 @@ def _stored_wait(
     report: FiscalSituationReport, call_id: UUID, operation: str
 ) -> timedelta:
     """SERPRO's own wait for this call's reply; the default only when it had none."""
+    for receipt in reversed(report.call_replies.get(str(call_id), [])):
+        if receipt["wait_ms"] is not None:
+            return timedelta(milliseconds=receipt["wait_ms"])
+    # An upgrade may find a reply recorded before the per-call ledger existed.
     if report.reply_call == str(call_id) and report.reply_wait_ms is not None:
         return timedelta(milliseconds=report.reply_wait_ms)
     return _default_wait(report, operation)
+
+
+def _call_keys(report: FiscalSituationReport) -> tuple[str, ...]:
+    return (
+        protocol_request_key(report.pk),
+        *(
+            emission_request_key(report.pk, n)
+            for n in range(1, MAX_EMISSION_ATTEMPTS + 1)
+        ),
+    )
+
+
+def _announced_until(report: FiscalSituationReport) -> datetime | None:
+    """Fold every sent call's recorded received-at + wait into one deadline."""
+    sent = ProviderCall.objects.filter(
+        client_id=report.client_id, request_key__in=_call_keys(report), attempts__gt=0
+    ).values_list("pk", flat=True)
+    deadlines = [
+        datetime.fromisoformat(receipt["received_at"])
+        + timedelta(milliseconds=receipt["wait_ms"])
+        for call_id in sent
+        for receipt in report.call_replies.get(str(call_id), [])
+        if receipt["wait_ms"] is not None
+    ]
+    return max(deadlines, default=None)
+
+
+def _emission_due(report: FiscalSituationReport) -> bool:
+    """One timing rule for planning and fenced reserve, claim and dispatch."""
+    deadlines = [
+        date
+        for date in (report.wait_until, _announced_until(report))
+        if date is not None
+    ]
+    return not deadlines or timezone.now() >= max(deadlines)
+
+
+def _recover_pdf(report: FiscalSituationReport) -> None:
+    """Recover private originals committed by an earlier version of the worker."""
+    if report.document_id is not None:
+        return
+    calls = {
+        str(call.pk): call
+        for call in ProviderCall.objects.filter(
+            client_id=report.client_id,
+            operation=EMISSION_OPERATION,
+            request_key__in=_call_keys(report),
+            attempts__gt=0,
+        )
+    }
+    document = (
+        Document.objects.filter(
+            client_id=report.client_id,
+            acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+            acquisition_receipt_ref__in=calls,
+            portal_visible=False,
+            purged_at__isnull=True,
+        )
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if document is not None:
+        report.document_id = document.pk
+        report.reply_call = document.acquisition_receipt_ref
+        report.emitted_at = document.created_at
+        report.save(update_fields=["document", "reply_call", "emitted_at"])
+
+
+def admit_emission(call: ProviderCall) -> None:
+    """Veto under the protocol fence before an attempt or effect barrier exists.
+
+    The shared policy calls this at reserve, claim and dispatch start. Raising a
+    domain exception rolls that transaction back; the SITFIS runner then restores
+    its own unsent claim to RESERVED and projects the durable wait or paid PDF.
+    Calls made by qualification code without a SITFIS report keep their contract.
+    """
+    reports = FiscalSituationReport.objects.select_for_update().filter(
+        client_id=call.client_id
+    )
+    for report in reports.order_by("pk"):
+        if call.request_key not in _call_keys(report):
+            continue
+        _recover_pdf(report)
+        if (
+            report.document_id is not None
+            or report.state in FINAL_STATES
+            or not _emission_due(report)
+        ):
+            raise EmissionDeferredError(call)
+        return
 
 
 def _accept_protocol(report: FiscalSituationReport) -> None:
@@ -535,13 +661,96 @@ def _attempt_of(report: FiscalSituationReport, call: ProviderCall) -> int:
 
 def _adopt(report: FiscalSituationReport, call: ProviderCall | None) -> None:
     """End a report whose paid PDF was received and stored: never buy it again."""
+    # A decision may find a durable PDF after another runner reserved the next
+    # call. An unlocked unsent identity is cancelled and its budget returned.
+    # A currently locked admission will see EMITIDO and roll itself back.
+    unused = ProviderCall.objects.select_for_update(skip_locked=True).filter(
+        client_id=report.client_id,
+        request_key__in=_call_keys(report),
+        state__in={CallState.RESERVED, CallState.CLAIMED, CallState.RETRY},
+        dispatch_started_at__isnull=True,
+    )
+    for pending in unused.order_by("pk"):
+        release(pending)
+        pending.state = CallState.CANCELLED
+        pending.version += 1
+        pending.save()
+    if report.state == FiscalReportState.EMITIDO:
+        return
     if call is not None:
         report.emission_attempts = max(
             report.emission_attempts, _attempt_of(report, call)
         )
     report.emitted_at = report.emitted_at or timezone.now()
     _finish(report, FiscalReportState.EMITIDO, EMISSION_OPERATION, call)
+    _resolve_report_problem(report)
     _emitted_event(report)
+
+
+def _resolve_report_problem(report: FiscalSituationReport) -> None:
+    """Resolve only this report's failure, retaining ownership and its history."""
+    problems = CycleException.objects.filter(
+        client_id=report.client_id,
+        subject_ref=report.pk,
+        reason_code=REPORT_FAILED,
+        state__in=ACTIVE_STATES,
+    ).order_by("cycle_id", "pk")
+    for candidate in problems:
+        cycle = ServiceCycle.objects.select_for_update().get(pk=candidate.cycle_id)
+        problem = CycleException.objects.select_for_update().get(pk=candidate.pk)
+        if problem.state not in ACTIVE_STATES:
+            continue
+        previous = problem.state
+        problem.state = ExceptionState.RESOLVED
+        problem.version += 1
+        problem.save(update_fields=["state", "version"])
+        cycle.version += 1
+        cycle.save(update_fields=["version"])
+        CycleEvent.objects.create(
+            tenant_id=report.tenant_id,
+            client_id=report.client_id,
+            cycle=cycle,
+            actor=None,
+            type="exception.transitioned",
+            aggregate_type="Exception",
+            aggregate_id=problem.pk,
+            aggregate_version=problem.version,
+            payload={
+                "from": previous,
+                "to": ExceptionState.RESOLVED,
+                "reason": "relatorio_pago_adotado",
+                "report_id": str(report.pk),
+            },
+        )
+    issues = IntegrationIssue.objects.select_for_update().filter(
+        client_id=report.client_id,
+        reason=REPORT_FAILED,
+        service=EMISSION_OPERATION,
+        state__in=ACTIVE_ISSUE_STATES,
+        evidence_refs__contains=[str(report.pk)],
+    )
+    for issue in issues.order_by("pk"):
+        # An issue may own several reports. Keep it active while another report
+        # still needs work, and retain every evidence reference.
+        other_reports = FiscalSituationReport.objects.filter(
+            pk__in=[ref for ref in issue.evidence_refs if ref != str(report.pk)]
+        ).exclude(state=FiscalReportState.EMITIDO)
+        if other_reports.exists():
+            continue
+        issue.state = IssueState.RESOLVIDA
+        issue.version += 1
+        issue.updated_at = timezone.now()
+        issue.save(update_fields=["state", "version", "updated_at"])
+        record_event(
+            action="integrations.issue_resolved",
+            tenant_id=report.tenant_id,
+            obj=ObjectRef("IntegrationIssue", str(issue.pk)),
+            metadata={
+                "reason": REPORT_FAILED,
+                "service": EMISSION_OPERATION,
+                "resolution": "relatorio_pago_adotado",
+            },
+        )
 
 
 def _keeper(report_id: UUID, step: _Step) -> Callable[[ProviderCall], None]:
@@ -549,7 +758,7 @@ def _keeper(report_id: UUID, step: _Step) -> Callable[[ProviderCall], None]:
 
     def keep(call: ProviderCall) -> None:
         report = FiscalSituationReport.objects.select_for_update().get(pk=report_id)
-        if call.request_key != step.key or report.state in FINAL_STATES:
+        if call.request_key != step.key:
             return
         if step.operation == PROTOCOL_OPERATION:
             if report.protocol and report.state == FiscalReportState.SOLICITADO:
@@ -703,11 +912,7 @@ def _step(
 
 
 def _received_pdf(report: FiscalSituationReport) -> _Step | None:
-    """Adopt a paid PDF that was received and stored; never buy it again.
-
-    Its own call is left to finish first: a live owner is waited for, and an
-    expired lease is handed to the claim (which quarantines it) before adoption.
-    """
+    """Adopt a durable paid PDF in every state, without another emission."""
     paid = (
         ProviderCall.objects.filter(
             client_id=report.client_id, pk=report.reply_call
@@ -715,12 +920,6 @@ def _received_pdf(report: FiscalSituationReport) -> _Step | None:
         if report.reply_call
         else None
     )
-    if paid is not None and paid.state in {CallState.CLAIMED, CallState.STARTED}:
-        if paid.lease_until is not None and paid.lease_until > timezone.now():
-            return None
-        operation, key, attempt = _next(report)
-        if paid.request_key == key:
-            return _step(report, operation, key, attempt)
     _adopt(report, paid)
     return None
 
@@ -730,7 +929,7 @@ def _first_call(
 ) -> _Step | None:
     """Name a call not made yet; an emission only at or after `wait_until`."""
     if operation == EMISSION_OPERATION:
-        if report.wait_until is not None and timezone.now() < report.wait_until:
+        if not _emission_due(report):
             if report.state != FiscalReportState.AGUARDANDO:
                 report.state = FiscalReportState.AGUARDANDO
                 _save(report)
@@ -758,13 +957,14 @@ def _decide(  # noqa: PLR0911 - each return names one A7.3 waiting point
     """Apply the newest final call to the report, then name the next call, if any."""
     with tenant_context(tenant_id), transaction.atomic():
         report = _locked(report_id)
+        _recover_pdf(report)
+        if report.document_id:
+            return _received_pdf(report)
         if report.state in FINAL_STATES:
             return None
         if report.state == FiscalReportState.SOLICITADO and report.protocol:
             # The protocol reply was recorded; its call may never have finalized.
             _accept_protocol(report)
-        if report.state != FiscalReportState.SOLICITADO and report.document_id:
-            return _received_pdf(report)
         if report.state == FiscalReportState.PROTOCOLO_RECEBIDO:
             report.state = FiscalReportState.AGUARDANDO
             _save(report)
@@ -775,8 +975,8 @@ def _decide(  # noqa: PLR0911 - each return names one A7.3 waiting point
         now = timezone.now()
         if call is None:
             return _first_call(report, operation, key, attempt)
-        if call.state == CallState.RESERVED:
-            return _step(report, operation, key, attempt)
+        if call.state in {CallState.RESERVED, CallState.RETRY}:
+            return _first_call(report, operation, key, attempt)
         if call.state in {CallState.CLAIMED, CallState.STARTED}:
             if call.lease_until is not None and call.lease_until > now:
                 return None
@@ -892,42 +1092,74 @@ def _conflicted(tenant_id: UUID, report_id: UUID, step: _Step) -> None:
             _finish(report, FiscalReportState.FALHA, step.operation, None)
 
 
+def _deferred(
+    tenant_id: UUID,
+    report_id: UUID,
+    error: EmissionDeferredError,
+) -> None:
+    """Restore only our unstarted claim; no send, attempt or reservation is lost."""
+    with tenant_context(tenant_id):
+        call = ProviderCall.objects.select_for_update().filter(pk=error.call_id).first()
+        if (
+            call is not None
+            and call.state == CallState.CLAIMED
+            and call.fence == error.fence
+            and call.lease_owner == error.owner
+            and call.dispatch_started_at is None
+        ):
+            call.state = CallState.RESERVED
+            call.lease_owner = None
+            call.lease_until = None
+            call.version += 1
+            call.save()
+        report = _locked(report_id)
+        _recover_pdf(report)
+        if report.document_id is not None:
+            _received_pdf(report)
+        elif report.state not in FINAL_STATES:
+            deadline = _announced_until(report)
+            if deadline is not None and (
+                report.wait_until is None or deadline > report.wait_until
+            ):
+                report.wait_until = deadline
+            report.state = FiscalReportState.AGUARDANDO
+            _save(report)
+
+
 def _run(tenant_id: UUID, report_id: UUID, step: _Step) -> None:
     """Make (or resume) the one call; each protocol phase owns its transaction."""
     body = build_request(step.operation, step.parties, step.data).body
     request = CallRequest(
         step.operation, step.key, hashlib.sha256(body).hexdigest(), step.key
     )
+    row: ProviderCall | None = None
+    ticket: Claim | None = None
     try:
         row = reserve(tenant_id, step.link_id, request)
+        ticket = claim(tenant_id, row.pk)
+        if ticket is None:
+            return  # Another runner's live lease, refusal or quarantined lease.
+        adapter = SitfisAdapter(
+            SerproAdapter(
+                _transport(cast("Environment", step.environment)),
+                step.parties,
+                step.data,
+            ),
+            tenant_id,
+            report_id,
+        )
+        try:
+            perform(ticket, adapter, keep=_keeper(report_id, step))
+        except (AdmissionDeniedError, StaleClaimError):
+            return  # Recorded on the call and applied by the next decision.
+    except EmissionDeferredError as error:
+        _deferred(tenant_id, report_id, error)
     except BudgetDeniedError:
         return  # The call row records the quota refusal; the next pass applies it.
     except AdmissionDeniedError as error:
-        _refused(tenant_id, report_id, step, error, None)
-        return
+        _refused(tenant_id, report_id, step, error, row.pk if row is not None else None)
     except IntentConflictError:
         _conflicted(tenant_id, report_id, step)
-        return
-    try:
-        ticket = claim(tenant_id, row.pk)
-    except AdmissionDeniedError as error:
-        _refused(tenant_id, report_id, step, error, row.pk)
-        return
-    if ticket is None:
-        return  # Another runner's live lease, a quota refusal or a quarantined lease.
-    adapter = SitfisAdapter(
-        SerproAdapter(
-            _transport(cast("Environment", step.environment)),
-            step.parties,
-            step.data,
-        ),
-        tenant_id,
-        report_id,
-    )
-    try:
-        perform(ticket, adapter, keep=_keeper(report_id, step))
-    except (AdmissionDeniedError, StaleClaimError):
-        return  # Recorded on the call (pausada, bloqueada_*, incerta); applied next.
 
 
 def advance_situation_report(tenant_id: UUID, report_id: UUID) -> FiscalSituationReport:

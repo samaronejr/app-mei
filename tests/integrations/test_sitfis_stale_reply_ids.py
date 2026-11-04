@@ -110,3 +110,5 @@ def test_r1c_stale_reply_ids_and_default_log(
         flush=True,
     )
     assert after["wait_left_s"] == 300.0, after
+    assert after["reply_call"] == call2, after
+    assert after["reply_wait_ms"] == 300_000, after
