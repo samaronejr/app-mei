@@ -294,3 +294,39 @@ def test_every_bounded_two_runner_ordering_preserves_wait_and_paid_pdf(
         checked += 1
     assert checked == 90
     print(f"SITFIS_INTERLEAVINGS_CHECKED={checked}")  # noqa: T201
+
+
+def test_applying_a_newer_short_reply_keeps_the_older_announced_task_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task must sleep until the same maximum that its send fence enforces."""
+    monkeypatch.setattr(registration, "termo_in_force", lambda *args: True)
+    monkeypatch.setattr(
+        registration, "authority_for", lambda *args, **kwargs: _row(usable=True)
+    )
+    monkeypatch.setattr(FirmIntegrationIssue, "objects", Rows([]))
+    monkeypatch.setattr(CycleException, "objects", Rows([]))
+    monkeypatch.setattr(IntegrationIssue, "objects", Rows([]))
+    monkeypatch.setattr(ServiceCycle, "objects", Rows([]))
+    scenario = Scenario(monkeypatch, 300, paid=False)
+    for step in (
+        "a_claim",
+        "a_send",
+        "reply_received",
+        "lease_expiry",
+        "apply_quarantine",
+        "b_claim",
+        "b_send",
+        "receive_recorded",
+    ):
+        getattr(scenario, step)()
+    scenario.b.state = CallState.WAITING
+    short_reply = mod.SitfisReply(
+        received_at=scenario.current, wait=timedelta(seconds=0)
+    )
+    mod._store_reply(scenario.report, scenario.b.pk, short_reply)
+    mod._apply(scenario.report, scenario.b, "SP-SIT-R", 2)
+    assert scenario.receipt.received_at is not None
+    expected = scenario.receipt.received_at + timedelta(seconds=300)
+    assert not mod._emission_due(scenario.report)
+    assert mod.next_run_at(scenario.report) == expected
