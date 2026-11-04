@@ -260,6 +260,7 @@ def test_a_malformed_report_is_decided_before_finality_and_owned(
     failed = world.advance(report)
     [call] = world.calls("SP-SIT-R")
     assert (call.state, call.billed) == ("falhou", "sim")
+    assert call.provider_code == "resposta_sitfis_invalida"
     assert failed.state == "falha"
     assert failed.document_id is None
     with tenant_context(world.tenant_id):
