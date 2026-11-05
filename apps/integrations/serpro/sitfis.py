@@ -1032,11 +1032,7 @@ def _decide(  # noqa: PLR0911 - each return names one A7.3 waiting point
     tenant_id: UUID, report_id: UUID
 ) -> _Step | None:
     """Apply the newest final call to the report, then name the next call, if any."""
-    with (
-        report_mutex(tenant_id, report_id),
-        tenant_context(tenant_id),
-        transaction.atomic(),
-    ):
+    with tenant_context(tenant_id), transaction.atomic():
         report = _locked(report_id)
         _recover_pdf(report)
         if report.document_id:
