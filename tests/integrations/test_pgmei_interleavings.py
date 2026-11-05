@@ -129,9 +129,11 @@ class Runners:
         self.checkpoint("reply")
         return result
 
-    def finalize(self, ticket: Claim, result: CallResult) -> bool:
+    def finalize(
+        self, ticket: Claim, result: CallResult, keep: call_protocol.Keep | None = None
+    ) -> bool:
         self.checkpoint("finalize")
-        return self.real_finalize(ticket, result)
+        return self.real_finalize(ticket, result, keep)
 
     def click(self, name: str, origin: str) -> pgmei.GuideOutcome | str:
         self.runner.name = name
@@ -252,9 +254,11 @@ class RetryLifecycleRunners(Runners):
         monkeypatch.setattr(call_protocol, "begin_io", self.begin_retry)
         monkeypatch.setattr(pgmei, "settle_guide", self.settle)
 
-    def finalize(self, ticket: Claim, result: CallResult) -> bool:
+    def finalize(
+        self, ticket: Claim, result: CallResult, keep: call_protocol.Keep | None = None
+    ) -> bool:
         self.checkpoint("finalize")
-        finalized = self.real_finalize(ticket, result)
+        finalized = self.real_finalize(ticket, result, keep)
         self.checkpoint(
             "first-finalized" if definitive_401(result) else "retry-finalized"
         )
