@@ -7,6 +7,8 @@ import os
 import selectors
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -16,16 +18,20 @@ from django.db import connection
 from psycopg import connect
 from psycopg.pq import TransactionStatus
 
+from apps.core.tenancy import tenant_context
 from apps.integrations import transport, transport_wire
 from apps.integrations.serpro import sitfis_wire
 from apps.integrations.serpro.sitfis_wire import ReportWireBusyError, report_mutex
+from apps.obligations.models import FiscalSituationReport
 from tests.integrations.sitfis_support import (
+    PDF,
     World,
     clock,
     protocol_reply,
     report_reply,
     world,
 )
+from tests.integrations.test_sitfis_adoption_concurrency import _worker
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -103,6 +109,56 @@ def test_bounded_acquisition_and_body_errors_release_every_mutex(
         raise TimeoutError
     with report_mutex(world.tenant_id, report_id, timeout_ms=1_000):
         pass
+
+
+def test_two_reports_send_concurrently_with_one_extra_session_per_worker(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.script(protocol_reply(30_000))
+    first = world.advance(world.request())
+    world.clock.advance(seconds=60)
+    with tenant_context(world.tenant_id):
+        second = FiscalSituationReport.objects.create(
+            tenant_id=world.tenant_id,
+            client_id=first.client_id,
+            consultation_id=first.consultation_id,
+            requested_at=first.requested_at,
+            protocol=first.protocol + "-independent",
+            protocol_date=first.protocol_date,
+            wait_until=world.clock.now(),
+            state="aguardando",
+        )
+    world.script(report_reply(), report_reply(PDF.replace(b"AXRM-016", b"AXRM-016-B")))
+    sessions: list[Connection[tuple[object, ...]]] = []
+    peak: list[int] = []
+    both_at_wire = threading.Barrier(2, timeout=10)
+
+    def capture(session: Connection[tuple[object, ...]]) -> None:
+        sessions.append(session)
+        active = sum(not current.closed for current in sessions)
+        peak.append(active)
+        assert active <= 2
+
+    def concurrent(
+        request: Request, limits: WireLimits, *, redirect: bool = False
+    ) -> ProviderResponse | str:
+        if str(request.url).endswith("/Emitir"):
+            assert not connection.in_atomic_block
+            both_at_wire.wait()
+        return transport_wire._exchange(request, limits, redirect=redirect)
+
+    monkeypatch.setattr(sitfis_wire, "connect", _observe(connect, capture))
+    monkeypatch.setattr(transport, "_exchange", concurrent)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(_worker, "independent-report-a", lambda: world.advance(first))
+        b = pool.submit(_worker, "independent-report-b", lambda: world.advance(second))
+        a.result(timeout=25)
+        b.result(timeout=25)
+    assert len(world.sent("/Emitir")) == 2
+    assert world.reload(first).state == "emitido"
+    assert world.reload(second).state == "emitido"
+    assert max(peak) == 2
+    assert all(session.closed for session in sessions)
 
 
 def test_process_death_releases_the_real_postgres_report_mutex(world: World) -> None:

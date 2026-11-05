@@ -92,7 +92,11 @@ from apps.integrations.models import (
 from apps.integrations.serpro.adapter import SerproAdapter
 from apps.integrations.serpro.codec import build_request, parse_response
 from apps.integrations.serpro.parties import termo_parties
-from apps.integrations.serpro.sitfis_wire import ReportWireBusyError, report_mutex
+from apps.integrations.serpro.sitfis_wire import (
+    ReportWireBusyError,
+    report_mutex,
+    report_writer,
+)
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import TransportFailure
 from apps.integrations.transport_wire import XML_LIMIT
@@ -381,7 +385,7 @@ def ingest_system_document(
     payload: bytes,
 ) -> Document:
     """Commit the private original and report association behind the wire mutex."""
-    with report_mutex(tenant_id, report_id), tenant_context(tenant_id):
+    with report_writer(tenant_id, report_id), tenant_context(tenant_id):
         document = _ingest_document(
             tenant_id=tenant_id,
             client_id=_client_of(tenant_id, report_id),
@@ -401,7 +405,7 @@ def _receive(
     tenant_id: UUID, report_id: UUID, call_id: UUID, reply: SitfisReply
 ) -> None:
     """Record this call's receipt in every call and report state."""
-    with report_mutex(tenant_id, report_id), tenant_context(tenant_id):
+    with report_writer(tenant_id, report_id), tenant_context(tenant_id):
         _store_reply(_locked(report_id), call_id, reply)
 
 
@@ -1176,7 +1180,7 @@ def _deferred(
     error: EmissionDeferredError,
 ) -> None:
     """Restore only our unstarted claim; no send, attempt or reservation is lost."""
-    with report_mutex(tenant_id, report_id), tenant_context(tenant_id):
+    with report_writer(tenant_id, report_id), tenant_context(tenant_id):
         call = ProviderCall.objects.select_for_update().filter(pk=error.call_id).first()
         if (
             call is not None

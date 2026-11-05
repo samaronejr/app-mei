@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import TYPE_CHECKING, Final
 
 from django.db import connection
 from psycopg import OperationalError, connect
+from psycopg.errors import LockNotAvailable, QueryCanceled
 
 from apps.core.tasks import assert_no_transaction
 
@@ -19,6 +20,28 @@ WIRE_LOCK_WAIT_MS: Final = 70_000
 
 class ReportWireBusyError(Exception):
     """The report's bounded session-lock acquisition failed before any send."""
+
+
+class ReportWireTimeoutError(ReportWireBusyError):
+    """A healthy session timed out waiting for report coordination."""
+
+
+@contextmanager
+def report_writer(tenant_id: UUID, report_id: UUID) -> Iterator[None]:
+    """Retry coordination timeouts with the same receipt/PDF and no new send.
+
+    A failed acquisition closes its dedicated connection before the next try.
+    Each worker therefore owns at most one extra connection, including waits;
+    none is checked out of Django's application connection pool.
+    """
+    with ExitStack() as scope:
+        while True:
+            try:
+                scope.enter_context(report_mutex(tenant_id, report_id))
+            except ReportWireTimeoutError:
+                continue
+            break
+        yield
 
 
 @contextmanager
@@ -52,6 +75,8 @@ def report_mutex(
                     "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
                     [f"sitfis-wire:{tenant_id}:{report_id}"],
                 )
+        except (LockNotAvailable, QueryCanceled):
+            raise ReportWireTimeoutError from None
         except OperationalError:
             raise ReportWireBusyError from None
         yield

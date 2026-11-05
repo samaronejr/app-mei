@@ -55,6 +55,7 @@ class WireScenario(Scenario):
         self.guard: AbstractContextManager[None] | None = None
         self.documents: list[Document] = []
         monkeypatch.setattr(mod, "report_mutex", self.mutex)
+        monkeypatch.setattr(mod, "report_writer", self.mutex)
         monkeypatch.setattr(mod, "tenant_context", lambda *args: nullcontext())
         monkeypatch.setattr(mod, "current_epoch", lambda: 1)
         monkeypatch.setattr(mod, "_locked", lambda report_id: self.report)
