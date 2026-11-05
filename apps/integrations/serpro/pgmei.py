@@ -136,6 +136,9 @@ MAX_DAILY_REQUESTS: Final = 5
 # One exhaustive classification for both client and firm protocol states. Every
 # non-final call blocks a new paid click until it is released, linked or owned.
 # The state-walk test checks this against both models' choices and CallState.
+# FAILED can still schedule its live definitive-401 retry until guide settlement.
+# Owning that failure revokes its ticket under the call lock before it is omitted
+# from the predecessor barrier.
 CALL_FINAL: Final[dict[str, bool]] = {
     CallState.QUEUED: False,
     CallState.RESERVED: False,
@@ -909,6 +912,21 @@ def _owned(call: ProviderCall, reason: str) -> bool:
 
 def _own(call: ProviderCall, reason: str) -> None:
     """Open the registered problem once; a resolved one is never reopened."""
+    if call.state == CallState.FAILED and call.lease_owner is not None:
+        call.fence += 1
+        call.lease_owner = None
+        call.lease_until = None
+        call.version += 1
+        call.updated_at = timezone.now()
+        call.save(
+            update_fields=[
+                "fence",
+                "lease_owner",
+                "lease_until",
+                "version",
+                "updated_at",
+            ]
+        )
     if _owned(call, reason):
         return
     raise_problem(
@@ -940,8 +958,11 @@ def settle_guide(
     if _lease_expired(call):
         _recover(tenant_id, call)
     with tenant_context(tenant_id):
-        call = ProviderCall.objects.select_related("client", "link").get(
-            pk=call_id, operation=OPERATION
+        lock_controls(tenant_id, call.link_id)
+        call = (
+            ProviderCall.objects.select_for_update()
+            .select_related("client", "link")
+            .get(pk=call_id, operation=OPERATION)
         )
         if not CALL_FINAL[call.state]:
             return "em_andamento"
