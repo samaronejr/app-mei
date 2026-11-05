@@ -1,0 +1,26 @@
+{
+  "commit": "0e79391",
+  "files": {
+    "observations": {
+      "original_sha256": "33ed8ffea554f06b484166de7203fa5b2ddbb965104a6a091065e46e015209e7",
+      "reference_sha256": "6bce3fe33db88445cfce14b4c6267ee15e0785564acbee88b660ba1472a960b5",
+      "adaptation": "None."
+    },
+    "journal": {
+      "original_sha256": "7d7cc3fcc2df44dcd1a68dc658bf551ff33674dda63aca254b2d3c847900b856",
+      "reference_sha256": "8f27073cf8ecb0fce0ccbff567bffd2c769f2e800da1b64cd6fef334728fc92e",
+      "adaptation": "None."
+    },
+    "replay": {
+      "original_sha256": "25fa3a56a6ddf507200b3e64a833e4c43a2ddb81012091bfb24f5c79cf25fe00",
+      "reference_sha256": "640d562231dd5a825ed18a0a2a11a219bc1967355fccca68b02f9cf17f0d0352",
+      "adaptation": "Only meter/observe import points to the frozen baseline module and is sorted with test imports."
+    },
+    "writer": {
+      "original_module_sha256": "c175c8fec5b4da8a01aff653bd1e2091f31629bff02531596cddf28aa57b9e9e",
+      "function_sha256": "d249ffcb5ad16926d76aa1c8a7d40f4f6de2eed97f66aaaa44b3b8948d11bf04",
+      "reference_sha256": "953e6abd352cd91b2005457b4b755745dee1edf1427eac481ba55d1acc6362b7",
+      "adaptation": "Exact record_result function; imports bind the frozen journal and current value types."
+    }
+  }
+}
