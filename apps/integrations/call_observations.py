@@ -10,6 +10,7 @@ from apps.integrations.call_contracts import (
     operation_for,
 )
 from apps.integrations.call_models import ProviderCall, ProviderCallAttempt
+from apps.integrations.call_unopened import unopened_attempts
 from apps.tenants.models import UsageKind, UsageRecord
 
 
@@ -67,6 +68,13 @@ def meter(
             if call.attempts == 1
             else uuid5(call.pk, f"provider-attempt:{call.attempts}")
         )
+        if (
+            call.operation == "SP-SIT-R"
+            and unopened_attempts(call).filter(fence__lt=call.fence).exists()
+        ):
+            # A reused no-wire slot has a new physical owner. Its bill must not
+            # collide with an earlier start-only estimate corrected to zero.
+            source = attempt_id
     existing = UsageRecord.objects.filter(metric=metric, source_event=source).first()
     focus_event = metric == "focus_eventos"
     if result.billed == "nao" and existing is None and not focus_event:

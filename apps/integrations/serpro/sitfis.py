@@ -36,7 +36,8 @@ import binascii
 import hashlib
 import logging
 import re
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, cast
 
@@ -76,8 +77,10 @@ from apps.integrations.call_contracts import (
     IntentConflictError,
     StaleClaimError,
 )
+from apps.integrations.call_dispatch import abort_unopened
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
+from apps.integrations.call_state import current_epoch
 from apps.integrations.models import (
     ACTIVE_ISSUE_STATES,
     ClientProviderLink,
@@ -89,6 +92,7 @@ from apps.integrations.models import (
 from apps.integrations.serpro.adapter import SerproAdapter
 from apps.integrations.serpro.codec import build_request, parse_response
 from apps.integrations.serpro.parties import termo_parties
+from apps.integrations.serpro.sitfis_wire import ReportWireBusyError, report_mutex
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import TransportFailure
 from apps.integrations.transport_wire import XML_LIMIT
@@ -102,10 +106,10 @@ from apps.obligations.models import (
     FiscalSituationReport,
 )
 from apps.obligations.models.federal import MAX_EMISSION_ATTEMPTS
-from apps.obligations.system_ingest import ingest_system_document
+from apps.obligations.system_ingest import ingest_system_document as _ingest_document
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from uuid import UUID
 
     from apps.accounts.models import User
@@ -181,12 +185,12 @@ class SituationReportRefusedError(ValidationError):
 class EmissionDeferredError(Exception):
     """A domain veto rolls back admission before any dispatch-start or spending."""
 
-    def __init__(self, call: ProviderCall) -> None:
+    def __init__(self, call: ProviderCall | Claim) -> None:
         """Carry the actual fenced claim, including an internal 401 retry."""
         super().__init__()
-        self.call_id = call.pk
+        self.call_id = call.call_id if isinstance(call, Claim) else call.pk
         self.fence = call.fence
-        self.owner = call.lease_owner
+        self.owner = call.owner if isinstance(call, Claim) else call.lease_owner
 
 
 def _digest(*parts: str) -> str:
@@ -329,19 +333,14 @@ class SitfisAdapter:
         try:
             # A durable private original always has its report association, even
             # when intake reused existing bytes with another acquisition receipt.
-            with tenant_context(self.tenant_id):
-                document = ingest_system_document(
-                    tenant_id=self.tenant_id,
-                    client_id=_client_of(self.tenant_id, self.report_id),
-                    origin=AcquisitionOrigin.FEDERAL_PROVIDER,
-                    receipt_ref=str(call_id),
-                    payload=self.reply.pdf,
-                    filename=f"situacao-fiscal-{self.report_id}.pdf",
-                    content_type="application/pdf",
-                    retention_class=RetentionClass.FISCAL_EVIDENCE,
-                )
-                self.reply.document_id = document.pk
-                _store_reply(_locked(self.report_id), call_id, self.reply)
+            document = ingest_system_document(
+                tenant_id=self.tenant_id,
+                report_id=self.report_id,
+                call_id=call_id,
+                reply=self.reply,
+                payload=self.reply.pdf,
+            )
+            self.reply.document_id = document.pk
         except (
             UploadScannerOff,
             UploadRejected,
@@ -373,11 +372,36 @@ def _client_of(tenant_id: UUID, report_id: UUID) -> UUID:
     return client_id
 
 
+def ingest_system_document(
+    *,
+    tenant_id: UUID,
+    report_id: UUID,
+    call_id: UUID,
+    reply: SitfisReply,
+    payload: bytes,
+) -> Document:
+    """Commit the private original and report association behind the wire mutex."""
+    with report_mutex(tenant_id, report_id), tenant_context(tenant_id):
+        document = _ingest_document(
+            tenant_id=tenant_id,
+            client_id=_client_of(tenant_id, report_id),
+            origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+            receipt_ref=str(call_id),
+            payload=payload,
+            filename=f"situacao-fiscal-{report_id}.pdf",
+            content_type="application/pdf",
+            retention_class=RetentionClass.FISCAL_EVIDENCE,
+        )
+        kept = replace(reply, document_id=document.pk)
+        _store_reply(_locked(report_id), call_id, kept)
+        return document
+
+
 def _receive(
     tenant_id: UUID, report_id: UUID, call_id: UUID, reply: SitfisReply
 ) -> None:
     """Record this call's receipt in every call and report state."""
-    with tenant_context(tenant_id):
+    with report_mutex(tenant_id, report_id), tenant_context(tenant_id):
         _store_reply(_locked(report_id), call_id, reply)
 
 
@@ -638,6 +662,59 @@ def admit_emission(call: ProviderCall) -> None:
         ):
             raise EmissionDeferredError(call)
         return
+
+
+def _wire_report_id(dispatch: Dispatch) -> UUID | None:
+    with tenant_context(dispatch.claim.tenant_id):
+        reports = FiscalSituationReport.objects.filter(
+            client_id=dispatch.claim.client_id
+        ).order_by("pk")
+        for report in reports:
+            if dispatch.receipt.request_key in _call_keys(report):
+                return report.pk
+    return None
+
+
+@contextmanager
+def wire_guard(dispatch: Dispatch) -> Iterator[None]:
+    """Keep the last locked send rule atomic with receipt and PDF commits."""
+    ticket = dispatch.claim
+    report_id = _wire_report_id(dispatch)
+    if report_id is None:
+        # Qualification calls have no report; their existing contract is retained.
+        yield
+        return
+    try:
+        with report_mutex(ticket.tenant_id, report_id):
+            with tenant_context(ticket.tenant_id):
+                report = _locked(report_id)
+                _recover_pdf(report)
+                live = ProviderCall.objects.filter(
+                    pk=ticket.call_id,
+                    client_id=ticket.client_id,
+                    state=CallState.STARTED,
+                    fence=ticket.fence,
+                    lease_owner=ticket.owner,
+                    execution_epoch=ticket.execution_epoch,
+                    lease_until__gt=timezone.now(),
+                ).exists()
+                deferred = (
+                    not live
+                    or current_epoch() != ticket.execution_epoch
+                    or report.document_id is not None
+                    or report.state in FINAL_STATES
+                    or not _emission_due(report)
+                )
+            if not deferred:
+                yield
+                return
+    except ReportWireBusyError:
+        # Acquisition failed before the guard could authorize a paid byte.
+        pass
+    # Both the report mutex and its eligibility transaction have ended. Keeping
+    # the immutable zero-byte closure may perform storage I/O.
+    abort_unopened(dispatch)
+    raise EmissionDeferredError(ticket)
 
 
 def _accept_protocol(report: FiscalSituationReport) -> None:
@@ -955,7 +1032,11 @@ def _decide(  # noqa: PLR0911 - each return names one A7.3 waiting point
     tenant_id: UUID, report_id: UUID
 ) -> _Step | None:
     """Apply the newest final call to the report, then name the next call, if any."""
-    with tenant_context(tenant_id), transaction.atomic():
+    with (
+        report_mutex(tenant_id, report_id),
+        tenant_context(tenant_id),
+        transaction.atomic(),
+    ):
         report = _locked(report_id)
         _recover_pdf(report)
         if report.document_id:
@@ -1099,7 +1180,7 @@ def _deferred(
     error: EmissionDeferredError,
 ) -> None:
     """Restore only our unstarted claim; no send, attempt or reservation is lost."""
-    with tenant_context(tenant_id):
+    with report_mutex(tenant_id, report_id), tenant_context(tenant_id):
         call = ProviderCall.objects.select_for_update().filter(pk=error.call_id).first()
         if (
             call is not None

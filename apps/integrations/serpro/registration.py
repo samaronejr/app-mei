@@ -1,6 +1,6 @@
 """Closed SERPRO operation registration with live authority and budget policies."""
 
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from django.utils import timezone
 
@@ -17,6 +17,12 @@ from apps.integrations.serpro.firm_budget import FirmBudgetPolicy
 from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.integrations.serpro.termo_state import termo_in_force
 from apps.obligations.models import AcquisitionOrigin, Document
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+    from apps.integrations.call_dispatch import Dispatch
+
 
 SUBMITTED: Final = "integrations.firm_authorization_submitted"
 MANAGE: Final = "fiscal.authority.manage"
@@ -96,6 +102,13 @@ def client_authority(call: ProviderCall) -> bool:
     return authorized
 
 
+def emission_wire_guard(dispatch: "Dispatch") -> "AbstractContextManager[None]":
+    """Bind only the paid SITFIS operation to its final wire-permit context."""
+    from apps.integrations.serpro.sitfis import wire_guard  # noqa: PLC0415
+
+    return wire_guard(dispatch)
+
+
 def register_serpro_operations() -> None:
     """Register no declarations and no permissive generic provider operation."""
     for code, kind, billing in CATALOG:
@@ -108,6 +121,7 @@ def register_serpro_operations() -> None:
                 "federal_checks",
                 billing,
                 BudgetPolicy(client_authority),
+                wire_guard=emission_wire_guard if code == "SP-SIT-R" else None,
             )
         )
     register_firm_operation(

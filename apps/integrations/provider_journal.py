@@ -11,6 +11,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 
 from apps.core.tasks import assert_no_transaction
+from apps.integrations.call_unopened import consume_unopened_write
 from apps.integrations.journal_schema import (
     FIRM_PREFIX,
     FirmJournalRecord,
@@ -70,6 +71,7 @@ def _save(path: str, raw: bytes) -> None:
 def append(record: JournalRecord | FirmJournalRecord) -> str:
     """Persist one validated immutable start or result before proceeding."""
     assert_no_transaction()
+    consume_unopened_write(record)
     raw = record.encode()
     try:
         if isinstance(record, FirmJournalRecord):
