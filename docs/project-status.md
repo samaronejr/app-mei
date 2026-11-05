@@ -1188,6 +1188,14 @@ cases then pass in three consecutive runs. Evidence:
 
 #### AXRM-018: fair monthly federal sweeps
 
+Review 2 adds six progress cases without changing product code: three firms with
+50 clients each remain fair when each firm's first 20 clients fail, both cursor
+fields advance through whole failed or refused turns, and a real missing-authority
+prefix does not strand authorized clients. M7 is a required no-starvation guard,
+not an equivalent mutant. The new tests kill M7, removal of refused-turn progress,
+and exception progress written to the wrong cursor. Repair 2 evidence is under
+`.evidence/AXRM-018-fix2-*`.
+
 Review 1 repair keeps never-received `solicitado` SITFIS reports in the monthly
 sweep, calling the existing request entry point again with the same report identity.
 Received reports and billed outcomes remain excluded. The Hoje integration source
