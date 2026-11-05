@@ -1188,6 +1188,15 @@ cases then pass in three consecutive runs. Evidence:
 
 #### AXRM-018: fair monthly federal sweeps
 
+Review 3 adds 20 cases with no product change. The environment selector is
+necessary for monthly fairness: 240 earlier-sorted clients linked only to another
+environment must not exhaust all 11 October turns before five eligible clients
+are served. Added counterexamples also guard all closed-cycle states, every
+combination of live pause switches and prior health, and the provider-attention
+priority contribution. M4, M6, M8 and M14 are all distinguished by committed
+assertions; no survivor is treated as equivalent or left untested. Search bounds
+and proof are recorded in `.evidence/AXRM-018-fix3-*`.
+
 Review 2 adds six progress cases without changing product code: three firms with
 50 clients each remain fair when each firm's first 20 clients fail, both cursor
 fields advance through whole failed or refused turns, and a real missing-authority
