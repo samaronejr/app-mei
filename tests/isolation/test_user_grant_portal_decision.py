@@ -33,6 +33,8 @@ NONE_TABLES = (
     "obligations_fiscalsituationreport",
     "integrations_firmintegrationissue",
     "integrations_firmproviderreservation",
+    "integrations_paymentquery",
+    "integrations_paymentpage",
 )
 
 # Tables that predate the explicit portal-decision rule (plan A7.1) and are on no

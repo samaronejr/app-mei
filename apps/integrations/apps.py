@@ -25,6 +25,9 @@ class IntegrationsConfig(AppConfig):
         )
         from apps.integrations.checks import check_provider_settings  # noqa: PLC0415
         from apps.integrations.serpro import pgmei_qualification  # noqa: PLC0415
+        from apps.integrations.serpro.payments import (  # noqa: PLC0415
+            REASONS as PAYMENT_REASONS,
+        )
         from apps.integrations.serpro.pgmei import (  # noqa: PLC0415
             REASONS as GUIDE_REASONS,
         )
@@ -42,7 +45,9 @@ class IntegrationsConfig(AppConfig):
         )
 
         register(check_provider_settings)
-        reasons = REASONS | BUDGET_REASONS | SERPRO_REASONS | GUIDE_REASONS
+        reasons = (
+            REASONS | BUDGET_REASONS | SERPRO_REASONS | PAYMENT_REASONS | GUIDE_REASONS
+        )
         for code, reason in reasons.items():
             register_exception_reason(code, reason)
         TENANT_EVALUATORS.extend(
@@ -53,4 +58,7 @@ class IntegrationsConfig(AppConfig):
             )
         )
         register_serpro_operations()
+        # Registers the `pagtoweb` qualification scenario (todo 13's extension point).
+        import apps.integrations.serpro.pagtoweb_qualification  # noqa: F401, PLC0415
+
         pgmei_qualification.register()

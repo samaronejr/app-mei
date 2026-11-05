@@ -571,6 +571,11 @@ class IssueReason(models.TextChoices):
         "autorizacao_procurador_ausente",
         "Autorizacao do procurador ausente",
     )
+    # AXRM-015: a PAGTOWEB consultation ended incomplete, failed or uncertain.
+    CONSULTA_PAGAMENTOS_FALHOU = (
+        "consulta_pagamentos_falhou",
+        "Consulta de pagamentos na Receita falhou",
+    )
     # AXRM-017: the official DAS guide was refused, or emitted but not attached.
     GUIA_DAS_NAO_OBTIDA = "guia_das_nao_obtida", "Guia DAS oficial não obtida"
     GUIA_DAS_NAO_VINCULADA = (

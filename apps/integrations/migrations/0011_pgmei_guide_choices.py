@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("integrations", "0006_firm_provider_reservations"),
+        ("integrations", "0010_payment_pages"),
     ]
 
     operations = [
@@ -31,6 +31,10 @@ class Migration(migrations.Migration):
                     (
                         "autorizacao_procurador_ausente",
                         "Autorizacao do procurador ausente",
+                    ),
+                    (
+                        "consulta_pagamentos_falhou",
+                        "Consulta de pagamentos na Receita falhou",
                     ),
                     ("guia_das_nao_obtida", "Guia DAS oficial não obtida"),
                     ("guia_das_nao_vinculada", "Guia DAS oficial não anexada"),
