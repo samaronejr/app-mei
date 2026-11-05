@@ -85,10 +85,15 @@ def client_authority(call: ProviderCall) -> bool:
         state__in=ACTIVE_STATES,
     ).exists():
         return False
-    return (
+    authorized = (
         termo_in_force(connection_id, timezone.localdate())
         and authority_for(call.client, call.operation, link=call.link).usable
     )
+    if authorized and call.operation == "SP-DAS":
+        from apps.integrations.serpro.pgmei import guide_admission  # noqa: PLC0415
+
+        return guide_admission(call)
+    return authorized
 
 
 def register_serpro_operations() -> None:

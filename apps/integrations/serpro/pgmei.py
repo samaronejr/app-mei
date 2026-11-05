@@ -34,6 +34,7 @@ from django.utils import timezone
 from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.services import can
+from apps.clients.models import ClientCompany
 from apps.clients.services import profile_at
 from apps.core.flags import tenant_has
 from apps.core.retention import RetentionClass
@@ -213,6 +214,18 @@ class GuideRefused(Exception):  # noqa: N818 - domain vocabulary
         """Carry the code only; labels live in `REFUSAL_LABELS`."""
         self.code = code
         super().__init__(code)
+
+
+class GuideDeferredError(Exception):
+    """A predecessor veto carries the actual claim, including an internal retry."""
+
+    def __init__(self, call: ProviderCall, predecessor_id: UUID) -> None:
+        """Keep only identities needed to close this unsent claim and wait."""
+        super().__init__()
+        self.call_id = call.pk
+        self.fence = call.fence
+        self.owner = call.lease_owner
+        self.predecessor_id = predecessor_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -562,19 +575,9 @@ def obtain_das_guide(
     earlier = _earlier_outcome(prepared, actor, tenant_id, before=call)
     if earlier is not None:
         return earlier
-    try:
-        ticket = claim(tenant_id, call.pk)
-    except AdmissionDeniedError as error:
-        raise _refusal(error) from None
-    if ticket is not None:
-        _send(
-            ticket,
-            prepared,
-            actor=actor,
-            tenant_id=tenant_id,
-            call_id=call.pk,
-            origin=origin,
-        )
+    waiting = _send(call, prepared, actor=actor, tenant_id=tenant_id, origin=origin)
+    if waiting is not None:
+        return waiting
     code = settle_guide(tenant_id, call.pk, cycle_id=prepared.cycle_id, actor=actor)
     if code in REFUSED_CODES.values():
         raise GuideRefused(code)
@@ -597,42 +600,98 @@ def obtain_das_guide(
     )
 
 
-def _send(  # noqa: PLR0913 - one claimed attempt and its frozen request
-    ticket: Claim,
+def _send(
+    call: ProviderCall,
     prepared: _Prepared,
     *,
     actor: User,
     tenant_id: UUID,
-    call_id: UUID,
     origin: str | None,
-) -> None:
+) -> GuideOutcome | None:
     """Perform the claimed attempt; a pre-send refusal settles and is re-raised."""
-    adapter = GuideAdapter(
-        SerproAdapter(
-            ProviderTransport(
-                "serpro",
-                prepared.environment,
-                (fake_origin() if origin is None else origin)
-                if prepared.environment == "fake"
-                else "",
-            ),
-            prepared.parties,
-            prepared.data,
-        ),
-        tenant_id,
-        prepared.client_id,
-        prepared.competence,
-        prepared.day,
-    )
+    ticket: Claim | None = None
     try:
+        ticket = claim(tenant_id, call.pk)
+        if ticket is None:
+            return None
+        adapter = GuideAdapter(
+            SerproAdapter(
+                ProviderTransport(
+                    "serpro",
+                    prepared.environment,
+                    (fake_origin() if origin is None else origin)
+                    if prepared.environment == "fake"
+                    else "",
+                ),
+                prepared.parties,
+                prepared.data,
+            ),
+            tenant_id,
+            prepared.client_id,
+            prepared.competence,
+            prepared.day,
+        )
         perform(ticket, adapter)
+    except GuideDeferredError as error:
+        _cancel_unsent(tenant_id, error.call_id, error.fence, error.owner)
+        return GuideOutcome("em_andamento", error.predecessor_id)
     except AdmissionDeniedError as error:
+        _cancel_unsent(
+            tenant_id,
+            call.pk,
+            call.fence if ticket is None else ticket.fence,
+            call.lease_owner if ticket is None else ticket.owner,
+        )
         refused = _refusal(error)
-        settle_guide(tenant_id, call_id, cycle_id=prepared.cycle_id, actor=actor)
+        settle_guide(tenant_id, call.pk, cycle_id=prepared.cycle_id, actor=actor)
         raise refused from None
     except StaleClaimError:
         # Lost before the first byte or quarantined as uncertain: settle reports it.
-        return
+        return None
+    return None
+
+
+def _lock_guide_client(client_id: UUID) -> ClientCompany:
+    """After controls and the current call, serialize this client's guide decisions."""
+    return ClientCompany.objects.select_for_update().get(pk=client_id)
+
+
+def _cancel_unsent(
+    tenant_id: UUID, call_id: UUID, fence: int, owner: UUID | None
+) -> None:
+    """Close only the vetoed fence; a different runner's lease is never changed."""
+    with tenant_context(tenant_id):
+        link_id = (
+            ProviderCall.objects.filter(pk=call_id)
+            .values_list("link_id", flat=True)
+            .first()
+        )
+        if link_id is None:
+            return
+        lock_controls(tenant_id, link_id)
+        call = ProviderCall.objects.select_for_update().get(pk=call_id)
+        call.client = _lock_guide_client(call.client_id)
+        if (
+            call.fence != fence
+            or call.lease_owner != owner
+            or call.state
+            not in {CallState.RESERVED, CallState.CLAIMED, CallState.RETRY}
+            or (call.dispatch_started_at is not None and call.state != CallState.RETRY)
+        ):
+            return
+        call.fence += 1
+        call.state = CallState.CANCELLED
+        call.lease_owner = None
+        call.lease_until = None
+        call.billed = "nao"
+        call.settled_microbrl = 0
+        call.finalized_at = timezone.now()
+        call.updated_at = call.finalized_at
+        call.version += 1
+        call.save()
+        release(call)
+        if call.attempts:
+            _own(call, GUIDE_NOT_OBTAINED)
 
 
 def _lease_expired(call: ProviderCall) -> bool:
@@ -653,6 +712,7 @@ def _recover(tenant_id: UUID, call: ProviderCall) -> None:
     with tenant_context(tenant_id):
         lock_controls(tenant_id, call.link_id)
         locked = ProviderCall.objects.select_for_update().get(pk=call.pk)
+        locked.client = _lock_guide_client(locked.client_id)
         if _lease_expired(locked):
             locked.link = ClientProviderLink.objects.get(pk=locked.link_id)
             if (
@@ -693,6 +753,62 @@ def _unsettled(call: ProviderCall) -> bool:
     return False
 
 
+def _guide_predecessors(
+    cycle: ServiceCycle, request_key: str, before: ProviderCall | None = None
+) -> list[ProviderCall]:
+    """Read the same client and competence identities at every barrier."""
+    cycles = ServiceCycle.objects.filter(
+        client_id=cycle.client_id, period_start=cycle.period_start
+    ).values_list("pk", flat=True)
+    keys = set(
+        Event.objects.filter(
+            action=REQUESTED_EVENT,
+            object_type="ServiceCycle",
+            object_id__in=[str(pk) for pk in cycles],
+        ).values_list("metadata__request_key", flat=True)
+    ) - {request_key}
+    earlier = ProviderCall.objects.filter(
+        client_id=cycle.client_id, operation=OPERATION, request_key__in=keys
+    )
+    if before is not None:
+        earlier = earlier.filter(
+            Q(created_at__lt=before.created_at)
+            | Q(created_at=before.created_at, pk__lt=before.pk)
+        )
+    return list(earlier.order_by("created_at", "pk"))
+
+
+def guide_admission(call: ProviderCall) -> bool:
+    """Check predecessors inside claim and dispatch-start, under the guide lock.
+
+    The protocol already holds controls and the current call. Settlement follows
+    that same order before locking the client. Predecessors are read, never locked
+    underneath that client lock. Qualification calls without a cycle retain their
+    AXRM-013 authority contract; guide requests record their event before reserve.
+    """
+    # Reservation constructs QUEUED calls; claim and dispatch admit later states.
+    if call.state == CallState.QUEUED:
+        return True
+    cycle_id = (
+        Event.objects.filter(
+            action=REQUESTED_EVENT,
+            object_type="ServiceCycle",
+            metadata__request_key=call.request_key,
+        )
+        .order_by("created_at", "pk")
+        .values_list("object_id", flat=True)
+        .first()
+    )
+    if cycle_id is None:
+        return True
+    call.client = _lock_guide_client(call.client_id)
+    cycle = ServiceCycle.objects.get(pk=cycle_id, client_id=call.client_id)
+    for earlier in _guide_predecessors(cycle, call.request_key, before=call):
+        if _unsettled(earlier):
+            raise GuideDeferredError(call, earlier.pk)
+    return True
+
+
 def _earlier_outcome(
     prepared: _Prepared,
     actor: User,
@@ -710,25 +826,7 @@ def _earlier_outcome(
     """
     with tenant_context(tenant_id):
         cycle = ServiceCycle.objects.get(pk=prepared.cycle_id)
-        cycles = ServiceCycle.objects.filter(
-            client_id=cycle.client_id, period_start=cycle.period_start
-        ).values_list("pk", flat=True)
-        keys = set(
-            Event.objects.filter(
-                action=REQUESTED_EVENT,
-                object_type="ServiceCycle",
-                object_id__in=[str(pk) for pk in cycles],
-            ).values_list("metadata__request_key", flat=True)
-        ) - {prepared.request.request_key}
-        earlier = ProviderCall.objects.filter(
-            client_id=cycle.client_id, operation=OPERATION, request_key__in=keys
-        )
-        if before is not None:
-            earlier = earlier.filter(
-                Q(created_at__lt=before.created_at)
-                | Q(created_at=before.created_at, pk__lt=before.pk)
-            )
-        earlier = earlier.order_by("created_at", "pk")
+        earlier = _guide_predecessors(cycle, prepared.request.request_key, before)
         pending = [call for call in earlier if _unsettled(call)]
     for call in pending:
         if not CALL_FINAL[call.state] and not _lease_expired(call):
@@ -959,11 +1057,10 @@ def settle_guide(
         _recover(tenant_id, call)
     with tenant_context(tenant_id):
         lock_controls(tenant_id, call.link_id)
-        call = (
-            ProviderCall.objects.select_for_update()
-            .select_related("client", "link")
-            .get(pk=call_id, operation=OPERATION)
+        call = ProviderCall.objects.select_for_update().get(
+            pk=call_id, operation=OPERATION
         )
+        call.client = _lock_guide_client(call.client_id)
         if not CALL_FINAL[call.state]:
             return "em_andamento"
         if call.state in REFUSED_CODES:

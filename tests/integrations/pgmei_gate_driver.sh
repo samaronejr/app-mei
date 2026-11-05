@@ -5,7 +5,7 @@ stage() {
     shift
     wait_window
     identity || { echo "A17_IDENTITY_FAIL before $name"; exit 96; }
-    local log="$EV/AXRM-017-fix2-$mode$round-$name.txt"
+    local log="$EV/${A17_EVIDENCE_PREFIX:-AXRM-017-fix2}-$mode$round-$name.txt"
     if [ -e "$log" ]; then echo "A17_REFUSING_OVERWRITE $log"; exit 90; fi
     (
         printf 'COMMAND:'; printf ' %q' "$@"
@@ -25,7 +25,7 @@ run_mutations() {
         ports || exit 1
         for variant in ${A17_VARIANTS:?}; do
             rc=0
-            stage "$variant" "$G" "${CI[@]}" uv run python "$EV/axrm017-fix2-mutant.py" "$variant" || rc=$?
+            stage "$variant" "$G" "${CI[@]}" uv run python "${A17_MUTANT_DRIVER:-$EV/axrm017-fix2-mutant.py}" "$variant" || rc=$?
             test "$rc" = 1 || { echo "A17_MUTANT_UNEXPECTED_EXIT $variant $rc"; [ "$rc" != 0 ] || failed=$((failed + 1)); continue; }
             failed=$((failed - 1))
         done

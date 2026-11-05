@@ -1240,7 +1240,9 @@ AXRM-011 attempt 5 has not been absorbed or independently confirmed here.
 Tests first: `.evidence/AXRM-017-red.txt` at `e44ad90` (47 cases: 45 failing, 2 passing by
 design, none on an import error); repair 1 red: `.evidence/AXRM-017-fix1-red.txt`;
 repair 2 red: `.evidence/AXRM-017-fix2-red.txt` (four original review-2 failures,
-89 baseline passes). The all-state walk, bounded two-runner schedules, three green
+89 baseline passes); repair 3 red: `.evidence/AXRM-017-fix3-red.txt` (the owned-401
+reopen and the retry-before-claim variant both bought two billed guides).
+The all-state walk, bounded two-runner schedules, three green
 rounds, committed-head gate totals per stage, deliberate breaks and
 the QA, adversarial and teardown receipts are recorded in `.evidence/AXRM-017-*`.
 
@@ -1248,6 +1250,23 @@ The complete state classification names the protocol's `RECONCILED` state, so
 `pgmei.py` is registered in the scope guard's exact provider-recovery file set.
 The guard's assertions stay unchanged; negative controls prove that OFX inside
 the registered module and recovery vocabulary in an unregistered module still fail.
+
+Repair 3 makes ownership terminal for sending: settlement locks and re-reads the
+call, then advances a failed call's fence and clears its lease in the transaction
+that opens owned work. The ordinary live, unbilled first-401 retry stays available
+until that settlement wins. `client_authority` delegates only `SP-DAS` to
+`guide_admission` at claim and dispatch-start. Both admission and settlement use
+the order provider controls, current call, then client; predecessor rows are read
+without taking a later call lock. A domain veto closes only its matching unsent
+fence and releases its reservation, without incrementing attempts. Calls from
+AXRM-013 qualification without a guide-cycle request retain their authority
+contract. A later deliberate new-day purchase is allowed only after prior work
+is released, linked or irreversibly owned; recovery never makes that purchase.
+
+Placement onto AXRM-016 keeps its `authorized` calculation and `SP-SIT-R`
+`admit_emission` delegation, then the separate `SP-DAS` `guide_admission`
+delegation. Other operations return the original authority decision. The exact
+protected-file diff and combined function are retained in the repair-3 DoneClaim.
 
 ## Axorim pivot
 

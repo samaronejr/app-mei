@@ -17,7 +17,13 @@ from django.utils import timezone
 from apps.core.tenancy import tenant_context
 from apps.integrations import call_protocol
 from apps.integrations.budget_models import ProviderBudget
+from apps.integrations.call_models import CallState
 from apps.integrations.serpro import pgmei
+from apps.integrations.serpro.reauthentication import (
+    definitive_401,
+    schedule_client_retry,
+)
+from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
 from tests.integrations.pgmei_support import (
     GUIDE_PDF,
@@ -35,6 +41,7 @@ from tests.integrations.test_pgmei_recovery import (
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from apps.accounts.models import User
     from apps.integrations.call_contracts import CallRequest, CallResult, Claim
     from apps.integrations.call_dispatch import Dispatch
     from apps.integrations.call_models import ProviderCall
@@ -217,4 +224,160 @@ def test_two_runners_never_buy_while_an_earlier_emission_is_non_final(
             runners.release_all()
     sys.stdout.write(
         f"PGMEI_ORDERING_CHECKED {schedule} bounded_orderings={len(SCHEDULES)}\n"
+    )
+
+
+RETRY_CUTS = (
+    "first-finalized",
+    "before-retry-schedule",
+    "retry-scheduled",
+    "retry-claimed",
+    "retry-dispatch",
+    "retry-reply",
+    "retry-finalized",
+    "settle",
+)
+
+
+class RetryLifecycleRunners(Runners):
+    """Include the completed-401, ownership and reopen boundaries explicitly."""
+
+    def __init__(self, world: GuideWorld, monkeypatch: pytest.MonkeyPatch) -> None:
+        super().__init__(world, monkeypatch)
+        self.real_begin = call_protocol.begin_io
+        self.real_settle = pgmei.settle_guide
+        self.predecessors_at_send: list[list[str]] = []
+        monkeypatch.setattr(call_protocol, "schedule_client_retry", self.schedule_retry)
+        monkeypatch.setattr(call_protocol, "claim", self.retry_claim)
+        monkeypatch.setattr(call_protocol, "begin_io", self.begin_retry)
+        monkeypatch.setattr(pgmei, "settle_guide", self.settle)
+
+    def finalize(self, ticket: Claim, result: CallResult) -> bool:
+        self.checkpoint("finalize")
+        finalized = self.real_finalize(ticket, result)
+        self.checkpoint(
+            "first-finalized" if definitive_401(result) else "retry-finalized"
+        )
+        return finalized
+
+    def schedule_retry(self, ticket: Claim, result: CallResult) -> bool:
+        if definitive_401(result):
+            self.checkpoint("before-retry-schedule")
+        scheduled = schedule_client_retry(ticket, result)
+        if scheduled:
+            self.checkpoint("retry-scheduled")
+        return scheduled
+
+    def retry_claim(self, tenant_id: UUID, call_id: UUID) -> Claim | None:
+        ticket = self.real_claim(tenant_id, call_id)
+        if ticket is not None:
+            self.checkpoint("retry-claimed")
+        return ticket
+
+    def begin_retry(self, ticket: Claim) -> Dispatch:
+        if ticket.fence > 1:
+            self.checkpoint("retry-dispatch")
+        return self.real_begin(ticket)
+
+    def send(self, adapter: pgmei.GuideAdapter, dispatch: Dispatch) -> CallResult:
+        self.checkpoint("send")
+        calls = guide_calls(self.world)
+        current = next(call for call in calls if call.pk == dispatch.claim.call_id)
+        self.predecessors_at_send.append(
+            [
+                call.state
+                for call in calls
+                if (call.created_at, call.pk) < (current.created_at, current.pk)
+            ]
+        )
+        result = self.real_send(adapter, dispatch)
+        self.inspected_sends.append(dispatch.claim.call_id)
+        self.checkpoint(
+            "retry-reply" if dispatch.receipt.attempt_number == 2 else "reply"
+        )
+        return result
+
+    def settle(
+        self,
+        tenant_id: UUID,
+        call_id: UUID,
+        *,
+        cycle_id: UUID | None = None,
+        actor: User | None = None,
+    ) -> str:
+        if self.runner.name == "A":
+            self.checkpoint("settle")
+        return self.real_settle(tenant_id, call_id, cycle_id=cycle_id, actor=actor)
+
+    def release_all(self) -> None:
+        for permit in self.permits.values():
+            for _ in range(len(BOUNDARIES) + len(RETRY_CUTS) * 2):
+                permit.put(None)
+
+
+@pytest.mark.parametrize("cut", RETRY_CUTS)
+@pytest.mark.parametrize("change_day", [False, True])
+def test_401_finalize_own_schedule_claim_and_day_change_never_buy_two_guides(
+    guide_world: GuideWorld,
+    monkeypatch: pytest.MonkeyPatch,
+    cut: str,
+    change_day: bool,
+) -> None:
+    world = guide_world
+    runners = RetryLifecycleRunners(world, monkeypatch)
+    with FakeSerpro(
+        (
+            Reply(status=401),
+            das_reply(pdf=GUIDE_PDF + b"% only paid guide\n"),
+            das_reply(pdf=GUIDE_PDF + b"% forbidden extra guide\n"),
+        )
+    ) as peer:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(runners.click, "A", peer.origin)
+            try:
+                a = runners.advance("A", runners.next_event("A"), cut)
+                if change_day:
+                    runners.day += timedelta(days=1)
+                second = pool.submit(runners.click, "B", peer.origin)
+                runners.advance("B", runners.next_event("B"))
+                b_result = second.result(timeout=30)
+                if (
+                    isinstance(b_result, pgmei.GuideOutcome)
+                    and b_result.code == "guia_nao_obtida"
+                ):
+                    # The first B click owns A's complete, unbilled 401. Its next
+                    # click can reach claim while A's old scheduler resumes.
+                    later = pool.submit(runners.click, "B", peer.origin)
+                    b = runners.advance("B", runners.next_event("B"), "claim")
+                    runners.advance("A", a)
+                    runners.advance("B", b)
+                    later.result(timeout=30)
+                else:
+                    runners.advance("A", a)
+                first.result(timeout=30)
+            finally:
+                runners.release_all()
+        with tenant_context(world.tenant_id):
+            budget = ProviderBudget.objects.get()
+            assert budget.known_liability <= 320_000
+            assert budget.reserved == 0
+        # These literal protocol states are independent of CALL_FINAL.
+        forbidden = {
+            CallState.QUEUED,
+            CallState.RESERVED,
+            CallState.CLAIMED,
+            CallState.STARTED,
+            CallState.WAITING,
+            CallState.RETRY,
+        }
+        assert not any(
+            state in forbidden
+            for states in runners.predecessors_at_send
+            for state in states
+        )
+        assert len(peer.requests) <= 2
+    sys.stdout.write(
+        f"PGMEI_RETRY_ORDERING_CHECKED cut={cut} change_day={change_day} "
+        f"retry_orderings={len(RETRY_CUTS) * 2} "
+        f"total_bounded_orderings={len(SCHEDULES) + len(RETRY_CUTS) * 2}\n"
     )

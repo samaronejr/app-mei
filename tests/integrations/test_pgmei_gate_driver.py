@@ -64,3 +64,27 @@ exit $(( failed > 0 ? 1 : 0 ))
     assert f"failed_stages={failed_stages}" in result.stdout
     [receipt] = list(tmp_path.glob("*.exit"))
     assert receipt.read_text().strip() == str(command_exit)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("mutations", 0, 1, 1),
+        ("mutations", 1, 0, 0),
+        ("mutations", 3, 1, 1),
+        ("ordinary", 7, 1, 1),
+    ],
+)
+def test_repair_three_uses_the_same_stage_accounting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: tuple[str, int, int, int],
+) -> None:
+    mode, command_exit, driver_exit, failed_stages = case
+    monkeypatch.setenv("A17_EVIDENCE_PREFIX", "AXRM-017-fix3")
+    monkeypatch.setenv("A17_MUTANT_DRIVER", "/controlled/repair-three-mutant.py")
+    test_driver_propagates_every_unexpected_stage_exit(
+        tmp_path, mode, command_exit, driver_exit, failed_stages
+    )
+    [receipt] = list(tmp_path.glob("*.exit"))
+    assert receipt.name.startswith("AXRM-017-fix3-")
