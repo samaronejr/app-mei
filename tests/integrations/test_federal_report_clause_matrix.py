@@ -28,6 +28,8 @@ __all__ = ["clock", "world"]
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from django.db.models import QuerySet
+
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
@@ -101,10 +103,14 @@ def test_a_report_slot_belongs_to_the_clients_open_month(
 
     for day in range(21, 32):
         today = date(2026, 10, day)
+
+        def candidates(current: date = today) -> QuerySet[ClientCompany]:
+            return sweeps.report_candidates(current)
+
         queued, failed = sweeps._turn(
             world.tenant_id,
             "federal_sitfis_cursor",
-            lambda current=today: sweeps.report_candidates(current),
+            candidates,
             record,
         )
         assert (queued, failed) == (len(expected), 0)
