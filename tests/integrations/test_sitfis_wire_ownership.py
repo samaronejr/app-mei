@@ -152,7 +152,9 @@ def test_two_reports_send_concurrently_with_one_extra_session_per_worker(
     with ThreadPoolExecutor(max_workers=2) as pool:
         a = pool.submit(_worker, "independent-report-a", lambda: world.advance(first))
         b = pool.submit(_worker, "independent-report-b", lambda: world.advance(second))
+        assert a.exception(timeout=25) is None
         a.result(timeout=25)
+        assert b.exception(timeout=25) is None
         b.result(timeout=25)
     assert len(world.sent("/Emitir")) == 2
     assert world.reload(first).state == "emitido"

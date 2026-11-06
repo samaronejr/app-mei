@@ -12,6 +12,7 @@ import threading
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 from django.core.exceptions import ValidationError
 from django.db import OperationalError, connections
 
@@ -410,6 +411,7 @@ def test_p3b2_a_db_error_after_a_final_202_schedules_a_bounded_continuation(
         tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
     monkeypatch.setattr(mod, "_apply", real_apply)
     # The failed delivery queued its own continuation (a bounded retry).
+    assert len(scheduled) == 1
     [retry] = scheduled
     assert retry["args"] == (str(world.tenant_id), str(report.pk))
     assert retry["kwargs"] == {"failures": 1}
@@ -610,3 +612,31 @@ def test_an_infected_report_cannot_be_reviewed(world: World) -> None:
                 expected_version=version,
                 input_digest=reviews.report_input_digest(current),
             )
+
+
+def test_a_paid_pdf_storage_fault_sets_failure_before_delivery_returns(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tasks, scheduled = _capture(monkeypatch)
+    report = _protocol(world)
+    scheduled.clear()
+    world.clock.advance(seconds=30)
+    world.script(report_reply())
+    mod = sitfis()
+
+    def storage_down(**kwargs: object) -> object:
+        raise ClientError({"Error": {"Code": "SlowDown"}}, "PutObject")
+
+    monkeypatch.setattr(mod, "ingest_system_document", storage_down)
+    try:
+        state = tasks.advance_situation_report_task(
+            str(world.tenant_id), str(report.pk)
+        )
+    finally:
+        assert world.reload(report).state == "falha"
+    assert state == "falha"
+    assert _calls(world) == [("falhou", 1, 200, "sim")]
+    assert world.budget().known_liability == EMISSAO_MICROBRL
+    assert world.budget().reserved == 0
+    assert _problems(world) == ["aberta"]
+    assert scheduled == []

@@ -257,3 +257,23 @@ def test_a_second_review_appends_and_never_rewrites_the_first(world: World) -> N
 def _exceptions(world: World) -> list[CycleException]:
     with tenant_context(world.tenant_id):
         return list(CycleException.objects.filter(reason_code=PENDENCIA))
+
+
+def test_an_inconsistent_review_is_refused_before_persistence(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _emitted(world)
+    world.scan()
+    reviews = review_module()
+
+    def unexpected_create(**fields: object) -> None:
+        message = "An inconsistent review reached the persistent write boundary"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(
+        reviews.FederalReportReview.objects, "create", unexpected_create
+    )
+    with pytest.raises(ValidationError):
+        _review(world, report, outcome="ilegivel", pendencias=(PENDENCIA,))
+    assert _reviews(world) == []
+    assert not _exceptions(world)

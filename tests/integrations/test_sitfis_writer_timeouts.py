@@ -48,6 +48,26 @@ def _assert_input_kept(
         assert report.document_id is not None
 
 
+def _contend[**P, T](
+    callback: Callable[P, T],
+    hold_report: Callable[[], None],
+    owned: threading.Event,
+    timed_out: threading.Event,
+) -> Callable[P, T]:
+    def busy(*args: P.args, **kwargs: P.kwargs) -> T:
+        holder = threading.Thread(target=hold_report)
+        holder.start()
+        try:
+            assert owned.wait(timeout=10)
+            return callback(*args, **kwargs)
+        finally:
+            timed_out.set()
+            holder.join(timeout=10)
+            assert not holder.is_alive()
+
+    return busy
+
+
 @pytest.mark.parametrize("writer", ["receipt", "pdf", "adoption"])
 def test_acquisition_timeout_preserves_and_retries_the_same_input(
     world: World, monkeypatch: pytest.MonkeyPatch, writer: str
@@ -81,32 +101,23 @@ def test_acquisition_timeout_preserves_and_retries_the_same_input(
             timed_out.set()
             raise
 
-    def contend[**P, T](callback: Callable[P, T]) -> Callable[P, T]:
-        def busy(*args: P.args, **kwargs: P.kwargs) -> T:
-            holder = threading.Thread(target=hold_report)
-            holder.start()
-            try:
-                assert owned.wait(timeout=10)
-                return callback(*args, **kwargs)
-            finally:
-                timed_out.set()
-                holder.join(timeout=10)
-                assert not holder.is_alive()
-
-        return busy
-
     target = {
         "receipt": "_receive",
         "pdf": "ingest_system_document",
         "adoption": "_deferred",
     }[writer]
     monkeypatch.setattr(sitfis_wire, "report_mutex", short_wait)
-    monkeypatch.setattr(mod, target, contend(getattr(mod, target)))
-    final = world.advance(report)
-    if writer == "adoption":
-        [call] = world.calls("SP-SIT-R")
-        mod._deferred(world.tenant_id, report.pk, mod.EmissionDeferredError(call))
-        final = world.reload(report)
+    monkeypatch.setattr(
+        mod, target, _contend(getattr(mod, target), hold_report, owned, timed_out)
+    )
+    try:
+        final = world.advance(report)
+        if writer == "adoption":
+            [call] = world.calls("SP-SIT-R")
+            mod._deferred(world.tenant_id, report.pk, mod.EmissionDeferredError(call))
+            final = world.reload(report)
+    finally:
+        assert attempts.count("acquire") > attempts.count("timeout")
     assert "timeout" in attempts
     assert attempts.count("acquire") > attempts.count("timeout")
     assert len(world.sent("/Emitir")) == 1

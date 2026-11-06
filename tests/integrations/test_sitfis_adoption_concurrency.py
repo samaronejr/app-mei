@@ -126,6 +126,7 @@ def test_paid_pdf_adoption_and_competing_admission_do_not_deadlock(
             finish_original.set()
             for future in (adoption, competing, original):
                 if future is not None:
+                    assert future.exception(timeout=25) is None
                     future.result(timeout=25)
     assert world.reload(report).state == "emitido"
     assert len(world.sent("/Emitir")) == 1

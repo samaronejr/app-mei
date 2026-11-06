@@ -414,8 +414,11 @@ def test_a_marker_followed_by_a_normal_guard_return_cannot_send(
         original.code,
         replace(original, wire_guard=returns_normally),
     )
-    with pytest.raises(EnvioNaoAutorizado):
-        veto.run()
+    try:
+        with pytest.raises(EnvioNaoAutorizado):
+            veto.run()
+    finally:
+        assert veto.world.sent("/Emitir") == []
     _unused(veto)
 
 
