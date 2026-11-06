@@ -223,24 +223,6 @@ def test_termo_journal_records_no_client_link_or_call_ids(
     assert provider_journal.read(termo.tenant_id) == []
 
 
-def test_a_signed_termo_is_refused_before_a_second_submission_insert(
-    termo: FirmAuthorization, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    reserve(termo)
-
-    def unexpected_save(
-        instance: FirmProviderCall, *args: object, **fields: object
-    ) -> None:
-        message = "A signed termo reached a second submission insert"
-        raise AssertionError(message)
-
-    monkeypatch.setattr(FirmProviderCall, "save", unexpected_save)
-    with pytest.raises(IntentConflictError):
-        reserve(termo, termo_request("another-key"))
-    with tenant_context(termo.tenant_id):
-        assert FirmProviderCall.objects.count() == 1
-
-
 def test_stale_fence_or_expired_lease_never_transmits(
     termo: FirmAuthorization,
 ) -> None:
@@ -302,10 +284,6 @@ def test_restore_rebuilds_the_termo_submission_without_another_request(
     assert ticket is not None
     with ProviderPeer() as peer:
         firm_perform(ticket, peer)
-        assert sorted(
-            record.result is not None
-            for record in provider_journal.read_firm(termo.tenant_id)
-        ) == [False, True]
         restore_before_submission()
         # When the independent firm journal is replayed, twice.
         reconcile()

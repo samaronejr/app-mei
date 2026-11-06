@@ -375,7 +375,6 @@ def test_recovery_refused_before_sending_is_owned_firm_work(
     assert paths == ["/Apoiar"]
     assert result.state == "incerta"
     with tenant_context(production.world.tenant.pk):
-        assert FirmIntegrationIssue.objects.filter(state__in=ACTIVE_STATES).count() == 1
         issue = FirmIntegrationIssue.objects.get(state__in=ACTIVE_STATES)
         stopped = ProviderCall.objects.get()
     assert issue.reason == PROC_MISSING

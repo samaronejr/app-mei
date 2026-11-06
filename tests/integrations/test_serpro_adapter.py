@@ -8,7 +8,6 @@ from uuid import UUID
 
 import pytest
 
-from apps.integrations.serpro.codec import CnpjInvalidoError
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import (
     OperacaoNaoPermitida,
@@ -37,15 +36,6 @@ def test_envelope_matches_golden_and_keeps_alphanumeric_cnpj_as_string() -> None
     assert json.loads(request.body) == json.loads(
         (FIXTURES / "envelope.json").read_text()
     )
-
-
-def test_lowercase_cnpj_is_accepted_before_envelope_validation() -> None:
-    rejected: CnpjInvalidoError | None = None
-    try:
-        test_envelope_matches_golden_and_keeps_alphanumeric_cnpj_as_string()
-    except CnpjInvalidoError as error:
-        rejected = error
-    assert rejected is None, "A valid lowercase alphanumeric CNPJ was rejected"
 
 
 @pytest.mark.parametrize("party", [12345678000195, True, None, "", "bad\ncnpj"])

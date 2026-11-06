@@ -10,7 +10,6 @@ import socket
 import ssl
 import threading
 from collections import deque
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -37,14 +36,6 @@ _TEST_LEASE = timedelta(hours=1)
 def wire_window(
     provider: str, environment: str, operation: str
 ) -> AbstractContextManager[object]:
-    if operation == "SP-SIT-R":
-        return _wire_window(
-            provider,
-            environment,
-            operation,
-            timezone.now() + _TEST_LEASE,
-            guard=nullcontext,
-        )
     return _wire_window(provider, environment, operation, timezone.now() + _TEST_LEASE)
 
 

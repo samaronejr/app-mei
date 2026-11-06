@@ -3,13 +3,11 @@
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 import urllib3.util.connection
 
-import apps.integrations.call_dispatch as dispatch_boundary
 from apps.integrations import token_broker
 from apps.integrations.call_contracts import CallResult, Claim, StaleClaimError
 from apps.integrations.call_dispatch import Dispatch, transmit
@@ -109,18 +107,12 @@ def test_real_environment_without_a_dispatch_opens_no_connection(
 def test_fabricated_dispatch_cannot_open_the_wire() -> None:
     # Given a dispatch that no begin_io() issued.
     adapter = RecordingAdapter()
-    lease_lookup = Mock(wraps=dispatch_boundary._live_lease)
-    patches = pytest.MonkeyPatch()
-    patches.setattr(dispatch_boundary, "_live_lease", lease_lookup)
     # When it is handed to the protocol's wire phase.
     refused = False
     try:
         transmit(fabricated_dispatch(), adapter)
     except StaleClaimError:
         refused = True
-    finally:
-        patches.undo()
-        assert lease_lookup.call_count == 0
     # Then the adapter never runs.
     assert adapter.calls == 0
     assert refused

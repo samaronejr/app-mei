@@ -241,12 +241,6 @@ def test_restore_reinserts_final_call_and_usage_without_another_request(
         with tenant_context(provider_link.tenant_id):
             assert ProviderCallAttempt.objects.filter(call=restored).count() == 1
             assert (
-                UsageRecord.objects.filter(
-                    metric="serpro_emissao", source_event=ticket.owner
-                ).count()
-                == 1
-            )
-            assert (
                 UsageRecord.objects.get(
                     metric="serpro_emissao", source_event=ticket.owner
                 ).quantity

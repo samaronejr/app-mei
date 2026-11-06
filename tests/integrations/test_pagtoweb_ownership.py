@@ -171,7 +171,6 @@ def test_a_runner_arriving_after_the_owner_paid_leaves_the_page_to_it(
         before = untouched(world, query.pk)
         # When B runs the same consultation on another connection.
         late_pool, late = runner("late", lambda: run(query))
-        assert late.exception(timeout=25) is None
         assert late.result(timeout=25) == "em_andamento"
         late_pool.shutdown(wait=True)
         # Then B wrote nothing: no state, receipt, event or issue.
@@ -213,9 +212,7 @@ def test_three_runners_leave_the_paid_page_to_the_one_that_paid(
         # When B and C resume against the same completed call.
         second.release.set()
         third.release.set()
-        assert late_b.exception(timeout=25) is None
         assert late_b.result(timeout=25) == "em_andamento"
-        assert late_c.exception(timeout=25) is None
         assert late_c.result(timeout=25) == "em_andamento"
         # Then neither settles it nor writes anything.
         assert untouched(world, query.pk) == before
@@ -350,7 +347,6 @@ def test_an_initiator_losing_access_never_downgrades_the_owners_paid_page(
         before = untouched(world, query.pk)
         late_pool, late = runner("late", lambda: redeliver(query))
         # Then the redelivery yields instead of failing the owner's consultation.
-        assert late.exception(timeout=25) is None
         assert late.result(timeout=25) == "em_andamento"
         late_pool.shutdown(wait=True)
         assert untouched(world, query.pk) == before
@@ -428,7 +424,6 @@ def test_an_owner_whose_lease_ran_out_yields_to_the_runner_that_took_over(
         # When A comes back.
         owner.release.set()
         # Then it yields to the live owner and writes nothing.
-        assert first.exception(timeout=25) is None
         assert first.result(timeout=25) == "em_andamento"
         assert untouched(world, query.pk) == before
     finally:
@@ -672,7 +667,6 @@ def test_a_stalled_owner_keeps_its_paid_page_past_its_lease(
         # When B runs the consultation on another connection.
         late_pool, late = runner("late", lambda: run(query))
         # Then B yields and writes nothing: A is late, not dead.
-        assert late.exception(timeout=25) is None
         assert late.result(timeout=25) == "em_andamento"
         late_pool.shutdown(wait=True)
         assert untouched(world, query.pk) == before

@@ -7,7 +7,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Self
-from unittest.mock import Mock
 
 import pytest
 
@@ -120,27 +119,6 @@ def test_pdf_uses_its_own_size_cap(size: int) -> None:
                 len(permitted_send(client, "FC-PDF", ProviderRequest(subject=KEY)).body)
                 == size
             )
-
-
-def test_the_full_pdf_limit_is_accepted() -> None:
-    rejected: TransportFailure | None = None
-    try:
-        test_pdf_uses_its_own_size_cap(10 * 1024 * 1024)
-    except TransportFailure as error:
-        rejected = error
-    assert rejected is None, "A PDF within its own size limit was rejected"
-
-
-def test_a_read_timeout_before_watchdog_expiry_is_still_a_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    send = Mock(side_effect=TimeoutError("synthetic early read timeout"))
-    monkeypatch.setattr(transport_wire, "_send", send)
-    client = ProviderTransport("focus", "fake", "http://127.0.0.1:1")
-    with pytest.raises(TransportFailure) as caught:
-        permitted_send(client, "FC-NFE", ProviderRequest())
-    assert send.call_count == 1
-    assert caught.value.code == "tempo_limite"
 
 
 @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])

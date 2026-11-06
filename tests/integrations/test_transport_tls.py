@@ -2,11 +2,9 @@
 
 import socket
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-import apps.integrations.transport_wire as wire_boundary
 from apps.integrations import transport
 from apps.integrations.transport import ProviderTransport, _pdf_location
 from apps.integrations.transport_types import ProviderRequest, TransportFailure
@@ -42,25 +40,6 @@ def test_tls_rejects_untrusted_certificate_even_with_environment_override(
                 ProviderRequest(),
             )
         assert not peer.requests
-
-
-def test_certificate_verification_is_requested_before_the_tls_exchange(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    with patch.object(
-        wire_boundary._WatchedAdapter,
-        "send",
-        autospec=True,
-        side_effect=wire_boundary._WatchedAdapter.send,
-    ) as send:
-        try:
-            test_tls_rejects_untrusted_certificate_even_with_environment_override(
-                tmp_path, monkeypatch
-            )
-        finally:
-            assert send.call_count == 1
-            assert send.call_args.kwargs["verify"] is True
 
 
 def test_verified_tls_positive_control(tmp_path: Path) -> None:

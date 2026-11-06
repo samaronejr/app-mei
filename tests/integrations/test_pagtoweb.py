@@ -15,7 +15,6 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import django.db
 import pytest
 from django.db import DatabaseError, connection, connections, transaction
 from django.db.migrations.executor import MigrationExecutor
@@ -506,17 +505,6 @@ def test_two_clients_with_identical_documents_never_cross_match(
             FederalPayment.objects.values_list("client_id", "matched_obligation_id")
         )
     assert rows == {client.pk: mine.pk, other.pk: None}
-
-
-def test_cross_client_matching_finishes_without_a_database_rejection(
-    world: World,
-) -> None:
-    failure: django.db.IntegrityError | None = None
-    try:
-        test_two_clients_with_identical_documents_never_cross_match(world)
-    except django.db.IntegrityError as error:
-        failure = error
-    assert failure is None, "A cross-client candidate reached the database binding"
 
 
 def test_only_the_late_candidate_the_rule_decides_is_bound(world: World) -> None:

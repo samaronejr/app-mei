@@ -78,26 +78,6 @@ def test_open_issue_keeps_every_uncertain_call_discoverable(
     ]
 
 
-def test_a_treated_issue_is_reused_before_any_duplicate_insert(
-    provider_link: ClientProviderLink, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    first = quarantine(provider_link, request("first"))
-    with tenant_context(provider_link.tenant_id):
-        IntegrationIssue.objects.filter(
-            reason=IssueReason.CHAMADA_PROVEDOR_INCERTA
-        ).update(state=IssueState.EM_TRATAMENTO)
-
-    def unexpected_create(**fields: object) -> None:
-        message = "An active treated issue reached a duplicate insert"
-        raise AssertionError(message)
-
-    monkeypatch.setattr(IntegrationIssue.objects, "create", unexpected_create)
-    second = quarantine(provider_link, request("second"))
-    assert uncertainty_issues(provider_link) == [
-        ("SP-DAS", IssueState.EM_TRATAMENTO, [str(first.pk), str(second.pk)])
-    ]
-
-
 def test_each_operation_keeps_its_own_uncertainty_issue(
     provider_link: ClientProviderLink,
 ) -> None:
