@@ -348,6 +348,7 @@ def test_refused_termo_is_recorded_and_owned_by_the_firm(
         assert head is not None
         assert head.status == "recusado"
         assert not termo_in_force(world.connection.pk, timezone.localdate())
+        assert FirmIntegrationIssue.objects.filter(state="aberta").count() == 1
         issue = FirmIntegrationIssue.objects.get(state="aberta")
         assert (issue.reason, issue.owner_id) == (PROC_MISSING, world.actor.pk)
 

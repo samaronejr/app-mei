@@ -200,6 +200,12 @@ def test_another_firm_can_neither_read_nor_attach_a_kept_page(
 
     def as_other_firm() -> str:
         with tenant_context(other.tenant.pk):
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT count(*) FROM integrations_paymentpage WHERE id = %s",
+                    [stored.pk],
+                )
+                assert cursor.fetchone() == (0,)
             visible = PaymentPage.objects.count()
             by_id = PaymentPage.objects.filter(pk=stored.pk).exists()
         refusals = 0

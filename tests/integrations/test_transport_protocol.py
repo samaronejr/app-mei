@@ -50,6 +50,7 @@ def test_oversize_is_finalized_as_failed_without_parsing_or_retry(
     ticket = claim(provider_link.tenant_id, row.pk)
     assert ticket is not None
     dispatch = begin_io(ticket)
+    assert call_dispatch._issued_key(ticket) in call_dispatch._ISSUED
     with FakeSerpro((Reply(body=b"x" * (6 * 1024 * 1024)),)) as peer:
         result = transmit(dispatch, _Probe(peer.origin))
         record_result(dispatch, result)
