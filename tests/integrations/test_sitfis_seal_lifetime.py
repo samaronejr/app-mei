@@ -6,7 +6,11 @@ import pytest
 
 from apps.integrations import call_dispatch, provider_journal
 from apps.integrations.call_unopened import UNOPENED_RESULT, is_unopened
-from apps.integrations.journal_schema import FirmJournalRecord, JournalError, JournalRecord
+from apps.integrations.journal_schema import (
+    FirmJournalRecord,
+    JournalError,
+    JournalRecord,
+)
 from apps.integrations.transport_types import EnvioNaoAutorizado
 from tests.integrations.sitfis_support import clock, world
 from tests.integrations.test_sitfis_unopened import CrashCutError, Veto, veto
@@ -49,16 +53,6 @@ def test_a_copied_writer_context_cannot_publish_after_the_issuer_has_closed(
         for row in provider_journal.read(veto.world.tenant_id)
         if is_unopened(row.operation, row.result)
     ]
-    print(
-        "RV5_ESCAPED_WRITER",
-        {
-            "issuer_closed": True,
-            "copied_context_accepted": accepted,
-            "durable_markers": len(stored),
-            "sends": len(veto.world.sent("/Emitir")),
-        },
-        flush=True,
-    )
     assert accepted is False, (
         "copied context retained a live marker capability after its issuer closed"
     )
