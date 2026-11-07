@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from os import getpid
+from threading import Lock
 from typing import TYPE_CHECKING, Final
 
 from django.utils import timezone
@@ -27,7 +29,15 @@ UNOPENED_RESULT: Final = CallResult(
 )
 
 
-_UNOPENED_WRITES: ContextVar[tuple[int, dict[int, JournalRecord]] | None] = ContextVar(
+@dataclass(slots=True)
+class _UnopenedWriteScope:
+    process_id: int
+    grants: dict[int, JournalRecord]
+    lock: Lock = field(default_factory=Lock)
+    open: bool = True
+
+
+_UNOPENED_WRITES: ContextVar[_UnopenedWriteScope | None] = ContextVar(
     "unopened_journal_write", default=None
 )
 
@@ -36,12 +46,34 @@ _UNOPENED_WRITES: ContextVar[tuple[int, dict[int, JournalRecord]] | None] = Cont
 def _issue_unopened_write(record: JournalRecord) -> Iterator[None]:
     """Seal one append after the dispatch boundary consumed its admission right."""
     grants = {id(record): record}
-    token = _UNOPENED_WRITES.set((getpid(), grants))
+    scope = _UnopenedWriteScope(getpid(), grants)
+    token = _UNOPENED_WRITES.set(scope)
     try:
         yield
     finally:
-        grants.clear()
+        # Do not acquire a possibly held lock inherited across fork.
+        if scope.process_id == getpid():
+            with scope.lock:
+                scope.open = False
+                grants.clear()
         _UNOPENED_WRITES.reset(token)
+
+
+@contextmanager
+def unopened_write_scope(
+    record: JournalRecord | FirmJournalRecord,
+) -> Iterator[None]:
+    """Keep marker validation and persistence atomic with its issuer's exit."""
+    if not is_unopened(record.operation, record.result):
+        yield
+        return
+    scope = _UNOPENED_WRITES.get()
+    if scope is None or scope.process_id != getpid():
+        raise JournalError
+    with scope.lock:
+        if not scope.open:
+            raise JournalError
+        yield
 
 
 def consume_unopened_write(record: JournalRecord | FirmJournalRecord) -> None:
@@ -51,8 +83,8 @@ def consume_unopened_write(record: JournalRecord | FirmJournalRecord) -> None:
     pending = _UNOPENED_WRITES.get()
     if (
         pending is None
-        or pending[0] != getpid()
-        or pending[1].pop(id(record), None) is not record
+        or pending.process_id != getpid()
+        or pending.grants.pop(id(record), None) is not record
     ):
         raise JournalError
 
