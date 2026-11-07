@@ -24,22 +24,20 @@ ALL_KINDS = {
     "document",
     "coverage",
 }
-# A client with an open cycle has no integration projection.
-SERVICE_AND_PERIOD_ITEMS = ALL_KINDS - {"integration"}
 
 
 @pytest.mark.parametrize(
     ("filters", "expected"),
     [
-        (BriefingFilters(service="mei_mensal"), SERVICE_AND_PERIOD_ITEMS),
+        (BriefingFilters(service="mei_mensal"), ALL_KINDS),
         (BriefingFilters(service="documentos_mensal"), set()),
-        (BriefingFilters(regime="mei"), SERVICE_AND_PERIOD_ITEMS),
+        (BriefingFilters(regime="mei"), ALL_KINDS),
         (BriefingFilters(regime="simples"), set()),
         (BriefingFilters(uf="SP"), ALL_KINDS),
         (BriefingFilters(uf="RJ"), set()),
         (BriefingFilters(municipality="3550308"), ALL_KINDS),
         (BriefingFilters(municipality="3304557"), set()),
-        (BriefingFilters(period=date(2026, 9, 1)), SERVICE_AND_PERIOD_ITEMS),
+        (BriefingFilters(period=date(2026, 9, 1)), ALL_KINDS),
         (BriefingFilters(period=date(2026, 10, 1)), set()),
         (BriefingFilters(work_state="due"), {"obligation"}),
         (BriefingFilters(risk_reason="request_overdue"), {"request"}),

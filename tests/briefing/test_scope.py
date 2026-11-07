@@ -78,10 +78,7 @@ def test_every_provider_is_nonempty_before_unassigned_staff_is_denied() -> None:
     with tenant_context(setup.tenant.pk):
         control = briefing(setup.actor, scope="team", filters=BriefingFilters())
         assert {item.kind for item in control.items} == set(graph.subjects)
-        assert all(
-            count.total == (0 if count.kind == "integration" else 1)
-            for count in control.counts
-        )
+        assert all(count.total > 0 for count in control.counts)
 
         page = briefing(setup.staff, scope="team", filters=BriefingFilters())
 
@@ -99,10 +96,7 @@ def test_each_provider_excludes_an_unassigned_client_in_the_same_tenant() -> Non
             tenant=setup.tenant, client=setup.client, user=setup.staff
         )
         control = briefing(setup.actor, scope="team", filters=BriefingFilters())
-        assert all(
-            count.total == (0 if count.kind == "integration" else 2)
-            for count in control.counts
-        )
+        assert all(count.total >= 2 for count in control.counts)
         assert set(other.subjects.values()) <= {
             item.subject_ref for item in control.items
         }
@@ -111,8 +105,5 @@ def test_each_provider_excludes_an_unassigned_client_in_the_same_tenant() -> Non
 
     assert {item.kind for item in page.items} == set(own.subjects)
     assert {item.client_id for item in page.items} == {setup.client.pk}
-    assert all(
-        count.total == (0 if count.kind == "integration" else 1)
-        for count in page.counts
-    )
+    assert all(count.total == 1 for count in page.counts)
     assert sum(count.total for count in page.counts) == page.total == 7

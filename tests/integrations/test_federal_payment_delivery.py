@@ -3,6 +3,7 @@
 from datetime import date
 
 import pytest
+import sentry_sdk
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -10,6 +11,8 @@ from apps.integrations.budget_models import ProviderBudget
 from apps.integrations.serpro import sweeps, tasks
 from apps.integrations.serpro.models import PaymentQuery
 from apps.integrations.serpro.pagtoweb import PaymentRange
+from apps.integrations.serpro.payments import open_payment_query
+from apps.obligations.models import SchedulerHeartbeat
 from tests.integrations.pagtoweb_support import World, page, world
 from tests.integrations.test_federal_sweeps import add_clients, lane, on
 
@@ -122,12 +125,14 @@ def test_payment_deliveries_are_once_per_client_and_month_across_repeated_turns(
 def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
     world: World,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Rollback clears its pending handoff; later turns recover the same client."""
     clients = add_clients(world, 4, mei=True)
     failed_client = clients[0].pk
     original = sweeps.payments_for
     deliveries: list[tuple[str, str]] = []
+    captured: list[Exception] = []
     fail = True
 
     def act(client: ClientCompany, window: PaymentRange) -> sweeps.Outcome:
@@ -144,6 +149,7 @@ def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
         return result.get()
 
     monkeypatch.setattr(sweeps, "payments_for", act)
+    monkeypatch.setattr(sentry_sdk, "capture_exception", captured.append)
     monkeypatch.setattr(tasks.run_payment_query_task, "delay", deliver)
     world.script(*(page([]) for _ in range(5)))
     on(monkeypatch, date(2026, 10, 21))
@@ -162,8 +168,60 @@ def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
     assert sweeps._pending == []
     assert len(deliveries) == len(set(deliveries)) == 5
     assert len(world.sent()) == 5
+    assert len(captured) == 1
+    assert isinstance(captured[0], ConnectionError)
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "apps.integrations.serpro.sweeps"
+        and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == "federal sweep failed for one client"
+    assert warnings[0].exc_info is not None
+    assert warnings[0].exc_info[1] is captured[0]
     with tenant_context(world.termo.tenant.pk):
         assert PaymentQuery.objects.count() == 5
         assert set(PaymentQuery.objects.values_list("state", flat=True)) == {
             "nada_localizado"
         }
+
+
+@pytest.mark.parametrize("existing", ["settled_monthly", "active_staff_intent"])
+def test_existing_payment_intent_returns_existing_without_a_failed_turn(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    existing: str,
+) -> None:
+    """An existing intent is a successful no-op, with no pending handoff."""
+    day = date(2026, 10, 21)
+    window = tasks.scheduled_window(day)
+    assert window is not None
+    with tenant_context(world.termo.tenant.pk):
+        query = open_payment_query(
+            world.termo.client,
+            window,
+            actor=None if existing == "settled_monthly" else world.termo.actor,
+            cadence=window.start if existing == "settled_monthly" else None,
+            nonce="staff-intent",
+        )
+    if existing == "settled_monthly":
+        world.script(page([]))
+        run = tasks.run_payment_query_task.apply(
+            args=(str(world.termo.tenant.pk), str(query.pk))
+        )
+        assert run.successful(), run.result
+        assert run.get() == "nada_localizado"
+    on(monkeypatch, day)
+    result = tasks.schedule_payment_consultations.apply()
+    assert result.successful(), result.result
+    assert result.get() == 0
+    beat = SchedulerHeartbeat.objects.get(name="schedule_payment_consultations")
+    assert beat.last_error_code == ""
+    with tenant_context(world.termo.tenant.pk):
+        outcome = sweeps.payments_for(world.termo.client, window)
+        assert outcome is sweeps.Outcome.EXISTING
+        assert PaymentQuery.objects.count() == 1
+        assert PaymentQuery.objects.get().pk == query.pk
+    assert sweeps._pending == []
+    assert len(world.sent()) == (1 if existing == "settled_monthly" else 0)

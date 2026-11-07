@@ -8,7 +8,6 @@ from apps.clients.models import Engagement, TaxProfile
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import PlaybookVersion
 from apps.cycles.packs import install_system_packs
-from apps.integrations.models import IntegrationIssue
 from apps.obligations.coverage import CoverageState, coverage_for_clients
 from apps.obligations.models import Obligation, ObservationVerificationStatus
 from apps.obligations.models.observations import ObservationOutcome
@@ -56,10 +55,6 @@ def test_hoje_keeps_the_budget_when_every_provider_has_items(
             PlaybookVersion.objects.get(playbook__key="mei-mensal", state="published"),
         )
         provider_graph(setup, obligation=Obligation.objects.get(client=stale_client))
-        # Keep every source populated with a valid no-open-cycle issue.
-        IntegrationIssue.objects.filter(client=stale_client).update(
-            client=failed_client
-        )
         failed = Obligation.objects.get(client=failed_client)
         assert_fact(
             tenant_id=firm.tenant.pk,
@@ -94,9 +89,8 @@ def test_hoje_keeps_the_budget_when_every_provider_has_items(
         "approval": 1,
         "delivery": 1,
         "document": 1,
-        "integration": 1,
         "coverage": 2,
     }
-    assert page.total == 1_008
+    assert page.total == 1_007
     assert page.failed_providers == ()
     assert len(page.items) == 50
