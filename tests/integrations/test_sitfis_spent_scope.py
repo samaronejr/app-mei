@@ -101,7 +101,9 @@ def test_a_write_spent_at_exit_cannot_become_durable_after_issuing_admission_clo
         with pytest.raises(CrashCutError):
             veto.run()
         issuer_closed.set()
-        assert markers(veto) == [], "marker was already durable before releasing the writer"
+        assert markers(veto) == [], (
+            "marker was already durable before releasing the writer"
+        )
     finally:
         release.set()
         for thread in threads:
