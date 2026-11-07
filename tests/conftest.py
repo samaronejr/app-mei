@@ -108,7 +108,7 @@ PORTAL_DENIED_TABLES = (
     # AXRM-015: a kept paid page awaiting settlement, firm-side like its consultation;
     # DenyPortalAccess from integrations.0010. Mirrors its `-- PORTAL_NONE:` line.
     "integrations_paymentpage",
-    # AXRM-016: the SITFIS review is firm-side; DenyPortalAccess from cycles.0021.
+    # AXRM-016: the SITFIS review is firm-side; DenyPortalAccess from cycles.0022.
     # Mirrors `-- PORTAL_NONE: cycles_federalreportreview` in ops/sql/roles.sql.
     "cycles_federalreportreview",
     "tenants_billingaccount",

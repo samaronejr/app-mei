@@ -109,6 +109,8 @@ PROVIDER_RECOVERY_FILES = frozenset(
         "apps/integrations/management/commands/reconcile_provider_operations.py",
         "apps/integrations/migrations/0003_call_protocol.py",
         "apps/integrations/provider_replay.py",
+        # AXRM-017: the guide flow classifies every provider-call recovery state.
+        "apps/integrations/serpro/pgmei.py",
     }
 )
 

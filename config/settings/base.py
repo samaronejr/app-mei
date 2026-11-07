@@ -373,6 +373,11 @@ CREDENTIAL_ROUTE_EXEMPTIONS = {
         "The UUID names a cycle, not a bearer credential. Authentication and "
         "RESTRICTIVE portal client RLS authorize the base-table SELECT."
     ),
+    "cycle-das-guide": (
+        "AXRM-017. The UUID names a cycle loaded through the actor's portfolio "
+        "(404 outside it); das.generate, eligibility, flags, pauses and the budget "
+        "are re-checked by the queued task before any provider call."
+    ),
     "cycle-request-action": (
         "The UUID names a cycle loaded through the actor's portfolio; every request "
         "command re-checks scope, version and capability inside the row lock."

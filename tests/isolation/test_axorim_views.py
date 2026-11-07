@@ -73,6 +73,7 @@ class Route:
 FIRM_ROUTES: Final = (
     Route("cycle-detail", {"pk": "cycles.servicecycle"}),
     Route("cycle-request-action", {"pk": "cycles.servicecycle"}),
+    Route("cycle-das-guide", {"pk": "cycles.servicecycle"}),
     Route("cycle-open", {"pk": "clients.clientcompany"}, control_own_object=False),
     Route("cycle-reopen", {"pk": "cycles.servicecycle"}),
     Route("cycle-exception-action", {"pk": "cycles.exception"}),

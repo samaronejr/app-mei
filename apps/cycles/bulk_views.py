@@ -43,6 +43,7 @@ from apps.cycles.services.bulk import (
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.tasks import run_bulk_operation
 from apps.delivery.services import remaining_quota
+from apps.integrations.serpro.pgmei import REFUSAL_LABELS, brl
 
 REASONS = {
     "client_inactive": "Cliente inativo.",
@@ -73,6 +74,15 @@ REASONS = {
     "notices_queued": "Avisos na fila; isso não comprova envio ou entrega.",
     "approval_recorded": "Decisão registrada; nenhum efeito externo foi executado.",
     "cancelled": "Cancelado antes de executar.",
+    # AXRM-017: guide eligibility and outcome codes.
+    **REFUSAL_LABELS,
+    "guia_obtida": "Guia obtida e anexada; nada foi publicado ao cliente.",
+    "guia_existente": "Guia de hoje já obtida; nenhuma nova emissão.",
+    "em_andamento": "Pedido em andamento; confira o ciclo.",
+    "guia_nao_obtida": "A Receita recusou a guia; há uma pendência no ciclo.",
+    "guia_nao_vinculada": "Guia emitida, mas não anexada; há uma pendência.",
+    "resultado_incerto": "Resultado incerto; nada será reenviado automaticamente.",
+    "guia_recuperada": "Guia de um pedido anterior recuperada; nenhuma nova emissão.",
 }
 SERVICE_LABELS = dict(SERVICE_KIND_CHOICES)
 
@@ -285,6 +295,12 @@ def bulk_detail(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
             # Read on every render, as the queue does: the firm's own reservations
             # today against the configured cap. Reading it reserves nothing.
             "remaining_quota": remaining_quota() if notices else None,
+            "estimated_cost": (
+                brl(operation.snapshot_json["estimated_cost"])
+                if operation.kind == BulkKind.OBTAIN_DAS_GUIDES
+                and isinstance(operation.snapshot_json.get("estimated_cost"), int)
+                else ""
+            ),
         },
         status=status,
     )

@@ -99,6 +99,10 @@ def client_authority(call: ProviderCall) -> bool:
         from apps.integrations.serpro.sitfis import admit_emission  # noqa: PLC0415
 
         admit_emission(call)
+    if authorized and call.operation == "SP-DAS":
+        from apps.integrations.serpro.pgmei import guide_admission  # noqa: PLC0415
+
+        return guide_admission(call)
     return authorized
 
 

@@ -245,7 +245,7 @@ $$;
 -- firm-side too; integrations.0010 adds the same policies.
 -- PORTAL_NONE: cycles_federalreportreview
 -- AXRM-016: the accountant's SITFIS review is firm-side (INV-R10) with the
--- client-anchored policy and DenyPortalAccess from cycles.0021; it is append-only,
+-- client-anchored policy and DenyPortalAccess from cycles.0022; it is append-only,
 -- so the receipt loop below keeps it SELECT/INSERT on re-applied bootstrap.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
