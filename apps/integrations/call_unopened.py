@@ -35,10 +35,12 @@ _UNOPENED_WRITES: ContextVar[tuple[int, dict[int, JournalRecord]] | None] = Cont
 @contextmanager
 def _issue_unopened_write(record: JournalRecord) -> Iterator[None]:
     """Seal one append after the dispatch boundary consumed its admission right."""
-    token = _UNOPENED_WRITES.set((getpid(), {id(record): record}))
+    grants = {id(record): record}
+    token = _UNOPENED_WRITES.set((getpid(), grants))
     try:
         yield
     finally:
+        grants.clear()
         _UNOPENED_WRITES.reset(token)
 
 
