@@ -3,6 +3,7 @@
 import json
 import sys
 import threading
+from collections.abc import Callable
 from contextvars import copy_context
 
 import pytest
@@ -30,6 +31,19 @@ def markers(case: Veto) -> list[JournalRecord]:
     ]
 
 
+def _append_in_thread(
+    append: Callable[[], str], outcomes: list[str], done: threading.Event
+) -> None:
+    try:
+        append()
+        outcomes.append("accepted")
+    except JournalError:
+        outcomes.append("rejected")
+    finally:
+        connections.close_all()
+        done.set()
+
+
 @pytest.mark.parametrize("cut", ["after-consume", "at-consume-return"])
 def test_a_write_spent_at_exit_cannot_become_durable_after_issuing_admission_closes(
     veto: Veto, monkeypatch: pytest.MonkeyPatch, cut: str
@@ -53,7 +67,7 @@ def test_a_write_spent_at_exit_cannot_become_durable_after_issuing_admission_clo
         ):
             pause()
         if threading.current_thread().name == "rv6-spent-thread":
-            observations.append(dict(issuer_closed_at_storage=issuer_closed.is_set()))
+            observations.append({"issuer_closed_at_storage": issuer_closed.is_set()})
         return real_save(path, raw)
 
     def held_consume(record: JournalRecord | FirmJournalRecord) -> None:
@@ -70,17 +84,11 @@ def test_a_write_spent_at_exit_cannot_become_durable_after_issuing_admission_clo
             return real_append(record)
         inherited = copy_context()
 
-        def run() -> None:
-            try:
-                inherited.run(real_append, record)
-                outcomes.append("accepted")
-            except JournalError:
-                outcomes.append("rejected")
-            finally:
-                connections.close_all()
-                done.set()
-
-        thread = threading.Thread(target=run, name="rv6-spent-thread")
+        thread = threading.Thread(
+            target=_append_in_thread,
+            args=(lambda: inherited.run(real_append, record), outcomes, done),
+            name="rv6-spent-thread",
+        )
         threads.append(thread)
         thread.start()
         assert spent.wait(timeout=15), "thread never consumed the grant"
@@ -93,23 +101,21 @@ def test_a_write_spent_at_exit_cannot_become_durable_after_issuing_admission_clo
         with pytest.raises(CrashCutError):
             veto.run()
         issuer_closed.set()
-        assert markers(veto) == [], (
-            "marker was already durable before releasing the writer"
-        )
+        assert markers(veto) == [], "marker was already durable before releasing the writer"
     finally:
         release.set()
         for thread in threads:
             thread.join(timeout=25)
     assert done.is_set()
     stored = markers(veto)
-    evidence = dict(
-        cut=cut,
-        issuer_closed=issuer_closed.is_set(),
-        writer_outcomes=outcomes,
-        durable_markers=len(stored),
-        physical_sends=len(veto.world.sent("/Emitir")),
-        observations=observations,
-    )
+    evidence = {
+        "cut": cut,
+        "issuer_closed": issuer_closed.is_set(),
+        "writer_outcomes": outcomes,
+        "durable_markers": len(stored),
+        "physical_sends": len(veto.world.sent("/Emitir")),
+        "observations": observations,
+    }
     sys.stdout.write(
         "RV6_SPENT_AT_SCOPE_EXIT " + json.dumps(evidence, sort_keys=True) + "\n"
     )
