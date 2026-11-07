@@ -4,10 +4,12 @@ from datetime import date
 
 import pytest
 
+from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.integrations.budget_models import ProviderBudget
 from apps.integrations.serpro import sweeps, tasks
 from apps.integrations.serpro.models import PaymentQuery
+from apps.integrations.serpro.pagtoweb import PaymentRange
 from tests.integrations.pagtoweb_support import World, page, world
 from tests.integrations.test_federal_sweeps import add_clients, lane, on
 
@@ -59,6 +61,7 @@ def test_one_turn_drains_each_owned_payment_handoff_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     add_clients(world, 4, mei=True)
+    deliveries: list[tuple[str, ...]]
     deliveries = []
     monkeypatch.setattr(
         tasks.run_payment_query_task, "delay", lambda *args: deliveries.append(args)
@@ -84,6 +87,7 @@ def test_payment_deliveries_are_once_per_client_and_month_across_repeated_turns(
         # Ten synthetic consultations cost 2.40; both calendar scenarios execute
         # during the same real billing month.
         ProviderBudget.objects.update(cap_microbrl=4_000_000)
+    deliveries: list[tuple[str, str]]
     deliveries = []
 
     def deliver(tenant_id: str, query_id: str) -> object:
@@ -113,3 +117,53 @@ def test_payment_deliveries_are_once_per_client_and_month_across_repeated_turns(
     assert month_queries[0].isdisjoint(month_queries[1])
     assert len(deliveries) == len(set(deliveries)) == 10
     assert len(world.sent()) == 10
+
+
+def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback clears its pending handoff; later turns recover the same client."""
+    clients = add_clients(world, 4, mei=True)
+    failed_client = clients[0].pk
+    original = sweeps.payments_for
+    deliveries: list[tuple[str, str]] = []
+    fail = True
+
+    def act(client: ClientCompany, window: PaymentRange) -> sweeps.Outcome:
+        outcome = original(client, window)
+        if client.pk == failed_client and fail:
+            message = "interrupt before client commit"
+            raise ConnectionError(message)
+        return outcome
+
+    def deliver(tenant_id: str, query_id: str) -> object:
+        deliveries.append((tenant_id, query_id))
+        result = tasks.run_payment_query_task.apply(args=(tenant_id, query_id))
+        assert result.successful(), result.result
+        return result.get()
+
+    monkeypatch.setattr(sweeps, "payments_for", act)
+    monkeypatch.setattr(tasks.run_payment_query_task, "delay", deliver)
+    world.script(*(page([]) for _ in range(5)))
+    on(monkeypatch, date(2026, 10, 21))
+    result = tasks.schedule_payment_consultations.apply()
+    assert result.successful(), result.result
+    assert result.get() == 4
+    assert sweeps._pending == []
+    assert len(deliveries) == 4
+    with tenant_context(world.termo.tenant.pk):
+        assert not PaymentQuery.objects.filter(client_id=failed_client).exists()
+    fail = False
+    on(monkeypatch, date(2026, 10, 22))
+    result = tasks.schedule_payment_consultations.apply()
+    assert result.successful(), result.result
+    assert result.get() == 1
+    assert sweeps._pending == []
+    assert len(deliveries) == len(set(deliveries)) == 5
+    assert len(world.sent()) == 5
+    with tenant_context(world.termo.tenant.pk):
+        assert PaymentQuery.objects.count() == 5
+        assert set(PaymentQuery.objects.values_list("state", flat=True)) == {
+            "nada_localizado"
+        }
