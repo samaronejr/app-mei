@@ -7,7 +7,7 @@ what was queued, so no provider byte is involved in the scheduling decision.
 
 import importlib
 import importlib.util
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -31,15 +31,22 @@ DAY = date(2026, 10, 15)
 SITFIS = "schedule_situation_reports"
 
 
+# The fake provider's termo lasts 30 days from the fixture clock and is checked
+# against the real clock, and a provider call's `next_attempt_at` defaults to real
+# time. So the instant must stay ahead of real time by days, whatever date this
+# runs on, and mid-month so the firm budget window (opened by local date) and the
+# firm-call reservation (read by UTC date) agree: the 8th of next month at 15:00Z.
+# The October dates the tests pass to the sweeps are plain date arguments.
+_REAL = datetime.now(UTC)
+INSTANT = (
+    (_REAL.replace(day=28) + timedelta(days=4)).replace(day=1) + timedelta(days=7)
+).replace(hour=15, minute=0, second=0, microsecond=0)
+
+
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
-    """A fixed mid-month clock, replacing the shared one for these tests.
-
-    The shared fixture starts an hour after the real time, which on the last UTC
-    hours of a month lands in the next month, where the firm budget window (opened
-    by local date) and the firm-call reservation (read by UTC date) disagree.
-    """
-    current = Clock(datetime(2026, 10, 15, 15, 0, tzinfo=UTC))
+    """A clock derived from real time, replacing the shared one for these tests."""
+    current = Clock(INSTANT)
     monkeypatch.setattr(timezone, "now", current.now)
     return current
 
