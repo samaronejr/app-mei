@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from apps.briefing import providers
 from apps.briefing.rules import BRIEFING_RULES_V1, RULE_LABELS
-from apps.briefing.source_rows import SourceContext
+from apps.briefing.source_rows import SourceContext, SourceRow
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import CycleState, ServiceCycle
@@ -116,3 +116,17 @@ def test_a_problem_with_an_unregistered_reason_gets_a_generic_title() -> None:
     assert len(items) == 1
     assert items[0].title
     assert items[0].title != "motivo_sem_registro_federal"
+
+
+def test_the_integration_source_rows_are_firm_only_and_not_client_visible() -> None:
+    setup = briefing_setup()
+    with tenant_context(setup.tenant.pk):
+        ServiceCycle.objects.update(state=CycleState.COMPLETED)
+        issue = _issue(setup, setup.client, review_on=NOW.date())
+        context = SourceContext(clients=ClientCompany.objects.all(), now=timezone.now())
+        rows = [
+            SourceRow(*row)
+            for row in _checked(lambda: providers.PROVIDERS["integration"](context))
+        ]
+    assert [row.subject_ref for row in rows] == [issue.pk]
+    assert rows[0].client_visible is False

@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 from django.utils import timezone
 
-from apps.delivery.jobs import JOB_LABELS, PAUSE_AWARE, JobStatus, registered_jobs
+from apps.delivery import jobs
+from apps.delivery.jobs import JOB_LABELS, JobStatus, registered_jobs
 from apps.obligations.models import SchedulerHeartbeat
 
 if TYPE_CHECKING:
@@ -35,7 +36,8 @@ def _row(name: str) -> JobStatus:
 
 
 def test_the_federal_sweeps_are_the_only_pause_aware_jobs() -> None:
-    assert set(SWEEPS.values()) == PAUSE_AWARE
+    assert getattr(jobs, "PAUSE_AWARE", None) == set(SWEEPS.values())
+    assert getattr(jobs, "PAUSED_CODE", None) == "pausado"
 
 
 @pytest.mark.parametrize("name", sorted(SWEEPS))
