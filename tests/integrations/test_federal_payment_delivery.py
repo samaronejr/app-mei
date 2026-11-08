@@ -1,5 +1,6 @@
 """Payment identity and queue ownership regressions from review 6."""
 
+import sys
 from datetime import date
 
 import pytest
@@ -122,6 +123,33 @@ def test_payment_deliveries_are_once_per_client_and_month_across_repeated_turns(
     assert len(world.sent()) == 10
 
 
+def _assert_rollback_diagnostics(
+    captured: list[Exception],
+    logged: list[BaseException | None],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert len(captured) == 1
+    assert isinstance(captured[0], ConnectionError)
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "apps.integrations.serpro.sweeps"
+        and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == "federal sweep failed for one client"
+    assert warnings[0].exc_info is not None
+    assert len(logged) == 1
+    assert logged[0] is captured[0]
+    assert warnings[0].exc_info[0] is not None
+    assert (
+        warnings[0].exc_info[0].__module__,
+        warnings[0].exc_info[0].__name__,
+    ) == ("builtins", "ConnectionError")
+    assert str(warnings[0].exc_info[1]) == "interrupt before client commit"
+    assert "ConnectionError: interrupt before client commit" in caplog.text
+
+
 def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
     world: World,
     monkeypatch: pytest.MonkeyPatch,
@@ -133,6 +161,8 @@ def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
     original = sweeps.payments_for
     deliveries: list[tuple[str, str]] = []
     captured: list[Exception] = []
+    logged: list[BaseException | None] = []
+    original_warning = sweeps.logger.warning
     fail = True
 
     def act(client: ClientCompany, window: PaymentRange) -> sweeps.Outcome:
@@ -148,7 +178,13 @@ def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
         assert result.successful(), result.result
         return result.get()
 
+    def warning(message: str, *, exc_info: bool) -> None:
+        assert exc_info is True
+        logged.append(sys.exception())
+        original_warning(message, exc_info=exc_info)
+
     monkeypatch.setattr(sweeps, "payments_for", act)
+    monkeypatch.setattr(sweeps.logger, "warning", warning)
     monkeypatch.setattr(sentry_sdk, "capture_exception", captured.append)
     monkeypatch.setattr(tasks.run_payment_query_task, "delay", deliver)
     world.script(*(page([]) for _ in range(5)))
@@ -168,18 +204,7 @@ def test_failed_client_does_not_carry_an_uncommitted_pending_handoff(
     assert sweeps._pending == []
     assert len(deliveries) == len(set(deliveries)) == 5
     assert len(world.sent()) == 5
-    assert len(captured) == 1
-    assert isinstance(captured[0], ConnectionError)
-    warnings = [
-        record
-        for record in caplog.records
-        if record.name == "apps.integrations.serpro.sweeps"
-        and record.levelname == "WARNING"
-    ]
-    assert len(warnings) == 1
-    assert warnings[0].getMessage() == "federal sweep failed for one client"
-    assert warnings[0].exc_info is not None
-    assert warnings[0].exc_info[1] is captured[0]
+    _assert_rollback_diagnostics(captured, logged, caplog)
     with tenant_context(world.termo.tenant.pk):
         assert PaymentQuery.objects.count() == 5
         assert set(PaymentQuery.objects.values_list("state", flat=True)) == {
