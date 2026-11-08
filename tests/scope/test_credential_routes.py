@@ -53,6 +53,7 @@ EXPECTED_EXEMPTION_KEYS: Final = frozenset(
         "cycle-open",
         "portal-cycle-detail",
         # T11
+        "cycle-das-guide",
         "cycle-request-action",
         "cycle-exception-action",
         "portal-request-detail",

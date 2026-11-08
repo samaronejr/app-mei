@@ -41,7 +41,7 @@ def refuse_reverse_with_rows(
     # CROSS_TENANT_OK: the rollback guard counts every firm's reviews on purpose.
     if review._base_manager.exists():
         msg = (
-            "cycles.0021 cannot be reversed while SITFIS reviews exist: use "
+            "cycles.0022 cannot be reversed while SITFIS reviews exist: use "
             "forward repair, with the flag off and the reviews kept."
         )
         raise IrreversibleError(msg)
@@ -50,7 +50,7 @@ def refuse_reverse_with_rows(
 class Migration(migrations.Migration):
     dependencies = [
         ("clients", "0015_import_batches_and_versions"),
-        ("cycles", "0020_evidenceexport_excluded_originals"),
+        ("cycles", "0021_pgmei_guide_choices"),
         ("obligations", "0025_federal_record_guards"),
         ("tenants", "0015_provider_usage_metrics"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),

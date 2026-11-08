@@ -35,6 +35,10 @@ class RequestState(models.TextChoices):
     REJECTED = "rejeitado", "Rejeitado"
     WAIVED = "dispensado", "Dispensado"
     REPLACED = "substituido", "Substituído"
+    # AXRM-017: a firm-only request the client is never asked for (the official
+    # DAS guide). Never sent, never in CLIENT_VISIBLE_STATES; a publication alone
+    # brings its accepted document to the client.
+    INTERNAL = "interno", "Interno do escritório"
 
 
 # States the client is still expected to act on. A rejected request goes back to the

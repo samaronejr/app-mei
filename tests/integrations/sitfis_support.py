@@ -41,8 +41,12 @@ from tests.fakes.provider import Received, Reply
 from tests.fakes.serpro import FakeSerpro
 
 PERIOD = date(2026, 10, 1)
-# After every real-time model default (created_at, next_scan_at) of this run.
-START = datetime.now(UTC).replace(second=0, microsecond=0) + timedelta(hours=1)
+# After every real-time model default (created_at, next_scan_at) of this run, and
+# far from a month end, so day-scale clock moves keep the month's provider budget.
+_NOW = datetime.now(UTC)
+START = (_NOW.replace(day=28) + timedelta(days=4)).replace(
+    day=1, hour=12, minute=0, second=0, microsecond=0
+)
 PDF = b"%PDF-1.7\n% synthetic SITFIS report AXRM-016\n%%EOF\n"
 EMISSAO_MICROBRL = 320_000
 PROTOCOL = "+S7N6c04XNZUVzmxWT7SzpkZA4xeDQC9Z2T2GBJ5usn8LyouyWX/synthetic=="

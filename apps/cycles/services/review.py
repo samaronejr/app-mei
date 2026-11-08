@@ -196,6 +196,20 @@ def _unless_unscanned(
     return intake
 
 
+def _next_state(state: str, *, accepting: bool) -> str:
+    """Return the request state after a decision on one of its files.
+
+    AXRM-017: a firm-only request stays firm-only; its link carries the decision.
+    """
+    if state == RequestState.INTERNAL:
+        return state
+    if accepting:
+        return RequestState.ACCEPTED
+    if state != RequestState.ACCEPTED:
+        return RequestState.REJECTED
+    return state
+
+
 def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
     actor: User,
     link_id: UUID,
@@ -289,10 +303,7 @@ def record_review(  # noqa: PLR0913 - the S7.5 contract names every argument
             update_fields=["review_decision", "client_reason", "reviewed_at", "version"]
         )
         previous = request.state
-        if accepting:
-            request.state = RequestState.ACCEPTED
-        elif request.state != RequestState.ACCEPTED:
-            request.state = RequestState.REJECTED
+        request.state = _next_state(request.state, accepting=accepting)
         request.version += 1
         request.save(update_fields=["state", "version"])
         if (

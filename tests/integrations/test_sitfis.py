@@ -203,6 +203,7 @@ def test_two_202_then_500_reach_the_limit_with_owned_work_and_no_fourth_call(
         (500, "nao"),
     ]
     assert (limited.state, limited.emission_attempts) == ("limite_de_tentativas", 3)
+    assert len(_exceptions(world, REPORT_FAILED)) == 1
     [problem] = _exceptions(world, REPORT_FAILED)
     assert (problem.subject_ref, problem.owner_id, problem.state) == (
         report.pk,
@@ -233,6 +234,7 @@ def test_a_limit_without_an_open_cycle_is_owned_as_an_integration_issue(
         world.advance(report)
     assert world.reload(report).state == "limite_de_tentativas"
     with tenant_context(world.tenant_id):
+        assert IntegrationIssue.objects.filter(reason=REPORT_FAILED).count() == 1
         issue = IntegrationIssue.objects.get(reason=REPORT_FAILED)
     assert (issue.client_id, issue.owner_id, issue.state) == (
         world.termo.client.pk,
@@ -260,6 +262,7 @@ def test_a_malformed_report_is_decided_before_finality_and_owned(
     failed = world.advance(report)
     [call] = world.calls("SP-SIT-R")
     assert (call.state, call.billed) == ("falhou", "sim")
+    assert call.provider_code == "resposta_sitfis_invalida"
     assert failed.state == "falha"
     assert failed.document_id is None
     with tenant_context(world.tenant_id):
@@ -313,13 +316,14 @@ def test_a_final_202_whose_runner_died_is_applied_by_the_next_runner(
         world.advance(report)
     monkeypatch.setattr(module, "perform", real)
     assert [c.state for c in world.calls("SP-SIT-R")] == [CallState.WAITING]
-    # When the next delivery runs, then the attempt counts with the default wait.
+    # When the next delivery runs, then the attempt counts with SERPRO's own wait
+    # (4 000 ms from the 202), never the 60 s default reserved for an absent one.
     caplog.set_level(logging.INFO, logger="apps.integrations.serpro.sitfis")
     recovered = world.advance(report)
     assert (recovered.state, recovered.emission_attempts) == ("aguardando", 1)
-    assert recovered.wait_until == world.clock.now() + timedelta(seconds=60)
+    assert recovered.wait_until == world.clock.now() + timedelta(seconds=4)
     assert len(world.sent("/Emitir")) == 1
-    assert any(
+    assert not any(
         getattr(record, "sitfis_event", "") == "espera_padrao"
         for record in caplog.records
     )
@@ -351,6 +355,7 @@ def test_a_lease_lost_mid_emission_is_owned_and_counted(
     # When the lease has run out, then the call is uncertain, owned and counted.
     world.clock.advance(seconds=121)
     counted = world.advance(report)
+    assert len(world.calls("SP-SIT-R")) == 1
     [call] = world.calls("SP-SIT-R")
     assert call.state == CallState.UNCERTAIN
     with tenant_context(world.tenant_id):
@@ -558,12 +563,14 @@ def test_the_task_reschedules_itself_at_wait_until(
     world.script(protocol_reply(30_000))
     report = world.request()
     # The committed request queued the first run once, with no delay.
+    assert len(scheduled) == 1
     [(queued, options)] = scheduled
     assert queued == (str(world.tenant_id), str(report.pk))
     assert "eta" not in options
     scheduled.clear()
     state = tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
     assert state == "aguardando"
+    assert len(scheduled) == 1
     [(args, kwargs)] = scheduled
     assert args == (str(world.tenant_id), str(report.pk))
     assert kwargs["eta"] == world.clock.now() + timedelta(seconds=30)

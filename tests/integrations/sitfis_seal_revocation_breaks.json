@@ -1,0 +1,28 @@
+[
+  [
+    "fix5-skip-grant-revocation-on-exit",
+    [
+      [
+        "apps/integrations/call_unopened.py",
+        "        grants.clear()\n",
+        "        pass\n"
+      ]
+    ],
+    [
+      "tests/integrations/test_sitfis_seal_lifetime.py"
+    ]
+  ],
+  [
+    "fix5-revoke-only-the-original-context",
+    [
+      [
+        "apps/integrations/call_unopened.py",
+        "        grants.clear()\n",
+        "        _UNOPENED_WRITES.set(None)\n"
+      ]
+    ],
+    [
+      "tests/integrations/test_sitfis_seal_lifetime.py"
+    ]
+  ]
+]

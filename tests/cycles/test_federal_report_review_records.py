@@ -27,7 +27,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 __all__ = ["clock", "world"]
 
 TABLE = "cycles_federalreportreview"
-BEFORE = ("cycles", "0020_evidenceexport_excluded_originals")
+BEFORE = ("cycles", "0021_pgmei_guide_choices")
 
 
 @contextmanager
