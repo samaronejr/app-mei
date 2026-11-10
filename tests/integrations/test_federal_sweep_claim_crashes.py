@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+from apps.clients.models import ClientCompany
 from apps.integrations.serpro import tasks
 from apps.integrations.serpro.models import PaymentQueryState
 from apps.obligations.models import SchedulerHeartbeat
@@ -71,7 +72,9 @@ def test_a_consultation_that_crashes_while_opening_is_a_failed_client(
     crashes: list[CrashError] = []
     handed: list[tuple[object, ...]] = []
 
-    def open_query(client, window, *, actor, cadence):  # noqa: ANN001, ANN202
+    def open_query(
+        client: ClientCompany, window: object, *, actor: object, cadence: object
+    ) -> SimpleNamespace:
         opened.append(client.pk)
         if len(opened) == 1:
             crash = CrashError("provider down")
@@ -106,7 +109,7 @@ def test_a_report_request_that_crashes_is_a_failed_client(
     asked: list[object] = []
     crashes: list[CrashError] = []
 
-    def request(client):  # noqa: ANN001, ANN202
+    def request(client: ClientCompany) -> None:
         asked.append(client.pk)
         if len(asked) == 1:
             crash = CrashError("provider down")
