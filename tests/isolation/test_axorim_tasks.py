@@ -36,6 +36,8 @@ TASK_MODULES = (
     "apps.clients.tasks",
     "apps.obligations.tasks",
     "apps.tenants.export_tasks",
+    "apps.integrations.serpro.tasks",
+    "apps.integrations.tasks",
 )
 
 # The tenant-aware registrations expected at cd19380: (module, name) pairs read
@@ -57,6 +59,11 @@ EXPECTED_TENANT_TASKS = frozenset(
         "apps.cycles.tasks.scan_tenant_quarantine",
         "apps.delivery.tasks.dispatch_tenant",
         "apps.delivery.tasks.sweep_tenant_reminders",
+        # AXRM-016: the SITFIS worker (PhasedTenantTask), registered by integrations.
+        "apps.integrations.serpro.sitfis_tasks.advance_situation_report_task",
+        "apps.integrations.serpro.tasks.emit_payment_receipt_task",
+        "apps.integrations.serpro.tasks.run_payment_query_task",
+        "apps.integrations.tasks.obtain_das_guide_task",
         "apps.tenants.export_tasks.build_account_export",
         "clients.commit_import",
     }

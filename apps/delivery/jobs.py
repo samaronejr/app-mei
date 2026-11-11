@@ -34,6 +34,7 @@ JOB_LABELS: Final = {
     "refresh_das_calendars": "Atualização do calendário DAS",
     "record_usage": "Registro diário de uso",
     "schedule_payment_consultations": "Consulta mensal de pagamentos na Receita",
+    "schedule_situation_reports": "Relatório mensal de situação fiscal na Receita",
     "purge_payment_pages": "Retenção de páginas de pagamentos da Receita",
     "offboard_expired_engagements": "Encerramentos após o prazo",
     "queue_daily_summaries": "Resumo diário por e-mail",
@@ -44,6 +45,12 @@ JOB_LABELS: Final = {
     "resume_bulk_operations": "Operações em lote",
     "purge_agent_outputs": "Retenção de registros internos de processamento",
 }
+# AXRM-018: the federal sweeps are stood down by the platform switches themselves,
+# so the page says "Pausado" while a switch is on, whatever the last stamp says.
+PAUSE_AWARE: Final = frozenset(
+    {"schedule_payment_consultations", "schedule_situation_reports"}
+)
+PAUSED_CODE: Final = "pausado"
 OUTCOME_LABELS: Final = {
     "evaluated": "Solicitações avaliadas em lotes concluídos",
     "queued": "Avisos incluídos em lotes concluídos",
@@ -136,7 +143,12 @@ def registered_jobs() -> tuple[JobStatus, ...]:
                 enabled=enabled,
                 due=due,
                 last_attempt_at=attempted,
-                last_error_code=stamp.last_error_code if stamp else "",
+                last_error_code=PAUSED_CODE
+                if short_name in PAUSE_AWARE
+                and (settings.PROVIDERS_PAUSED or settings.SERPRO_PAUSED)
+                else stamp.last_error_code
+                if stamp
+                else "",
                 outcomes=tuple(
                     (label, int(stamp.outcomes_json[key]))
                     for key, label in OUTCOME_LABELS.items()

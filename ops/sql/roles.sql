@@ -243,6 +243,10 @@ $$;
 -- PORTAL_NONE: integrations_paymentpage
 -- AXRM-015: a paid PAGTOWEB page kept until its consultation settles it is
 -- firm-side too; integrations.0010 adds the same policies.
+-- PORTAL_NONE: cycles_federalreportreview
+-- AXRM-016: the accountant's SITFIS review is firm-side (INV-R10) with the
+-- client-anchored policy and DenyPortalAccess from cycles.0022; it is append-only,
+-- so the receipt loop below keeps it SELECT/INSERT on re-applied bootstrap.
 -- PORTAL_NONE: tenants_billingaccount
 -- PORTAL_NONE: tenants_usagerecord
 -- PORTAL_NONE: tenants_notificationpreference
@@ -271,7 +275,8 @@ BEGIN
         'cycles_actionexecution', 'cycles_clientacknowledgement',
         'cycles_evidenceindex', 'cycles_completiongeneration', 'tenants_usagerecord',
         'integrations_providercallattempt', 'integrations_providereffectbarrier',
-        'integrations_firmprovidercallattempt', 'obligations_federalpayment'
+        'integrations_firmprovidercallattempt', 'obligations_federalpayment',
+        'cycles_federalreportreview'
     ]
     LOOP
         IF to_regclass('public.' || receipt_table) IS NOT NULL THEN

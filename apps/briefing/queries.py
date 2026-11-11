@@ -62,7 +62,7 @@ def _counts(
     return tuple(
         BriefingCount(kind, label, counted[kind])
         for kind, label in PROVIDER_LABELS.items()
-        if kind not in failed
+        if kind not in failed and (kind != "integration" or counted[kind])
     )
 
 

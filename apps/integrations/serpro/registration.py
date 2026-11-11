@@ -1,6 +1,6 @@
 """Closed SERPRO operation registration with live authority and budget policies."""
 
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from django.utils import timezone
 
@@ -17,6 +17,12 @@ from apps.integrations.serpro.firm_budget import FirmBudgetPolicy
 from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.integrations.serpro.termo_state import termo_in_force
 from apps.obligations.models import AcquisitionOrigin, Document
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+    from apps.integrations.call_dispatch import Dispatch
+
 
 SUBMITTED: Final = "integrations.firm_authorization_submitted"
 MANAGE: Final = "fiscal.authority.manage"
@@ -85,10 +91,26 @@ def client_authority(call: ProviderCall) -> bool:
         state__in=ACTIVE_STATES,
     ).exists():
         return False
-    return (
+    authorized = (
         termo_in_force(connection_id, timezone.localdate())
         and authority_for(call.client, call.operation, link=call.link).usable
     )
+    if authorized and call.operation == "SP-SIT-R":
+        from apps.integrations.serpro.sitfis import admit_emission  # noqa: PLC0415
+
+        admit_emission(call)
+    if authorized and call.operation == "SP-DAS":
+        from apps.integrations.serpro.pgmei import guide_admission  # noqa: PLC0415
+
+        return guide_admission(call)
+    return authorized
+
+
+def emission_wire_guard(dispatch: "Dispatch") -> "AbstractContextManager[None]":
+    """Bind only the paid SITFIS operation to its final wire-permit context."""
+    from apps.integrations.serpro.sitfis import wire_guard  # noqa: PLC0415
+
+    return wire_guard(dispatch)
 
 
 def register_serpro_operations() -> None:
@@ -103,6 +125,7 @@ def register_serpro_operations() -> None:
                 "federal_checks",
                 billing,
                 BudgetPolicy(client_authority),
+                wire_guard=emission_wire_guard if code == "SP-SIT-R" else None,
             )
         )
     register_firm_operation(

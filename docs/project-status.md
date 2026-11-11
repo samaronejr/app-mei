@@ -1167,6 +1167,87 @@ Downstream notes from the review remain assigned to their original todos:
 Repair evidence is retained separately under `.evidence/AXRM-014-fix1-*`.
 The committed repair head still requires full standard gates, manual/adversarial
 QA and cleanup before fresh independent review; no approval is claimed here.
+
+#### AXRM-016: fiscal-situation report (SITFIS)
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-016` | `request_situation_report` opens one `FiscalSituationReport` and its `FederalConsultation` receipt per client at a time (portfolio scope and `fiscal.checks.run` for staff; flag, pause, scanner, link, termo and 00002 authority refuse before any row). The `advance_situation_report` worker (`PhasedTenantTask`) drives A7.3 from durable rows only: SOLICITARPROTOCOLO91 (`/Apoiar`, free) stores the protocol and `wait_until = now + tempoEspera` (milliseconds; 60 s default, logged); RELATORIOSITFIS92 (`/Emitir`) is never reserved or sent before `wait_until`; a 202 (billed) takes the new `tempoEspera` from `dados`, a 204 (not billed) from the `ETag` header; each emission attempt is its own protocol call, at most three, then `limite_de_tentativas`. Replies are decided before finality, and the protocol or the PDF is written in the transaction that finalizes the call (the AXRM-015 `keep` hook, copied byte-identically), so a dead worker never loses a paid result and nothing raises after finality. The PDF is stored unparsed through `ingest_system_document` (`provedor_federal`, `portal_visible=False`, quarantined for the scan). Every other ending opens owned work (`situacao_fiscal_nao_obtida` on open cycles, else an `IntegrationIssue`; a 403 also records `ausente_detectada`). `cycles.FederalReportReview` (append-only, firm-only, `cycles.0022`) is recorded under the cycle lock with version check, `cycles.review` re-check, the input digest of the scanned bytes and a minimized `federal.report.reviewed` event; `pendencias_registradas` opens one `pendencia_fiscal_federal` per item for the engagement responsible; only `sem_pendencias_nas_fontes` has the dated "Nenhuma pendência registrada nas fontes verificadas em {data}" sentence. Qualification scenario `sitfis` (fake, trial). | Flag `federal_checks` off, `SERPRO_ENVIRONMENT=fake` and providers paused by default. Recovery is flag off or `SERPRO_PAUSED`: an in-flight protocol is not emitted and ends `protocolo_expirado` with owned work; reports and reviews stay. `cycles.0022` reverses while empty and refuses once a review exists (forward repair); `integrations.0012` only adds an issue reason. PQ-SERPRO-1 and LQ-3 remain open. |
+
+Tenant tables grow from **84 to 85** (`cycles_federalreportreview`, registered once in
+`roles.sql`, `PORTAL_DENIED_TABLES`, `APPEND_ONLY_TABLES`, the model inventory, the
+paired-FK inventory and the static-only coverage list). Baseline: AXRM-013's delivered
+head `0122c88` gates (group 1 **2289**, group 2 **6607 passed, 53 skipped**,
+isolation **909 passed, 53 skipped**). Tests first at the tests-only commit:
+**48 failed** on assertions, **1 passed** (the `producao` refusal). The 49 new
+cases then pass in three consecutive runs. Evidence:
+`.evidence/AXRM-016-red.txt`, `AXRM-016-green{1,2,3}.txt`, `AXRM-016-gates*.txt`,
+`AXRM-016-breaks.txt`, `AXRM-016-happy.txt`, `AXRM-016-failure.txt`,
+`AXRM-016-adversarial.txt`, `AXRM-016-teardown.txt` and
+`AXRM-016-doneclaim.json`.
+
+Repair 1 (review 1 of `bebff5a`) closes three ownership gaps and two of the same class.
+Every emission identity counts toward the cap of three, sent or not: one that never
+reached the wire is retried at once (nothing was paid), so a report can no longer wait
+forever. Each validated reply is recorded on the report before its call is final
+(`obligations.0027`: the reply's call and SERPRO's wait, plus the protocol, and the
+paid PDF already stored as a private original), so any runner applies SERPRO's own
+wait and adopts a received PDF instead of buying it again. A storage failure on a paid
+PDF ends billed and owned; any other failed delivery schedules a bounded continuation
+(1, 5, 30 min) and then opens owned work. A wait above one day is clamped to one day (that
+shortens such an estimate; it is never replaced by the 60 s default). Repair 2 records
+a reply's call and wait only for the report's current attempt, under the report row
+lock, so a stale runner's late reply cannot replace a newer attempt's wait; a late
+paid PDF is still kept and adopted. The PDF limit is the largest report the 5 MiB JSON wire can carry
+(`MAX_REPORT_BYTES`, about 3.75 MiB). Evidence: `.evidence/AXRM-016-fix1-*`.
+
+#### AXRM-018: fair monthly federal sweeps
+
+Review 3 adds 20 cases with no product change. The environment selector is
+necessary for monthly fairness: 240 earlier-sorted clients linked only to another
+environment must not exhaust all 11 October turns before five eligible clients
+are served. Added counterexamples also guard all closed-cycle states, every
+combination of live pause switches and prior health, and the provider-attention
+priority contribution. M4, M6, M8 and M14 are all distinguished by committed
+assertions; no survivor is treated as equivalent or left untested. Search bounds
+and proof are recorded in `.evidence/AXRM-018-fix3-*`.
+
+Review 2 adds six progress cases without changing product code: three firms with
+50 clients each remain fair when each firm's first 20 clients fail, both cursor
+fields advance through whole failed or refused turns, and a real missing-authority
+prefix does not strand authorized clients. M7 is a required no-starvation guard,
+not an equivalent mutant. The new tests kill M7, removal of refused-turn progress,
+and exception progress written to the wrong cursor. Repair 2 evidence is under
+`.evidence/AXRM-018-fix2-*`.
+
+Review 1 repair keeps never-received `solicitado` SITFIS reports in the monthly
+sweep, calling the existing request entry point again with the same report identity.
+Received reports and billed outcomes remain excluded. The Hoje integration source
+now excludes clients with any open cycle, whose work uses the exception source.
+Regression tests cover lost broker publication, worker death after commit, duplicate
+Hoje items, resolved issues, blocked clients, staff versus scheduled competence,
+and missing SITFIS authority. The existing briefing fixture retains its old issue
+and now asserts zero integration items for its open cycle; the scale test keeps
+every source populated using a client without an open cycle. Repair evidence is
+recorded under `.evidence/AXRM-018-fix1-*`.
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-018` | Beat entries `federal-sitfis-monthly` (06:10, task `schedule_situation_reports`) and `federal-payments-monthly` (06:20, from day 21, the existing `schedule_payment_consultations`) now go through `apps/integrations/serpro/sweeps.py`. Each firm gets a bounded turn: at most 20 clients per firm per run, taken after a per-firm cursor (`delivery.0009`: `federal_sitfis_cursor` and `federal_payments_cursor` on `AutomationPause`, two nullable columns, no new table) and wrapping, so with 3 firms x 50 clients every client is reached in three runs. Each client is one short transaction holding its work and the cursor move, so a worker that dies resumes at the client in flight and a refused or failing client never holds the others back. Every claim is refused before any row or provider I/O unless `PROVIDERS_PAUSED`/`SERPRO_PAUSED` are off, the environment is approved, the firm holds `federal_checks` and the client's authority is active (a missing one opens owned work); the budget is admitted by the call protocol. SITFIS candidates are linked clients whose cycle opened this month and that have no report requested this month; payments candidates are linked clients without a settled scheduled consultation for the month (its identity is the client and the competence month, so a second run, or another day, pays nothing). Provider-bound runs are queued only after each client's transaction commits. Heartbeats (`schedule_situation_reports`, `schedule_payment_consultations`) stamp an attempt first and `last_success_at` only when every firm's turn completed; a pause stamps `pausado`. The automations page labels both jobs and shows "Pausado" while a switch is on. The Hoje queue gains the `integration` source (open `IntegrationIssue` rows: failed consultations and missing authority of clients with no open cycle; open cycles keep using the exception source). | Beat entries are inert while `federal_checks` is off for the firm, `SERPRO_PAUSED`/`PROVIDERS_PAUSED` is on, or the production environment is unapproved. Recovery is the pause switch or the flag; cursors are harmless to keep. `delivery.0009` reverses (two nullable columns). No retry limit or billing of todos 15/16 changed. |
+
+Tenant tables stay at **85** (no new table; the two cursors are columns of the existing
+`delivery_automationpause`). Tests first at the tests-only commit: **17 failed** on
+assertions, **2 passed** (`AXRM-018-red.txt`). The 19 new cases then pass in three
+consecutive runs (`AXRM-018-green{1,2,3}.txt`). Seven deliberate breaks (pause, flag, budget,
+authority, cursor cap, heartbeat on failure, same-month idempotency) each fail an
+assertion and revert cleanly (`AXRM-018-breaks.txt`). Existing-test registrations: four
+briefing tests that enumerate the Hoje sources or pin their totals. Gates at the clean
+head `8cde261`: ruff, format, mypy, Django checks (dev, test, prod), migration drift and the
+round trip, group 2 **6654 passed, 53 skipped**, isolation **938 passed, 53 skipped**, CNPJ
+**29**, portal **319**, the AXRM-011 boundary selection **2027**, build with no `static/` diff,
+browser **197**. Group 1: **2485 passed** (the first run had 45 errors in the existing todo-16 tests from the shared SITFIS fixture clock in the last UTC hours of a month, identical at the untouched base `bebff5a`; rerun green after the local month rolled over, `AXRM-018-gates-group1-rerun.txt`). Evidence: `.evidence/AXRM-018-*.txt` and
+`AXRM-018-doneclaim.json`.
+
 #### AXRM-013: SERPRO adapter and authorization
 
 Budget-month follow-up (2026-11-04): synthetic qualification opens its explicit
@@ -1270,6 +1351,43 @@ passed, 53 skipped**, portal 319, CNPJ 29, browser 197, 9/9 mutants killed
 (`AXRM-015-gates-r3-*.txt`, `AXRM-015-gates-r4-*.txt`). Review 1 fixes (monthly
 identity, late DAS binding): red-first `AXRM-015-fix1-red.txt`, gates
 `AXRM-015-fix1-gates*.txt`.
+
+#### AXRM-017: official MEI DAS guide (PGMEI)
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-017` | Staff action "Obter guia DAS oficial" on MEI cycles (`das.generate`, flag `federal_checks`, MEI profile at the competence), queued after commit; `GERARDASPDF21` runs through the AXRM-013 adapter, the AXRM-009 phased protocol and an AXRM-010 reservation per item. The reply is decided before finality (one documented `Das` for this taxpayer and period); its PDF is ingested as a private, quarantined `provedor_federal` original before the fenced finalize. Idempotent per client, competence and local consolidation day. The guide is linked by a staff-origin link on a firm-only, non-required "Guia DAS oficial" request (new request state `interno`, kept through review), so the existing publication form offers it; the exact-approved publication releases the approved private original to the client. Production-only verified `guide_issued` fact. Refusals and linking failures open registered owned work (`guia_das_nao_obtida`, `guia_das_nao_vinculada`); ambiguous replies stay AXRM-009 uncertain work. Repair 1 (review 1): a claimed or started call whose lease has run out (a worker that died after SERPRO replied, before finality) is owned as AXRM-009 uncertain work and never resent, and a PDF it already stored is adopted into the cycle; an acks-late redelivery inside the lease retries and then settles that same call; a click never emits again while an earlier emission for the same client and competence is in flight or unsettled (it settles that emission instead); the daily evaluator settles every unsettled emission with no time window and regardless of `federal_checks` (the flag gates new emissions only). Repair 2: one exhaustive classification covers all 15 client/firm call states; every non-final state blocks another paid click. A never-claimed reservation is cancelled with its fence advanced and its budget returned under the protocol locks; every other expired non-final state is owned without an automatic resend, including an abandoned definitive-401 retry (the settled 401 remains unbilled). Runners recheck their durable predecessors before claiming, so two different local-day reservations cannot dispatch over each other. Bulk variant through the existing preview with a per-item cost line; qualification scenario `pgmei`. No new table (tenant tables unchanged); choice-only migrations `cycles.0021` and `integrations.0011`. | Behind `federal_checks` and `das.generate`, `SERPRO_ENVIRONMENT=fake` by default; never scheduled. Recovery: flag off or `SERPRO_PAUSED`; generated guides stay as private documents; publications follow the R1 withdraw path. PQ-SERPRO-3 and LQ-5 stay open. |
+
+Tests first: `.evidence/AXRM-017-red.txt` at `e44ad90` (47 cases: 45 failing, 2 passing by
+design, none on an import error); repair 1 red: `.evidence/AXRM-017-fix1-red.txt`;
+repair 2 red: `.evidence/AXRM-017-fix2-red.txt` (four original review-2 failures,
+89 baseline passes); repair 3 red: `.evidence/AXRM-017-fix3-red.txt` (the owned-401
+reopen and the retry-before-claim variant both bought two billed guides).
+The all-state walk, bounded two-runner schedules, three green
+rounds, committed-head gate totals per stage, deliberate breaks and
+the QA, adversarial and teardown receipts are recorded in `.evidence/AXRM-017-*`.
+
+The complete state classification names the protocol's `RECONCILED` state, so
+`pgmei.py` is registered in the scope guard's exact provider-recovery file set.
+The guard's assertions stay unchanged; negative controls prove that OFX inside
+the registered module and recovery vocabulary in an unregistered module still fail.
+
+Repair 3 makes ownership terminal for sending: settlement locks and re-reads the
+call, then advances a failed call's fence and clears its lease in the transaction
+that opens owned work. The ordinary live, unbilled first-401 retry stays available
+until that settlement wins. `client_authority` delegates only `SP-DAS` to
+`guide_admission` at claim and dispatch-start. Both admission and settlement use
+the order provider controls, current call, then client; predecessor rows are read
+without taking a later call lock. A domain veto closes only its matching unsent
+fence and releases its reservation, without incrementing attempts. Calls from
+AXRM-013 qualification without a guide-cycle request retain their authority
+contract. A later deliberate new-day purchase is allowed only after prior work
+is released, linked or irreversibly owned; recovery never makes that purchase.
+
+Placement onto AXRM-016 keeps its `authorized` calculation and `SP-SIT-R`
+`admit_emission` delegation, then the separate `SP-DAS` `guide_admission`
+delegation. Other operations return the original authority decision. The exact
+protected-file diff and combined function are retained in the repair-3 DoneClaim.
 
 ## Axorim pivot
 

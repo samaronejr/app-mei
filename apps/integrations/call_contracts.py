@@ -9,8 +9,11 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol
 from apps.integrations.models import ISSUE_SERVICE_LENGTH
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager
     from uuid import UUID
 
+    from apps.integrations.call_dispatch import Dispatch
     from apps.integrations.call_models import ProviderCall
 
 HTTP_STATUS_MIN: Final = 100
@@ -143,6 +146,7 @@ class Operation:
     feature: Literal["federal_checks", "document_capture"]
     billing_class: Literal["consulta", "emissao", "incluido_no_plano", "nao_faturada"]
     policy: AdmissionPolicy
+    wire_guard: Callable[[Dispatch], AbstractContextManager[None]] | None = None
 
     @property
     def journaled(self) -> bool:

@@ -35,6 +35,7 @@ from apps.delivery.errors import IntentConflict
 from apps.delivery.models import DeliveryEffect, OutboundMessage
 from apps.delivery.policy import content_digest
 from apps.delivery.services import record
+from apps.obligations.models import Document
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,39 @@ def _existing(proposal: ActionProposal) -> bool:
         msg = "A mesma intenção já tem efeitos diferentes registrados."
         raise IntentConflict(msg)
     return previous is not None
+
+
+def _release_documents(
+    proposal: ActionProposal, documents: list[dict[str, object]]
+) -> None:
+    """Make the exact approved private originals readable by the client (INV-R10).
+
+    AXRM-012 keeps provider and firm-only originals invisible to the portal role;
+    the approved publication is the one path that brings them to the client. Only
+    the documents the frozen manifest names, with the approved hash, are released.
+    """
+    approved = {str(row["document_id"]): str(row["sha256"]) for row in documents}
+    for document in (
+        Document.objects.select_for_update()
+        .filter(client_id=proposal.client_id, pk__in=approved, portal_visible=False)
+        .order_by("pk")
+    ):
+        if approved[str(document.pk)] != document.sha256:
+            msg = "O documento não corresponde à versão aprovada."
+            raise IntentConflict(msg)
+        twins = Document.objects.filter(
+            client_id=proposal.client_id, sha256=document.sha256, portal_visible=True
+        )
+        twins = (
+            twins.filter(obligation__isnull=True)
+            if document.obligation_id is None
+            else twins.filter(obligation_id=document.obligation_id)
+        )
+        if twins.exists():
+            msg = "O cliente já tem um arquivo idêntico; publique o arquivo dele."
+            raise IntentConflict(msg)
+        document.portal_visible = True
+        document.save(update_fields=["portal_visible"])
 
 
 def _publish(proposal: ActionProposal) -> None:
@@ -88,6 +122,7 @@ def _publish(proposal: ActionProposal) -> None:
             business_intent_key=proposal.business_intent_key,
             supersedes_id=payload.get("supersedes", {}).get("publication_id"),
         )
+        _release_documents(proposal, data["documents"])
         event_type = "publication.published"
     CycleEvent.objects.create(
         tenant_id=proposal.tenant_id,

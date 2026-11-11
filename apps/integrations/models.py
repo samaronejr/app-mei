@@ -576,6 +576,17 @@ class IssueReason(models.TextChoices):
         "consulta_pagamentos_falhou",
         "Consulta de pagamentos na Receita falhou",
     )
+    # AXRM-017: the official DAS guide was refused, or emitted but not attached.
+    GUIA_DAS_NAO_OBTIDA = "guia_das_nao_obtida", "Guia DAS oficial não obtida"
+    GUIA_DAS_NAO_VINCULADA = (
+        "guia_das_nao_vinculada",
+        "Guia DAS oficial não anexada",
+    )
+    # AXRM-016: a SITFIS report ended without being obtained (A7.3 alternatives).
+    SITUACAO_FISCAL_NAO_OBTIDA = (
+        "situacao_fiscal_nao_obtida",
+        "Relatório de situação fiscal não obtido",
+    )
 
 
 class ProviderOperationCode(models.TextChoices):

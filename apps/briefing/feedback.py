@@ -31,6 +31,7 @@ from apps.cycles.models import (
 from apps.cycles.models import Exception as CycleException
 from apps.cycles.services.cycle import require_actor, tenant_id
 from apps.delivery.models import OutboundMessage
+from apps.integrations.models import IntegrationIssue
 from apps.obligations.coverage import coverage_for
 from apps.obligations.models import Obligation
 
@@ -41,6 +42,7 @@ type Subject = (
     | ActionProposal
     | OutboundMessage
     | DocumentIntake
+    | IntegrationIssue
     | Engagement
 )
 
@@ -51,6 +53,7 @@ SUBJECT_MODELS: Final[dict[str, type[Subject]]] = {
     "approval": ActionProposal,
     "delivery": OutboundMessage,
     "document": DocumentIntake,
+    "integration": IntegrationIssue,
     "coverage": Engagement,
 }
 REASON_LIMIT: Final = 500
