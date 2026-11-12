@@ -951,11 +951,18 @@ def test_parsing_outcomes_as_text(settings: SettingsWrapper) -> None:
     )
 
 
-def test_limiter_windows_are_per_token_name() -> None:
+def test_limiter_windows_are_per_effective_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Two names holding different tokens get different windows (PLAN19-RATE-LIMIT);
+    # the same token under two names shares one (tests/integrations/test_focus_repair1).
+    monkeypatch.setenv("FOCUS_SECRET_FOCUS_A", "synthetic-token-a")
+    monkeypatch.setenv("FOCUS_SECRET_FOCUS_B", "synthetic-token-b")
     first = ProviderConnection(environment="homologacao", secret_ref=NAME_A)
     second = ProviderConnection(environment="homologacao", secret_ref=NAME_B)
     assert limiter_key(first) != limiter_key(second)
-    assert limiter_key(first) == f"homologacao:{NAME_A}"
+    assert limiter_key(first).startswith("token:")
+    assert "synthetic-token-a" not in limiter_key(first)
 
 
 def test_an_expired_window_frees_promptly() -> None:

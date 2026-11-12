@@ -19,12 +19,14 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
 import re
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final, Literal
 
+from django.conf import settings
 from django.utils import timezone
 
 from apps.integrations.allowlist import ROUTES
@@ -93,8 +95,18 @@ def token_for(connection: ProviderConnection) -> str | None:
 
 
 def limiter_key(connection: ProviderConnection) -> str:
-    """Rate-limit by token identity (its name), never by the token value."""
-    return f"{connection.environment}:{connection.secret_ref or 'sem-segredo'}"
+    """Rate-limit per effective token: Focus counts requests per token, not per alias.
+
+    Every secret name that resolves to the same token shares one window. The key is a
+    keyed digest (HMAC-SHA256 under SECRET_KEY) of the token value, held only in this
+    process's memory: never the value, never reversible, never stored or logged.
+    """
+    token = token_for(connection)
+    if token is None:
+        # Refused before the limiter (MISSING_CREDENTIAL); no window is consumed.
+        return f"{connection.environment}:sem-token"
+    digest = hmac.new(settings.SECRET_KEY.encode(), token.encode(), hashlib.sha256)
+    return f"token:{digest.hexdigest()}"
 
 
 def company_request(subject: str) -> ProviderRequest:

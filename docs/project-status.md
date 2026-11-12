@@ -1408,6 +1408,20 @@ refuse), and the FC-EMP allowlist accepts `habilita_manifestacao[_homologacao]`
 and exactly `dry_run=1` on the company update. The QA, adversarial, mutation,
 gate and teardown receipts are recorded in `.evidence/AXRM-019-*`.
 
+Repair 1 (review 1, two product defects). PLAN19-IMMUTABLE-MONTH: a setup plan computed
+before another setup fenced a different start month could still send its month;
+`run_setup` now checks the plan's month against the stored link under its row lock
+right before the write (and fences an absent month in that transaction), and the
+setup command reports the refusal. PLAN19-RATE-LIMIT: the limiter was keyed by secret
+alias, so two aliases of one token each got 60 requests per minute; it is now keyed
+by an HMAC-SHA256 of the effective token under `SECRET_KEY`, never the token itself.
+Red: `tests/integrations/test_focus_repair1.py` (5 assertion failures on `074d71e`);
+guards: `tests/integrations/test_focus_repair1_witnesses.py`. Suites at the repair
+head: default 9911 collected (9902 at `074d71e` plus the 9 repair tests; 199 browser
+cases deselected by `-m "not browser"`), 53 skipped (inherited); pass totals per stage are in
+`.evidence/AXRM-019-gates.txt`. The PR exceeds the ~800-line split guideline; the
+split decision stays with the orchestrator.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

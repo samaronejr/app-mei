@@ -59,6 +59,8 @@ class Command(BaseCommand):
         )
         try:
             outcome = run_setup(plan, dry_run=dry_run)
+        except FocusRefusedError as error:
+            raise CommandError(str(error)) from None
         except AdmissionDeniedError as error:
             raise CommandError(admission_message(error)) from None
         record = outcome_record(outcome)

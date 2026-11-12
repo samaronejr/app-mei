@@ -61,7 +61,6 @@ from apps.integrations.models import (
 from apps.integrations.services import (
     LINK_TRANSITIONS,
     LinkMachine,
-    set_capture_start_month,
     transition_link,
 )
 from apps.integrations.transport import ProviderTransport
@@ -551,6 +550,41 @@ def _confirm_setup(plan: SetupPlan) -> ClientProviderLink:
         return link
 
 
+def _fence_start_month(plan: SetupPlan, *, dry_run: bool) -> ClientProviderLink:
+    """Check the plan's month against the stored link under its lock, before the write.
+
+    A plan is computed earlier than it runs; another setup may have fenced a different
+    month meanwhile. Under the link's row lock the stored month must be absent or equal
+    to the plan's, or nothing is sent. A real setup fences an absent month in the same
+    transaction. Once set, the month never changes (database trigger, INV-R11), so the
+    write that follows can only carry the stored month.
+    """
+    with tenant_context(plan.tenant_id), transaction.atomic():
+        link = ClientProviderLink.objects.select_for_update().get(pk=plan.link_id)
+        stored = link.capture_start_month
+        if stored is not None and stored != plan.start_month:
+            message = (
+                f"O mês de início da captura já foi definido ({stored:%Y-%m}) e não "
+                f"muda; nada foi enviado com {plan.start_month:%Y-%m}."
+            )
+            raise FocusRefusedError(message)
+        if stored is None and not dry_run:
+            link.capture_start_month = plan.start_month
+            link.version += 1
+            link.updated_at = timezone.now()
+            link.save(update_fields=["capture_start_month", "version", "updated_at"])
+            record_event(
+                action="integrations.capture_start_set",
+                tenant_id=plan.tenant_id,
+                obj=ObjectRef("ClientProviderLink", str(link.pk)),
+                metadata={
+                    "month": plan.start_month.isoformat(),
+                    "version": link.version,
+                },
+            )
+    return _load(plan.tenant_id, plan.link_id)
+
+
 def run_setup(plan: SetupPlan, *, dry_run: bool = False) -> ConfigurationOutcome:
     """Write the planned fields (or let Focus validate them), then read them back.
 
@@ -559,7 +593,7 @@ def run_setup(plan: SetupPlan, *, dry_run: bool = False) -> ConfigurationOutcome
     be followed by a different month.
     """
     occurrence = uuid4().hex
-    link = _load(plan.tenant_id, plan.link_id)
+    link = _fence_start_month(plan, dry_run=dry_run)
     request = update_request(link.provider_company_ref, plan.fields, dry_run=dry_run)
     if dry_run:
         write = _call(
@@ -573,14 +607,6 @@ def run_setup(plan: SetupPlan, *, dry_run: bool = False) -> ConfigurationOutcome
             link.disablement_state,
             link.credential_state,
         )
-    if link.capture_start_month is None:
-        set_capture_start_month(
-            plan.tenant_id,
-            link.pk,
-            month=plan.start_month,
-            expected_version=link.version,
-        )
-        link = _load(plan.tenant_id, plan.link_id)
     with tenant_context(plan.tenant_id):
         _event(
             link,
