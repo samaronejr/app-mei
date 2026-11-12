@@ -1233,15 +1233,18 @@ Mutation evidence distinguishes native assertion failures, native crashes,
 survivors and written equivalence proofs; wrapper failures are not counted as
 assertion kills. The final corpus has **1180 assertion kills, 570 crash kills
 and 16 equivalences**, with the orchestrator's crash-counting decision and the
-bounded fixture audit retained in evidence. Final collection contains **9965
-default cases**: CI group 1 has **3117** and group 2 has **6848**, with no overlap
-and an exact union. The fiscal acceptance pack contains **191 cases**: the
+bounded fixture audit retained in evidence. After the attribution repair, collection
+contains **9970 default cases**: CI group 1 has **3117** and group 2 has **6853**,
+with no overlap and an exact union. The fiscal acceptance pack contains **196 cases**: the
 190-case pre-commit pack passed, and the added tenant-predicate witness passed
 alone before its mutant failed an assertion. Browser collection contains
 **199**. The full-suite numbers above are
-collection totals. Passing, skipped and failing totals belong
+collection totals. The repair adds the reviewer's three version cases and two
+idempotency regressions: stale or conflicting wrong-recipient originals open the
+attribution exception without changing head ordering or consistency handling.
+Passing, skipped and failing totals belong
 to the gate receipts for the committed head and the final DoneClaim. Collection
-evidence: `.evidence/AXRM-020-collection-final-{default,group1,group2,browser}.json`.
+evidence: `.evidence/AXRM-020-r1-final-collect-{default,group1,group2,browser}.json`.
 
 | Todo | Engineering delivery | Rollout and recovery |
 | --- | --- | --- |

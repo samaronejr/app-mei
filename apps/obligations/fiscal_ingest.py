@@ -409,6 +409,11 @@ def _register(
         )
     )
     _classify(original, intake, extraction, role)
+    if role == "divergent":
+        raise_problem(
+            client,
+            Problem("documento_fiscal_divergente", fiscal.pk, timezone.localdate()),
+        )
     revision = FiscalRevision.objects.filter(
         document=fiscal,
         source_namespace=context.source_namespace,
@@ -472,11 +477,6 @@ def _register(
     fiscal.summary_only = extraction.summary_only
     fiscal.version += 1
     fiscal.save()
-    if role == "divergent":
-        raise_problem(
-            client,
-            Problem("documento_fiscal_divergente", fiscal.pk, timezone.localdate()),
-        )
     record_event(
         action="fiscal.head_changed",
         tenant_id=context.tenant_id,
