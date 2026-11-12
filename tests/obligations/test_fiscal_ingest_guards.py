@@ -28,7 +28,7 @@ from apps.cycles.scanning import ByteStream, FakeScanner, Verdict, scan_intake
 from apps.integrations.models import ClientProviderLink
 from apps.obligations import fiscal_ingest
 from apps.obligations.models import Document, FiscalDocument, RevisionArtifact
-from apps.tenants.models import Membership
+from apps.tenants.models import Membership, Tenant
 from tests.obligations.fiscal_fixtures import (
     ALPHANUMERIC,
     CLIENT,
@@ -112,7 +112,7 @@ def test_register_locks_client_binding_head_and_intake(
 
 
 def test_authorization_queries_only_the_named_tenant(setup: PortalSetup) -> None:
-    manager = fiscal_ingest.Tenant.objects
+    manager = Tenant.objects
     with patch.object(manager, "get", wraps=manager.get) as selected:
         ingest(setup, payload=nfe())
     assert selected.call_args_list
