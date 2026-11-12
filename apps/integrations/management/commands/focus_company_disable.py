@@ -41,9 +41,6 @@ class Command(BaseCommand):
             raise CommandError(admission_message(error)) from None
         record = {"streams": list(plan.streams), **outcome_record(outcome)}
         emit(self.stdout, record)
-        if outcome.write is None:
-            self.stdout.write("Nada a fazer: a desativação já foi confirmada.")
-            return
         path = write_receipt(
             "disable",
             {

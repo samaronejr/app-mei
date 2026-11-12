@@ -24,12 +24,14 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
 from django.conf import settings
-from django.db import transaction
+from django.db import DEFAULT_DB_ALIAS, OperationalError, connections, transaction
 from django.utils import timezone
 
 from apps.audit.services import ObjectRef, record_event
@@ -66,8 +68,9 @@ from apps.integrations.services import (
 from apps.integrations.transport import ProviderTransport
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
+    from django.db.backends.utils import CursorWrapper
     from django.db.models import QuerySet
 
     from apps.integrations.transport_types import Environment, ProviderRequest
@@ -550,6 +553,62 @@ def _confirm_setup(plan: SetupPlan) -> ClientProviderLink:
         return link
 
 
+# Setup and disable of one link never interleave (RV2): bounded wait, then refuse.
+LINK_LOCK_TIMEOUT: Final = "30s"
+LOCK_NOT_AVAILABLE: Final = "55P03"
+_LOCKED_LINK: ContextVar[UUID | None] = ContextVar("focus_link_lock", default=None)
+
+
+def _lock_key(link_id: UUID) -> str:
+    return f"focus-link:{link_id}"
+
+
+def _wait_for_link_lock(cursor: CursorWrapper, key: str) -> None:
+    cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", [key])
+
+
+@contextmanager
+def link_exchange_lock(link_id: UUID) -> Iterator[None]:
+    """Serialize setup and disable of one link across the whole provider exchange.
+
+    A transaction-level advisory lock keyed on the link is taken on a dedicated
+    connection and held through the fence, the PUT and the read-back, so a disable
+    can never be overtaken by a setup's late write. The main connection stays outside
+    any transaction, so journal rows still commit before each send. The wait is
+    bounded by LINK_LOCK_TIMEOUT; a timeout refuses with nothing sent. A crash drops
+    the connection and so the lock. One lock at a time: no provider call ever runs
+    while another link's lock is held.
+    """
+    if _LOCKED_LINK.get() is not None:
+        message = "a Focus link exchange lock is already held by this context"
+        raise RuntimeError(message)
+    lock = connections.create_connection(DEFAULT_DB_ALIAS)
+    try:
+        lock.ensure_connection()
+        lock.set_autocommit(False)
+        try:
+            with lock.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config('lock_timeout', %s, true)", [LINK_LOCK_TIMEOUT]
+                )
+                _wait_for_link_lock(cursor, _lock_key(link_id))
+        except OperationalError as error:
+            if getattr(error.__cause__, "sqlstate", None) != LOCK_NOT_AVAILABLE:
+                raise
+            message = (
+                "Outra operação Focus neste vínculo está em andamento; nada foi "
+                "enviado. Tente novamente."
+            )
+            raise FocusRefusedError(message) from None
+        token = _LOCKED_LINK.set(link_id)
+        try:
+            yield
+        finally:
+            _LOCKED_LINK.reset(token)
+    finally:
+        lock.close()
+
+
 def _fence_start_month(plan: SetupPlan, *, dry_run: bool) -> ClientProviderLink:
     """Check the plan's month against the stored link under its lock, before the write.
 
@@ -561,6 +620,14 @@ def _fence_start_month(plan: SetupPlan, *, dry_run: bool) -> ClientProviderLink:
     """
     with tenant_context(plan.tenant_id), transaction.atomic():
         link = ClientProviderLink.objects.select_for_update().get(pk=plan.link_id)
+        if link.disablement_state != DisablementState.ATIVA:
+            # A disable started or was confirmed after this plan was computed: a setup
+            # must never re-enable capture at Focus (A7.3 recovery stays disabled).
+            message = (
+                f"Vínculo em desativação ({link.disablement_state}): a configuração "
+                "não reativa a captura; nada foi enviado."
+            )
+            raise FocusRefusedError(message)
         stored = link.capture_start_month
         if stored is not None and stored != plan.start_month:
             message = (
@@ -586,6 +653,17 @@ def _fence_start_month(plan: SetupPlan, *, dry_run: bool) -> ClientProviderLink:
 
 
 def run_setup(plan: SetupPlan, *, dry_run: bool = False) -> ConfigurationOutcome:
+    """Run the setup exchange under the link's exchange lock (`link_exchange_lock`).
+
+    A read-only fence check runs first, so a stale plan is refused at once instead of
+    waiting for the lock; the authoritative check runs again inside the lock.
+    """
+    _fence_start_month(plan, dry_run=True)
+    with link_exchange_lock(plan.link_id):
+        return _run_setup(plan, dry_run=dry_run)
+
+
+def _run_setup(plan: SetupPlan, *, dry_run: bool) -> ConfigurationOutcome:
     """Write the planned fields (or let Focus validate them), then read them back.
 
     The start month is fenced locally before the write: Focus keeps
@@ -714,20 +792,21 @@ def _stop_locally(plan: DisablePlan, link: ClientProviderLink) -> ClientProvider
 
 
 def run_disable(plan: DisablePlan) -> ConfigurationOutcome:
+    """Run the disable exchange under the link's lock (`link_exchange_lock`)."""
+    with link_exchange_lock(plan.link_id):
+        return _run_disable(plan)
+
+
+def _run_disable(plan: DisablePlan) -> ConfigurationOutcome:
     """Stop locally, turn the receipt switches off at Focus, confirm by read-back."""
     occurrence = uuid4().hex
     link = _load(plan.tenant_id, plan.link_id)
     confirmed_state = DisablementState.DESATIVADA_NO_PROVEDOR_CONFIRMADA
-    if plan.whole_link and link.disablement_state == confirmed_state:
-        return ConfigurationOutcome(
-            None,
-            None,
-            [],
-            link.status,
-            link.disablement_state,
-            link.credential_state,
-        )
-    link = _stop_locally(plan, link)
+    # The local state says capture already stopped; only Focus's read-back says the
+    # switches are off. A repeated disable therefore always re-sends and re-confirms.
+    already_confirmed = plan.whole_link and link.disablement_state == confirmed_state
+    if not already_confirmed:
+        link = _stop_locally(plan, link)
     with tenant_context(plan.tenant_id):
         _event(
             link,
@@ -742,7 +821,8 @@ def run_disable(plan: DisablePlan) -> ConfigurationOutcome:
     if write.state == CallState.SUCCESS:
         readback = sync_company_status(link, occurrence=occurrence)
     unconfirmed = _unconfirmed(plan.fields, readback.report if readback else None)
-    if ConfigurationOutcome(write, readback, unconfirmed).confirmed and plan.whole_link:
+    confirmed = ConfigurationOutcome(write, readback, unconfirmed).confirmed
+    if confirmed and plan.whole_link and not already_confirmed:
         current = _load(plan.tenant_id, plan.link_id)
         transition_link(
             plan.tenant_id,

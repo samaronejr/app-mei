@@ -568,10 +568,12 @@ def test_disable_of_one_stream_keeps_the_other(
     assert world.fake.company["habilita_nfsen_recebidas_homologacao"] is True
 
 
-def test_disable_of_a_confirmed_link_sends_nothing(world: World) -> None:
+def test_disable_of_a_confirmed_link_resends_and_confirms(world: World) -> None:
+    # RV2: the local "confirmed" state never stands in for Focus's read-back.
     activate(world, disablement_state="desativada_no_provedor_confirmada")
     output = disable(world)
-    assert world.fake.requests == []
+    assert [r.method for r in world.fake.requests] == ["PUT", "GET"]
+    assert world.fake.company["habilita_nfsen_recebidas_homologacao"] is False
     assert "desativada_no_provedor_confirmada" in output
 
 

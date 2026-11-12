@@ -2,9 +2,10 @@
 
 Focus allows 100 requests per minute per token and answers 429 beyond that; Axorim
 stays at 60 so a burst never reaches the provider's limit. The window is exact (a
-log of send times), keyed by the token's *name* (environment and secret reference),
-never by the token value. A refused request is not recorded, so it does not extend
-the wait. The log lives in process memory only.
+log of send times), keyed by the effective token (an HMAC-SHA256 of its value under
+SECRET_KEY, see `adapter.limiter_key`), so every alias of one token shares one
+window; the key never carries the token value. A refused request is not recorded,
+so it does not extend the wait. The log lives in process memory only.
 """
 
 import threading
