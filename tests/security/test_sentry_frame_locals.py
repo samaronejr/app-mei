@@ -95,7 +95,7 @@ def test_production_sentry_omits_frame_locals_without_emptying_traceback() -> No
 
     # Negative control: the same event must expose the planted value when enabled.
     control_event = _capture_exception_event(
-        {**prod_settings.SENTRY_OPTIONS, "include_local_variables": True},
+        {"include_local_variables": True, "default_integrations": False},
     )
     _, control_frames = _exception_and_frames(control_event)
     control_raising_frame = next(

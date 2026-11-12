@@ -197,6 +197,8 @@ jobs:
           uv run python manage.py makemigrations --check --dry-run \
             --settings=config.settings.test
 
+      # The wall-clock budget is deselected here and runs in the next step instead:
+      # under coverage tracing and xdist load it measured the runner, not the scan.
       - name: Tests with coverage
         run: |
           uv run pytest tests/cycles tests/delivery tests/integrations \
@@ -204,7 +206,14 @@ jobs:
             --durations=50 \
             --durations-min=1.0 \
             --cov=apps --cov=config \
-            --cov-report=term-missing --cov-report=xml
+            --cov-report=term-missing --cov-report=xml \
+            --deselect tests/integrations/test_privacy_scan.py::test_repetitive_known_value_scan_completes_under_one_second
+
+      # The 256 KiB redaction budget stays at 1.0 s; it runs alone, without coverage.
+      # PR #113 measured 1.07 s for it inside the covered xdist run above, where the
+      # same scan takes about 0.16 s on its own (AXRM-011 review 14).
+      - name: Timing budgets without coverage
+        run: uv run pytest tests/integrations/test_privacy_scan.py::test_repetitive_known_value_scan_completes_under_one_second -v
 
       # Asserted in the job, independently of the suite, because a roles.sql that
       # loses `GRANT app_runtime TO app_test` or drops NOBYPASSRLS makes every
@@ -386,6 +395,7 @@ jobs:
             -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 
       # Every directory the `test` job selects is ignored here, and nothing else is.
+      # The flags, the timing-budget deselect included, match that job's exactly.
       - name: Tests with coverage
         run: |
           uv run pytest \
@@ -394,7 +404,8 @@ jobs:
             --durations=50 \
             --durations-min=1.0 \
             --cov=apps --cov=config \
-            --cov-report=term-missing --cov-report=xml
+            --cov-report=term-missing --cov-report=xml \
+            --deselect tests/integrations/test_privacy_scan.py::test_repetitive_known_value_scan_completes_under_one_second
 
       # Same assertion as in the `test` job: this job's denial tests bite only if the
       # effective role after SET ROLE cannot bypass row-level security.
