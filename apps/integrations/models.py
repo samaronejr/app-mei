@@ -225,10 +225,16 @@ class ClientProviderLink(TenantScopedModel):
         blank=True,
     )
     capture_start_month = models.DateField(null=True, blank=True)
+    # Bumped by every disable, scoped or whole-link (RV4): a setup compares it with
+    # its fence to see a disable that did not change `disablement_state`.
+    disable_epoch = models.PositiveIntegerField(default=0)
     certificate_cnpj = models.CharField(max_length=14, blank=True, default="")
     certificate_valid_from = models.DateField(null=True, blank=True)
     certificate_valid_to = models.DateField(null=True, blank=True)
     certificate_synced_at = models.DateTimeField(null=True, blank=True)
+    # AXRM-019: the provider's capture/issuance switches and receipt start dates as
+    # last read back (allowlisted names, booleans and dates only; never a token).
+    provider_flags = models.JSONField(default=dict, blank=True)
     credential_generation = models.PositiveIntegerField(default=0)
     status = models.CharField(
         max_length=24,
@@ -555,6 +561,10 @@ class IssueReason(models.TextChoices):
         "Certificado no provedor vencido",
     )
     CREDENCIAL_DIVERGENTE = "credencial_divergente", "Credencial divergente"
+    RECEBIMENTO_REABERTO_PROVEDOR = (
+        "recebimento_reaberto_provedor",
+        "Recebimento reaberto no provedor",
+    )
     # AXRM-009: an attempt whose provider outcome is unknown (A7.3 `incerta`).
     CHAMADA_PROVEDOR_INCERTA = (
         "chamada_provedor_incerta",

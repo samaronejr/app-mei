@@ -80,6 +80,64 @@ NFSE_ALLOWED_FILES = frozenset(
 )
 NFSE_FORBIDDEN_FILES = ("apps/audit/models.py", "apps/authz/matrix.py")
 
+# AXRM-019 (superseded restriction, ADR-0008; A6 FC-EMP, FC-NFE, FC-NFS): the Focus
+# package only RECEIVES documents -- capture of received NF-e and received NFS-e
+# Nacional, configured by the operator's setup/disable commands. Issuance stays out of
+# scope. Registered by exact line content and count, never by file: any other matching
+# line in these modules -- a new issuance reference included -- fails the scan, and so
+# does a pin that no longer matches. The only issuance switches named are the two
+# literals of `ISSUANCE_FLAGS`, the set the adapter refuses to send.
+FOCUS_PACKAGE = "apps/integrations/focus/"
+_ADAPTER = "apps/integrations/focus/adapter.py"
+_COMPANY = "apps/integrations/focus/company.py"
+_QUALIFICATION = "apps/integrations/focus/qualification.py"
+_REGISTRATION = "apps/integrations/focus/registration.py"
+_STREAMS_MESSAGE = (
+    'message = "Fluxos inválidos: use nfe_recebidas e/ou nfsen_recebidas."'
+)
+_NFSEN_ON = 'fields[f"habilita_nfsen_recebidas_{_key_environment(environment)}"] = True'
+_NFSEN_OFF = (
+    'fields[f"habilita_nfsen_recebidas_{_key_environment(environment)}"] = False'
+)
+_NFSEN_START = 'fields["data_inicio_recebimento_nfsen"] = start.isoformat()'
+_INIT_DOC = (
+    '"""Focus NFe adapter, company status sync and the operator setup/disable'
+    ' (AXRM-019)."""'
+)
+_COMPANY_DOC = (
+    "(INV-R11), a link being disabled, a missing credential, and received NF-e without"
+)
+_NFE_REFUSAL = '"Captura de NF-e recebidas bloqueada: falta a evidencia PQ-FOCUS-1"'
+_REGISTRATION_DOC = (
+    "never from the web). FC-NFE/FC-NFS are the capture reads todo 21 schedules; their"
+)
+FOCUS_RECEIVED_NFSE_LINES = Counter(
+    {
+        (_ADAPTER, '"habilita_nfsen_recebidas_producao",'): 1,
+        (_ADAPTER, '"habilita_nfsen_recebidas_homologacao",'): 1,
+        (_ADAPTER, '"data_inicio_recebimento_nfsen",'): 1,
+        # Refused issuance switches (ISSUANCE_FLAGS), named only to refuse them.
+        (_ADAPTER, '"habilita_nfse",'): 1,
+        (_ADAPTER, '"habilita_nfsen_producao",'): 1,
+        (_COMPANY, _STREAMS_MESSAGE): 1,
+        (_COMPANY, "if CaptureStream.NFSEN_RECEBIDAS in streams:"): 2,
+        (_COMPANY, _NFSEN_ON): 1,
+        (_COMPANY, _NFSEN_START): 1,
+        (_COMPANY, _NFSEN_OFF): 1,
+        (_QUALIFICATION, '"habilita_nfsen_recebidas_homologacao": False,'): 1,
+    }
+)
+FOCUS_RECEIVED_NFE_LINES = Counter(
+    {
+        ("apps/integrations/focus/__init__.py", _INIT_DOC): 1,
+        (_COMPANY, _COMPANY_DOC): 1,
+        (_COMPANY, _NFE_REFUSAL): 1,
+        (_REGISTRATION, _REGISTRATION_DOC): 1,
+        (_REGISTRATION, '("FC-NFE", "read"),'): 1,
+    }
+)
+ISSUANCE_SWITCH = re.compile(r'"(habilita_(?:nfe|nfse|nfsen_producao|nfce|cte|mdfe))"')
+
 # Row 8. `connector` under `apps/**/*.py`: two audit action names and prose promising
 # Phase 3 a seam. No implementation.
 #
@@ -406,6 +464,28 @@ def _outside_receipt_scope(
     return _outside((hit for hit, key in parsed if key not in expected), allowed)
 
 
+def _pinned(
+    hits: Iterable[str], package: str
+) -> tuple[list[str], Counter[tuple[str, str]]]:
+    """Split hits into those outside `package` and a count of (path, line) inside it."""
+    outside = [hit for hit in hits if not hit.split(":", 1)[0].startswith(package)]
+    inside = Counter(
+        (hit.split(":", 1)[0], hit.split(":", 2)[2].strip())
+        for hit in hits
+        if hit.split(":", 1)[0].startswith(package)
+    )
+    return outside, inside
+
+
+def _pin_difference(
+    found: Counter[tuple[str, str]], pins: Counter[tuple[str, str]]
+) -> list[str]:
+    """List unpinned lines (+) and pins no longer matched (-), with their counts."""
+    extra = [f"+ {path}: {line}" for path, line in (found - pins).elements()]
+    stale = [f"- {path}: {line}" for path, line in (pins - found).elements()]
+    return sorted(extra + stale)
+
+
 def _report(label: str, hits: Sequence[str]) -> str:
     """Format offenders one per line, because a bare `assert []` names nothing."""
     return f"{label} — {len(hits)} offending line(s):\n" + "\n".join(hits)
@@ -471,8 +551,13 @@ def test_row_4_no_invoice_or_nfse_workflow() -> None:
 
     # Then it appears only where a municipal *fact* is recorded — never in the audit
     # actions or the permission matrix, which is where a request workflow would land.
-    strays = _outside_receipt_scope(hits, NFSE_ALLOWED_FILES, r"nfs[-_]?e")
+    elsewhere, focus = _pinned(hits, FOCUS_PACKAGE)
+    strays = _outside_receipt_scope(elsewhere, NFSE_ALLOWED_FILES, r"nfs[-_]?e")
     assert strays == [], _report("NFS-e outside the registry", strays)
+    assert focus == FOCUS_RECEIVED_NFSE_LINES, _report(
+        "Focus NFS-e lines differ from the received-capture pins",
+        _pin_difference(focus, FOCUS_RECEIVED_NFSE_LINES),
+    )
     matched_files = {hit.split(":", 1)[0] for hit in hits}
     for forbidden in NFSE_FORBIDDEN_FILES:
         assert forbidden not in matched_files, f"NFS-e reached {forbidden}"
@@ -616,10 +701,15 @@ def test_row_10_no_esocial_nfe_whatsapp_or_support_console() -> None:
     # fail on legitimate code.
     whatsapp = _grep(sources, r"whatsapp")
     esocial = _grep(sources, r"esocial")
+    nfe_elsewhere, focus_nfe = _pinned(
+        _grep(sources, r"\bnf-?e\b|\bnfc-?e\b"), FOCUS_PACKAGE
+    )
     nfe = _outside_receipt_scope(
-        _grep(sources, r"\bnf-?e\b|\bnfc-?e\b"),
-        NFE_READ_ONLY_FILES,
-        r"\bnf-?e\b|\bnfc-?e\b",
+        nfe_elsewhere, NFE_READ_ONLY_FILES, r"\bnf-?e\b|\bnfc-?e\b"
+    )
+    assert focus_nfe == FOCUS_RECEIVED_NFE_LINES, _report(
+        "Focus NF-e lines differ from the received-capture pins",
+        _pin_difference(focus_nfe, FOCUS_RECEIVED_NFE_LINES),
     )
     console = sorted(
         name
@@ -681,3 +771,21 @@ def test_extra_no_clinic_project_fork() -> None:
 
     # Then nothing was copied across.
     assert hits == [], _report("clinic_project reference in shipped code", hits)
+
+
+def test_focus_pins_name_issuance_switches_only_to_refuse_them() -> None:
+    """AXRM-019: a pinned issuance switch is a literal of the refused ISSUANCE_FLAGS."""
+    from apps.integrations.focus.adapter import ISSUANCE_FLAGS  # noqa: PLC0415
+
+    pins = FOCUS_RECEIVED_NFSE_LINES + FOCUS_RECEIVED_NFE_LINES
+    named = {
+        (path, match.group(1))
+        for path, line in pins
+        for match in [ISSUANCE_SWITCH.search(line)]
+        if match is not None
+    }
+    assert named == {
+        (_ADAPTER, "habilita_nfse"),
+        (_ADAPTER, "habilita_nfsen_producao"),
+    }
+    assert {switch for _, switch in named} <= ISSUANCE_FLAGS

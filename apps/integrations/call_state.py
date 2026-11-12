@@ -47,14 +47,20 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
     """Recheck closed defaults and mandatory live policy under the control locks."""
     link = call.link
     provider = link.connection
+    # AXRM-019: operator configuration (FC-EMP setup, read-back, disable) is what
+    # brings a pending link up and takes a pausing or blocked one down, so it runs
+    # on a link still being configured and whatever its disablement or certificate
+    # state; pauses, flags, environment and a revoked link still refuse it.
+    configuration = operation.operation_class == "configuration"
     if (
         settings.PROVIDERS_PAUSED
         or getattr(settings, f"{call.provider.upper()}_PAUSED")
         or not tenant.is_active
         or not tenant_row_has(tenant, operation.feature)
         or provider.status != "ativa"
-        or link.status != "ativa"
-        or link.disablement_state != "ativa"
+        or link.status
+        not in ({"ativa", "configuracao_pendente"} if configuration else {"ativa"})
+        or (link.disablement_state != "ativa" and not configuration)
         or call.environment != getattr(settings, f"{call.provider.upper()}_ENVIRONMENT")
         or (call.environment == "producao" and not settings.PROVIDER_REAL_DATA_APPROVED)
     ):
@@ -67,6 +73,7 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
         or call.credential_generation != link.credential_generation
         or (
             operation.feature == "document_capture"
+            and not configuration
             and link.credential_state not in {"ativa", "vencendo"}
         )
         or not operation.policy.authorize(call)

@@ -166,6 +166,11 @@ REASONS: Final[dict[str, ExceptionReason]] = {
         "A captura está bloqueada até a equipe conferir o cadastro no provedor.",
         label="credencial divergente no provedor",
     ),
+    IssueReason.RECEBIMENTO_REABERTO_PROVEDOR: ExceptionReason(
+        "A Focus voltou a receber documentos de um cliente com a captura desativada. "
+        "Rode focus_company_disable para o cliente e confirme a desativação.",
+        label="recebimento reaberto no provedor",
+    ),
 }
 
 

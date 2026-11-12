@@ -6,6 +6,8 @@ from types import MappingProxyType
 from typing import Final, Literal
 from urllib.parse import urlencode
 
+from django.conf import settings
+
 from apps.integrations.transport_types import (
     JSONValue,
     OperacaoNaoPermitida,
@@ -72,6 +74,22 @@ ROUTES: Final = MappingProxyType(
 )
 
 
+# AXRM-019: the plan's PQ-FOCUS-1 gate is enforced at the wire too. Turning received
+# NF-e (MDe) on is refused unless the platform setting names the PQ-FOCUS-1 evidence
+# id recording that enabling it registers no Ciencia automatically; turning it off
+# (`false`) is always allowed, so capture can always be stopped.
+PQ_FOCUS_1_ID: Final = re.compile(r"AXRM-PQ-FOCUS-1(?:[-_.][A-Za-z0-9]+)*")
+MANIFESTATION_SWITCHES: Final = frozenset(
+    {"habilita_manifestacao", "habilita_manifestacao_homologacao"}
+)
+
+
+def nfe_capture_qualified() -> bool:
+    """Whether the platform setting names a PQ-FOCUS-1 evidence id."""
+    reference = getattr(settings, "FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF", "")
+    return isinstance(reference, str) and PQ_FOCUS_1_ID.fullmatch(reference) is not None
+
+
 def _body(code: str, request: ProviderRequest) -> None:
     try:
         body: JSONValue = decode_json(request.body)
@@ -109,6 +127,9 @@ def _body(code: str, request: ProviderRequest) -> None:
             "uf",
             "email",
             "habilita_nfe_recebidas",
+            # AXRM-019: received NF-e (MDe) switches, one per Focus environment.
+            "habilita_manifestacao",
+            "habilita_manifestacao_homologacao",
             "habilita_nfsen_recebidas_producao",
             "habilita_nfsen_recebidas_homologacao",
             "data_inicio_recebimento_nfe",
@@ -117,6 +138,11 @@ def _body(code: str, request: ProviderRequest) -> None:
             "certificado_especifico",
         }
         if body.keys() - allowed:
+            raise OperacaoNaoPermitida
+        enabling = [
+            k for k in MANIFESTATION_SWITCHES & body.keys() if body[k] is not False
+        ]
+        if enabling and not nfe_capture_qualified():
             raise OperacaoNaoPermitida
 
 
@@ -134,9 +160,15 @@ def resolve(
     elif request.subject:
         raise OperacaoNaoPermitida
     keys = [key for key, _ in request.query]
-    if len(keys) != len(set(keys)) or set(keys) - {"cnpj", "versao"}:
+    # AXRM-019: Focus's documented `dry_run=1` validates a company update unsaved.
+    dry_run = (code, request.variant, request.query) == (
+        "FC-EMP",
+        "update",
+        (("dry_run", "1"),),
+    )
+    if not dry_run and (len(keys) != len(set(keys)) or set(keys) - {"cnpj", "versao"}):
         raise OperacaoNaoPermitida
-    if request.query and (provider != "focus" or route.method != "GET"):
+    if request.query and not dry_run and (provider != "focus" or route.method != "GET"):
         raise OperacaoNaoPermitida
     if route.method == "GET":
         if request.body:
