@@ -26,6 +26,9 @@ class IntegrationsConfig(AppConfig):
             REASONS as BUDGET_REASONS,
         )
         from apps.integrations.checks import check_provider_settings  # noqa: PLC0415
+        from apps.integrations.focus.registration import (  # noqa: PLC0415
+            register_focus_operations,
+        )
         from apps.integrations.serpro import pgmei_qualification  # noqa: PLC0415
         from apps.integrations.serpro.payments import (  # noqa: PLC0415
             REASONS as PAYMENT_REASONS,
@@ -68,6 +71,7 @@ class IntegrationsConfig(AppConfig):
             )
         )
         register_serpro_operations()
+        register_focus_operations()
         # Registers the `pagtoweb` qualification scenario (todo 13's extension point).
         import apps.integrations.serpro.pagtoweb_qualification  # noqa: F401, PLC0415
 
@@ -75,8 +79,10 @@ class IntegrationsConfig(AppConfig):
 
         # AXRM-016: the SITFIS worker task and the `sitfis` qualification scenario
         # (todo 13's extension point) register on import.
+        # AXRM-019: the Focus `empresa_status` qualification scenario.
         for module in (
             "apps.integrations.serpro.sitfis_qualification",
             "apps.integrations.serpro.sitfis_tasks",
+            "apps.integrations.focus.qualification",
         ):
             importlib.import_module(module)

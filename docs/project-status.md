@@ -1389,6 +1389,91 @@ Placement onto AXRM-016 keeps its `authorized` calculation and `SP-SIT-R`
 delegation. Other operations return the original authority decision. The exact
 protected-file diff and combined function are retained in the repair-3 DoneClaim.
 
+### Wave 3: fiscal document capture
+
+#### AXRM-019: Focus adapter, company status sync and audited setup/disable
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-019` | `apps/integrations/focus/`: an adapter that sends only the A6 allowlist (FC-EMP read/update, FC-NFE, FC-NFS; FC-CIE registers with todo 22 and FC-PDF with the staff PDF view), HTTP Basic with the connection's deployment-secret token as user and a blank password, read per send and never stored, and a client-side sliding-window limit of 60 requests per minute per effective token, keyed by an HMAC of the token value (Focus allows 100). `sync_company_status(link)` reads the company through the AXRM-009 protocol and, inside the finalizing transaction, stores certificate CNPJ/validity through AXRM-008's `record_certificate_status` (A7.3 `vencendo` within 30 days, `vencida`, `divergente` for another CNPJ, a company of another CNPJ, an unrequested new certificate or a vanished one; generation +1 on a requested rotation) plus an allowlisted switch snapshot (`ClientProviderLink.provider_flags`, migration `integrations.0013`). `manage.py focus_company_setup --client --streams --start-month [--dry-run]` refuses before any write or request (unknown streams, start before `FOCUS_CAPTURE_PILOT_START_MONTH`, a different immutable start month, a revoked or disabling link, no credential, NF-e without a `FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF` PQ-FOCUS-1 id) and sends exactly the receipt switches and start dates; `--dry-run` is Focus's `dry_run=1`. `manage.py focus_company_disable --client [--stream]` stops capture locally first (A7.3 walk, or drops the stream), sets the receipt switches false and confirms by read-back. Every call is a journaled, included-plan configuration `ProviderCall`; configuration is admitted on a pending, disabling or certificate-blocked link, capture reads are not. `capture_links()` is the sweep's selection (todo 21). `qualify_provider focus --scenario empresa_status` (fake, homologacao). | Operator commands only, nothing from the web; NF-e capture stays refused until PQ-FOCUS-1 evidence is recorded. Recovery: `focus_company_disable` per client (read-back confirmed) and `FOCUS_PAUSED`; provider-side switches are never reverted by a migration. `0013` is additive and reversible. |
+
+Tests first: `.evidence/AXRM-019-red.txt` (collection failed on the missing
+`apps.integrations.focus` package). Acceptance tests in
+`tests/integrations/test_focus_adapter.py`; guard, branch and side-effect
+witnesses in `tests/integrations/test_focus_adapter_edges.py`, against the
+stateful synthetic company in `tests/fakes/focus.py`. Existing-code changes:
+`call_state.admit` admits configuration-class calls on a link still being
+configured or disabled (pauses, flags, environment and a revoked link still
+refuse), and the FC-EMP allowlist accepts `habilita_manifestacao[_homologacao]`
+and exactly `dry_run=1` on the company update. The QA, adversarial, mutation,
+gate and teardown receipts are recorded in `.evidence/AXRM-019-*`.
+
+Repair 1 (review 1, two product defects). PLAN19-IMMUTABLE-MONTH: a setup plan computed
+before another setup fenced a different start month could still send its month;
+`run_setup` now checks the plan's month against the stored link under its row lock
+right before the write (and fences an absent month in that transaction), and the
+setup command reports the refusal. PLAN19-RATE-LIMIT: the limiter was keyed by secret
+alias, so two aliases of one token each got 60 requests per minute; it is now keyed
+by an HMAC-SHA256 of the effective token under `SECRET_KEY`, never the token itself.
+Red: `tests/integrations/test_focus_repair1.py` (5 assertion failures on `074d71e`);
+guards: `tests/integrations/test_focus_repair1_witnesses.py`. Suites at the repair
+head: default 9911 collected (9902 at `074d71e` plus the 9 repair tests; 199 browser
+cases deselected by `-m "not browser"`), 53 skipped (inherited); pass totals per stage are in
+`.evidence/AXRM-019-gates.txt`. The PR exceeds the ~800-line split guideline; the
+split decision stays with the orchestrator.
+
+Repair 2 (review 2, RV2-STALE-SETUP-REOPENS-CONFIRMED-DISABLE). Setup and disable of one
+link are serialized across the whole provider exchange by a transaction-level advisory
+lock (`pg_advisory_xact_lock(hashtext('focus-link:'||id))`) on a dedicated connection,
+with a bounded wait that refuses with nothing sent; the setup fence refuses a link that
+is no longer active, and a read-only pre-check refuses a stale plan without waiting. A
+repeated disable no longer trusts the local "confirmed" state: it re-sends the off
+switches and confirms them by read-back. Red: `tests/integrations/test_focus_repair2.py`
+(3 assertion failures on `b3357fc`); guards:
+`tests/integrations/test_focus_repair2_witnesses.py`. Default suite at the repair head:
+9920 collected, 53 skipped (inherited).
+
+Repair 3 (review 3, RV3-WHOLE-LINK-DISABLE-MISSES-CONCURRENTLY-ADDED-STREAM and
+RV3-LOCK-CONNECTION-LOSS-REOPENS-CONFIRMED-DISABLE). A disable decides what to turn off
+inside the per-link lock from the stored link: a whole-link disable sends every receipt
+switch the adapter manages as false and confirms them by read-back; a stream-scoped
+disable keeps to its streams. Setup proves it still holds the lock (`pg_locks` on its
+own lock connection) right before each write, else refuses unsent; after its write it
+re-reads the link under its row lock and, if a disable started or finished meanwhile,
+switches receipt off again under a new journaled occurrence, confirms it and refuses.
+Status sync surfaces a confirmed-disabled link whose read-back shows a receipt switch
+on: an owned issue (`recebimento_reaberto_provedor`, migration
+`integrations.0014`) and an audit event; nothing is sent from the sweep. Red:
+`tests/integrations/test_focus_repair3.py`, `test_focus_repair3_lock.py`,
+`test_focus_repair3_drift.py` (all assertion failures on `eb100a3`). Default suite
+at the repair head (`175eca8`): 9933 collected, 53 skipped (inherited).
+
+Repair 4 (review 4, RV4-LOST-LOCK-SETUP-REOPENS-STREAM-DISABLE, plan :1061 `--stream`).
+A stream-scoped disable leaves the link active, so setup no longer keys its post-write
+check on `disablement_state` alone: every disable bumps a per-link
+`disable_epoch` (migration `integrations.0015`; a scoped disable in its own local
+stop, a whole-link disable before its A7.3 walk). Setup takes the epoch at its fence;
+after its write, if the epoch moved and the link no longer holds a stream the setup
+wrote, it turns those switches off again, confirms by read-back and refuses, so the
+stream is never merged back in. Red: `tests/integrations/test_focus_repair4.py` (both
+streams, through the command path); the post-write re-read's row lock is pinned by
+`tests/integrations/test_focus_repair4_witnesses.py`. Default suite at the repair
+head (`cec84b3`): 9938 collected, 53 skipped (inherited).
+
+Repair 5 (review 5, RV5-OLD-COMPENSATION-DISABLES-NEW-CONFIRMED-SETUP, plan :1061/:1063).
+A setup that compensates after losing its lock no longer decides from its earlier
+view: the compensation re-acquires the link's exchange lock (bounded wait; when it is
+not granted, or is lost again before the write, nothing is sent and an owned
+`recebimento_reaberto_provedor` issue and an audit event record the pending
+re-disable), re-reads the link under its row lock and undoes only the streams this
+setup wrote that the link does not hold now (every managed switch when the link is no
+longer active); with nothing left to undo it refuses and sends nothing, so a newer
+confirmed setup is never undone. Setup confirmation also never re-adds a stream a
+disable removed after the fence (the fence epoch is carried to `_confirm_setup`; the
+withheld stream is recorded in an event). Red: `tests/integrations/test_focus_repair5.py`
+(both streams, through the command path). Default suite at the repair head: 9945
+collected, 53 skipped (inherited).
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan
