@@ -1253,6 +1253,43 @@ passed, 53 skipped**, portal 319, CNPJ 29, browser 197, 9/9 mutants killed
 identity, late DAS binding): red-first `AXRM-015-fix1-red.txt`, gates
 `AXRM-015-fix1-gates*.txt`.
 
+#### AXRM-017: official MEI DAS guide (PGMEI)
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-017` | Staff action "Obter guia DAS oficial" on MEI cycles (`das.generate`, flag `federal_checks`, MEI profile at the competence), queued after commit; `GERARDASPDF21` runs through the AXRM-013 adapter, the AXRM-009 phased protocol and an AXRM-010 reservation per item. The reply is decided before finality (one documented `Das` for this taxpayer and period); its PDF is ingested as a private, quarantined `provedor_federal` original before the fenced finalize. Idempotent per client, competence and local consolidation day. The guide is linked by a staff-origin link on a firm-only, non-required "Guia DAS oficial" request (new request state `interno`, kept through review), so the existing publication form offers it; the exact-approved publication releases the approved private original to the client. Production-only verified `guide_issued` fact. Refusals and linking failures open registered owned work (`guia_das_nao_obtida`, `guia_das_nao_vinculada`); ambiguous replies stay AXRM-009 uncertain work. Repair 1 (review 1): a claimed or started call whose lease has run out (a worker that died after SERPRO replied, before finality) is owned as AXRM-009 uncertain work and never resent, and a PDF it already stored is adopted into the cycle; an acks-late redelivery inside the lease retries and then settles that same call; a click never emits again while an earlier emission for the same client and competence is in flight or unsettled (it settles that emission instead); the daily evaluator settles every unsettled emission with no time window and regardless of `federal_checks` (the flag gates new emissions only). Repair 2: one exhaustive classification covers all 15 client/firm call states; every non-final state blocks another paid click. A never-claimed reservation is cancelled with its fence advanced and its budget returned under the protocol locks; every other expired non-final state is owned without an automatic resend, including an abandoned definitive-401 retry (the settled 401 remains unbilled). Runners recheck their durable predecessors before claiming, so two different local-day reservations cannot dispatch over each other. Bulk variant through the existing preview with a per-item cost line; qualification scenario `pgmei`. No new table (tenant tables unchanged); choice-only migrations `cycles.0021` and `integrations.0011`. | Behind `federal_checks` and `das.generate`, `SERPRO_ENVIRONMENT=fake` by default; never scheduled. Recovery: flag off or `SERPRO_PAUSED`; generated guides stay as private documents; publications follow the R1 withdraw path. PQ-SERPRO-3 and LQ-5 stay open. |
+
+Tests first: `.evidence/AXRM-017-red.txt` at `e44ad90` (47 cases: 45 failing, 2 passing by
+design, none on an import error); repair 1 red: `.evidence/AXRM-017-fix1-red.txt`;
+repair 2 red: `.evidence/AXRM-017-fix2-red.txt` (four original review-2 failures,
+89 baseline passes); repair 3 red: `.evidence/AXRM-017-fix3-red.txt` (the owned-401
+reopen and the retry-before-claim variant both bought two billed guides).
+The all-state walk, bounded two-runner schedules, three green
+rounds, committed-head gate totals per stage, deliberate breaks and
+the QA, adversarial and teardown receipts are recorded in `.evidence/AXRM-017-*`.
+
+The complete state classification names the protocol's `RECONCILED` state, so
+`pgmei.py` is registered in the scope guard's exact provider-recovery file set.
+The guard's assertions stay unchanged; negative controls prove that OFX inside
+the registered module and recovery vocabulary in an unregistered module still fail.
+
+Repair 3 makes ownership terminal for sending: settlement locks and re-reads the
+call, then advances a failed call's fence and clears its lease in the transaction
+that opens owned work. The ordinary live, unbilled first-401 retry stays available
+until that settlement wins. `client_authority` delegates only `SP-DAS` to
+`guide_admission` at claim and dispatch-start. Both admission and settlement use
+the order provider controls, current call, then client; predecessor rows are read
+without taking a later call lock. A domain veto closes only its matching unsent
+fence and releases its reservation, without incrementing attempts. Calls from
+AXRM-013 qualification without a guide-cycle request retain their authority
+contract. A later deliberate new-day purchase is allowed only after prior work
+is released, linked or irreversibly owned; recovery never makes that purchase.
+
+Placement onto AXRM-016 keeps its `authorized` calculation and `SP-SIT-R`
+`admit_emission` delegation, then the separate `SP-DAS` `guide_admission`
+delegation. Other operations return the original authority decision. The exact
+protected-file diff and combined function are retained in the repair-3 DoneClaim.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

@@ -33,7 +33,7 @@ from apps.cycles.bulk_contracts import (
 )
 from apps.cycles.capabilities import CYCLES_OPERATE
 from apps.cycles.effects.manifest import JSONValue
-from apps.cycles.errors import VersionConflict
+from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.models import (
     ActionProposal,
     CycleEvent,
@@ -263,6 +263,32 @@ def _preview_approval(actor: User, pk: UUID) -> SnapshotItem:
     )
 
 
+def _preview_guide(actor: User, pk: UUID) -> SnapshotItem:
+    # The guide service depends on cycles; import it where it is used.
+    from apps.integrations.serpro import pgmei  # noqa: PLC0415
+
+    cycle = get_object_or_404(ServiceCycle, pk=pk)
+    client = load_client(actor, tenant_id(), cycle.client_id)
+    reason = pgmei.guide_eligibility(actor, cycle)
+    if not reason and not can(actor, BULK_CAPABILITY, tenant_id=tenant_id()):
+        reason = "capability_denied"
+    try:
+        cost: int | None = pgmei.estimated_cost_microbrl()
+    except pgmei.GuideRefused as refused:
+        cost, reason = None, reason or refused.code
+    return _item(
+        cycle,
+        client,
+        reason,
+        {
+            "period": cycle.period_start.isoformat(),
+            "competence": pgmei.competence(cycle),
+            "estimated_cost_microbrl": cost,
+            "estimated_cost": pgmei.brl(cost) if cost is not None else "",
+        },
+    )
+
+
 def preview_item(
     actor: User, kind: BulkKind, pk: UUID, selection: Selection
 ) -> SnapshotItem:
@@ -276,6 +302,8 @@ def preview_item(
             return _preview_migration(actor, pk, selection)
         case BulkKind.APPROVE_ITEMS:
             return _preview_approval(actor, pk)
+        case BulkKind.OBTAIN_DAS_GUIDES:
+            return _preview_guide(actor, pk)
     assert_never(kind)
 
 
@@ -308,6 +336,9 @@ def _require_current(actor: User, client_id: UUID, capability: str) -> None:
         and can(actor, capability, tenant_id=tenant_id())
     ):
         raise PermissionDenied
+
+
+PROVIDER_ITEM = "Este item faz uma chamada ao provedor fora da transação."
 
 
 def _changed() -> VersionConflict:
@@ -498,6 +529,9 @@ def execute_effect(
             result = _execute_migration(actor, item)
         case BulkKind.APPROVE_ITEMS:
             result = _execute_approval(actor, item)
+        case BulkKind.OBTAIN_DAS_GUIDES:
+            # Provider I/O never runs in this savepoint (bulk_runner.run_guide).
+            raise IllegalTransition(PROVIDER_ITEM)
         case _:
             assert_never(kind)
     # All source/authority locks remain held. A grant expiring during work rolls
