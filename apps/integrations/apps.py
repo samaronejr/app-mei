@@ -24,8 +24,20 @@ class IntegrationsConfig(AppConfig):
             REASONS as BUDGET_REASONS,
         )
         from apps.integrations.checks import check_provider_settings  # noqa: PLC0415
+        from apps.integrations.serpro.registration import (  # noqa: PLC0415
+            register_serpro_operations,
+        )
+        from apps.integrations.serpro.work import (  # noqa: PLC0415
+            REASONS as SERPRO_REASONS,
+        )
+        from apps.integrations.serpro.work import (  # noqa: PLC0415
+            evaluate_termo_conditions,
+        )
 
         register(check_provider_settings)
-        for code, reason in (REASONS | BUDGET_REASONS).items():
+        for code, reason in (REASONS | BUDGET_REASONS | SERPRO_REASONS).items():
             register_exception_reason(code, reason)
-        TENANT_EVALUATORS.append(evaluate_provider_conditions)
+        TENANT_EVALUATORS.extend(
+            (evaluate_provider_conditions, evaluate_termo_conditions)
+        )
+        register_serpro_operations()

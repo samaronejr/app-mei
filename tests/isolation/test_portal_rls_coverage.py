@@ -81,7 +81,8 @@ RUNTIME_ROLE = "app_runtime"
 # reservation ledger: 77 + 2 = 79.
 # AXRM-014 adds three client-paired private federal tables (consultation receipts,
 # payment documents, fiscal-situation reports; both policies): 79 + 3 = 82.
-EXPECTED_TENANT_TABLE_COUNT = 82
+# AXRM-013 adds client-less firm work and zero-cost attempt reservations: 82 + 2.
+EXPECTED_TENANT_TABLE_COUNT = 84
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -617,6 +618,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "obligations_federalconsultation",
         "obligations_federalpayment",
         "obligations_fiscalsituationreport",
+        "integrations_firmintegrationissue",
+        "integrations_firmproviderreservation",
     },
 )
 

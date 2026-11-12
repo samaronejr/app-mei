@@ -205,6 +205,8 @@ $$;
 -- PORTAL_NONE: integrations_providerexecutionepoch
 -- PORTAL_NONE: integrations_firmprovidercall
 -- PORTAL_NONE: integrations_firmprovidercallattempt
+-- PORTAL_NONE: integrations_firmintegrationissue
+-- PORTAL_NONE: integrations_firmproviderreservation
 -- AXRM-007: provider connections and client provider links are firm-side provider
 -- configuration (ADR-0008); no portal grant, and each table carries DenyPortalAccess
 -- from integrations.0001, so a grant added by mistake would still read nothing.

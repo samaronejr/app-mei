@@ -12,3 +12,4 @@ __pycache__/
 staticfiles/
 media/
 node_modules/
+ops/secrets/

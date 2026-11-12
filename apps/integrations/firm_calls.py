@@ -37,6 +37,9 @@ from apps.integrations.call_models import (
 from apps.integrations.call_state import current_epoch
 from apps.integrations.journal_schema import FirmJournalRecord
 from apps.integrations.models import FirmAuthorization, ProviderConnection
+from apps.integrations.serpro.firm_budget import FirmBudgetPolicy
+from apps.integrations.serpro.reauthentication import prior_401, schedule_firm_retry
+from apps.integrations.serpro.work import own_firm_result
 from apps.tenants.models import Tenant
 
 LEASE: Final = timedelta(seconds=120)
@@ -142,11 +145,18 @@ def _admit(
 
 
 def _uncertain(call: FirmProviderCall) -> None:
-    """Quarantine the registration; todo 13 owns the firm-level work item."""
+    """Quarantine the registration and open client-less firm recovery work."""
+    policy = _operation(call.operation).policy
+    if isinstance(policy, FirmBudgetPolicy):
+        if call.dispatch_started_at is None:
+            policy.release(call)
+        else:
+            policy.settle(call)
     call.state = CallState.UNCERTAIN
     call.version += 1
     call.updated_at = timezone.now()
     call.save()
+    own_firm_result(call)
 
 
 def observe_firm(
@@ -217,6 +227,9 @@ def firm_reserve(
             connection_version=connection.version,
         )
         _admit(call, tenant, connection, operation)
+        call.save()
+        if isinstance(operation.policy, FirmBudgetPolicy):
+            operation.policy.reserve(call)
         call.state = CallState.RESERVED
         call.save()
         return call
@@ -242,14 +255,25 @@ def firm_claim(tenant_id: UUID, call_id: UUID) -> FirmClaim | None:
             if call.lease_until is not None and call.lease_until <= now:
                 _uncertain(call)
             return None
-        if call.state != CallState.RESERVED:
+        if call.state not in {CallState.RESERVED, CallState.RETRY}:
             return None
-        _admit(call, tenant, connection, _operation(call.operation))
+        if call.state == CallState.RETRY and (
+            call.attempts != 1 or not prior_401(call)
+        ):
+            return None
+        operation = _operation(call.operation)
+        _admit(call, tenant, connection, operation)
+        if call.state == CallState.RETRY and isinstance(
+            operation.policy, FirmBudgetPolicy
+        ):
+            operation.policy.reserve(call)
         call.fence += 1
         call.lease_owner = uuid4()
         call.lease_until = now + LEASE
         call.execution_epoch = current_epoch()
         call.state = CallState.CLAIMED
+        call.dispatch_started_at = None
+        call.finalized_at = None
         call.version += 1
         call.updated_at = now
         call.save()
@@ -281,6 +305,9 @@ def _prepare(
     try:
         _admit(call, tenant, connection, _operation(call.operation))
     except AdmissionDeniedError as error:
+        policy = _operation(call.operation).policy
+        if isinstance(policy, FirmBudgetPolicy):
+            policy.release(call)
         call.state = (
             CallState.PAUSED if str(error) == CallState.PAUSED else CallState.AUTHORITY
         )
@@ -367,10 +394,13 @@ def firm_finalize(ticket: FirmClaim, result: CallResult) -> bool:
         call.version += 1
         call.updated_at = now
         call.save()
+        policy = _operation(call.operation).policy
+        if isinstance(policy, FirmBudgetPolicy):
+            policy.settle(call)
         return True
 
 
-def firm_perform(ticket: FirmClaim, adapter: FirmAdapter) -> CallResult:
+def _firm_perform_once(ticket: FirmClaim, adapter: FirmAdapter) -> CallResult:
     """Start once, transmit once, journal the reply, then finalize under the fence."""
     dispatch = firm_begin_io(ticket)
     assert_no_transaction()
@@ -386,4 +416,16 @@ def firm_perform(ticket: FirmClaim, adapter: FirmAdapter) -> CallResult:
     firm_record_result(dispatch, result)
     if not firm_finalize(ticket, result):
         return CallResult(CallState.UNCERTAIN, None, "stale_finalize", "desconhecido")
+    return result
+
+
+def firm_perform(ticket: FirmClaim, adapter: FirmAdapter) -> CallResult:
+    """One send per claim; only a complete first 401 opens one fresh firm claim."""
+    result = _firm_perform_once(ticket, adapter)
+    if schedule_firm_retry(ticket, result):
+        retry = firm_claim(ticket.tenant_id, ticket.call_id)
+        if retry is not None:
+            result = _firm_perform_once(retry, adapter)
+    with tenant_context(ticket.tenant_id):
+        own_firm_result(FirmProviderCall.objects.get(pk=ticket.call_id))
     return result

@@ -34,6 +34,7 @@ from apps.integrations.journal_schema import (
     JournalRecord,
 )
 from apps.integrations.models import FirmAuthorization, ProviderConnection
+from apps.integrations.serpro.work import own_firm_result
 from apps.tenants.models import Tenant
 
 
@@ -296,6 +297,7 @@ def _restore_firm(records: list[FirmJournalRecord]) -> int:
     call.response_digest = result.response_digest
     call.version += 1
     call.save()
+    own_firm_result(call)
     return count
 
 

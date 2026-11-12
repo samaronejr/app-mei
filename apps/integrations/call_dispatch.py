@@ -32,6 +32,7 @@ from apps.integrations.call_models import (
 )
 from apps.integrations.call_state import admit, current_epoch, lock_controls, uncertain
 from apps.integrations.journal_schema import JournalRecord
+from apps.integrations.serpro.reauthentication import prior_401
 from apps.integrations.transport_types import EnvioNaoAutorizado
 
 if TYPE_CHECKING:
@@ -198,8 +199,16 @@ def _prepare(ticket: Claim) -> Dispatch | AdmissionDeniedError | StaleClaimError
         if not created:
             if barrier.request_digest != call.request_digest:
                 raise IntentConflictError
-            uncertain(call)
-            return StaleClaimError()
+            # The barrier stays immutable. Only this same call's first complete
+            # 401 proves non-execution and admits its separately journaled retry.
+            if not (
+                call.provider == "serpro"
+                and call.attempts == 2  # noqa: PLR2004 - exactly one auth retry
+                and barrier.call_id == call.pk
+                and prior_401(call)
+            ):
+                uncertain(call)
+                return StaleClaimError()
     call.state = CallState.STARTED
     call.version += 1
     call.save()

@@ -344,27 +344,25 @@ def raise_problem(client: ClientCompany, problem: Problem) -> None:
         opened = True
     if opened:
         return
-    if IntegrationIssue.objects.filter(
-        client_id=client.pk,
-        reason=problem.reason,
-        service=problem.service,
-        state__in=ACTIVE_ISSUE_STATES,
-    ).exists():
-        return
     owner = client_owner(client)
     if owner is None:
         return
-    issue = IntegrationIssue.objects.create(
-        tenant_id=client.tenant_id,
+    issue, created = IntegrationIssue.objects.get_or_create(
         client=client,
         reason=problem.reason,
         service=problem.service,
-        link=problem.link,
-        owner=owner,
-        review_on=problem.review_on,
-        due_on=problem.due_on,
-        evidence_refs=[str(problem.subject_ref)],
+        state__in=ACTIVE_ISSUE_STATES,
+        defaults={
+            "tenant_id": client.tenant_id,
+            "link": problem.link,
+            "owner": owner,
+            "review_on": problem.review_on,
+            "due_on": problem.due_on,
+            "evidence_refs": [str(problem.subject_ref)],
+        },
     )
+    if not created:
+        return
     record_event(
         action="integrations.issue_opened",
         tenant_id=client.tenant_id,

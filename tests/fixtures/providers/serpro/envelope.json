@@ -1,0 +1,11 @@
+{
+  "contratante": {"numero": "12345678000195", "tipo": 2},
+  "autorPedidoDados": {"numero": "11222333000181", "tipo": 2},
+  "contribuinte": {"numero": "12ABC34501DE35", "tipo": 2},
+  "pedidoDados": {
+    "idSistema": "PAGTOWEB",
+    "idServico": "PAGAMENTOS71",
+    "versaoSistema": "1.0",
+    "dados": "{\"tamanhoDaPagina\":100}"
+  }
+}
