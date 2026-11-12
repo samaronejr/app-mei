@@ -192,7 +192,7 @@ def synthetic_termo(environment: Environment) -> SyntheticTermo:
         ProviderBudget.objects.create(
             tenant=tenant,
             provider="serpro",
-            window_start=today.replace(day=1),
+            window_start=timezone.now().date().replace(day=1),
             cap_microbrl=0,
             tariff_revision="serpro-free-v1",
         )
