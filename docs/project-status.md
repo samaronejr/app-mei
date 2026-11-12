@@ -232,6 +232,235 @@ Lint, format, Mypy and migration drift are clean. Evidence:
 | `AXRM-008` | Client authority as append-only revisions (`AuthorityRecord`: procurações 00002/00004, PGMEI catalogued `nao_exigida`, client authorizations for NF-e/NFS-e capture and Ciência), the firm termo record (`FirmAuthorization`, submitted by todo 13) and owned provider problems (`IntegrationIssue` when the client has no open cycle, the registered cycle exception when it does). `authority_for(client, operation)` answers usable / missing / expired / unknown with a reason, fails closed for any operation outside the implemented A6 set, derives expiry from the injected date and, for capture, also requires a current, matching, non-divergent provider-held certificate. Declare, verify and revoke lock the client, re-check `fiscal.authority.manage` and the rendered chain version, and append a successor; a provider 403 appends `ausente_detectada`; `record_certificate_status` stores provider-reported certificate metadata only and marks a foreign CNPJ or unexpected generation `divergente`. Openers `autorizacao_ausente`, `certificado_provedor_vencendo` (30/7/1-day review dates), `certificado_provedor_vencido` and `credencial_divergente`. Workspace section "Autorizações e certificados" (firm-only, flag-gated, private evidence through the scanned staff intake; certificate files refused). | Apply `integrations.0002_authority_records` with `federal_checks` and `document_capture` off: nothing is drawn or evaluated. Recovery is flags off; authority rows are append-only evidence, so the reverse runs only while all three tables are empty and refuses afterwards (forward repair). The reverse never drops the shared `audit_reject_mutation()` function. |
 | `AXRM-009` | Client-scoped provider calls, append-only attempt receipts and effect barriers, uncertainty work on AXRM-008's `IntegrationIssue`, a client-less SP-TERMO firm submission journal, and a platform execution epoch. Reservation and dispatch recheck live controls under locks; every external storage/network boundary is outside transactions. Issuance/registration barriers and per-attempt journal replay prevent repeated effects after crashes or restores. Provider usage metrics are added as a prerequisite for restoring individual billed attempts; pricing/caps remain the next todo's mandatory policy hook. | No operation is registered by default; flags stay off and providers paused. Preserve all independent journal prefixes (client, firm, epochs), then run `reconcile_provider_operations` under the global pause. Uncertain effects are not retried. Populated protocol/usage migrations refuse reversal; keep tables and repair forward. Operator, provider-qualification and owner gates stay open. |
 | `AXRM-010` | Monthly `ProviderBudget` (tenant) with integer micro-BRL cap, known liability, uncertain exposure and reservations, plus a client-private per-attempt `ProviderReservation` ledger. Reservation locks the budget and refuses (`cota_esgotada`, `cota_ausente`, `tarifa_ausente`) before any I/O against the tenant cap and the platform ceiling; claim and dispatch recheck the held reservation. SERPRO Consulta/Emissao 200/202/403 settle as billed, other statuses release, unknown outcomes stay uncertain until reconciliation. Focus included calls reserve zero only under `focus-plan (PQ-FOCUS-4 pendente)` and stay journaled; Focus documents are metered monthly from captured revisions (the per-call AXRM-009 mapping is removed), Ciencia as estimated `focus_eventos`. Owned `cota_provedor_proxima`/`cota_provedor_esgotada` work at 80%/100%; the owner usage panel shows measured, estimated and missing. | A missing budget row, cap or price disables spend. Recovery = pause the provider and reconcile; usage rows stay append-only. `integrations.0004` reverses only while both budget tables are empty and removes only them; populated balances refuse reversal (forward repair). PQ-FOCUS-4, OD-R1 ceilings and owner activation stay open. |
+| `AXRM-011` | Closed A6 operation catalog, bounded Requests transport, per-call HMAC token-broker client, deterministic SERPRO/Focus peers and synthetic fixtures. TLS verification, split timeouts, byte/decompression limits, strict JSON, one credential-free PDF redirect to the documented storage host, and shared two-pass structural credential/body redaction in console/Sentry. | No table or migration; no adapter registration, provider activation or certificate handling. Recovery is a code revert. Attempt 6 awaits independent review; provider qualification, operator and owner gates remain open. See `docs/provider-transport.md`. |
+
+`AXRM-011` adds **144 tests**: **142 pure transport tests** pass in three consecutive
+runs, and two exercise fenced finalization and the no-I/O-in-transactions boundary
+against the lane database. The combined initial protocol/credential regression
+selection passes **15 tests**. The default suite collects **5770 cases**, with
+**189 browser cases** separately marked; these are inventory counts, not an
+unrun full-suite claim. Full committed-HEAD totals and exits are recorded in
+`.evidence/AXRM-011-gates.txt`, using the code-identical `2e2afc4` AXRM-009 baseline
+instead of rerunning it (default **5582 passed, 44 skipped**, isolation **777 passed,
+44 skipped**, CNPJ pack **29 passed**, browser **189 passed**). The only existing-test
+edit is a registration: `tests/scope/test_scope_fidelity.py` lists
+`apps/integrations/allowlist.py` among the read-only NF-e and NFS-e references (rows 4
+and 10), because the catalog names the received-document GET routes while refusing
+issuance.
+The initial red has six credential-scrubbing assertion failures; the later
+duplicate-key red proves an operation-smuggling case before the parser fix.
+Twenty-eight guard mutations fail their witnesses, with matching source hashes
+after each isolated campaign. Evidence: `AXRM-011-red.txt`,
+`AXRM-011-duplicate-key-red.txt`, `AXRM-011-happy.txt`, `AXRM-011-failure.txt`,
+`AXRM-011-json-final-mutations.txt`, `AXRM-011-adversarial.txt` and
+`AXRM-011-baseline.txt`. Assets and browser gates are not applicable: this todo
+changes no UI, template, CSS, JavaScript or browser test.
+
+`AXRM-011` review fix (gate review attempt 1, needs-fix at `5721789`). Provider
+transmission is now bound to the AXRM-009 protocol in code: `begin_io()` records the
+dispatch it authorized, `transmit()` accepts only that exact dispatch once and opens
+a single-send window for its provider, environment and operation, and
+`ProviderTransport.send()` (and the broker client) refuse with
+`envio_nao_autorizado` before any connection otherwise. This closes the reviewed
+bypass: a direct production `FC-CIE` call with providers paused now opens no
+connection. The production console filter redacts log arguments, non-string
+messages and header-style pairs before interpolation and scrubs the whole rendered
+exception chain with active and collected credential values; the Sentry hook
+redacts header pairs. The body read budget now bounds every blocking read instead
+of checking only between reads. The rework adds **35 tests** (the transport
+selection collects **179**; the default suite **5805**, browser **189**). Existing
+test edits: the injected-clock trickle test is replaced by a real elapsed-time test
+plus a between-reads budget witness; the misnamed base64/exception-chain test is
+renamed to what it checks, with real chain tests added; wire-level tests send
+through `permitted_send` in `tests/fakes/provider.py`; broker client tests open a SERPRO
+window. Evidence: `AXRM-011-rework-red.txt` (21 assertion failures),
+`AXRM-011-rework-red-db.txt`, `AXRM-011-rework-mutations-*.txt`,
+`AXRM-011-rework-failure.txt` and the committed-HEAD `AXRM-011-gates.txt`.
+
+`AXRM-011` final-review follow-up. B3: a real-wire regression with the reviewed
+byte pattern (0, 20 and 40 s; unmodified 30 s budget) must abort with
+`tempo_limite` within 29-31 s; it runs alone through the exclusive gate slot. A real
+FC-PDF redirect logged by urllib3 at DEBUG through the production console exposed a
+presigned query leak (`AXRM-011-rework2-red.txt`); each wire call now registers its
+URL, path-and-query and query as active secrets, a text rule removes presigned query
+credentials without a scheme, and known values are replaced before pattern rules.
+Tests whose names claimed more than they checked were renamed (Sentry extra field,
+Sentry JWT extra, response body/auth header, socket timeout configuration); the
+review's three B2 reproductions are kept verbatim as regressions. The transport
+selection collects **187** tests; the default suite **5813**, browser **189**. An
+exception-note case witnesses the rendered-chain scrub, which argument redaction
+alone no longer exercises.
+
+`AXRM-011` review-2 fix (attempt 3). B1: `transmit()` now rechecks, before any
+I/O, that the claim still owns the started call (same fence, owner and
+epoch, lease not expired) before opening the wire; an expired lease, with or without
+another worker's reclaim, raises `StaleClaimError` with zero bytes sent. B2: one
+read budget covers response headers and body from the established connection; an
+exchange watchdog shuts the socket down when it is spent, replacing the per-read
+socket timeout and the private-socket lookup. B3: bytes names and values in
+header pairs and mappings are redacted, and the text rule skips a `b` prefix and
+no longer re-captures a marker (`[Filtered]]`). B4: a header-pair witness with
+space, comma and semicolon values (str and bytes) kills the pair-redaction mutant,
+and each condition of the B1 recheck has its own refusing case; an HTTPS header
+drip witnesses the TLS connection path. The body-budget timing test now has 1.5 s
+headroom. Existing test edits: that test's budget and drip, an elapsed bound on the
+injected-clock budget test, and the added bytes cases. The transport selection
+collects **211** tests; the default suite **5837**, browser **189**. Evidence: `AXRM-011-fix3-red-pure.txt`,
+`AXRM-011-fix3-b2-red.txt` and `AXRM-011-fix3-*.txt`.
+
+`AXRM-011` review-3 fix (attempt 4), placed on main `80c134e` (AXRM-007, 012, 008,
+009 and 010). Placement: the firm SP-TERMO path registers its journaled dispatch and
+sends through the same consumed, rechecked wire window as client dispatches; a client
+dispatch refused before its first byte releases its AXRM-010 attempt reservation
+(also after a reconciler quarantined it as uncertain), never a settled bill or a newer
+attempt. BLK-1: the Sentry scrubber normalizes field names (bytes, or the SDK's
+serialized `b'Authorization'`) before matching. BLK-2: the field rule never captures
+an existing marker with its quote or scheme, so scrubbing is idempotent and the
+marker renders once. BLK-3: a quoted rendered value is redacted through its closing
+quote, so text after a comma, semicolon or space inside it no longer survives.
+BLK-4: the recheck returns the call's `lease_until`, the wire permit carries it, and
+`open_wire()` consumes the permit and raises `StaleClaimError` once
+`now >= lease_until`, the last check before the socket opens; the firm call is left
+started for reconciliation. BLK-5 (corrected wording): the recheck is a short
+read-only tenant transaction, needed for the transaction-local RLS tenant setting,
+committed before any I/O; it takes only the shared execution-epoch advisory lock, no
+row lock, and a test proves the connection is idle with no advisory, row or
+call-table lock while the adapter sends. A stale claim never reaches the adapter, and
+one dispatch transmitted from two threads sends once. Existing test edit: the
+wire-test fake's window passes a one-hour lease. A gate follow-up keeps the
+reconciliation vocabulary out of the budget release note (scope row 6) and witnesses
+that a bytes-keyed mapping value is removed where it appears again. The transport
+selection (`test_transport*.py`, `test_token_broker_client.py`) collects **252**
+tests; the default suite **6225**, browser **195**. Evidence: `AXRM-011-fix4-privacy-red.txt`,
+`AXRM-011-fix4-blk45.txt`, `AXRM-011-fix4-placement.txt` and `AXRM-011-fix4-*.txt`.
+
+`AXRM-011` review-4 repair (owner-authorized attempt 5, 2026-10-25).
+The unpublished stack is placed on AXRM-014's reviewed head
+`e22065f53df8bdadd9a6b8ac0dcf603d52bdd1bf`, for eventual PR base
+`axrm/014-federal-records`. All 17 placement range-diff pairs are unchanged;
+there were no conflicts, and both tasks' status records remain. RV4-B3-1:
+a complete marker is consumed as a whole rather than trusting a marker prefix.
+RV4-B3-2: quoted credential values consume escaped delimiters, including str,
+bytes repr and JSON, while retaining subsequent diagnostic context. RV4-B3-3:
+Sentry collects nested credential leaves before replacing their labelled field,
+then removes echoes regardless of field order; direct short-string collection
+is retained. No transport, lease, budget or accepted short RLS transaction design
+changes. The original hostile matrix changes from **13 assertion failures,
+1 pass** to **14 passed**; the inherited token-shaped Sentry witness has
+**3 passed**. The existing privacy suite grows from **88** to **172** tests
+(**84 added**, three successful repetitions), and four isolated guard mutants
+are killed by named behavioral witnesses. The placed default suite collects
+**6475** tests and the browser suite **195**. Full placed-head stage exits are
+recorded in `.evidence/AXRM-011-fix5-gates.txt`; red, mutation, range-diff and
+sink evidence is retained under `AXRM-011-fix5-*`. Fresh independent review
+and PR delivery remain pending; provider qualification, operator and owner
+activation gates stay open.
+
+`AXRM-011` review-5 rewrite (owner-authorized attempt 6, 2026-10-26).
+Attempt 5 at `f00d7cb` was rejected for deep credential echoes and escaped body
+fragments; its DoneClaim and attempt 4's are retained as historical evidence.
+Console and Sentry now use one iterative, two-pass walker over mapping keys and
+values, lists, tuples, sets and frozensets. Discovery collects sensitive leaves
+before replacing whole labelled values and their unlabelled aliases. Rendered
+str/bytes/JSON values use an escape-aware tokenizer, complete markers remain
+atomic, and replacement is idempotent. Production Sentry discovery runs before
+SDK depth/breadth truncation; SDK annotation paths do not become credentials.
+Bodies are excluded as whole containers, without discarding adjacent status,
+operation, timing or request identifiers. Transport, lease, budget and accepted
+short RLS transaction boundaries are unchanged.
+
+The original RV5 repros at `f00d7cb` show **6 nested Sentry failures** and
+**36 adversarial assertion failures**. The unchanged matrices now pass:
+RV4 **14**, RV3 **133**, RV5 nested **12**, RV5 adversarial **564 checks** and
+inherited AXRM-013 **3**. Privacy coverage grows from **172** to **338 tests**
+(**166 added**, three successful repetitions). All **79** bytecode-isolated
+guard mutations have applied receipts and named failing witnesses: **77** from
+the complete campaign and the remaining signed-URL/base64 mutations after adding
+real-sink witnesses, with identical production-source hashes. A new assertion
+checks body fragments in the actual message rather than random SDK identifiers.
+Evidence is retained under `AXRM-011-fix6-*`, including the complete mutation
+reconciliation. The default suite collects **6641** cases and the separate browser
+suite **195**; these are inventory counts, not passing-suite claims. Read
+`.evidence/AXRM-011-fix6-gates.txt` for committed-head STD-GATES exits and execution
+totals. Independent review, PR delivery and provider activation remain open.
+
+`AXRM-011` attempt-6 closeout (2026-10-26). The original committed-head run
+at `de02654` had one real failure: the existing Sentry integration test received
+no transaction events. A second redaction pass parsed a URL whose hostname had
+already become `[Filtered]`; the resulting URL-parser exception caused the SDK
+to discard the transaction. `247ce01` filters invalid diagnostic URLs and their
+echoes without losing the event. Unchanged manual sink QA then exposed scalar
+representations corrupting a request ID: `32e2c32` recovers native numbers,
+booleans and `None` only on SDK depth-limit annotation paths, while real string
+credentials remain subject to redaction. `2db4b6e` isolates only the three new
+malformed-URL cases from inherited SDK state before planting their inputs;
+their assertions and every pre-existing test remain unchanged.
+
+At `2db4b6e`, the unchanged live Sentry regression passes, the full selected
+privacy/security set has **507 passed**, and the exact original group-2 xdist
+command has **4556 passed, 51 skipped**. All **15** touched-guard mutants are
+applied and killed, with unmutated baselines of **356 privacy tests** and the
+live Sentry test passing in separate processes. The **5 failed, 351 passed**
+stage is the expected scalar-recovery-removal mutant, not the final suite.
+`AXRM-011-fix6c-final-gates.txt` ends with `PIPELINE_FAILED_STAGES=0` and
+`PIPELINE_UNIT_EXIT=0`; Ruff, format and Mypy also pass.
+
+The unchanged RV3/RV4/RV5/AXRM-013 matrices pass again. Actual console and
+captured Sentry event/transaction QA retain diagnostic identifiers, contain no
+planted credentials or body values, and remain idempotent. The **18** added
+continuation cases bring privacy coverage to **356**. With the explicitly reused
+unaffected group-1 results and six exclusive timing cases, the combined default
+inventory is **6608 passing cases and 51 existing skips** (**6659** total), not a
+claim of another full-suite invocation. The exact diff proof checks **1745**
+unchanged tracked blobs, unchanged existing privacy/security tests, the gate
+runner, and production AST outside the two Sentry repairs. Isolation **893/51**,
+portal **319**, CNPJ **29**, browser **195**, migrations, build/static checks and
+the original **79** structural-redactor mutation witnesses are reused with
+their original receipts.
+
+The historical mixed-serial mutation baseline remains recorded as failed
+(inherited breadcrumb state; zero mutants applied); no old test was weakened.
+Existing editor-only typing findings and the inherited npm advisory remain
+outside this repair. Owned attempt-6 containers and completed units are removed,
+with empty runtime receipts. Evidence and the replacement DoneClaim are under
+`AXRM-011-fix6c-*`; attempts 4 and 5 remain separate. Commit `de02654`'s transport
+addition subject misdescribes its redactor rewrite; history is retained rather
+than rewritten. Fresh independent review and all activation gates remain open.
+
+`AXRM-011` attempt 7 (RV6-PRIVACY-OVERLAP, owner-authorized 2026-10-26). The
+redactor sorted its structural and known-value ranges but skipped any range that
+started before the cursor, so a known value crossing into a quoted credential
+left its private tail visible at the console and both Sentry configurations.
+`b8e7ae1` merges overlapping and adjacent ranges into one union with one
+marker; `6be7054` also collects every occurrence of a known value, overlapping
+ones included, with a zero-width lookahead, so a value that starts inside an
+earlier match is no longer missed and chained windows are removed whole.
+
+The reviewer's attack, unmodified, fails **9 of 9** cases on the attempt-6
+product and has **0 of 9** failures with the union. The crossing witnesses
+(**9** real-sink cases, exact union, adjacent and separated controls) fail
+**11, pass 8** on the attempt-6 product; the overlapping-value witnesses fail
+**8, pass 7** on the union alone, with the tail visible, and all pass at
+`6be7054`. A union that consumes a closing quote is documented, not changed: no
+secret survives, and a second scrub reads the unterminated body to the end and
+drops the later diagnostics. Unchanged RV3 **133**, RV4 **14**, RV5 **12** and
+**504/48/12**, and AXRM-013 **3** pass again; the privacy module has **378**
+passing and the privacy/security selection **529**. Group 1 has **2068 passed**
+plus the six exclusive timing cases; the exact group-2 xdist command has
+**4556 passed, 51 skipped**; combined default inventory is **6630 passing
+cases and 51 existing skips** (**6681**). Ruff, format and Mypy pass, and all
+**11** range-union and known-scan mutants are applied and killed (unmutated
+baselines pass).
+
+Isolation **893/51**, portal **319**, CNPJ **29**, browser **195**, migrations,
+npm and static checks are reused from the reviewer's fresh run at `91e21a7`
+behind an exact diff proof: only `apps/integrations/privacy.py` and the privacy
+test module differ, **1745** other tracked blobs are identical, and its only
+production consumer is `config/settings/prod.py`. The first proof run failed on
+my own assertion (two import lines, not one); its log is kept and the corrected
+proof passes. Owned lane `axrm-pg-011fix7`/`axrm-redis-011fix7` is removed with
+an empty receipt. Evidence is under `AXRM-011-fix7-*`. Independent review and
+all activation gates remain open.
 
 `AXRM-009` reuses the supplied code-identical `AXRM-007` baseline at `8a5868c`:
 default **5462 passed, 44 skipped**, isolation **740 passed, 44 skipped**.

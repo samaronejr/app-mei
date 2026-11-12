@@ -1,0 +1,13 @@
+[
+  {
+    "nome_emitente": "Emitente sintetico",
+    "documento_emitente": "00000000000000",
+    "chave_nfe": "00000000000000000000000000000000000000000000",
+    "valor_total": "100.00",
+    "data_emissao": "2026-10-01T12:00:00-03:00",
+    "situacao": "autorizada",
+    "manifestacao_destinatario": "ciencia",
+    "nfe_completa": true,
+    "versao": 73
+  }
+]
