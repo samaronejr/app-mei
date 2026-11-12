@@ -152,6 +152,9 @@ def test_the_enumeration_covers_every_axorim_model_and_nothing_else() -> None:
         "obligations.FederalConsultation",
         "obligations.FederalPayment",
         "obligations.FiscalSituationReport",
+        "obligations.FiscalDocument",
+        "obligations.FiscalRevision",
+        "obligations.RevisionArtifact",
         # AXR1-023's support-grant ledger.
         "tenants.SupportGrant",
         "authz.UserCapabilityGrant",
@@ -457,6 +460,13 @@ def test_a_paired_fk_rejects_the_cross_client_reference(
         ):
             _unscoped(model).filter(pk=row.pk).update(client_id=sibling.pk)
         names = [n for n, _e in client_paired_defs[table]]
+        # AXRM-020's immutable revision points back to its identity. PostgreSQL's
+        # incoming FK action trigger runs before its outgoing head check trigger.
+        names.extend(
+            {
+                "obligations_fiscaldocument": ["fiscalrevision_document_id_scope_fk"],
+            }.get(table, [])
+        )
         sqlstate = getattr(exc.value.__cause__, "sqlstate", None)
         assert sqlstate == FK_VIOLATION, (
             f"{table}: expected the composite FK to fire (23503), "

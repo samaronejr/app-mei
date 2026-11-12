@@ -19,6 +19,11 @@ from apps.obligations.models.federal import (
     FiscalReportState,
     FiscalSituationReport,
 )
+from apps.obligations.models.fiscal import (
+    FiscalDocument,
+    FiscalRevision,
+    RevisionArtifact,
+)
 from apps.obligations.models.observations import (
     ObservationKind,
     ObservationSourceKind,
@@ -49,8 +54,10 @@ __all__ = [
     "FederalEnvironment",
     "FederalPayment",
     "FederalPaymentType",
+    "FiscalDocument",
     "FiscalParameter",
     "FiscalReportState",
+    "FiscalRevision",
     "FiscalSituationReport",
     "Holiday",
     "MonthlyRevenue",
@@ -63,6 +70,7 @@ __all__ = [
     "ObservationSubjectKind",
     "ObservationVerificationStatus",
     "Periodicity",
+    "RevisionArtifact",
     "SchedulerHeartbeat",
     "SourceObservation",
     "new_storage_key",

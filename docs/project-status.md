@@ -1201,6 +1201,57 @@ lock, so a stale runner's late reply cannot replace a newer attempt's wait; a la
 paid PDF is still kept and adopted. The PDF limit is the largest report the 5 MiB JSON wire can carry
 (`MAX_REPORT_BYTES`, about 3.75 MiB). Evidence: `.evidence/AXRM-016-fix1-*`.
 
+#### AXRM-020: fiscal document register and ingestion
+
+The register retains one fiscal identity with immutable source revisions and
+artifact links. Migration `obligations.0029_fiscal_register` adds the three
+tenant-scoped tables, paired client foreign keys, portal denial, append-only
+revision and artifact enforcement, and a head foreign key constrained to the
+same document. Reversal refuses retained fiscal history.
+
+Extractor v2 handles NF-e originals and received summaries and national NFS-e
+layouts 1.00 and 1.01. It preserves supported fiscal fields and provenance,
+ignores IBS/CBS groups, and records unsupported layouts without inventing
+fields. The existing v1 extraction remains available. Server ingestion retains
+private provider originals, scans before extraction, and keeps human uploads
+attributed to their actual actor. Received summaries require the active,
+client-bound capture link; its provider company reference remains opaque.
+A summary stays unconfirmed until a matching original establishes the client's
+party role. Divergence creates owned work without publishing client evidence.
+
+Provider source versions preserve stale originals without regressing the head.
+Conflicting content at the same source version becomes uncertain; cancellation
+and substitution metadata retain their source basis and cannot be silently
+resurrected by an older or incompatible revision. Human imports cannot assert
+provider lifecycle metadata. Authorization is rechecked after scanner I/O.
+
+The initial 36-case baseline passed. Historical failures and their precise
+classification are preserved in `.evidence/AXRM-020-original-failures.md`:
+the scalar red cases reached assertions, lifecycle red exposed the missing
+public API, and the first metadata control exposed a repaired loader defect.
+Mutation evidence distinguishes native assertion failures, native crashes,
+survivors and written equivalence proofs; wrapper failures are not counted as
+assertion kills. The final corpus has **1180 assertion kills, 570 crash kills
+and 16 equivalences**, with the orchestrator's crash-counting decision and the
+bounded fixture audit retained in evidence. Final collection contains **9965
+default cases**: CI group 1 has **3117** and group 2 has **6848**, with no overlap
+and an exact union. The fiscal acceptance pack contains **191 cases**: the
+190-case pre-commit pack passed, and the added tenant-predicate witness passed
+alone before its mutant failed an assertion. Browser collection contains
+**199**. The full-suite numbers above are
+collection totals. Passing, skipped and failing totals belong
+to the gate receipts for the committed head and the final DoneClaim. Collection
+evidence: `.evidence/AXRM-020-collection-final-{default,group1,group2,browser}.json`.
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-020` | Fiscal identity, append-only revisions and artifacts, extractor v2, and scanned server ingestion with attribution and version-order guards. | Apply `obligations.0029_fiscal_register`; empty tables reverse, retained fiscal history requires forward repair. Provider flags remain off and providers paused. |
+
+Recovery keeps provider rollout disabled and providers paused; this engineering
+delivery does not authorize a cohort or close provider, operator, live or owner
+gates. Revert the ingestion code if needed; do not reverse the migration over
+retained fiscal records.
+
 #### AXRM-018: fair monthly federal sweeps
 
 Review 3 adds 20 cases with no product change. The environment selector is

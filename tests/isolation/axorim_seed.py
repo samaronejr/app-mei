@@ -53,6 +53,7 @@ from apps.delivery.models import TenantNoticePolicy
 from apps.delivery.notice_authority import configure
 from apps.delivery.outbox import enqueue
 from apps.delivery.policy import BusinessIntent
+from apps.obligations.models import FiscalDocument, FiscalRevision
 from apps.tenants.models import Membership, Tenant, TenantRole
 
 PERIOD = dt.date(2026, 9, 1)
@@ -76,6 +77,9 @@ NEW_OBLIGATION_MODELS = (
     "FederalConsultation",
     "FederalPayment",
     "FiscalSituationReport",
+    "FiscalDocument",
+    "FiscalRevision",
+    "RevisionArtifact",
 )
 # AXR1-023: the support-grant ledger, tenant-scoped without a client column.
 NEW_TENANT_MODELS = (
@@ -229,6 +233,8 @@ _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
 
 # Rows whose insert fires a domain trigger the generic kwargs cannot satisfy.
 _SPECIAL_SEEDERS: dict[str, str] = {
+    "obligations.FiscalDocument": "_seed_fiscal_identity",
+    "obligations.FiscalRevision": "_seed_fiscal_identity",
     "delivery.OutboundMessage": "_seed_notice",
     "delivery.TenantNoticePolicy": "_seed_notice_policy",
     "cycles.ActionProposal": "_seed_action_proposal",
@@ -326,6 +332,49 @@ def seed_model(
     if self_fk is not None:
         _link_self_parent(model, self_fk, instance, kwargs, ctx)
     return instance
+
+
+def _seed_fiscal_identity(model: type[models.Model], ctx: SeedContext) -> models.Model:
+    """Seed both sides of the fiscal head cycle, including the exact head FK."""
+    with tenant_context(ctx.tenant.pk), client_context(ctx.client.pk):
+        fiscal = cast(
+            "FiscalDocument | None", ctx.rows.get("obligations.fiscaldocument")
+        )
+        if fiscal is None:
+            fiscal = FiscalDocument.objects.create(
+                tenant=ctx.tenant,
+                client=ctx.client,
+                environment="fake",
+                family="nfe",
+                key_namespace="seed",
+                document_key=ctx.tag,
+                client_role="destinatario",
+                source="captura",
+                provider="focus",
+                fiscal_state="autorizada",
+                role_verification="confirmed",
+                summary_only=False,
+            )
+            ctx.rows["obligations.fiscaldocument"] = fiscal
+        revision = cast(
+            "FiscalRevision | None", ctx.rows.get("obligations.fiscalrevision")
+        )
+        if revision is None:
+            revision = FiscalRevision.objects.create(
+                tenant=ctx.tenant,
+                client=ctx.client,
+                document=fiscal,
+                source_namespace="seed",
+                provider_version="1",
+                semantic_digest="a" * 64,
+                fiscal_state="autorizada",
+                receipt_ref="synthetic-isolation-receipt",
+            )
+            ctx.rows["obligations.fiscalrevision"] = revision
+        if fiscal.current_revision_id is None:
+            fiscal.current_revision = revision
+            fiscal.save(update_fields=["current_revision"])
+    return ctx.rows[model._meta.label_lower]
 
 
 def _seed_notice_policy(
@@ -1194,6 +1243,32 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "obligations_fiscalsituationreport",
             "document_id",
             "sitfisreport_document_private_fk",
+        ),
+        (
+            "obligations_fiscaldocument",
+            "current_revision_id",
+            "fiscaldocument_current_revision_id_scope_fk",
+        ),
+        ("obligations_fiscaldocument", "id", "fiscaldocument_exact_head_fk"),
+        (
+            "obligations_fiscaldocument",
+            "current_revision_id",
+            "fiscaldocument_exact_head_fk",
+        ),
+        (
+            "obligations_fiscalrevision",
+            "document_id",
+            "fiscalrevision_document_id_scope_fk",
+        ),
+        (
+            "obligations_revisionartifact",
+            "revision_id",
+            "revisionartifact_revision_id_scope_fk",
+        ),
+        (
+            "obligations_revisionartifact",
+            "document_id",
+            "revisionartifact_document_id_scope_fk",
         ),
         (
             "obligations_fiscalsituationreport",
