@@ -107,6 +107,10 @@ class FocusRefusedError(Exception):
     """An operator request refused before any write or provider request."""
 
 
+class LinkBusyError(FocusRefusedError):
+    """The link's exchange lock was not granted within LINK_LOCK_TIMEOUT."""
+
+
 @dataclass(frozen=True, slots=True)
 class CallOutcome:
     """One finished (or refused-in-flight) FC-EMP call, by its minimized result."""
@@ -574,7 +578,21 @@ def _confirm_setup(plan: SetupPlan) -> ClientProviderLink:
         allowed = LINK_TRANSITIONS[LinkMachine.STATUS].get(link.status, frozenset())
         if LinkStatus.ATIVA in allowed:
             link.status = LinkStatus.ATIVA
-        link.streams = sorted({*link.streams, *plan.streams})
+        # A disable since the fence may have removed a stream this setup wrote; the
+        # union never restores it (RV5). Without a moved epoch every stream is added.
+        epoch = _FENCE_EPOCH.get()
+        moved = epoch is not None and link.disable_epoch != epoch
+        withheld = sorted(s for s in plan.streams if moved and s not in link.streams)
+        link.streams = sorted(
+            {*link.streams, *(s for s in plan.streams if s not in withheld)}
+        )
+        if withheld:
+            _event(
+                link,
+                "integrations.focus_setup_streams_withheld",
+                streams=withheld,
+                disable_epoch=link.disable_epoch,
+            )
         link.version += 1
         link.updated_at = timezone.now()
         link.save()
@@ -592,6 +610,8 @@ def _confirm_setup(plan: SetupPlan) -> ClientProviderLink:
 LINK_LOCK_TIMEOUT: Final = "30s"
 LOCK_NOT_AVAILABLE: Final = "55P03"
 _LOCKED_LINK: ContextVar[UUID | None] = ContextVar("focus_link_lock", default=None)
+# The disable epoch a running setup saw at its fence (RV5 confirmation).
+_FENCE_EPOCH: ContextVar[int | None] = ContextVar("focus_fence_epoch", default=None)
 _LOCK_CONNECTION: ContextVar[BaseDatabaseWrapper | None] = ContextVar(
     "focus_link_lock_connection", default=None
 )
@@ -648,7 +668,7 @@ def link_exchange_lock(link_id: UUID) -> Iterator[None]:
                 "Outra operação Focus neste vínculo está em andamento; nada foi "
                 "enviado. Tente novamente."
             )
-            raise FocusRefusedError(message) from None
+            raise LinkBusyError(message) from None
         token = _LOCKED_LINK.set(link_id)
         held = _LOCK_CONNECTION.set(lock)
         try:
@@ -691,21 +711,106 @@ def _reread_locked(plan: SetupPlan) -> ClientProviderLink:
         return ClientProviderLink.objects.select_for_update().get(pk=plan.link_id)
 
 
+@contextmanager
+def _relocked(link_id: UUID) -> Iterator[None]:
+    """Hold the link's exchange lock for a compensation, re-acquiring it if lost.
+
+    A setup compensates because its lock may have been lost; a newer setup or disable
+    may then have run. If this context still proves its lock it keeps it; otherwise
+    it takes a fresh lock (bounded wait, LinkBusyError on timeout) so the
+    compensation serializes with any newer operation on the link.
+    """
+    try:
+        _require_link_lock(link_id)
+    except FocusRefusedError:
+        held = False
+    else:
+        held = True
+    if held:
+        yield
+        return
+    locked = _LOCKED_LINK.set(None)
+    connection = _LOCK_CONNECTION.set(None)
+    try:
+        with link_exchange_lock(link_id):
+            yield
+    finally:
+        _LOCK_CONNECTION.reset(connection)
+        _LOCKED_LINK.reset(locked)
+
+
+def _defer_undo(plan: SetupPlan, occurrence: str, reason: str) -> None:
+    """Own a compensation that could not run: an issue and an event, nothing sent."""
+    with tenant_context(plan.tenant_id), transaction.atomic():
+        link = ClientProviderLink.objects.select_for_update().get(pk=plan.link_id)
+        _own_issue(link, IssueReason.RECEBIMENTO_REABERTO_PROVEDOR, link.pk, "")
+        _event(
+            link,
+            "integrations.focus_setup_compensation_deferred",
+            reason=reason,
+            setup_occurrence=occurrence,
+        )
+
+
 def _undo_setup(plan: SetupPlan, link: ClientProviderLink, occurrence: str) -> None:
     """Switch receipt off again when a disable ran while this setup's write was out.
 
     The fence saw an active link, but a disable ran since (for example the setup's
-    lock connection was lost mid-exchange): the link is being or has been disabled,
-    or its disable epoch moved and it no longer holds a stream this setup wrote.
-    Those switches (every managed one for a disabled link) go off again and are
-    confirmed by read-back; the setup reports a refusal and the link keeps its
-    disablement state and streams.
+    lock connection was lost mid-exchange). The compensation runs under the link's
+    exchange lock (`_relocked`) and decides from the link as stored now, re-read
+    under its row lock: every managed switch for a link no longer active, otherwise
+    only the streams this setup wrote that the link does not hold now, so a newer
+    setup that restored a stream is never undone (RV5). With nothing left to undo it
+    sends nothing. Either way the setup reports a refusal. If the lock cannot be
+    had (or is lost again before the write), nothing is sent: an issue and an event
+    record the pending re-disable. `link` is the setup's earlier view, kept for the
+    interface; the decision never uses it.
     """
-    state = link.disablement_state
+    del link
+    try:
+        with _relocked(plan.link_id):
+            _compensate(plan, occurrence)
+    except LinkBusyError:
+        _defer_undo(plan, occurrence, "lock_not_granted")
+        message = (
+            "Uma desativação ocorreu durante esta configuração e o vínculo está "
+            "ocupado: nada foi enviado; uma pendência foi aberta para rodar "
+            "focus_company_disable. A configuração não foi aplicada."
+        )
+        raise FocusRefusedError(message) from None
+
+
+def _compensate(plan: SetupPlan, occurrence: str) -> None:
+    """Under the exchange lock: undo from fresh state, confirm, and refuse."""
+    fresh = _reread_locked(plan)
+    state = fresh.disablement_state
     if state != DisablementState.ATIVA:
         streams = tuple(sorted(CaptureStream.values))
     else:
-        streams = tuple(name for name in plan.streams if name not in link.streams)
+        streams = tuple(name for name in plan.streams if name not in fresh.streams)
+    if not streams:
+        with tenant_context(plan.tenant_id):
+            _event(
+                fresh,
+                "integrations.focus_setup_compensation_skipped",
+                setup_occurrence=occurrence,
+            )
+        message = (
+            "Uma desativação ocorreu durante esta configuração; nada a desfazer: o "
+            "vínculo já tem os fluxos desta configuração por uma operação mais "
+            "recente. A configuração não foi aplicada."
+        )
+        raise FocusRefusedError(message)
+    try:
+        _require_link_lock(plan.link_id)
+    except FocusRefusedError:
+        _defer_undo(plan, occurrence, "lock_lost_before_write")
+        message = (
+            "Uma desativação ocorreu durante esta configuração e o bloqueio do "
+            "vínculo foi perdido: nada foi enviado; uma pendência foi aberta para "
+            "rodar focus_company_disable. A configuração não foi aplicada."
+        )
+        raise FocusRefusedError(message) from None
     # Reload through the tenant context: the locked row's relations (its connection)
     # are only visible there.
     link = _load(plan.tenant_id, plan.link_id)
@@ -729,10 +834,10 @@ def _undo_setup(plan: SetupPlan, link: ClientProviderLink, occurrence: str) -> N
         readback = sync_company_status(link, occurrence=undo)
     unconfirmed = _unconfirmed(fields, readback.report if readback else None)
     confirmed = ConfigurationOutcome(write, readback, unconfirmed).confirmed
-    state = "confirmado" if confirmed else "NÃO confirmado; rode focus_company_disable"
+    result = "confirmado" if confirmed else "NÃO confirmado; rode focus_company_disable"
     message = (
         "Uma desativação ocorreu durante esta configuração; os recebimentos foram "
-        f"desligados de novo na Focus ({state}). A configuração não foi aplicada."
+        f"desligados de novo na Focus ({result}). A configuração não foi aplicada."
     )
     raise FocusRefusedError(message)
 
@@ -802,6 +907,22 @@ def _run_setup(plan: SetupPlan, *, dry_run: bool) -> ConfigurationOutcome:
     link = _fence_start_month(plan, dry_run=dry_run)
     # Read before the lock proof below: if that proof passes, no disable ran since.
     epoch = link.disable_epoch
+    fenced = _FENCE_EPOCH.set(epoch)
+    try:
+        return _exchange_setup(plan, link, epoch, occurrence, dry_run=dry_run)
+    finally:
+        _FENCE_EPOCH.reset(fenced)
+
+
+def _exchange_setup(
+    plan: SetupPlan,
+    link: ClientProviderLink,
+    epoch: int,
+    occurrence: str,
+    *,
+    dry_run: bool,
+) -> ConfigurationOutcome:
+    """Send the setup (or let Focus validate it), read it back and confirm it."""
     request = update_request(link.provider_company_ref, plan.fields, dry_run=dry_run)
     # The last check before any send (dry run or write): only an audit row follows.
     _require_link_lock(plan.link_id)

@@ -28,7 +28,7 @@ from tests.integrations.test_focus_adapter_edges import (
 
 __all__ = ["world"]
 db = pytest.mark.django_db(transaction=True)
-BUSY = "FocusRefusedError: Outra operação Focus neste vínculo está em andamento"
+BUSY = "LinkBusyError: Outra operação Focus neste vínculo está em andamento"
 
 
 @contextmanager

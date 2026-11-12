@@ -1458,7 +1458,21 @@ wrote, it turns those switches off again, confirms by read-back and refuses, so 
 stream is never merged back in. Red: `tests/integrations/test_focus_repair4.py` (both
 streams, through the command path); the post-write re-read's row lock is pinned by
 `tests/integrations/test_focus_repair4_witnesses.py`. Default suite at the repair
-head: 9938 collected, 53 skipped (inherited).
+head (`cec84b3`): 9938 collected, 53 skipped (inherited).
+
+Repair 5 (review 5, RV5-OLD-COMPENSATION-DISABLES-NEW-CONFIRMED-SETUP, plan :1061/:1063).
+A setup that compensates after losing its lock no longer decides from its earlier
+view: the compensation re-acquires the link's exchange lock (bounded wait; when it is
+not granted, or is lost again before the write, nothing is sent and an owned
+`recebimento_reaberto_provedor` issue and an audit event record the pending
+re-disable), re-reads the link under its row lock and undoes only the streams this
+setup wrote that the link does not hold now (every managed switch when the link is no
+longer active); with nothing left to undo it refuses and sends nothing, so a newer
+confirmed setup is never undone. Setup confirmation also never re-adds a stream a
+disable removed after the fence (the fence epoch is carried to `_confirm_setup`; the
+withheld stream is recorded in an event). Red: `tests/integrations/test_focus_repair5.py`
+(both streams, through the command path). Default suite at the repair head: 9945
+collected, 53 skipped (inherited).
 
 ## Axorim pivot
 
