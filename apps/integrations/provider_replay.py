@@ -27,6 +27,7 @@ from apps.integrations.call_models import (
 )
 from apps.integrations.call_observations import meter, observe
 from apps.integrations.call_state import current_epoch, lock_controls, uncertain
+from apps.integrations.call_unopened import is_unopened, rewind_unopened
 from apps.integrations.firm_calls import observe_firm
 from apps.integrations.journal_schema import (
     FirmJournalRecord,
@@ -53,6 +54,16 @@ def _attempts[Receipt: (JournalRecord, FirmJournalRecord)](
     for attempt_id, reply in replies.items():
         if replace(reply, result=None) != starts[attempt_id]:
             raise JournalError
+    resolved = [replies.get(row.attempt_id, row) for row in starts.values()]
+    if any(is_unopened(row.operation, row.result) for row in resolved):
+        resolved.sort(key=lambda row: (row.attempt_number, row.fence))
+        expected, fence = 1, 0
+        for row in resolved:
+            if row.attempt_number != expected or row.fence <= fence:
+                raise JournalError
+            expected += int(not is_unopened(row.operation, row.result))
+            fence = row.fence
+        return resolved
     ordered = sorted(starts.values(), key=lambda row: row.attempt_number)
     if [row.attempt_number for row in ordered] != list(range(1, len(ordered) + 1)):
         raise JournalError
@@ -109,6 +120,10 @@ def _restore_attempt(call: ProviderCall, record: JournalRecord) -> int:
     attempt_call.lease_owner = record.attempt_id
     attempt_call.x_request_tag = record.attempt_id
     attempt_call.dispatch_started_at = record.occurred_at
+    if is_unopened(record.operation, record.result):
+        rewind_unopened(call, record)
+        meter(attempt_call, record.attempt_id, result, record.occurred_at)
+        return int(created)
     if created:
         operation_for(record.operation).policy.settle(attempt_call, result)
     meter(attempt_call, record.attempt_id, result, record.occurred_at)
@@ -171,10 +186,14 @@ def _restore(records: list[JournalRecord]) -> int:
         count += _restore_attempt(call, record)
     latest = attempts[-1]
     # Human decisions and later DB attempts are never undone by older receipts.
-    if call.attempts > latest.attempt_number or call.state in {
-        CallState.RECONCILED,
-        CallState.CANCELLED,
-    }:
+    if (
+        call.attempts > latest.attempt_number
+        or call.state in {CallState.RECONCILED, CallState.CANCELLED}
+        or (
+            call.fence > latest.fence
+            and any(is_unopened(row.operation, row.result) for row in attempts)
+        )
+    ):
         return count
     result = latest.result or CallResult(
         CallState.UNCERTAIN, None, "journal_start_only", "desconhecido"
@@ -198,6 +217,15 @@ def _restore(records: list[JournalRecord]) -> int:
     call.billed = result.billed
     call.response_digest = result.response_digest
     call.settled_microbrl = result.settled_microbrl
+    if is_unopened(latest.operation, latest.result):
+        call.attempts -= 1
+        call.state = CallState.RETRY
+        call.reserved_microbrl = 0
+        call.dispatch_started_at = None
+        call.finalized_at = None
+        call.lease_owner = None
+        call.lease_until = None
+        call.next_attempt_at = latest.occurred_at
     call.version += 1
     call.save()
     if call.state == CallState.UNCERTAIN:

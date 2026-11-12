@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from copy import copy
+from dataclasses import dataclass, field, replace
+from functools import partial
 from http.client import HTTPException
+from os import getpid
+from threading import Lock
 from typing import TYPE_CHECKING, Protocol
 
 from django.utils import timezone
@@ -28,15 +32,24 @@ from apps.integrations.call_models import (
     CallState,
     FirmProviderCall,
     ProviderCall,
+    ProviderCallAttempt,
     ProviderEffectBarrier,
 )
+from apps.integrations.call_observations import meter, observe
 from apps.integrations.call_state import admit, current_epoch, lock_controls, uncertain
+from apps.integrations.call_unopened import (
+    UNOPENED_RESULT,
+    _issue_unopened_write,
+    is_unopened,
+    prior_unopened,
+    rewind_unopened,
+)
 from apps.integrations.journal_schema import JournalRecord
 from apps.integrations.serpro.reauthentication import prior_401
 from apps.integrations.transport_types import EnvioNaoAutorizado
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from datetime import datetime
     from uuid import UUID
 
@@ -60,6 +73,13 @@ class _WirePermit:
     lease_until: datetime
     used: bool = False
     expired: bool = False
+    guard: Callable[[], AbstractContextManager[None]] | None = None
+    scope: ExitStack = field(default_factory=ExitStack, repr=False)
+    issued: Dispatch | FirmDispatch | None = None
+    admitting: bool = False
+    unopened: bool = False
+    admission_lock: Lock = field(default_factory=Lock, repr=False)
+    process_id: int = field(default_factory=getpid)
 
 
 # Dispatches that begin_io() authorized and journaled in this process and that
@@ -79,14 +99,22 @@ def issue_dispatch(dispatch: Dispatch | FirmDispatch) -> None:
 
 @contextmanager
 def _wire_window(
-    provider: str, environment: str, operation: str, lease_until: datetime
+    provider: str,
+    environment: str,
+    operation: str,
+    lease_until: datetime,
+    *,
+    guard: Callable[[], AbstractContextManager[None]] | None = None,
 ) -> Iterator[_WirePermit]:
-    permit = _WirePermit(provider, environment, operation, lease_until)
+    permit = _WirePermit(provider, environment, operation, lease_until, guard=guard)
     token = _WIRE.set(permit)
     try:
         yield permit
     finally:
-        _WIRE.reset(token)
+        try:
+            permit.scope.close()
+        finally:
+            _WIRE.reset(token)
 
 
 def open_wire(provider: str, environment: str, operation: str) -> None:
@@ -101,12 +129,31 @@ def open_wire(provider: str, environment: str, operation: str) -> None:
         or permit.used
         or (permit.provider, permit.environment, permit.operation)
         != (provider, environment, operation)
+        or (operation == "SP-SIT-R" and permit.guard is None)
     ):
         raise EnvioNaoAutorizado
     permit.used = True
     if timezone.now() >= permit.lease_until:
         permit.expired = True
         raise StaleClaimError
+    if permit.guard is not None:
+        with permit.admission_lock:
+            permit.admitting = True
+        try:
+            permit.scope.enter_context(permit.guard())
+        finally:
+            with permit.admission_lock:
+                permit.admitting = False
+        if permit.unopened:
+            raise EnvioNaoAutorizado
+        assert_no_transaction()
+
+
+def close_wire() -> None:
+    """End the operation permit before adapter result or private-document work."""
+    permit = _WIRE.get()
+    if permit is not None:
+        permit.scope.close()
 
 
 def require_dispatch(provider: str) -> None:
@@ -180,6 +227,7 @@ def _prepare(ticket: Claim) -> Dispatch | AdmissionDeniedError | StaleClaimError
     if call.lease_until <= timezone.now():
         uncertain(call)
         return StaleClaimError()
+    unopened = prior_unopened(call)
     call.attempts += 1
     call.dispatch_started_at = timezone.now()
     call.x_request_tag = ticket.owner
@@ -199,13 +247,18 @@ def _prepare(ticket: Claim) -> Dispatch | AdmissionDeniedError | StaleClaimError
         if not created:
             if barrier.request_digest != call.request_digest:
                 raise IntentConflictError
-            # The barrier stays immutable. Only this same call's first complete
-            # 401 proves non-execution and admits its separately journaled retry.
+            # The barrier stays immutable. A complete 401 or this same call's
+            # exact latest no-wire closure proves the effect was not repeated.
             if not (
                 call.provider == "serpro"
-                and call.attempts == 2  # noqa: PLR2004 - exactly one auth retry
                 and barrier.call_id == call.pk
-                and prior_401(call)
+                and (
+                    unopened
+                    or (
+                        call.attempts == 2  # noqa: PLR2004 - one auth retry
+                        and prior_401(call)
+                    )
+                )
             ):
                 uncertain(call)
                 return StaleClaimError()
@@ -232,10 +285,61 @@ def begin_io(ticket: Claim) -> Dispatch:
 def record_result(dispatch: Dispatch, result: CallResult) -> None:
     """Durably record the reply before the fenced database finalization."""
     assert_no_transaction()
-    if dispatch.journaled:
+    if is_unopened(dispatch.receipt.operation, result):
+        _require_unopened(dispatch)
+        record = replace(dispatch.receipt, result=result)
+        with _issue_unopened_write(record):
+            provider_journal.append(record)
+    elif dispatch.journaled:
         provider_journal.append(
             replace(dispatch.receipt, result=billing_result(dispatch.receipt, result))
         )
+
+
+def _require_unopened(dispatch: Dispatch) -> None:
+    """Consume exactly one local closure before admission can hand off to I/O."""
+    permit = _WIRE.get()
+    if permit is None or permit.process_id != getpid():
+        raise EnvioNaoAutorizado
+    with permit.admission_lock:
+        if (
+            not permit.admitting
+            or not dispatch.journaled
+            or permit.unopened
+            or permit.issued is not dispatch
+            or dispatch.receipt.operation != "SP-SIT-R"
+        ):
+            raise EnvioNaoAutorizado
+        permit.unopened = True
+
+
+def abort_unopened(dispatch: Dispatch) -> None:
+    """Close a veto durably while its own guard is still before the first byte."""
+    record_result(dispatch, UNOPENED_RESULT)
+    receipt = replace(dispatch.receipt, result=UNOPENED_RESULT)
+    ticket = dispatch.claim
+    with tenant_context(ticket.tenant_id):
+        lock_controls(ticket.tenant_id, receipt.link_id)
+        call = ProviderCall.objects.select_for_update().get(
+            pk=ticket.call_id, client_id=ticket.client_id
+        )
+        observe(
+            call,
+            ProviderCallAttempt(
+                attempt_id=ticket.owner,
+                attempt_number=receipt.attempt_number,
+                fence=ticket.fence,
+                observation="result",
+                reserved_microbrl=receipt.reserved_microbrl,
+                occurred_at=receipt.occurred_at,
+            ),
+            UNOPENED_RESULT,
+        )
+        attempt = copy(call)
+        attempt.attempts = receipt.attempt_number
+        attempt.fence = receipt.fence
+        meter(attempt, ticket.owner, UNOPENED_RESULT, receipt.occurred_at)
+        rewind_unopened(call, receipt)
 
 
 def _live_lease(ticket: Claim | FirmClaim) -> datetime | None:
@@ -291,9 +395,24 @@ def dispatch_window(dispatch: Dispatch | FirmDispatch) -> Iterator[None]:
         _release_unsent(issued)
         raise StaleClaimError
     receipt = issued.receipt
+    factory = (
+        operation_for(receipt.operation).wire_guard
+        if isinstance(issued, Dispatch)
+        else None
+    )
+    guard = (
+        partial(factory, issued)
+        if factory is not None and isinstance(issued, Dispatch)
+        else None
+    )
     with _wire_window(
-        receipt.provider, receipt.environment, receipt.operation, lease_until
+        receipt.provider,
+        receipt.environment,
+        receipt.operation,
+        lease_until,
+        guard=guard,
     ) as permit:
+        permit.issued = issued
         try:
             yield
         finally:

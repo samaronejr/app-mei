@@ -63,6 +63,7 @@ from apps.cycles.export_records import (
     ExportAttempt,
     ExportState,
 )
+from apps.cycles.federal_records import FederalReportOutcome, FederalReportReview
 from apps.cycles.publications import (
     ActionExecution,
     ClientAcknowledgement,
@@ -114,6 +115,8 @@ __all__ = [
     "ExportAttempt",
     "ExportState",
     "ExtractedField",
+    "FederalReportOutcome",
+    "FederalReportReview",
     "FieldOrigin",
     "IntakeState",
     "InternalNote",

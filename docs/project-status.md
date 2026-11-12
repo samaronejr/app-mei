@@ -1167,6 +1167,40 @@ Downstream notes from the review remain assigned to their original todos:
 Repair evidence is retained separately under `.evidence/AXRM-014-fix1-*`.
 The committed repair head still requires full standard gates, manual/adversarial
 QA and cleanup before fresh independent review; no approval is claimed here.
+
+#### AXRM-016: fiscal-situation report (SITFIS)
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-016` | `request_situation_report` opens one `FiscalSituationReport` and its `FederalConsultation` receipt per client at a time (portfolio scope and `fiscal.checks.run` for staff; flag, pause, scanner, link, termo and 00002 authority refuse before any row). The `advance_situation_report` worker (`PhasedTenantTask`) drives A7.3 from durable rows only: SOLICITARPROTOCOLO91 (`/Apoiar`, free) stores the protocol and `wait_until = now + tempoEspera` (milliseconds; 60 s default, logged); RELATORIOSITFIS92 (`/Emitir`) is never reserved or sent before `wait_until`; a 202 (billed) takes the new `tempoEspera` from `dados`, a 204 (not billed) from the `ETag` header; each emission attempt is its own protocol call, at most three, then `limite_de_tentativas`. Replies are decided before finality, and the protocol or the PDF is written in the transaction that finalizes the call (the AXRM-015 `keep` hook, copied byte-identically), so a dead worker never loses a paid result and nothing raises after finality. The PDF is stored unparsed through `ingest_system_document` (`provedor_federal`, `portal_visible=False`, quarantined for the scan). Every other ending opens owned work (`situacao_fiscal_nao_obtida` on open cycles, else an `IntegrationIssue`; a 403 also records `ausente_detectada`). `cycles.FederalReportReview` (append-only, firm-only, `cycles.0022`) is recorded under the cycle lock with version check, `cycles.review` re-check, the input digest of the scanned bytes and a minimized `federal.report.reviewed` event; `pendencias_registradas` opens one `pendencia_fiscal_federal` per item for the engagement responsible; only `sem_pendencias_nas_fontes` has the dated "Nenhuma pendência registrada nas fontes verificadas em {data}" sentence. Qualification scenario `sitfis` (fake, trial). | Flag `federal_checks` off, `SERPRO_ENVIRONMENT=fake` and providers paused by default. Recovery is flag off or `SERPRO_PAUSED`: an in-flight protocol is not emitted and ends `protocolo_expirado` with owned work; reports and reviews stay. `cycles.0022` reverses while empty and refuses once a review exists (forward repair); `integrations.0012` only adds an issue reason. PQ-SERPRO-1 and LQ-3 remain open. |
+
+Tenant tables grow from **84 to 85** (`cycles_federalreportreview`, registered once in
+`roles.sql`, `PORTAL_DENIED_TABLES`, `APPEND_ONLY_TABLES`, the model inventory, the
+paired-FK inventory and the static-only coverage list). Baseline: AXRM-013's delivered
+head `0122c88` gates (group 1 **2289**, group 2 **6607 passed, 53 skipped**,
+isolation **909 passed, 53 skipped**). Tests first at the tests-only commit:
+**48 failed** on assertions, **1 passed** (the `producao` refusal). The 49 new
+cases then pass in three consecutive runs. Evidence:
+`.evidence/AXRM-016-red.txt`, `AXRM-016-green{1,2,3}.txt`, `AXRM-016-gates*.txt`,
+`AXRM-016-breaks.txt`, `AXRM-016-happy.txt`, `AXRM-016-failure.txt`,
+`AXRM-016-adversarial.txt`, `AXRM-016-teardown.txt` and
+`AXRM-016-doneclaim.json`.
+
+Repair 1 (review 1 of `bebff5a`) closes three ownership gaps and two of the same class.
+Every emission identity counts toward the cap of three, sent or not: one that never
+reached the wire is retried at once (nothing was paid), so a report can no longer wait
+forever. Each validated reply is recorded on the report before its call is final
+(`obligations.0027`: the reply's call and SERPRO's wait, plus the protocol, and the
+paid PDF already stored as a private original), so any runner applies SERPRO's own
+wait and adopts a received PDF instead of buying it again. A storage failure on a paid
+PDF ends billed and owned; any other failed delivery schedules a bounded continuation
+(1, 5, 30 min) and then opens owned work. A wait above one day is clamped to one day (that
+shortens such an estimate; it is never replaced by the 60 s default). Repair 2 records
+a reply's call and wait only for the report's current attempt, under the report row
+lock, so a stale runner's late reply cannot replace a newer attempt's wait; a late
+paid PDF is still kept and adopted. The PDF limit is the largest report the 5 MiB JSON wire can carry
+(`MAX_REPORT_BYTES`, about 3.75 MiB). Evidence: `.evidence/AXRM-016-fix1-*`.
+
 #### AXRM-013: SERPRO adapter and authorization
 
 | Todo | Engineering delivery | Rollout and recovery |

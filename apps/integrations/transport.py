@@ -8,7 +8,7 @@ from requests import Request
 
 from apps.core.tasks import assert_no_transaction
 from apps.integrations.allowlist import resolve
-from apps.integrations.call_dispatch import open_wire
+from apps.integrations.call_dispatch import close_wire, open_wire
 from apps.integrations.transport_types import (
     Environment,
     OperacaoNaoPermitida,
@@ -117,11 +117,16 @@ class ProviderTransport:
         headers = dict(request.headers)
         headers["Accept-Encoding"] = "identity"
         headers.setdefault("Content-Type", "application/json")
-        response = _exchange(
-            Request(route.method, origin + path, headers=headers, data=request.body),
-            limits,
-            redirect=operation == "FC-PDF",
-        )
+        try:
+            response = _exchange(
+                Request(
+                    route.method, origin + path, headers=headers, data=request.body
+                ),
+                limits,
+                redirect=operation == "FC-PDF",
+            )
+        finally:
+            close_wire()
         if isinstance(response, str):
             if not _pdf_location(response):
                 msg = "redirecionamento_nao_permitido"

@@ -261,6 +261,13 @@ class FiscalSituationReport(TenantScopedModel):
     protocol_date = models.DateTimeField(null=True, blank=True)
     wait_until = models.DateTimeField(null=True, blank=True)
     emission_attempts = models.PositiveSmallIntegerField(default=0)
+    # AXRM-016 repair 1: the last validated reply recorded before its call was
+    # final (the call id and SERPRO's wait), so any runner applies it unchanged.
+    reply_call = models.CharField(max_length=64, blank=True, default="")
+    reply_wait_ms = models.PositiveIntegerField(null=True, blank=True)
+    # AXRM-016: independent receipts keyed by ProviderCall id. The old two fields
+    # above are only the current-attempt projection, never the emission gate.
+    call_replies = models.JSONField(default=dict, blank=True)
     emitted_at = models.DateTimeField(null=True, blank=True)
     # The emitted PDF. Firm-only: the migration's trigger refuses a portal-visible
     # document (INV-R10).

@@ -1,0 +1,46 @@
+[
+  [
+    "fix6-liveness-only-at-consume",
+    [
+      [
+        "apps/integrations/call_unopened.py",
+        "    with scope.lock:\n        if not scope.open:\n            raise JournalError\n        yield\n",
+        "    with scope.lock:\n        if not scope.open:\n            raise JournalError\n    yield\n"
+      ]
+    ],
+    [
+      "tests/integrations/test_sitfis_spent_scope.py"
+    ]
+  ],
+  [
+    "fix6-authorization-check-outside-lock",
+    [
+      [
+        "apps/integrations/call_unopened.py",
+        "    with scope.lock:\n        if not scope.open:\n            raise JournalError\n        yield\n",
+        "    if not scope.open:\n        raise JournalError\n    with scope.lock:\n        yield\n"
+      ],
+      [
+        "apps/integrations/provider_journal.py",
+        "    with unopened_write_scope(record):\n        consume_unopened_write(record)\n",
+        "    consume_unopened_write(record)\n    with unopened_write_scope(record):\n"
+      ]
+    ],
+    [
+      "tests/integrations/test_sitfis_scope_orderings.py"
+    ]
+  ],
+  [
+    "fix6-append-skips-scope",
+    [
+      [
+        "apps/integrations/provider_journal.py",
+        "    with unopened_write_scope(record):\n",
+        "    if True:\n"
+      ]
+    ],
+    [
+      "tests/integrations/test_sitfis_spent_scope.py"
+    ]
+  ]
+]

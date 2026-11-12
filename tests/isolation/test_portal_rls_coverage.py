@@ -83,7 +83,8 @@ RUNTIME_ROLE = "app_runtime"
 # payment documents, fiscal-situation reports; both policies): 79 + 3 = 82.
 # AXRM-013 adds client-less firm work and zero-cost attempt reservations: 82 + 2.
 # AXRM-015 adds PAGTOWEB consultations (85) and their kept paid pages: 85 + 1.
-EXPECTED_TENANT_TABLE_COUNT = 86
+# AXRM-016 adds the client-paired private SITFIS review (both policies): 86 + 1.
+EXPECTED_TENANT_TABLE_COUNT = 87
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -118,6 +119,8 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         # AXRM-015: PAGTOWEB consultations and their kept paid pages.
         "integrations_paymentquery",
         "integrations_paymentpage",
+        # AXRM-016: the accountant's SITFIS review.
+        "cycles_federalreportreview",
     }
 )
 
@@ -627,6 +630,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         # AXRM-015: PAGTOWEB consultations and their kept paid pages are portal NONE.
         "integrations_paymentquery",
         "integrations_paymentpage",
+        # AXRM-016: SITFIS reviews are portal NONE.
+        "cycles_federalreportreview",
     },
 )
 

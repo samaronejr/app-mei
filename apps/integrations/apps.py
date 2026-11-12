@@ -1,5 +1,7 @@
 """App configuration for provider connections, links and their guards."""
 
+import importlib
+
 from django.apps import AppConfig
 from django.core.checks import register
 
@@ -37,6 +39,9 @@ class IntegrationsConfig(AppConfig):
         from apps.integrations.serpro.registration import (  # noqa: PLC0415
             register_serpro_operations,
         )
+        from apps.integrations.serpro.sitfis import (  # noqa: PLC0415
+            REASONS as SITFIS_REASONS,
+        )
         from apps.integrations.serpro.work import (  # noqa: PLC0415
             REASONS as SERPRO_REASONS,
         )
@@ -46,7 +51,12 @@ class IntegrationsConfig(AppConfig):
 
         register(check_provider_settings)
         reasons = (
-            REASONS | BUDGET_REASONS | SERPRO_REASONS | PAYMENT_REASONS | GUIDE_REASONS
+            REASONS
+            | BUDGET_REASONS
+            | SERPRO_REASONS
+            | PAYMENT_REASONS
+            | GUIDE_REASONS
+            | SITFIS_REASONS
         )
         for code, reason in reasons.items():
             register_exception_reason(code, reason)
@@ -62,3 +72,11 @@ class IntegrationsConfig(AppConfig):
         import apps.integrations.serpro.pagtoweb_qualification  # noqa: F401, PLC0415
 
         pgmei_qualification.register()
+
+        # AXRM-016: the SITFIS worker task and the `sitfis` qualification scenario
+        # (todo 13's extension point) register on import.
+        for module in (
+            "apps.integrations.serpro.sitfis_qualification",
+            "apps.integrations.serpro.sitfis_tasks",
+        ):
+            importlib.import_module(module)

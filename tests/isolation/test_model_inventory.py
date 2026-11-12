@@ -46,6 +46,8 @@ SWEEP_LABELS: Final = frozenset(
         "cycles.ExceptionInternal",
         "cycles.ExportAttempt",
         "cycles.ExtractedField",
+        # AXRM-016 SITFIS reviews: tests/integrations/test_sitfis_review.py.
+        "cycles.FederalReportReview",
         "cycles.InternalNote",
         "cycles.LegalHold",
         "cycles.Playbook",
