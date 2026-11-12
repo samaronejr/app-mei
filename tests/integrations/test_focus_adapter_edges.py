@@ -233,7 +233,10 @@ def test_allowlist_refusal_inside_send_is_a_definitive_unsent_failure(
     )
 
 
-def test_allowlist_takes_the_production_switch_and_only_the_exact_dry_run() -> None:
+def test_allowlist_takes_the_production_switch_and_only_the_exact_dry_run(
+    settings: SettingsWrapper,
+) -> None:
+    settings.FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = QUALIFICATION_REF
     body = json.dumps({"habilita_manifestacao": True}).encode()
     route, path = resolve(
         "focus", "FC-EMP", ProviderRequest(variant="update", subject=SUBJECT, body=body)
@@ -928,7 +931,8 @@ def test_an_allowlist_refusal_in_send_reports_its_code() -> None:
     )
 
 
-def test_parsing_outcomes_as_text() -> None:
+def test_parsing_outcomes_as_text(settings: SettingsWrapper) -> None:
+    settings.FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = QUALIFICATION_REF
     assert outcome_of(lambda: _reported_day("")) == "ok"
     body = json.dumps({"id": COMPANY_ID, "habilita_nfe": 1}).encode()
     assert outcome_of(lambda: parse_company(ProviderResponse(200, body), SUBJECT)) == (
@@ -1171,3 +1175,48 @@ def test_the_limiter_admits_exactly_its_limit_under_concurrent_callers() -> None
     assert not [thread for thread in threads if thread.is_alive()]
     assert len(results) == callers
     assert results.count(True) == 60
+
+
+# --- The PQ-FOCUS-1 gate at the wire (allowlist) -----------------------------------
+
+REFUSED = "OperacaoNaoPermitidaError: operacao_nao_permitida"
+
+
+def _company_update(fields: dict[str, object]) -> Callable[[], object]:
+    body = json.dumps(fields).encode()
+    request = ProviderRequest(variant="update", subject=SUBJECT, body=body)
+    return lambda: resolve("focus", "FC-EMP", request)[1]
+
+
+@pytest.mark.parametrize(
+    "switch", ["habilita_manifestacao", "habilita_manifestacao_homologacao"]
+)
+def test_turning_received_nfe_on_needs_the_pq_focus_1_id_at_the_wire(
+    settings: SettingsWrapper, switch: str
+) -> None:
+    path = f"/v2/empresas/{SUBJECT}"
+    settings.FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = ""
+    # Off is always allowed, so capture can always be stopped.
+    assert outcome_of(_company_update({switch: False})) == path
+    # On (or any value that is not false) is refused without the evidence id.
+    assert outcome_of(_company_update({switch: True})) == REFUSED
+    assert outcome_of(_company_update({switch: 1})) == REFUSED
+    for value in ("AXRM-PQ-FOCUS-1 extra", "xAXRM-PQ-FOCUS-1", "PQ-FOCUS-1"):
+        settings.FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = value
+        assert outcome_of(_company_update({switch: True})) == REFUSED, value
+    settings.FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = None
+    assert outcome_of(_company_update({switch: True})) == REFUSED
+    # With the recorded evidence id the switch may be turned on.
+    settings.FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = QUALIFICATION_REF
+    assert outcome_of(_company_update({switch: True})) == path
+
+
+def test_other_receipt_switches_do_not_need_the_pq_focus_1_id(
+    settings: SettingsWrapper,
+) -> None:
+    settings.FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = ""
+    fields: dict[str, object] = {
+        "habilita_nfsen_recebidas_homologacao": True,
+        "certificado_especifico": True,
+    }
+    assert outcome_of(_company_update(fields)) == f"/v2/empresas/{SUBJECT}"

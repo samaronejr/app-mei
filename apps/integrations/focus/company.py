@@ -35,6 +35,7 @@ from django.utils import timezone
 from apps.audit.services import ObjectRef, record_event
 from apps.core.tasks import PlatformTask, assert_no_transaction
 from apps.core.tenancy import tenant_context
+from apps.integrations.allowlist import PQ_FOCUS_1_ID
 from apps.integrations.authority import record_certificate_status
 from apps.integrations.call_contracts import CallRequest, StaleClaimError
 from apps.integrations.call_models import CallState, ProviderCall
@@ -77,7 +78,8 @@ OPERATION_REVISION: Final = "v1"
 NFE_QUALIFICATION_REFUSAL: Final = (
     "Captura de NF-e recebidas bloqueada: falta a evidencia PQ-FOCUS-1"
 )
-QUALIFICATION_ID: Final = re.compile(r"AXRM-PQ-FOCUS-1(?:[-_.][A-Za-z0-9]+)*")
+# The same compiled pattern the wire enforces (apps.integrations.allowlist).
+QUALIFICATION_ID: Final = PQ_FOCUS_1_ID
 CAPTURE_ENVIRONMENTS: Final = ("fake", "homologacao", "producao")
 # A7.3 disablement: the operator's disable walks the local steps, then the provider's.
 DISABLE_PATH: Final = (
