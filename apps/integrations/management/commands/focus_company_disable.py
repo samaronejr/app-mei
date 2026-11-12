@@ -39,14 +39,14 @@ class Command(BaseCommand):
             raise CommandError(str(error)) from None
         except AdmissionDeniedError as error:
             raise CommandError(admission_message(error)) from None
-        record = {"streams": list(plan.streams), **outcome_record(outcome)}
+        record = {"streams": list(outcome.streams), **outcome_record(outcome)}
         emit(self.stdout, record)
         path = write_receipt(
             "disable",
             {
                 "link": str(plan.link_id),
                 "environment": plan.environment,
-                "fields": plan.fields,
+                "fields": outcome.sent,
                 **record,
             },
         )

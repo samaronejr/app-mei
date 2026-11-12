@@ -558,6 +558,10 @@ class IssueReason(models.TextChoices):
         "Certificado no provedor vencido",
     )
     CREDENCIAL_DIVERGENTE = "credencial_divergente", "Credencial divergente"
+    RECEBIMENTO_REABERTO_PROVEDOR = (
+        "recebimento_reaberto_provedor",
+        "Recebimento reaberto no provedor",
+    )
     # AXRM-009: an attempt whose provider outcome is unknown (A7.3 `incerta`).
     CHAMADA_PROVEDOR_INCERTA = (
         "chamada_provedor_incerta",

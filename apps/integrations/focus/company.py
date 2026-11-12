@@ -26,12 +26,18 @@ import hashlib
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
 from django.conf import settings
-from django.db import DEFAULT_DB_ALIAS, OperationalError, connections, transaction
+from django.db import (
+    DEFAULT_DB_ALIAS,
+    DatabaseError,
+    OperationalError,
+    connections,
+    transaction,
+)
 from django.utils import timezone
 
 from apps.audit.services import ObjectRef, record_event
@@ -39,6 +45,7 @@ from apps.core.tasks import PlatformTask, assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.integrations.allowlist import PQ_FOCUS_1_ID
 from apps.integrations.authority import record_certificate_status
+from apps.integrations.budget_alerts import _own_issue
 from apps.integrations.call_contracts import CallRequest, StaleClaimError
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
@@ -57,6 +64,7 @@ from apps.integrations.models import (
     ConnectionStatus,
     CredentialState,
     DisablementState,
+    IssueReason,
     LinkStatus,
     Provider,
 )
@@ -70,6 +78,7 @@ from apps.integrations.transport import ProviderTransport
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from django.db.backends.base.base import BaseDatabaseWrapper
     from django.db.backends.utils import CursorWrapper
     from django.db.models import QuerySet
 
@@ -185,6 +194,29 @@ def _call(
 # --- Status sync -----------------------------------------------------------------
 
 
+def _surface_reopened_receipt(link: ClientProviderLink, report: CompanyReport) -> None:
+    """Own the mismatch when a confirmed-disabled link reads a receipt switch on.
+
+    A crash between a setup's write and its compensation can leave a switch on at
+    Focus after a confirmed disable. The sweep already skips the link; this makes the
+    mismatch visible (an owned issue and an audit event) so the operator re-runs
+    focus_company_disable. Nothing is sent from here; active links are untouched.
+    """
+    if link.disablement_state != DisablementState.DESATIVADA_NO_PROVEDOR_CONFIRMADA:
+        return
+    managed = disable_fields(tuple(sorted(CaptureStream.values)), _environment(link))
+    reopened = sorted(name for name in managed if report.flags.get(name) is True)
+    if not reopened:
+        return
+    _own_issue(link, IssueReason.RECEBIMENTO_REABERTO_PROVEDOR, link.pk, "")
+    record_event(
+        action="integrations.focus_receipt_reopened",
+        tenant_id=link.tenant_id,
+        obj=ObjectRef("ClientProviderLink", str(link.pk)),
+        metadata={"switches": reopened, "needs_redisable": True},
+    )
+
+
 def _apply_report(link_id: UUID, report: CompanyReport, today: dt.date | None) -> None:
     """Store one attributable report; runs inside the read's finalizing transaction."""
     link = (
@@ -227,6 +259,7 @@ def _apply_report(link_id: UUID, report: CompanyReport, today: dt.date | None) -
     link.provider_flags = report.flags
     link.updated_at = timezone.now()
     link.save()
+    _surface_reopened_receipt(link, report)
     record_event(
         action="integrations.focus_company_status_synced",
         tenant_id=link.tenant_id,
@@ -505,6 +538,8 @@ class ConfigurationOutcome:
     link_status: str = ""
     disablement_state: str = ""
     credential_state: str = ""
+    sent: dict[str, bool | str] = field(default_factory=dict)
+    streams: tuple[str, ...] = ()
 
     @property
     def confirmed(self) -> bool:
@@ -557,6 +592,20 @@ def _confirm_setup(plan: SetupPlan) -> ClientProviderLink:
 LINK_LOCK_TIMEOUT: Final = "30s"
 LOCK_NOT_AVAILABLE: Final = "55P03"
 _LOCKED_LINK: ContextVar[UUID | None] = ContextVar("focus_link_lock", default=None)
+_LOCK_CONNECTION: ContextVar[BaseDatabaseWrapper | None] = ContextVar(
+    "focus_link_lock_connection", default=None
+)
+# The lock connection's own backend holds the link's key (bigint advisory form).
+_HOLDS_LOCK_SQL: Final = """
+    WITH k AS (SELECT hashtext(%s)::bigint AS v)
+    SELECT EXISTS (
+        SELECT 1 FROM pg_locks l, k
+        WHERE l.locktype = 'advisory' AND l.pid = pg_backend_pid() AND l.granted
+          AND l.objsubid = 1
+          AND l.classid::bigint = ((k.v >> 32) & 4294967295)
+          AND l.objid::bigint = (k.v & 4294967295)
+    )
+"""
 
 
 def _lock_key(link_id: UUID) -> str:
@@ -601,12 +650,85 @@ def link_exchange_lock(link_id: UUID) -> Iterator[None]:
             )
             raise FocusRefusedError(message) from None
         token = _LOCKED_LINK.set(link_id)
+        held = _LOCK_CONNECTION.set(lock)
         try:
             yield
         finally:
+            _LOCK_CONNECTION.reset(held)
             _LOCKED_LINK.reset(token)
     finally:
         lock.close()
+
+
+def _require_link_lock(link_id: UUID) -> None:
+    """Refuse unless this context still holds the link's lock, right before a send.
+
+    The lock lives on a dedicated connection; if that connection was lost (backend
+    terminated, network, server restart) the lock is gone and another operation on
+    the link may already run. Any failure to prove the lock is a refusal, unsent.
+    """
+    lock = _LOCK_CONNECTION.get()
+    held = False
+    if lock is not None and _LOCKED_LINK.get() == link_id:
+        try:
+            with lock.cursor() as cursor:
+                cursor.execute(_HOLDS_LOCK_SQL, [_lock_key(link_id)])
+                row = cursor.fetchone()
+                held = bool(row and row[0])
+        except DatabaseError:
+            held = False
+    if not held:
+        message = (
+            "O bloqueio deste vínculo foi perdido antes do envio; nada foi enviado. "
+            "Tente novamente."
+        )
+        raise FocusRefusedError(message)
+
+
+def _reread_locked(plan: SetupPlan) -> ClientProviderLink:
+    """Read the link as stored now, under its row lock (no provider I/O inside)."""
+    with tenant_context(plan.tenant_id), transaction.atomic():
+        return ClientProviderLink.objects.select_for_update().get(pk=plan.link_id)
+
+
+def _undo_setup(plan: SetupPlan, link: ClientProviderLink, occurrence: str) -> None:
+    """Switch receipt off again when a disable ran while this setup's write was out.
+
+    The fence saw an active link, but the link is now being or has been disabled
+    (for example the setup's lock connection was lost mid-exchange). Every receipt
+    switch the adapter manages goes off again and is confirmed by read-back; the
+    setup reports a refusal and the link keeps its disablement state.
+    """
+    state = link.disablement_state
+    # Reload through the tenant context: the locked row's relations (its connection)
+    # are only visible there.
+    link = _load(plan.tenant_id, plan.link_id)
+    fields = disable_fields(tuple(sorted(CaptureStream.values)), plan.environment)
+    # A new journaled occurrence: the setup's own read-back has the same request
+    # digest, so reusing its occurrence would replay that read instead of a new GET.
+    undo = uuid4().hex
+    with tenant_context(plan.tenant_id):
+        _event(
+            link,
+            "integrations.focus_setup_compensated",
+            fields=sorted(fields),
+            disablement_state=state,
+            occurrence=undo,
+            setup_occurrence=occurrence,
+        )
+    request = update_request(link.provider_company_ref, fields)
+    write = _call(link, request, action="focus_company_disable", occurrence=undo)
+    readback = None
+    if write.state == CallState.SUCCESS:
+        readback = sync_company_status(link, occurrence=undo)
+    unconfirmed = _unconfirmed(fields, readback.report if readback else None)
+    confirmed = ConfigurationOutcome(write, readback, unconfirmed).confirmed
+    state = "confirmado" if confirmed else "NÃO confirmado; rode focus_company_disable"
+    message = (
+        "Uma desativação ocorreu durante esta configuração; os recebimentos foram "
+        f"desligados de novo na Focus ({state}). A configuração não foi aplicada."
+    )
+    raise FocusRefusedError(message)
 
 
 def _fence_start_month(plan: SetupPlan, *, dry_run: bool) -> ClientProviderLink:
@@ -673,6 +795,8 @@ def _run_setup(plan: SetupPlan, *, dry_run: bool) -> ConfigurationOutcome:
     occurrence = uuid4().hex
     link = _fence_start_month(plan, dry_run=dry_run)
     request = update_request(link.provider_company_ref, plan.fields, dry_run=dry_run)
+    # The last check before any send (dry run or write): only an audit row follows.
+    _require_link_lock(plan.link_id)
     if dry_run:
         write = _call(
             link, request, action="focus_company_setup_dry_run", occurrence=occurrence
@@ -699,6 +823,9 @@ def _run_setup(plan: SetupPlan, *, dry_run: bool) -> ConfigurationOutcome:
     readback = None
     if write.state == CallState.SUCCESS:
         readback = sync_company_status(link, occurrence=occurrence)
+    current = _reread_locked(plan)
+    if current.disablement_state != DisablementState.ATIVA:
+        _undo_setup(plan, current, occurrence)
     unconfirmed = _unconfirmed(plan.fields, readback.report if readback else None)
     outcome = ConfigurationOutcome(write, readback, unconfirmed)
     if outcome.confirmed:
@@ -735,6 +862,7 @@ class DisablePlan:
     streams: tuple[str, ...]
     remaining: tuple[str, ...]
     fields: dict[str, bool | str]
+    scoped: bool = False
 
     @property
     def whole_link(self) -> bool:
@@ -759,6 +887,7 @@ def plan_disable(client_id: UUID, streams: list[str] | None = None) -> DisablePl
         chosen,
         remaining,
         disable_fields(chosen, environment),
+        scoped=bool(streams),
     )
 
 
@@ -791,6 +920,29 @@ def _stop_locally(plan: DisablePlan, link: ClientProviderLink) -> ClientProvider
     return _load(plan.tenant_id, plan.link_id)
 
 
+def _decide_disable(plan: DisablePlan) -> DisablePlan:
+    """Decide what to turn off from the link as stored now, inside the link lock.
+
+    A plan is computed before the lock; a setup may have added a stream meanwhile
+    (RV3). A whole-link disable turns off every receipt switch the adapter manages,
+    configured locally or not, so no stream can stay on at Focus. A stream-scoped
+    disable keeps to its streams, and what remains comes from the stored link.
+    """
+    stored = tuple(sorted(_load(plan.tenant_id, plan.link_id).streams))
+    every = tuple(sorted(CaptureStream.values))
+    if plan.scoped:
+        remaining = tuple(name for name in stored if name not in plan.streams)
+        fields = disable_fields(plan.streams, plan.environment)
+        return replace(plan, remaining=remaining, fields=fields)
+    chosen = stored or every
+    return replace(
+        plan,
+        streams=chosen,
+        remaining=(),
+        fields=disable_fields(every, plan.environment),
+    )
+
+
 def run_disable(plan: DisablePlan) -> ConfigurationOutcome:
     """Run the disable exchange under the link's lock (`link_exchange_lock`)."""
     with link_exchange_lock(plan.link_id):
@@ -800,6 +952,7 @@ def run_disable(plan: DisablePlan) -> ConfigurationOutcome:
 def _run_disable(plan: DisablePlan) -> ConfigurationOutcome:
     """Stop locally, turn the receipt switches off at Focus, confirm by read-back."""
     occurrence = uuid4().hex
+    plan = _decide_disable(plan)
     link = _load(plan.tenant_id, plan.link_id)
     confirmed_state = DisablementState.DESATIVADA_NO_PROVEDOR_CONFIRMADA
     # The local state says capture already stopped; only Focus's read-back says the
@@ -839,4 +992,6 @@ def _run_disable(plan: DisablePlan) -> ConfigurationOutcome:
         link.status,
         link.disablement_state,
         link.credential_state,
+        sent=dict(plan.fields),
+        streams=plan.streams,
     )

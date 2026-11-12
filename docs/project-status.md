@@ -1433,6 +1433,21 @@ switches and confirms them by read-back. Red: `tests/integrations/test_focus_rep
 `tests/integrations/test_focus_repair2_witnesses.py`. Default suite at the repair head:
 9920 collected, 53 skipped (inherited).
 
+Repair 3 (review 3, RV3-WHOLE-LINK-DISABLE-MISSES-CONCURRENTLY-ADDED-STREAM and
+RV3-LOCK-CONNECTION-LOSS-REOPENS-CONFIRMED-DISABLE). A disable decides what to turn off
+inside the per-link lock from the stored link: a whole-link disable sends every receipt
+switch the adapter manages as false and confirms them by read-back; a stream-scoped
+disable keeps to its streams. Setup proves it still holds the lock (`pg_locks` on its
+own lock connection) right before each write, else refuses unsent; after its write it
+re-reads the link under its row lock and, if a disable started or finished meanwhile,
+switches receipt off again under a new journaled occurrence, confirms it and refuses.
+Status sync surfaces a confirmed-disabled link whose read-back shows a receipt switch
+on: an owned issue (`recebimento_reaberto_provedor`, migration
+`integrations.0014`) and an audit event; nothing is sent from the sweep. Red:
+`tests/integrations/test_focus_repair3.py`, `test_focus_repair3_lock.py`,
+`test_focus_repair3_drift.py` (all assertion failures on `eb100a3`). Default suite
+at the repair head: 9929 collected, 53 skipped (inherited).
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

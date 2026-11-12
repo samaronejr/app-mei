@@ -506,8 +506,13 @@ def test_disable_sets_receipt_flags_false_and_confirms_by_read_back(
     assert [link.pk for link in _capture(world)] == [world.link.pk]
     # When the operator disables it.
     output = disable(world)
-    # Then one PUT turns the receipt flag off, and a GET confirmed it.
-    assert world.fake.bodies() == [{"habilita_nfsen_recebidas_homologacao": False}]
+    # Then one PUT turns every managed receipt flag off (RV3); a GET confirmed it.
+    assert world.fake.bodies() == [
+        {
+            "habilita_manifestacao_homologacao": False,
+            "habilita_nfsen_recebidas_homologacao": False,
+        }
+    ]
     assert [r.method for r in world.fake.requests] == ["PUT", "GET"]
     link = world.reload()
     assert link.disablement_state == "desativada_no_provedor_confirmada"
