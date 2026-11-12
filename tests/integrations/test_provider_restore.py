@@ -201,7 +201,10 @@ def restore_before_call() -> None:
         cursor.execute("RESET ROLE")
         try:
             cursor.execute(
-                "TRUNCATE integrations_providerreservation, "
+                # AXRM-015: a kept PAGTOWEB page references its call, so the
+                # pre-call horizon has none either.
+                "TRUNCATE integrations_paymentpage, "
+                "integrations_providerreservation, "
                 "integrations_providereffectbarrier, "
                 "integrations_providercallattempt, "
                 "integrations_providercall, tenants_usagerecord"

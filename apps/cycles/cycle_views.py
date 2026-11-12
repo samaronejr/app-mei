@@ -341,6 +341,8 @@ def _render_detail(
         {
             "cycle": cycle,
             "coverage": reads.coverage,
+            # AXRM-015: the Receita Federal section loads from its own endpoint.
+            "federal_payments_enabled": tenant_has(cycle.tenant_id, "federal_checks"),
             "service_label": dict(SERVICE_KIND_CHOICES)[cycle.engagement.service_kind],
             "tasks": tasks,
             "actions": [
