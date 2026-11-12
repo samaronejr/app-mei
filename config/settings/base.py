@@ -746,6 +746,14 @@ PROVIDER_REAL_DATA_APPROVED = env.bool("PROVIDER_REAL_DATA_APPROVED", default=Fa
 PROVIDER_GLOBAL_MONTHLY_CAP_BRL = env.json(
     "PROVIDER_GLOBAL_MONTHLY_CAP_BRL", default={}
 )
+# AXRM-019 (INV-R11, OG-R4): `focus_company_setup` never sets a Focus receipt start
+# earlier than the pilot start month (YYYY-MM; blank refuses every setup), and
+# enables received NF-e only when this names the PQ-FOCUS-1 evidence id recording
+# that enabling it registers no Ciencia automatically (blank refuses NF-e).
+FOCUS_CAPTURE_PILOT_START_MONTH = env.str("FOCUS_CAPTURE_PILOT_START_MONTH", default="")
+FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF = env.str(
+    "FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF", default=""
+)
 
 # Closed until the operator verifies the real SMTP route and journal storage.
 DELIVERY_PAUSED = env.bool("DELIVERY_PAUSED", default=True)

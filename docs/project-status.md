@@ -1389,6 +1389,25 @@ Placement onto AXRM-016 keeps its `authorized` calculation and `SP-SIT-R`
 delegation. Other operations return the original authority decision. The exact
 protected-file diff and combined function are retained in the repair-3 DoneClaim.
 
+### Wave 3: fiscal document capture
+
+#### AXRM-019: Focus adapter, company status sync and audited setup/disable
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-019` | `apps/integrations/focus/`: an adapter that sends only the A6 allowlist (FC-EMP read/update, FC-NFE, FC-NFS; FC-CIE registers with todo 22 and FC-PDF with the staff PDF view), HTTP Basic with the connection's deployment-secret token as user and a blank password, read per send and never stored, and a client-side sliding-window limit of 60 requests per minute per token name (Focus allows 100). `sync_company_status(link)` reads the company through the AXRM-009 protocol and, inside the finalizing transaction, stores certificate CNPJ/validity through AXRM-008's `record_certificate_status` (A7.3 `vencendo` within 30 days, `vencida`, `divergente` for another CNPJ, a company of another CNPJ, an unrequested new certificate or a vanished one; generation +1 on a requested rotation) plus an allowlisted switch snapshot (`ClientProviderLink.provider_flags`, migration `integrations.0013`). `manage.py focus_company_setup --client --streams --start-month [--dry-run]` refuses before any write or request (unknown streams, start before `FOCUS_CAPTURE_PILOT_START_MONTH`, a different immutable start month, a revoked or disabling link, no credential, NF-e without a `FOCUS_NFE_RECEBIDAS_QUALIFICATION_REF` PQ-FOCUS-1 id) and sends exactly the receipt switches and start dates; `--dry-run` is Focus's `dry_run=1`. `manage.py focus_company_disable --client [--stream]` stops capture locally first (A7.3 walk, or drops the stream), sets the receipt switches false and confirms by read-back. Every call is a journaled, included-plan configuration `ProviderCall`; configuration is admitted on a pending, disabling or certificate-blocked link, capture reads are not. `capture_links()` is the sweep's selection (todo 21). `qualify_provider focus --scenario empresa_status` (fake, homologacao). | Operator commands only, nothing from the web; NF-e capture stays refused until PQ-FOCUS-1 evidence is recorded. Recovery: `focus_company_disable` per client (read-back confirmed) and `FOCUS_PAUSED`; provider-side switches are never reverted by a migration. `0013` is additive and reversible. |
+
+Tests first: `.evidence/AXRM-019-red.txt` (collection failed on the missing
+`apps.integrations.focus` package). Acceptance tests in
+`tests/integrations/test_focus_adapter.py`; guard, branch and side-effect
+witnesses in `tests/integrations/test_focus_adapter_edges.py`, against the
+stateful synthetic company in `tests/fakes/focus.py`. Existing-code changes:
+`call_state.admit` admits configuration-class calls on a link still being
+configured or disabled (pauses, flags, environment and a revoked link still
+refuse), and the FC-EMP allowlist accepts `habilita_manifestacao[_homologacao]`
+and exactly `dry_run=1` on the company update. The QA, adversarial, mutation,
+gate and teardown receipts are recorded in `.evidence/AXRM-019-*`.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

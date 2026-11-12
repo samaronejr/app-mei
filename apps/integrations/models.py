@@ -229,6 +229,9 @@ class ClientProviderLink(TenantScopedModel):
     certificate_valid_from = models.DateField(null=True, blank=True)
     certificate_valid_to = models.DateField(null=True, blank=True)
     certificate_synced_at = models.DateTimeField(null=True, blank=True)
+    # AXRM-019: the provider's capture/issuance switches and receipt start dates as
+    # last read back (allowlisted names, booleans and dates only; never a token).
+    provider_flags = models.JSONField(default=dict, blank=True)
     credential_generation = models.PositiveIntegerField(default=0)
     status = models.CharField(
         max_length=24,

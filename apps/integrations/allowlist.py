@@ -109,6 +109,9 @@ def _body(code: str, request: ProviderRequest) -> None:
             "uf",
             "email",
             "habilita_nfe_recebidas",
+            # AXRM-019: received NF-e (MDe) switches, one per Focus environment.
+            "habilita_manifestacao",
+            "habilita_manifestacao_homologacao",
             "habilita_nfsen_recebidas_producao",
             "habilita_nfsen_recebidas_homologacao",
             "data_inicio_recebimento_nfe",
@@ -134,9 +137,15 @@ def resolve(
     elif request.subject:
         raise OperacaoNaoPermitida
     keys = [key for key, _ in request.query]
-    if len(keys) != len(set(keys)) or set(keys) - {"cnpj", "versao"}:
+    # AXRM-019: Focus's documented `dry_run=1` validates a company update unsaved.
+    dry_run = (code, request.variant, request.query) == (
+        "FC-EMP",
+        "update",
+        (("dry_run", "1"),),
+    )
+    if not dry_run and (len(keys) != len(set(keys)) or set(keys) - {"cnpj", "versao"}):
         raise OperacaoNaoPermitida
-    if request.query and (provider != "focus" or route.method != "GET"):
+    if request.query and not dry_run and (provider != "focus" or route.method != "GET"):
         raise OperacaoNaoPermitida
     if route.method == "GET":
         if request.body:
