@@ -2,14 +2,25 @@
 
 from datetime import timedelta
 
-from django.db.models import CharField, DateField, F, OuterRef, Q, Subquery, Value
+from django.db.models import (
+    CharField,
+    DateField,
+    Exists,
+    F,
+    OuterRef,
+    Q,
+    Subquery,
+    Value,
+)
 from django.db.models.functions import Cast, Coalesce, Concat
 
 from apps.briefing.source_rows import SourceContext, SourceQuery, project
 from apps.clients.models import AssignmentRole, ClientAssignment, Engagement
 from apps.clients.models.engagement import ServiceKind
-from apps.cycles.models import DocumentIntake, EvidenceLink, IntakeState
+from apps.cycles.models import DocumentIntake, EvidenceLink, IntakeState, ServiceCycle
+from apps.cycles.openers import CLOSED_STATES
 from apps.delivery.models import MessageState, OutboundMessage
+from apps.integrations.models import ACTIVE_ISSUE_STATES, IntegrationIssue
 from apps.obligations.queries import DUE_SOON_HORIZON_DAYS, unsettled_for
 
 
@@ -114,6 +125,34 @@ def documents(context: SourceContext) -> SourceQuery:
                 Subquery(links.values("request__cycle__engagement__service_kind")[:1]),
                 Value(""),
             ),
+            brief_state=F("state"),
+            brief_visible=Value(value=False),
+        )
+    )
+
+
+def integrations(context: SourceContext) -> SourceQuery:
+    """Owned provider problems of clients with no open cycle."""
+    opened = ServiceCycle.objects.filter(client_id=OuterRef("client_id")).exclude(
+        state__in=CLOSED_STATES
+    )
+    return project(
+        IntegrationIssue.objects.filter(
+            client_id__in=context.clients.values("pk"), state__in=ACTIVE_ISSUE_STATES
+        )
+        .filter(~Exists(opened))
+        .annotate(
+            brief_kind=Value("integration"),
+            brief_period=Value(None, output_field=DateField()),
+            brief_owner=F("owner_id"),
+            brief_owner_name=Coalesce("owner__email", Value("")),
+            brief_due=Coalesce("due_on", "review_on"),
+            brief_version=Cast("version", CharField()),
+            brief_observed=F("created_at"),
+            brief_target=F("pk"),
+            brief_title=F("reason"),
+            brief_action=Value("Conferir a consulta ou a autorização na Receita"),
+            brief_service=Value(""),
             brief_state=F("state"),
             brief_visible=Value(value=False),
         )

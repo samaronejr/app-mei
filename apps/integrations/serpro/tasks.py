@@ -5,19 +5,15 @@ from typing import Final
 from uuid import UUID
 
 from celery import shared_task
-from django.conf import settings
 from django.utils import timezone
 from django.utils.timezone import now as wall_clock
 
-from apps.core.flags import tenant_has
-from apps.core.tasks import PhasedTenantTask, PlatformTask, assert_no_transaction
-from apps.integrations.models import ClientProviderLink, LinkStatus
-from apps.integrations.serpro.models import ACTIVE_QUERY_STATES, PaymentQueryState
+from apps.core.tasks import PhasedTenantTask, PlatformTask
+from apps.integrations.serpro import sweeps
+from apps.integrations.serpro.models import ACTIVE_QUERY_STATES
 from apps.integrations.serpro.pagtoweb import PaymentRange
 from apps.integrations.serpro.payments import (
-    PaymentQueryConflictError,
     emit_payment_receipt,
-    open_payment_query,
     purge_kept_pages,
     run_payment_query,
 )
@@ -81,37 +77,23 @@ def scheduled_window(today: date) -> PaymentRange | None:
 def schedule_payment_consultations(self: PlatformTask) -> int:
     """Open one system consultation per linked client and month, then enqueue it.
 
-    Beat fires daily; the consultation's identity is the client and the competence
-    month, never the day, so once the month's consultation exists (in any state)
-    later days return it and nothing new is opened or billed (A6 SP-PAG).
+    Beat fires daily from 06:20; the consultation's identity is the client and the
+    competence month, never the day, so once the month's consultation exists later
+    days return it and nothing new is opened or billed (A6 SP-PAG). Each firm gets
+    a bounded, cursor-ordered turn and every guard is checked first (AXRM-018).
     """
-    assert_no_transaction()
-    today = timezone.localdate()
-    window = scheduled_window(today)
+    window = scheduled_window(timezone.localdate())
     if window is None:
         return 0
-    queued: list[tuple[str, str]] = []
-    for tenant in self.each_tenant():
-        if not tenant_has(tenant.pk, "federal_checks"):
-            continue
-        links = (
-            ClientProviderLink.objects.filter(
-                connection__provider="serpro",
-                connection__environment=settings.SERPRO_ENVIRONMENT,
-                status=LinkStatus.ATIVA,
-            )
-            .select_related("client")
-            .order_by("pk")
-        )
-        for link in links:
-            try:
-                query = open_payment_query(
-                    link.client, window, actor=None, cadence=window.start
-                )
-            except PaymentQueryConflictError:
-                continue
-            if query.state == PaymentQueryState.NA_FILA:
-                queued.append((str(query.tenant_id), str(query.pk)))
-    for tenant_id, query_id in queued:
-        run_payment_query_task.delay(tenant_id, query_id)
-    return len(queued)
+    return sweeps.sweep_payments(self, window)
+
+
+@shared_task(base=PlatformTask, bind=True)
+def schedule_situation_reports(self: PlatformTask) -> int:
+    """Request this month's SITFIS report for each client whose cycle opened.
+
+    Beat fires daily from 06:10; a client that already has a report this month, in
+    any state, is not requested again (A6 SP-SIT). The report's own worker task
+    drives the protocol, the wait and the emission.
+    """
+    return sweeps.sweep_reports(self, timezone.localdate())

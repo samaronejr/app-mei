@@ -14,6 +14,7 @@ BRIEFING_RULES_V1: Final = {
     "approval_waiting_gt_24h": 15,
     "stale_coverage": 10,
     "divergent_document": 35,
+    "provider_check_attention": 25,
 }
 
 RULE_LABELS: Final = {
@@ -24,6 +25,7 @@ RULE_LABELS: Final = {
     "approval_waiting_gt_24h": "Aprovação aguardando há mais de 24 horas",
     "stale_coverage": "Cobertura desatualizada",
     "divergent_document": "Documento de outra empresa",
+    "provider_check_attention": "Consulta federal com falha ou sem autorização",
 }
 
 STATUTORY_HORIZON: Final = timedelta(days=3)
@@ -41,6 +43,7 @@ class PriorityFacts:
     approval_requested_at: datetime | None = None
     stale_coverage: bool = False
     divergent_document: bool = False
+    provider_check_attention: bool = False
 
 
 def priority_factors(
@@ -71,6 +74,7 @@ def priority_factors(
         ),
         ("stale_coverage", facts.stale_coverage),
         ("divergent_document", facts.divergent_document),
+        ("provider_check_attention", facts.provider_check_attention),
     )
     return tuple(
         (code, BRIEFING_RULES_V1[code]) for code, applies in applicable if applies

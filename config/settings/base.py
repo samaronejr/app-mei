@@ -828,11 +828,19 @@ CELERY_BEAT_SCHEDULE: dict[str, Any] = {
         "task": "apps.cycles.tasks.open_deterministic_exceptions",
         "schedule": crontab(hour=6, minute=0),
     },
-    # AXRM-015: after the 20th, one system PAGTOWEB consultation per linked client
-    # and month (idempotent per month); inert while federal_checks is off.
-    "schedule-payment-consultations": {
+    # AXRM-018: one SITFIS report per client whose cycle opened this month and has
+    # none yet; at most 20 clients per firm per run, inert while federal_checks is
+    # off or the providers are paused.
+    "federal-sitfis-monthly": {
+        "task": "apps.integrations.serpro.tasks.schedule_situation_reports",
+        "schedule": crontab(hour=6, minute=10),
+    },
+    # AXRM-015/018: from the 21st, one system PAGTOWEB consultation per client and
+    # month (idempotent per month), fair across firms and clients; inert while
+    # federal_checks is off or the providers are paused.
+    "federal-payments-monthly": {
         "task": "apps.integrations.serpro.tasks.schedule_payment_consultations",
-        "schedule": crontab(hour=6, minute=30),
+        "schedule": crontab(hour=6, minute=20),
     },
     # AXRM-015: a kept (paid, not yet applied) PAGTOWEB page is deleted once applied
     # or once its consultation ends; this sweep removes any left past retention.
