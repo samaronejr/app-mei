@@ -1446,7 +1446,19 @@ on: an owned issue (`recebimento_reaberto_provedor`, migration
 `integrations.0014`) and an audit event; nothing is sent from the sweep. Red:
 `tests/integrations/test_focus_repair3.py`, `test_focus_repair3_lock.py`,
 `test_focus_repair3_drift.py` (all assertion failures on `eb100a3`). Default suite
-at the repair head: 9929 collected, 53 skipped (inherited).
+at the repair head (`175eca8`): 9933 collected, 53 skipped (inherited).
+
+Repair 4 (review 4, RV4-LOST-LOCK-SETUP-REOPENS-STREAM-DISABLE, plan :1061 `--stream`).
+A stream-scoped disable leaves the link active, so setup no longer keys its post-write
+check on `disablement_state` alone: every disable bumps a per-link
+`disable_epoch` (migration `integrations.0015`; a scoped disable in its own local
+stop, a whole-link disable before its A7.3 walk). Setup takes the epoch at its fence;
+after its write, if the epoch moved and the link no longer holds a stream the setup
+wrote, it turns those switches off again, confirms by read-back and refuses, so the
+stream is never merged back in. Red: `tests/integrations/test_focus_repair4.py` (both
+streams, through the command path); the post-write re-read's row lock is pinned by
+`tests/integrations/test_focus_repair4_witnesses.py`. Default suite at the repair
+head: 9938 collected, 53 skipped (inherited).
 
 ## Axorim pivot
 

@@ -694,16 +694,22 @@ def _reread_locked(plan: SetupPlan) -> ClientProviderLink:
 def _undo_setup(plan: SetupPlan, link: ClientProviderLink, occurrence: str) -> None:
     """Switch receipt off again when a disable ran while this setup's write was out.
 
-    The fence saw an active link, but the link is now being or has been disabled
-    (for example the setup's lock connection was lost mid-exchange). Every receipt
-    switch the adapter manages goes off again and is confirmed by read-back; the
-    setup reports a refusal and the link keeps its disablement state.
+    The fence saw an active link, but a disable ran since (for example the setup's
+    lock connection was lost mid-exchange): the link is being or has been disabled,
+    or its disable epoch moved and it no longer holds a stream this setup wrote.
+    Those switches (every managed one for a disabled link) go off again and are
+    confirmed by read-back; the setup reports a refusal and the link keeps its
+    disablement state and streams.
     """
     state = link.disablement_state
+    if state != DisablementState.ATIVA:
+        streams = tuple(sorted(CaptureStream.values))
+    else:
+        streams = tuple(name for name in plan.streams if name not in link.streams)
     # Reload through the tenant context: the locked row's relations (its connection)
     # are only visible there.
     link = _load(plan.tenant_id, plan.link_id)
-    fields = disable_fields(tuple(sorted(CaptureStream.values)), plan.environment)
+    fields = disable_fields(streams, plan.environment)
     # A new journaled occurrence: the setup's own read-back has the same request
     # digest, so reusing its occurrence would replay that read instead of a new GET.
     undo = uuid4().hex
@@ -794,6 +800,8 @@ def _run_setup(plan: SetupPlan, *, dry_run: bool) -> ConfigurationOutcome:
     """
     occurrence = uuid4().hex
     link = _fence_start_month(plan, dry_run=dry_run)
+    # Read before the lock proof below: if that proof passes, no disable ran since.
+    epoch = link.disable_epoch
     request = update_request(link.provider_company_ref, plan.fields, dry_run=dry_run)
     # The last check before any send (dry run or write): only an audit row follows.
     _require_link_lock(plan.link_id)
@@ -824,7 +832,10 @@ def _run_setup(plan: SetupPlan, *, dry_run: bool) -> ConfigurationOutcome:
     if write.state == CallState.SUCCESS:
         readback = sync_company_status(link, occurrence=occurrence)
     current = _reread_locked(plan)
-    if current.disablement_state != DisablementState.ATIVA:
+    if current.disablement_state != DisablementState.ATIVA or (
+        current.disable_epoch != epoch
+        and any(name not in current.streams for name in plan.streams)
+    ):
         _undo_setup(plan, current, occurrence)
     unconfirmed = _unconfirmed(plan.fields, readback.report if readback else None)
     outcome = ConfigurationOutcome(write, readback, unconfirmed)
@@ -891,6 +902,23 @@ def plan_disable(client_id: UUID, streams: list[str] | None = None) -> DisablePl
     )
 
 
+def _bump_disable_epoch(plan: DisablePlan) -> ClientProviderLink:
+    """Mark a whole-link disable on the link, under its row lock, before the walk.
+
+    Every disable bumps the epoch so a setup that lost its lock can see it even when
+    `disablement_state` stayed `ativa` (RV4). A stream-scoped disable bumps it in
+    its own local stop (`_stop_locally`); a whole-link disable walks A7.3 through
+    `transition_link`, so it bumps here first.
+    """
+    with tenant_context(plan.tenant_id), transaction.atomic():
+        locked = ClientProviderLink.objects.select_for_update().get(pk=plan.link_id)
+        locked.disable_epoch += 1
+        locked.version += 1
+        locked.updated_at = timezone.now()
+        locked.save(update_fields=["disable_epoch", "version", "updated_at"])
+    return _load(plan.tenant_id, plan.link_id)
+
+
 def _stop_locally(plan: DisablePlan, link: ClientProviderLink) -> ClientProviderLink:
     """Stop capture before the provider write: walk A7.3, or drop the streams."""
     if plan.whole_link:
@@ -907,6 +935,7 @@ def _stop_locally(plan: DisablePlan, link: ClientProviderLink) -> ClientProvider
     with tenant_context(plan.tenant_id), transaction.atomic():
         locked = ClientProviderLink.objects.select_for_update().get(pk=plan.link_id)
         locked.streams = list(plan.remaining)
+        locked.disable_epoch += 1
         locked.version += 1
         locked.updated_at = timezone.now()
         locked.save()
@@ -958,6 +987,8 @@ def _run_disable(plan: DisablePlan) -> ConfigurationOutcome:
     # The local state says capture already stopped; only Focus's read-back says the
     # switches are off. A repeated disable therefore always re-sends and re-confirms.
     already_confirmed = plan.whole_link and link.disablement_state == confirmed_state
+    if plan.whole_link:
+        link = _bump_disable_epoch(plan)
     if not already_confirmed:
         link = _stop_locally(plan, link)
     with tenant_context(plan.tenant_id):

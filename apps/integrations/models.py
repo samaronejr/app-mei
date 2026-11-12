@@ -225,6 +225,9 @@ class ClientProviderLink(TenantScopedModel):
         blank=True,
     )
     capture_start_month = models.DateField(null=True, blank=True)
+    # Bumped by every disable, scoped or whole-link (RV4): a setup compares it with
+    # its fence to see a disable that did not change `disablement_state`.
+    disable_epoch = models.PositiveIntegerField(default=0)
     certificate_cnpj = models.CharField(max_length=14, blank=True, default="")
     certificate_valid_from = models.DateField(null=True, blank=True)
     certificate_valid_to = models.DateField(null=True, blank=True)
