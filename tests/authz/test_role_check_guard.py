@@ -84,6 +84,12 @@ ROLE_SHAPE_EXEMPT: Final[dict[str, str]] = {
         "invitation may offer so accepting one cannot violate the first constraint. "
         "None of the three decides what a role may do."
     ),
+    "apps/obligations/fiscal_ingest.py": (
+        "AXRM-020's role variable is fiscal party verification "
+        "(confirmed/unconfirmed/divergent), not a membership role. These three "
+        "comparisons classify an intake and its divergence exception; permission "
+        "decisions still call can(). Pin only these exact validation comparisons."
+    ),
 }
 
 # The exact role references the exemption buys, pinned to their SOURCE TEXT.
@@ -124,6 +130,17 @@ EXEMPT_ROLE_CHECK_SOURCE: Final[dict[str, tuple[str, ...]]] = {
         "| models.Q(role__in=CLIENT_ROLES, client__isnull=False)",
         "models.Q(role__in=FIRM_ROLES, client__isnull=True)",
         "| models.Q(role__in=CLIENT_ROLES, client__isnull=False)",
+    ),
+    "apps/obligations/fiscal_ingest.py": (
+        (
+            'state = IntakeState.DIVERGENT if role == "divergent" '
+            "else IntakeState.CLASSIFIED"
+        ),
+        (
+            'reason = "documento_fiscal_divergente" if role == "divergent" '
+            "else extraction.note"
+        ),
+        'if role == "divergent":',
     ),
 }
 

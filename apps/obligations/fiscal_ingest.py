@@ -144,9 +144,9 @@ def _authorize(context: FiscalSource) -> tuple[Tenant, ClientCompany]:
         load_visible_client(context.actor, client.pk, tenant_id=tenant.pk)
         if not can(context.actor, "cycles.operate", tenant_id=tenant.pk):
             raise PermissionDenied
-    # PLATFORM_QUERY_OK: verify the one portal human's membership for this client.
     if (
         context.source == "upload_cliente"
+        # PLATFORM_QUERY_OK: verify the one portal human's membership for this client.
         and not Membership.objects.filter(
             tenant_id=tenant.pk, client=client, user=context.actor, is_active=True
         ).exists()
