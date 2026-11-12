@@ -94,6 +94,12 @@ PORTAL_DENIED_TABLES = (
     # AXRM-009: the client-less SP-TERMO submission and its attempt receipts.
     "integrations_firmprovidercall",
     "integrations_firmprovidercallattempt",
+    # AXRM-014: federal consultation receipts, payment documents and SITFIS reports
+    # are firm-side (INV-R10); DenyPortalAccess from obligations.0024. Mirrors the
+    # `-- PORTAL_NONE: obligations_federal*` / `_fiscalsituationreport` lines.
+    "obligations_federalconsultation",
+    "obligations_federalpayment",
+    "obligations_fiscalsituationreport",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -128,6 +134,8 @@ APPEND_ONLY_TABLES = (
     # AXRM-008: authority revisions and firm termo records are append-only.
     "integrations_authorityrecord",
     "integrations_firmauthorization",
+    # AXRM-014: federal payment documents are append-only.
+    "obligations_federalpayment",
 )
 
 # AXR1-023: writable-but-undeletable tables — UPDATE stays (revocation sets

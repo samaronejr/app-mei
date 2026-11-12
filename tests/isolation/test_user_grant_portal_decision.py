@@ -28,6 +28,9 @@ NONE_TABLES = (
     "integrations_providerexecutionepoch",
     "integrations_firmprovidercall",
     "integrations_firmprovidercallattempt",
+    "obligations_federalconsultation",
+    "obligations_federalpayment",
+    "obligations_fiscalsituationreport",
 )
 
 # Tables that predate the explicit portal-decision rule (plan A7.1) and are on no

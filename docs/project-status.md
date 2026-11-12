@@ -585,6 +585,100 @@ six of them for the new guards, and the review's 17). Evidence:
 `AXRM-008-rv2-registry-check.txt`, `AXRM-008-rv2-mutations.txt`,
 `AXRM-008-rv2-gates.txt`, `AXRM-008-rv2-screens/`.
 
+### Wave 2: federal checks
+
+| Todo | Engineering delivery | Rollout and recovery |
+| --- | --- | --- |
+| `AXRM-014` | Client-scoped, firm-only federal records in `obligations.0024` and repair `0025`: `FederalConsultation` (receipt: kind, scope digest, range, `consulted_at`, outcome `encontrado`/`nada_localizado`/`sem_procuracao`/`falha`/`cota_esgotada`/`incerto`, opaque `provider_ref`, environment), append-only `FederalPayment` (unique per client `numero_documento`, Decimal(14,2) amounts, consultation and nullable matched obligation) and `FiscalSituationReport` (A7.3 states, at most three emission attempts, private original protected against attachment, reassignment and later visibility changes). `record_payment_consultation` resolves the actual tenant/client-scoped SERPRO payment call, rejects inconsistent metadata, derives provenance and time from successful persisted finalization, and requires production plus `PROVIDER_REAL_DATA_APPROVED` for a matched payment's verified `official_api` observation. Empty results remain receipts only; `source_subjects` includes payment-derived obligations. Fresh independent review remains required after repair. | New tables start empty and no provider slice writes them yet (todos 15-18). Reverse while empty; once any receipt exists the scope/privacy repair refuses reversal (forward repair, flag `federal_checks` off). Observations stay append-only. No provider, operator or owner gate closes here. |
+
+#### AXRM-014: federal consultation records
+
+Baseline at `80c134e` (`AXRM-014-baseline-r2.txt`; the first baseline log was
+overwritten by a duplicate unit launch and is not counted): default
+**5924 passed, 49 skipped** (1532 + 4392). Tests first: `AXRM-014-red.txt` at
+`80c134e` with only the new tests and registry edits (8 failed, 34 passed,
+9 errors; every error is the missing module, models or tables). This does not
+establish historical assertion-first red for each payment behavior. The later
+26 killed mutations establish behavioral sensitivity, not that earlier sequence
+(`AXRM-014-mutations.txt`; 25 fail on an assertion or `DID NOT RAISE`, the
+float-to-Decimal one on the guard's own `ValidationError`), each with a private
+bytecode prefix and a fresh test database, and the unmutated control passes.
+The malformed-input probe found
+`"1e400"` escaping as `InvalidOperation` at `41fe249`
+(`AXRM-014-adversarial-malformed-r1.txt`), fixed in `71065a7`.
+
+STD-GATES on the clean committed head `71065a7` (`AXRM-014-gates.txt`, every
+command exit 0, Node v24.13.1): Ruff, format, Mypy, system checks (dev, test,
+prod), migration drift, effective-role RLS check, `npm ci`/build with `static/`
+unchanged; default **6048 passed, 51 skipped** (1532 + 4516; +124 against the
+baseline); isolation **893 passed, 51 skipped**; portal **319 passed**; CNPJ
+**29 passed**; migration round trips **11 passed**; browser **195 passed**.
+Tenant tables 79 -> 82, each new table registered exactly once in every isolation
+registry (`AXRM-014-registry-check.txt`). QA: `AXRM-014-happy.txt` (production
+DAS -> payment, verified official observation, coverage `verified`),
+`AXRM-014-failure.txt` (trial -> records, no observation, coverage unchanged;
+empty -> `nada_localizado`), `AXRM-014-repeat-{1,2,3}.txt`,
+`AXRM-014-adversarial.txt`, `AXRM-014-teardown.txt`.
+
+#### AXRM-014 repair round 1
+
+The independent review of `3d68e3d` rejected three stored invariants. Repair
+`0025_federal_record_guards` adds the durable consultation scope digest and a
+database-generated constant-False report key with a composite foreign key to
+the document's client/id/visibility. The existing attachment trigger stays in
+place; the native key also refuses later visibility updates and protects both
+transaction orderings without relying on a trigger's cross-table snapshot or
+effective-role visibility.
+
+The writer locks the actual tenant/client-scoped `ProviderCall` before domain
+writes. Environment, request digest and SERPRO/SP-PAG/read metadata must agree;
+a successful result requires `sucesso` and non-null `finalized_at`. Official
+observations still require the real-data approval gate. The opaque reference
+remains storage, not proof by itself. New receipts retain the canonical request
+digest; legacy receipts receive an explicitly namespaced digest of their retained
+scope, not an invented historical provider request. Populated reverse migration
+refuses loss of either scope or privacy protection.
+
+Repair baseline: **81 passed** at the reviewed head. Assertion-level repair red:
+**15 failed**, no collection/setup errors, in
+`AXRM-014-fix1-20261025T161703Z-red.txt`: twelve call-provenance refusals, two
+actual post-attachment visibility updates under runtime and owner roles, and the
+missing durable scope field. The latter is a schema assertion; the named reload
+test and scope-write mutation establish the later persistence contract.
+The repaired control and two repetitions each passed **121 tests**, including
+attachment/reassignment races in both orders under READ COMMITTED and REPEATABLE
+READ. The inherited mutation pipeline exited 1: six application markers were
+missing and one failure-with-payments mutant survived a masked test. Those
+attempts are preserved and are not counted as successful kills. The failure test
+now uses a valid refused-before-dispatch scope rather than an invalid call id;
+the finalization-clock test uses an explicitly different fixed input.
+The retained `20261025T165150Z` recheck exited 0: the six marker cases, the
+failure-with-payments case and the changed clock case all produced their named
+behavioral failures with application markers and unchanged source. Together with
+the earlier 36 valid kills this establishes **43 unique killed mutants**, not
+44: the clock case was rechecked, not added. Both changed tests passed three
+times. No completed successful run was relaunched during recovery.
+
+Downstream notes from the review remain assigned to their original todos:
+
+- Todo 15 owns PAGTOWEB paging and real field normalization, including `tipo` as
+  a domain object, `receitaPrincipal` as a Receita object, DAS code `09`, and ISO
+  period dates. The flattened synthetic parser fixture is not qualification.
+  Deterministic MEI/DAS/month matching, partial-page budgets and receipt retrieval
+  are also not certified by this record-layer repair.
+- Todo 16 owns protocol scheduling, scan-before-review, reviews, exceptions and
+  report orchestration. Private originals remain firm-only.
+- Cycle-aware todo 15/16 services must emit the A7.8 federal events with
+  `actor=NULL`, only when the matching cycle exists, in the domain-finalization
+  transaction. The record helper does not implement that orchestration.
+- Same-reference replay retains the original payload. Callers own canonical
+  request/scope construction and its range mapping; no new payload-conflict
+  contract is claimed here. Existing seven-day official-api freshness remains.
+
+Repair evidence is retained separately under `.evidence/AXRM-014-fix1-*`.
+The committed repair head still requires full standard gates, manual/adversarial
+QA and cleanup before fresh independent review; no approval is claimed here.
+
 ## Axorim pivot
 
 The product direction changed on 2026-09-27. The local-only plan

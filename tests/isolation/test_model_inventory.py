@@ -75,6 +75,10 @@ SWEEP_LABELS: Final = frozenset(
         # AXRM-012 subject, evidence and supersedes-chain visibility:
         # test_portal_reference_visibility.py.
         "obligations.SourceObservation",
+        # AXRM-014 federal records: tests/obligations/test_federal_records.py.
+        "obligations.FederalConsultation",
+        "obligations.FederalPayment",
+        "obligations.FiscalSituationReport",
         "tenants.AccountExport",
         "tenants.AccountExportAttempt",
         "tenants.BillingAccount",
