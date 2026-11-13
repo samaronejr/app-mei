@@ -99,8 +99,14 @@ def test_manager_pauses_retries_and_cancels_with_honest_uncertainty(
         page.screenshot("AXR1-027-entrypoint")
         page.page.locator(f'a[href="{PATH}"]').click()
         expect(page.page.locator("[data-job]")).not_to_have_count(0)
-        unknown_row = page.page.locator(f'[data-message-id="{unknown.pk}"]')
-        expect(unknown_row.locator("button")).to_have_count(0)
+        expect(
+            page.page.get_by_role(
+                "heading", name="Captura de documentos fiscais", exact=True
+            )
+        ).to_be_visible()
+        expect(
+            page.page.locator(f'[data-message-id="{unknown.pk}"]').locator("button")
+        ).to_have_count(0)
         axe_check(page.page)
         page.screenshot("AXR1-027-automacoes-populated")
 

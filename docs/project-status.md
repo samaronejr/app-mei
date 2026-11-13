@@ -1292,12 +1292,14 @@ skipped and failing counts belong to the gate receipts for the committed head.
 The 300-document cycle measurement passes the unchanged 25-query and 150,000-byte
 limits at **25 queries and 15,907 gzip HTML bytes**. Desktop and mobile journeys
 cover full-original review, summary refusal and the disabled feature.
+Automações names the capture routine in Portuguese. Pre-call restore fixtures
+clear retained capture acquisitions together with their referenced provider calls.
 
 The happy driver retains 230 received NF-e summaries and 40 national NFS-e
 originals, reaches cursors 230 and 40, and lists all 270 documents for review.
 The failure driver preserves the page cursor through a reset, replays without
 duplicates and surfaces three consecutive failures. The changed-line campaign
-has **41 assertion kills and two native product-exception kills**. Both initial
+has **42 assertion kills and two native product-exception kills**. Both initial
 survivors were distinguished by added witnesses; a migration-setup error was
 excluded and replaced by a probe that reaches the tenant-isolation assertion.
 
