@@ -232,6 +232,10 @@ $$;
 -- PORTAL_NONE: obligations_federalconsultation
 -- PORTAL_NONE: obligations_federalpayment
 -- PORTAL_NONE: obligations_fiscalsituationreport
+-- AXRM-020: fiscal identities, revisions and retained artifacts are firm-only.
+-- PORTAL_NONE: obligations_fiscaldocument
+-- PORTAL_NONE: obligations_fiscalrevision
+-- PORTAL_NONE: obligations_revisionartifact
 -- AXRM-014: federal consultation receipts, the payment documents they returned and
 -- fiscal-situation reports are firm-side (INV-R10); each carries the client-anchored
 -- policy and DenyPortalAccess from obligations.0024. obligations_federalpayment is

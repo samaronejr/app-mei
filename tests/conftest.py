@@ -100,6 +100,9 @@ PORTAL_DENIED_TABLES = (
     "obligations_federalconsultation",
     "obligations_federalpayment",
     "obligations_fiscalsituationreport",
+    "obligations_fiscaldocument",
+    "obligations_fiscalrevision",
+    "obligations_revisionartifact",
     "integrations_firmintegrationissue",
     "integrations_firmproviderreservation",
     # AXRM-015: PAGTOWEB consultations are firm-side (INV-R10); DenyPortalAccess from
@@ -147,6 +150,8 @@ APPEND_ONLY_TABLES = (
     "integrations_firmauthorization",
     # AXRM-014: federal payment documents are append-only.
     "obligations_federalpayment",
+    "obligations_fiscalrevision",
+    "obligations_revisionartifact",
     # AXRM-016: SITFIS reviews are append-only.
     "cycles_federalreportreview",
 )

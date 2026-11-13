@@ -14,7 +14,8 @@ from tests.obligations.test_federal_records_migration import _firm
 
 pytestmark = pytest.mark.django_db(transaction=True)
 PREVIOUS = ("obligations", "0027_sitfis_reply_record")
-CURRENT = ("obligations", "0028_sitfis_call_replies")
+# AXRM-020 is the current leaf; this test still exercises the 0028 ledger upgrade.
+CURRENT = ("obligations", "0029_fiscal_register")
 
 
 def test_the_call_ledger_round_trip_and_populated_reverse_guard() -> None:

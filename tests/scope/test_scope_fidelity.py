@@ -204,6 +204,156 @@ NFE_READ_ONLY_FILES = frozenset(
     },
 )
 
+# AXRM-020 buys exact receipt/registration references, never whole-file permission.
+# Counts include repeated namespace/family lines; another occurrence is a failure.
+FISCAL_RECEIPT_ONLY = (
+    " Only receives/registers fiscal documents; no issuance or invoice workflow."
+)
+FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
+    (
+        "apps/cycles/extraction/v2.py",
+        "The official production XSD bundle NFSe-ESQUEMAS_XSD-v1.01-20260209 accepts",
+        1,
+        "Documents the schema used to read received national XML."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'NFE: Final = "{http://www.portalfiscal.inf.br/nfe}"',
+        1,
+        "Names the received NF-e XML namespace." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'NFSE: Final = "{http://www.sped.fazenda.gov.br/nfse}"',
+        1,
+        "Names the received national NFS-e XML namespace." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'if root.tag == f"{NFE}resNFe":',
+        1,
+        "Recognizes a received NF-e summary." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'family="nfe",',
+        2,
+        "Labels the received summary and full XML with their identity family."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'document_key=_text(root, f"{NFE}chNFe"),',
+        1,
+        "Reads the identity key from a received summary." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        '_text(root, f"{NFE}cSitNFe"), "desconhecida"',
+        1,
+        "Reads the received summary's stated status." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        "NFE,",
+        2,
+        "Selects the namespace while reading summary/full XML fields."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'info = root if root.tag == f"{NFE}infNFe" else root.find(f".//{NFE}infNFe")',
+        1,
+        "Locates the information element in received full XML." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        "if info is not None and root.tag.startswith(NFE):",
+        1,
+        "Checks the namespace of received full XML." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'if not identifier.startswith("NFe"):',
+        1,
+        "Validates the received identity prefix." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        '_text(root, f".//{NFE}infProt/{NFE}cStat"), "desconhecida"',
+        1,
+        "Reads the protocol status already present in received XML."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'info = root.find(f"{NFSE}infNFSe")',
+        1,
+        "Locates national information in received XML." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'if root.tag != f"{NFSE}NFSe" or info is None:',
+        1,
+        "Refuses an unsupported received national XML root." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        '"nfse_nacional",',
+        1,
+        "Labels an unsupported received national layout without inventing fields."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        'family="nfse_nacional",',
+        1,
+        "Labels the received national XML identity family." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/extraction/v2.py",
+        "NFSE,",
+        1,
+        "Selects the namespace while reading received national XML fields."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/fiscal_ingest.py",
+        "NFE,",
+        1,
+        "Imports the namespace used to retain received summary bytes."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/fiscal_ingest.py",
+        'root = Element(f"{NFE}resNFe")',
+        1,
+        "Serializes a received provider summary for quarantine and retention."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/fiscal_ingest.py",
+        'SubElement(root, f"{NFE}{name}").text = summary[name]',
+        1,
+        "Retains fields supplied by a received provider summary." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/models/fiscal.py",
+        '(value, value) for value in ("nfe", "nfse_nacional", "nfse_municipal")',
+        1,
+        "Stores family labels for received/imported register identities."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/migrations/0029_fiscal_register.py",
+        '(v, v) for v in ("nfe", "nfse_nacional", "nfse_municipal")',
+        1,
+        "Creates family-label storage for received/imported register identities."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+)
+
 # Row 3. AXR1-022 explicitly commissions firm owner invitations and opted-in summaries,
 # housed inside tenants. No notifications app, push channel or mail-template subsystem.
 FIRM_NOTIFICATION_MODULES = frozenset(
@@ -280,6 +430,38 @@ def _outside(hits: Iterable[str], allowed: Iterable[str]) -> list[str]:
     """Return the hits whose file is not in the derived allow-set."""
     permitted = frozenset(allowed)
     return sorted(hit for hit in hits if hit.split(":", 1)[0] not in permitted)
+
+
+def _outside_receipt_scope(
+    hits: Sequence[str], allowed: Iterable[str], pattern: str
+) -> list[str]:
+    expression = re.compile(pattern, re.IGNORECASE)
+    keys = [(file, text) for file, text, _count, _reason in FISCAL_RECEIPT_SCOPE_LINES]
+    assert len(keys) == len(set(keys)), "Duplicate fiscal reference registration"
+    fiscal_files = {file for file, _text in keys}
+    assert not fiscal_files.intersection(allowed), "Fiscal files cannot be exempted"
+    assert all(
+        count > 0 and reason.strip()
+        for _, _, count, reason in FISCAL_RECEIPT_SCOPE_LINES
+    )
+    expected = Counter(
+        {
+            (file, text): count
+            for file, text, count, _reason in FISCAL_RECEIPT_SCOPE_LINES
+            if expression.search(text)
+        }
+    )
+    assert expected, "Fiscal receipt reference inventory is empty"
+    parsed = []
+    for hit in hits:
+        file, _number, text = hit.split(":", 2)
+        parsed.append((hit, (file, text.strip())))
+    actual = Counter(key for _hit, key in parsed if key[0] in fiscal_files)
+    assert actual == expected, (
+        f"Fiscal receipt references changed: "
+        f"unexpected={dict(actual - expected)}, missing={dict(expected - actual)}"
+    )
+    return _outside((hit for hit, key in parsed if key not in expected), allowed)
 
 
 def _pinned(
@@ -370,7 +552,7 @@ def test_row_4_no_invoice_or_nfse_workflow() -> None:
     # Then it appears only where a municipal *fact* is recorded — never in the audit
     # actions or the permission matrix, which is where a request workflow would land.
     elsewhere, focus = _pinned(hits, FOCUS_PACKAGE)
-    strays = _outside(elsewhere, NFSE_ALLOWED_FILES)
+    strays = _outside_receipt_scope(elsewhere, NFSE_ALLOWED_FILES, r"nfs[-_]?e")
     assert strays == [], _report("NFS-e outside the registry", strays)
     assert focus == FOCUS_RECEIVED_NFSE_LINES, _report(
         "Focus NFS-e lines differ from the received-capture pins",
@@ -522,7 +704,9 @@ def test_row_10_no_esocial_nfe_whatsapp_or_support_console() -> None:
     nfe_elsewhere, focus_nfe = _pinned(
         _grep(sources, r"\bnf-?e\b|\bnfc-?e\b"), FOCUS_PACKAGE
     )
-    nfe = _outside(nfe_elsewhere, NFE_READ_ONLY_FILES)
+    nfe = _outside_receipt_scope(
+        nfe_elsewhere, NFE_READ_ONLY_FILES, r"\bnf-?e\b|\bnfc-?e\b"
+    )
     assert focus_nfe == FOCUS_RECEIVED_NFE_LINES, _report(
         "Focus NF-e lines differ from the received-capture pins",
         _pin_difference(focus_nfe, FOCUS_RECEIVED_NFE_LINES),
