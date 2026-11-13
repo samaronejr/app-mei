@@ -646,6 +646,11 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "obligations_fiscaldocument",
         "obligations_fiscalrevision",
         "obligations_revisionartifact",
+        # AXRM-021: capture records and exact-revision reviews are portal NONE.
+        "integrations_syncstream",
+        "integrations_syncrun",
+        "integrations_captureacquisition",
+        "cycles_fiscaldocumentreview",
     },
 )
 

@@ -118,10 +118,14 @@ def _case(
         ):
             if environment != "fake":
                 sync_company_status(world.link)
-            # PLATFORM_QUERY_OK: one fresh synthetic firm's qualification owner.
             owner = (
+                # PLATFORM_QUERY_OK: one fresh synthetic firm's qualification owner.
                 Membership.objects.select_related("user")
-                .get(tenant_id=world.tenant.pk, role=TenantRole.OWNER)
+                .get(
+                    tenant_id=world.tenant.pk,
+                    role=TenantRole.OWNER,
+                    client__isnull=True,
+                )
                 .user
             )
             with tenant_context(world.tenant.pk):

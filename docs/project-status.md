@@ -1299,7 +1299,7 @@ The happy driver retains 230 received NF-e summaries and 40 national NFS-e
 originals, reaches cursors 230 and 40, and lists all 270 documents for review.
 The failure driver preserves the page cursor through a reset, replays without
 duplicates and surfaces three consecutive failures. The changed-line campaign
-has **42 assertion kills and two native product-exception kills**. Both initial
+has **44 assertion kills and two native product-exception kills**. Both initial
 survivors were distinguished by added witnesses; a migration-setup error was
 excluded and replaced by a probe that reaches the tenant-isolation assertion.
 
