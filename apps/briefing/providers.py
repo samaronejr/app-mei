@@ -12,6 +12,7 @@ from django.utils import timezone
 
 from apps.briefing.coverage_source import coverage_items
 from apps.briefing.cycle_sources import approvals, exceptions, requests
+from apps.briefing.fiscal_source import fiscal_documents
 from apps.briefing.operation_sources import (
     deliveries,
     documents,
@@ -35,6 +36,7 @@ PROVIDERS: Final[dict[str, Callable[[SourceContext], SourceQuery]]] = {
     "delivery": deliveries,
     "document": documents,
     "integration": integrations,
+    "fiscal_document": fiscal_documents,
 }
 COVERAGE_PROVIDER: Final = coverage_items
 PROVIDER_LABELS: Final = {
@@ -45,6 +47,7 @@ PROVIDER_LABELS: Final = {
     "delivery": "Envios para revisar",
     "document": "Documentos divergentes",
     "integration": "Consultas federais",
+    "fiscal_document": "Documentos capturados aguardando revisão",
     "coverage": "Cobertura desatualizada",
 }
 _PATH_PLACEHOLDER: Final = UUID(int=0)
@@ -135,6 +138,9 @@ def _item(
             reason = reason_for(row.title)
             title = reason.label if reason is not None else "Consulta federal"
             url = path("client-detail", row.client_id)
+        case "fiscal_document":
+            facts = PriorityFacts()
+            url = path("document-review", row.target_id)
         case _:
             # Only the registered SQL projections can produce this internal code.
             raise LookupError(row.kind)

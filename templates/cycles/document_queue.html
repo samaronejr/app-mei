@@ -7,7 +7,7 @@ most "aguardando revisão" until a person decides.
 {% block title %}Documentos · {{ spec.label }}{% endblock %}
 {% block heading %}Documentos{% endblock %}
 {% block content %}
-<p class="mb-4 text-ink-600">Arquivos enviados pelos clientes. A leitura automática só sugere campos; a decisão é sempre da equipe.</p>
+<p class="mb-4 text-ink-600">{% if spec.slug == 'fiscais' %}Documentos capturados ou importados. Resumos aguardam o XML completo; a revisão vale apenas para a versão e os arquivos apresentados.{% else %}Arquivos enviados pelos clientes. A leitura automática só sugere campos; a decisão é sempre da equipe.{% endif %}</p>
 <nav class="mb-4 flex flex-wrap gap-2" aria-label="Filas de documentos">
   {% for tab in tabs %}<a class="ui-btn {% if tab.spec.slug == spec.slug %}ui-btn-primary{% else %}ui-btn-quiet{% endif %}" href="?{{ queue_param }}={{ tab.spec.slug }}"{% if tab.spec.slug == spec.slug %} aria-current="page"{% endif %} data-queue="{{ tab.spec.slug }}">{{ tab.spec.label }} <span class="badge badge-neutral" data-count="{{ tab.count }}">{{ tab.count }}</span></a>{% endfor %}
 </nav>

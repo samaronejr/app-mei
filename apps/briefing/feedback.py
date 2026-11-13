@@ -33,7 +33,7 @@ from apps.cycles.services.cycle import require_actor, tenant_id
 from apps.delivery.models import OutboundMessage
 from apps.integrations.models import IntegrationIssue
 from apps.obligations.coverage import coverage_for
-from apps.obligations.models import Obligation
+from apps.obligations.models import FiscalDocument, Obligation
 
 type Subject = (
     Obligation
@@ -44,6 +44,7 @@ type Subject = (
     | DocumentIntake
     | IntegrationIssue
     | Engagement
+    | FiscalDocument
 )
 
 SUBJECT_MODELS: Final[dict[str, type[Subject]]] = {
@@ -54,6 +55,7 @@ SUBJECT_MODELS: Final[dict[str, type[Subject]]] = {
     "delivery": OutboundMessage,
     "document": DocumentIntake,
     "integration": IntegrationIssue,
+    "fiscal_document": FiscalDocument,
     "coverage": Engagement,
 }
 REASON_LIMIT: Final = 500

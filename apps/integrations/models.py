@@ -33,6 +33,7 @@ from apps.integrations.serpro.models import (
     FirmIntegrationIssue,
     FirmProviderReservation,
 )
+from apps.integrations.sync_models import CaptureAcquisition, SyncRun, SyncStream
 from apps.integrations.validators import (
     REF_MAX_LENGTH,
     REF_NAME_PATTERN,
@@ -46,6 +47,7 @@ __all__ = [
     "AuthorityRecord",
     "AuthorityService",
     "AuthorityStatus",
+    "CaptureAcquisition",
     "CaptureStream",
     "ClientProviderLink",
     "ConnectionStatus",
@@ -73,6 +75,8 @@ __all__ = [
     "ProviderExecutionEpoch",
     "ProviderOperationCode",
     "ProviderReservation",
+    "SyncRun",
+    "SyncStream",
 ]
 
 
@@ -597,6 +601,7 @@ class IssueReason(models.TextChoices):
         "situacao_fiscal_nao_obtida",
         "Relatório de situação fiscal não obtido",
     )
+    FALHA_NA_CAPTURA = "falha_na_captura", "Falha na captura de documentos fiscais"
 
 
 class ProviderOperationCode(models.TextChoices):

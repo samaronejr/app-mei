@@ -64,6 +64,7 @@ from apps.cycles.export_records import (
     ExportState,
 )
 from apps.cycles.federal_records import FederalReportOutcome, FederalReportReview
+from apps.cycles.fiscal_records import FiscalDocumentReview
 from apps.cycles.publications import (
     ActionExecution,
     ClientAcknowledgement,
@@ -118,6 +119,7 @@ __all__ = [
     "FederalReportOutcome",
     "FederalReportReview",
     "FieldOrigin",
+    "FiscalDocumentReview",
     "IntakeState",
     "InternalNote",
     "LegalHold",

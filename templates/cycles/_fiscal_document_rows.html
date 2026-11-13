@@ -1,0 +1,7 @@
+{% load ptbr %}<tr data-fiscal-document="{{ row.pk }}">
+  <td data-label="Cliente">{{ row.client.legal_name }}</td>
+  <td data-label="Documento" class="whitespace-normal break-all"><a class="ui-link" href="{% url 'document-review' row.pk %}">{{ row.document_key }}</a><p class="text-sm">{{ row.family }} · {{ row.counterpart_name }}</p></td>
+  <td data-label="Origem">{% if row.source == 'captura' %}Capturado do provedor{% elif row.source == 'upload_cliente' %}Enviado pelo cliente{% else %}Importado pela equipe{% endif %}<p class="text-sm text-ink-600">{{ row.provider }} · {{ row.environment }}</p></td>
+  <td data-label="Capturado em">{{ row.current_revision.observed_at|data_hora }}</td>
+  <td data-label="Situação">{{ row.fiscal_state }}{% if row.summary_only %}<p class="text-sm">Resumo · requer XML completo</p>{% endif %}{% if row.role_verification == 'divergent' %}<p class="text-sm">CNPJ divergente · sem vínculo ao ciclo</p>{% endif %}<p class="text-sm">Aguardando revisão</p></td>
+</tr>

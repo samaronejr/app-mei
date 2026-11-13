@@ -84,6 +84,7 @@ _INSERT_ONLY_IDENTITY_TABLES = frozenset(
         "cycles_actionproposal",
         "cycles_clientpublication",
         "delivery_outboundmessage",
+        "integrations_syncstream",
     }
 )
 
@@ -664,6 +665,13 @@ class _ParentProbe:
             # AXRM-014: an unchanged clone would hit the per-client document-number
             # unique (23505) before the composite could fire.
             overrides["numero_documento"] = "clone-numero"
+        if model._meta.db_table == "integrations_captureacquisition":
+            # A second work item must clear revision/role/sequence uniqueness
+            # before the probed composite can fire. Keep its byte-state CHECK
+            # valid when the probed column itself supplies a retained document.
+            overrides.update(role="xml_cce", sequence=1)
+            if column == "document_id":
+                overrides["state"] = "retida"
         with (
             tenant_context(self.alpha.tenant.id),
             client_context(self.alpha.client.id),

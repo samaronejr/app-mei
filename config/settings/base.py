@@ -7,12 +7,13 @@ cookie, so ``SESSION_COOKIE_DOMAIN`` stays ``None`` and ``CSRF_TRUSTED_ORIGINS``
 explicit per-origin list rather than a wildcard.
 """
 
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import django_stubs_ext
 import environ
-from celery.schedules import crontab
+from celery.schedules import crontab, schedule
 from django.core.exceptions import ImproperlyConfigured
 
 # Makes Django's generic classes subscriptable at runtime, so shipped code can write
@@ -773,6 +774,10 @@ if OUTBOX_MAX_QUEUED_AGE_SECONDS < 0 or OUTBOX_MAX_DEAD_LETTERS < 0:
     raise ImproperlyConfigured(_outbox_threshold_error)
 
 CELERY_BEAT_SCHEDULE: dict[str, Any] = {
+    "capture-documents": {
+        "task": "apps.integrations.focus.tasks.capture_documents",
+        "schedule": schedule(timedelta(hours=1)),
+    },
     "record-firm-usage": {
         "task": "apps.tenants.tasks.record_usage",
         "schedule": crontab(hour=2, minute=30),

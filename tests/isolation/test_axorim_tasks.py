@@ -38,6 +38,7 @@ TASK_MODULES = (
     "apps.tenants.export_tasks",
     "apps.integrations.serpro.tasks",
     "apps.integrations.tasks",
+    "apps.integrations.focus.tasks",
 )
 
 # The tenant-aware registrations expected at cd19380: (module, name) pairs read

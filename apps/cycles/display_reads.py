@@ -1,6 +1,7 @@
 """One request-local, portfolio-scoped read cut for the firm cycle detail."""
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, TypedDict
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from apps.authz.portfolio import visible_clients
 from apps.authz.services import granted_levels
 from apps.clients.models import TaxProfile
 from apps.clients.services import claim_at
+from apps.core.flags import tenant_has
 from apps.cycles.capabilities import (
     CYCLES_COMPLETE,
     CYCLES_OPERATE,
@@ -25,6 +27,7 @@ from apps.cycles.display_completion import display_valid_waivers
 from apps.cycles.display_index import display_source_digest
 from apps.cycles.display_recipients import RecipientPreview, display_recipients
 from apps.cycles.display_requests import display_requests
+from apps.cycles.fiscal_queries import PeriodDocumentRow, period_document_rows
 from apps.cycles.models import (
     ActionExecution,
     ActionProposal,
@@ -70,6 +73,7 @@ class CycleFacts(TypedDict):
     display_has_notes: bool
     display_has_proposals: bool
     display_has_exceptions: bool
+    display_fiscal_documents: list[PeriodDocumentRow]
 
 
 class ProposalFacts(TypedDict):
@@ -99,6 +103,7 @@ class CycleDetailReads:
     obligations: tuple[Obligation, ...]
     observations: tuple[SourceObservation, ...]
     coverage: tuple[CoverageItem, ...]
+    fiscal_documents: tuple[dict[str, object], ...]
     # AXRM-017: the regime claim at the competence, already read for coverage.
     profile: TaxProfile | None
     recipients: tuple[RecipientPreview, ...]
@@ -147,6 +152,9 @@ def _cycle(
             ),
             display_has_exceptions=Exists(
                 CycleException.objects.filter(cycle_id=OuterRef("pk"))
+            ),
+            display_fiscal_documents=period_document_rows(
+                enabled=tenant_has(tenant, "document_capture")
             ),
         )
     )
@@ -255,6 +263,10 @@ def load_cycle_detail(actor: "User", cycle_id: UUID) -> CycleDetailReads:
         obligations=obligations,
         observations=observations,
         coverage=coverage,
+        fiscal_documents=tuple(
+            {**row, "observed_at": datetime.fromisoformat(row["observed_at"])}
+            for row in cycle.display_fiscal_documents
+        ),
         profile=profile,
         recipients=display_recipients(cycle.client),
         allowed=frozenset(
