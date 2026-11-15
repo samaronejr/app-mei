@@ -236,6 +236,11 @@ $$;
 -- PORTAL_NONE: obligations_fiscaldocument
 -- PORTAL_NONE: obligations_fiscalrevision
 -- PORTAL_NONE: obligations_revisionartifact
+-- AXRM-021: capture positions, acquisition work and exact-revision reviews are private.
+-- PORTAL_NONE: integrations_syncstream
+-- PORTAL_NONE: integrations_syncrun
+-- PORTAL_NONE: integrations_captureacquisition
+-- PORTAL_NONE: cycles_fiscaldocumentreview
 -- AXRM-014: federal consultation receipts, the payment documents they returned and
 -- fiscal-situation reports are firm-side (INV-R10); each carries the client-anchored
 -- policy and DenyPortalAccess from obligations.0024. obligations_federalpayment is
@@ -280,7 +285,8 @@ BEGIN
         'cycles_evidenceindex', 'cycles_completiongeneration', 'tenants_usagerecord',
         'integrations_providercallattempt', 'integrations_providereffectbarrier',
         'integrations_firmprovidercallattempt', 'obligations_federalpayment',
-        'cycles_federalreportreview'
+        'cycles_federalreportreview', 'cycles_fiscaldocumentreview',
+        'integrations_captureacquisition'
     ]
     LOOP
         IF to_regclass('public.' || receipt_table) IS NOT NULL THEN

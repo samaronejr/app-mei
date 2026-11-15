@@ -92,6 +92,9 @@ _ADAPTER = "apps/integrations/focus/adapter.py"
 _COMPANY = "apps/integrations/focus/company.py"
 _QUALIFICATION = "apps/integrations/focus/qualification.py"
 _REGISTRATION = "apps/integrations/focus/registration.py"
+_CAPTURE = "apps/integrations/focus/capture.py"
+_CAPTURE_WIRE = "apps/integrations/focus/capture_wire.py"
+_CAPTURE_QUALIFICATION = "apps/integrations/focus/capture_qualification.py"
 _STREAMS_MESSAGE = (
     'message = "Fluxos inválidos: use nfe_recebidas e/ou nfsen_recebidas."'
 )
@@ -125,6 +128,56 @@ FOCUS_RECEIVED_NFSE_LINES = Counter(
         (_COMPANY, _NFSEN_START): 1,
         (_COMPANY, _NFSEN_OFF): 1,
         (_QUALIFICATION, '"habilita_nfsen_recebidas_homologacao": False,'): 1,
+        # AXRM-021: received-list reads, received XML and synthetic qualification.
+        # Pin exact lines and counts; issuance routes remain unregistered.
+        (_CAPTURE, 'if collection == "nfsen_recebidas":'): 1,
+        (_CAPTURE, 'collection not in ("nfe_recebidas", "nfsen_recebidas")'): 1,
+        (
+            _CAPTURE,
+            (
+                'key = row.get("chave_nfe" if collection == "nfe_recebidas"'
+                ' else "chave_nfse")'
+            ),
+        ): 1,
+        (_CAPTURE, 'replacement = row.get("chave_nfse_substituta", "")'): 1,
+        (_CAPTURE, 'if replacement and collection == "nfsen_recebidas":'): 1,
+        (
+            _CAPTURE,
+            '"nfe" if run.stream.collection == "nfe_recebidas" else "nfse_nacional"',
+        ): 1,
+        (_CAPTURE, 'else "captura_nfse"'): 1,
+        (_CAPTURE, 'if run.stream.collection == "nfsen_recebidas":'): 1,
+        (_CAPTURE_QUALIFICATION, '"chave_nfe" if nfe else "chave_nfse": key,'): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            """'<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.01">'""",
+        ): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            """f'<infNFSe Id="NFS{key}"><cLocIncid>3303302</cLocIncid>'""",
+        ): 1,
+        (_CAPTURE_QUALIFICATION, '"</infDPS></DPS></infNFSe></NFSe>"'): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            'path = "/v2/nfes_recebidas" if nfe else "/v2/nfsens_recebidas"',
+        ): 1,
+        (_CAPTURE_QUALIFICATION, 'else "captura_nfse",'): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            "def qualify_nfse(environment: Environment) -> QualificationEvidence:",
+        ): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            '"""Read the received national NFS-e stream and acquire its XML."""',
+        ): 1,
+        (_CAPTURE_QUALIFICATION, 'return _qualify(environment, "nfsen_recebidas")'): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            (
+                'for name, runner in (("nfe_recebidas", qualify_nfe),'
+                ' ("nfsen_recebidas", qualify_nfse)):'
+            ),
+        ): 1,
     }
 )
 FOCUS_RECEIVED_NFE_LINES = Counter(
@@ -134,6 +187,36 @@ FOCUS_RECEIVED_NFE_LINES = Counter(
         (_COMPANY, _NFE_REFUSAL): 1,
         (_REGISTRATION, _REGISTRATION_DOC): 1,
         (_REGISTRATION, '("FC-NFE", "read"),'): 1,
+        # AXRM-021 adds received capture only; all exact pins retain their counts.
+        (
+            _CAPTURE,
+            'operation = "FC-NFE" if collection == "nfe_recebidas" else "FC-NFS"',
+        ): 1,
+        (
+            _CAPTURE,
+            '"nfe" if run.stream.collection == "nfe_recebidas" else "nfse_nacional"',
+        ): 1,
+        (
+            _CAPTURE_WIRE,
+            (
+                'operation = "FC-NFE" if run.stream.collection == "nfe_recebidas"'
+                ' else "FC-NFS"'
+            ),
+        ): 1,
+        (_CAPTURE_QUALIFICATION, 'nfe = collection == "nfe_recebidas"'): 1,
+        (_CAPTURE_QUALIFICATION, '"chave_nfe" if nfe else "chave_nfse": key,'): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            '"situacao": "autorizada" if nfe else "autorizado",',
+        ): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            'path = "/v2/nfes_recebidas" if nfe else "/v2/nfsens_recebidas"',
+        ): 1,
+        (
+            _CAPTURE_QUALIFICATION,
+            '"""Read the received NF-e stream; never register any manifestation."""',
+        ): 1,
     }
 )
 ISSUANCE_SWITCH = re.compile(r'"(habilita_(?:nfe|nfse|nfsen_producao|nfce|cte|mdfe))"')
@@ -210,6 +293,70 @@ FISCAL_RECEIPT_ONLY = (
     " Only receives/registers fiscal documents; no issuance or invoice workflow."
 )
 FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
+    # AXRM-021: exact received stream storage and period/review projections.
+    (
+        "apps/integrations/sync_models.py",
+        '("nfe_recebidas", "NF-e recebidas"),',
+        1,
+        "Labels a received NF-e cursor." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/integrations/sync_models.py",
+        '("nfsen_recebidas", "NFS-e Nacional recebidas"),',
+        1,
+        "Labels a received national NFS-e cursor." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/integrations/migrations/0016_capture_sync.py",
+        '("nfe_recebidas", "NF-e recebidas"),',
+        1,
+        "Freezes the received NF-e cursor label." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/integrations/migrations/0016_capture_sync.py",
+        '("nfsen_recebidas", "NFS-e Nacional recebidas"),',
+        1,
+        "Freezes the received national NFS-e cursor label." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/integrations/migrations/0016_capture_sync.py",
+        'collection__in=["nfe_recebidas", "nfsen_recebidas"]',
+        1,
+        "Restricts cursor storage to the two received collections."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/fiscal_queries.py",
+        'family="nfe",',
+        1,
+        "Projects received NF-e by emission month." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/fiscal_queries.py",
+        'family__in=("nfse_nacional", "nfse_municipal"),',
+        1,
+        "Projects received/imported service XML by competence." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/fiscal_views.py",
+        'period = fiscal.issue_date if fiscal.family == "nfe" else fiscal.competence',
+        1,
+        "Selects existing cycles for a received document review." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/services/fiscal_review.py",
+        'period = fiscal.issue_date if fiscal.family == "nfe" else fiscal.competence',
+        1,
+        "Refuses reviewing received documents outside their fiscal period."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/briefing/fiscal_source.py",
+        'family="nfe",',
+        1,
+        "Places pending received NF-e reviews in the correct monthly briefing."
+        + FISCAL_RECEIPT_ONLY,
+    ),
     (
         "apps/cycles/extraction/v2.py",
         "The official production XSD bundle NFSe-ESQUEMAS_XSD-v1.01-20260209 accepts",

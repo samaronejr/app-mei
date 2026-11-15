@@ -36,6 +36,7 @@ from apps.authz.portfolio import visible_clients
 from apps.authz.services import require_can
 from apps.authz.support import in_support_mode
 from apps.clients.views import require_tenant
+from apps.core.flags import tenant_has
 from apps.cycles.capabilities import CYCLES_REVIEW
 from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.evidence import (
@@ -51,6 +52,8 @@ from apps.cycles.evidence import (
     ReviewDecision,
 )
 from apps.cycles.extraction import FIELD_LABELS, KIND_FIELDS, XML_LAYOUTS, kind_for
+from apps.cycles.fiscal_queries import pending_documents
+from apps.cycles.fiscal_views import fiscal_document_review
 from apps.cycles.receipt_observations import payment_evidence_eligible
 from apps.cycles.scanning import scan_required
 from apps.cycles.services.cycle import require_enabled, tenant_id
@@ -61,6 +64,7 @@ from apps.cycles.services.review import (
 )
 from apps.cycles.serving import document_response
 from apps.cycles.sniffing import JPEG, PNG
+from apps.obligations.models import FiscalDocument
 from apps.obligations.views import QueueSpec
 
 PAGE_SIZE: Final = 25
@@ -191,6 +195,14 @@ VERIFYING = QueueSpec(
     HEADINGS,
 )
 DOCUMENT_QUEUES: Final = (PENDING, DIVERGENT, VERIFYING)
+FISCAL = QueueSpec(
+    "fiscais",
+    _("Documentos fiscais"),
+    CYCLES_REVIEW,
+    pending_documents,
+    "cycles/_fiscal_document_rows.html",
+    (_("Cliente"), _("Documento"), _("Origem"), _("Capturado em"), _("Situação")),
+)
 
 
 @require_http_methods(["GET"])
@@ -200,13 +212,17 @@ DOCUMENT_QUEUES: Final = (PENDING, DIVERGENT, VERIFYING)
 def document_queue(request: AuthenticatedRequest) -> HttpResponse:
     """Render the three document queues, one at a time, each with its count."""
     require_enabled()
+    queues = (
+        (*DOCUMENT_QUEUES, FISCAL)
+        if tenant_has(tenant_id(), "document_capture")
+        else DOCUMENT_QUEUES
+    )
     selected = next(
-        (spec for spec in DOCUMENT_QUEUES if spec.slug == request.GET.get(QUEUE_PARAM)),
+        (spec for spec in queues if spec.slug == request.GET.get(QUEUE_PARAM)),
         PENDING,
     )
     tabs = [
-        {"spec": spec, "count": spec.fetch(request.user).count()}
-        for spec in DOCUMENT_QUEUES
+        {"spec": spec, "count": spec.fetch(request.user).count()} for spec in queues
     ]
     page = Paginator(selected.fetch(request.user), PAGE_SIZE).get_page(
         request.GET.get("pagina")
@@ -329,6 +345,11 @@ def _corrections(
 def document_review(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     """Review one submission; the POST carries the request revision it was drawn at."""
     require_enabled()
+    if (
+        tenant_has(tenant_id(), "document_capture")
+        and FiscalDocument.objects.filter(pk=pk).exists()
+    ):
+        return fiscal_document_review(request, pk)
     link = _visible_link(request.user, pk)
     intake = DocumentIntake.objects.filter(document_id=link.document_id).first()
     kind = kind_for(intake.sniffed_type if intake else link.document.content_type)

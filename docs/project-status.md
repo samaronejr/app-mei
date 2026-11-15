@@ -1256,6 +1256,59 @@ delivery does not authorize a cohort or close provider, operator, live or owner
 gates. Revert the ingestion code if needed; do not reverse the migration over
 retained fiscal records.
 
+#### AXRM-021: captured-document synchronization and fiscal review
+
+Received-document capture keeps one `SyncStream` per client provider link,
+collection, authoritative filter digest and epoch, with fenced `SyncRun` rows and
+immutable `CaptureAcquisition` records. The isolation inventory grows from 90 to
+**94 tenant tables**, including the immutable `FiscalDocumentReview`; every new
+table has tenant/client isolation, portal denial and paired parent keys.
+Migrations are `integrations.0016_capture_sync`,
+`cycles.0023_fiscal_document_review` and `delivery.0010_capture_sweep_cursor`.
+
+The hourly sweep visits at most ten clients per tenant and three pages per
+stream, retaining fair progress between runs. Company credentials use the
+existing secret-reference path, with process and advisory ownership plus a
+shared 60-request window. Raw responses are protected before accounting;
+storage, provider reads and scanning happen outside the page transaction.
+That transaction rechecks live eligibility, binding, disable epoch, run ownership
+and cursor version before registering every revision and acquisition together
+with the cursor. Returned versions determine progress. Start-month filtering,
+incomplete summaries, cancellation, substitution and latest correction XML
+preserve their source semantics. Three consecutive failed runs open owned work.
+
+The existing document queue and review route now include captured identities.
+Each decision binds the exact current revision and original digest; summaries
+cannot be accepted as reviewed evidence. Cycle detail selects documents by
+emission month for NF-e and competence for NFS-e, and pending captured heads
+appear in Hoje. A newer revision requires a new decision. Disabled capture leaves
+the existing cycle usable and its fiscal section absent.
+
+Pre-commit collection contains **10,331 default cases**: the covered CI
+selections contain **3,418** and **6,911**, with no overlap; their union plus the
+two privacy timing cases run separately equals the default selection. Browser
+collection contains **203 cases**. These are collection totals; executed,
+skipped and failing counts belong to the gate receipts for the committed head.
+The 300-document cycle measurement passes the unchanged 25-query and 150,000-byte
+limits at **25 queries and 15,907 gzip HTML bytes**. Desktop and mobile journeys
+cover full-original review, summary refusal and the disabled feature.
+Automações names the capture routine in Portuguese. Pre-call restore fixtures
+clear retained capture acquisitions together with their referenced provider calls.
+
+The happy driver retains 230 received NF-e summaries and 40 national NFS-e
+originals, reaches cursors 230 and 40, and lists all 270 documents for review.
+The failure driver preserves the page cursor through a reset, replays without
+duplicates and surfaces three consecutive failures. The changed-line campaign
+has **44 assertion kills and two native product-exception kills**. Both initial
+survivors were distinguished by added witnesses; a migration-setup error was
+excluded and replaced by a probe that reaches the tenant-isolation assertion.
+
+Recovery is feature flag off. Empty capture/review tables can reverse; retained
+cursors and professional decisions require forward repair. Provider rollout,
+operator qualification and owner gates remain separate. Capture's commit-time
+checks do not claim to repair the inherited Focus configuration race when an
+advisory connection is lost during an already in-flight provider write.
+
 #### AXRM-018: fair monthly federal sweeps
 
 Review 3 adds 20 cases with no product change. The environment selector is

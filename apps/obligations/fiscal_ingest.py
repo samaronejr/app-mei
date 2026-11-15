@@ -7,7 +7,7 @@ serializes identity creation and head movement. Stale snapshots stay immutable.
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Final
@@ -56,6 +56,14 @@ from apps.obligations.models import (
 from apps.obligations.system_ingest import ingest_system_document
 from apps.tenants.models import Membership, Tenant
 
+__all__ = [
+    "FiscalSource",
+    "PreparedFiscalDocument",
+    "ingest_fiscal_document",
+    "prepare_fiscal_document",
+    "scanner_from_settings",
+]
+
 ROLE_COUNTERPART: Final = {
     "destinatario": "emitente",
     "emitente": "destinatario",
@@ -89,6 +97,25 @@ class FiscalSource:
     fiscal_state: str | None = None
     replacement_key: str = ""
     source_effective_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedFiscalDocument:
+    """Scanned original and extraction; registration is a database-only phase."""
+
+    context: FiscalSource
+    original: Document
+    intake: DocumentIntake
+    extraction: FiscalExtraction
+
+    def register(self, receipt_ref: str) -> FiscalDocument:
+        """Register these prepared bytes inside the caller's page transaction."""
+        return _register(
+            replace(self.context, receipt_ref=receipt_ref),
+            self.original,
+            self.intake,
+            self.extraction,
+        )
 
 
 def _money(raw: str) -> Decimal:
@@ -487,6 +514,40 @@ def _register(
     return fiscal
 
 
+def prepare_fiscal_document(
+    context: FiscalSource,
+    *,
+    payload_bytes: bytes | None,
+    summary: Mapping[str, str] | None,
+) -> PreparedFiscalDocument | None:
+    """Quarantine, scan and extract outside transactions, without registering."""
+    assert_no_transaction()
+    payload = _payload(context, payload_bytes, summary)
+    with tenant_context(context.tenant_id):
+        _, client = _authorize(context)
+        if summary is not None:
+            _binding(context, client)
+    original = _original(context, payload)
+    with tenant_context(context.tenant_id):
+        intake = DocumentIntake.objects.get(document=original)
+    if intake.state not in CLEAN_STATES:
+        scan_intake(
+            context.tenant_id,
+            intake.pk,
+            scanner=scanner_from_settings(),
+            now=timezone.now(),
+        )
+        with tenant_context(context.tenant_id):
+            intake = DocumentIntake.objects.get(pk=intake.pk)
+    if intake.state not in CLEAN_STATES:
+        return None
+    extraction = extract(intake, payload)
+    if not extraction.document_key or len(extraction.document_key) > KEY_MAX:
+        code = "missing_fiscal_key"
+        raise UnsafeDocument(code)
+    return PreparedFiscalDocument(context, original, intake, extraction)
+
+
 def ingest_fiscal_document(  # noqa: PLR0913 - the plan's keyword-only server contract
     *,
     tenant_id: UUID,
@@ -524,25 +585,10 @@ def ingest_fiscal_document(  # noqa: PLR0913 - the plan's keyword-only server co
         replacement_key,
         source_effective_at,
     )
-    payload = _payload(context, payload_bytes, summary)
-    with tenant_context(tenant_id):
-        _, client = _authorize(context)
-        if summary is not None:
-            _binding(context, client)
-    original = _original(context, payload)
-    with tenant_context(tenant_id):
-        intake = DocumentIntake.objects.get(document=original)
-    if intake.state not in CLEAN_STATES:
-        scan_intake(
-            tenant_id, intake.pk, scanner=scanner_from_settings(), now=timezone.now()
-        )
-        with tenant_context(tenant_id):
-            intake = DocumentIntake.objects.get(pk=intake.pk)
-    if intake.state not in CLEAN_STATES:
+    prepared = prepare_fiscal_document(
+        context, payload_bytes=payload_bytes, summary=summary
+    )
+    if prepared is None:
         return None
-    extraction = extract(intake, payload)
-    if not extraction.document_key or len(extraction.document_key) > KEY_MAX:
-        code = "missing_fiscal_key"
-        raise UnsafeDocument(code)
     with tenant_context(tenant_id):
-        return _register(context, original, intake, extraction)
+        return prepared.register(receipt_ref)

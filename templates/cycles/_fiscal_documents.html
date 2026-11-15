@@ -1,0 +1,13 @@
+{% load ptbr %}
+<section class="ui-panel p-4 mt-6" id="documentos-fiscais" aria-labelledby="fiscal-documents-title" data-fiscal-documents>
+  <h2 id="fiscal-documents-title" class="ui-panel-heading">Documentos fiscais do período</h2>
+  <p class="text-sm text-ink-600">NF-e pelo mês de emissão; NFS-e pela competência. Resumos aguardam o XML completo e não são evidência revisada.</p>
+  <ul class="mt-3 grid gap-3">
+    {% for document in fiscal_documents %}<li class="border-t pt-3" data-fiscal-document="{{ document.pk }}">
+      <a class="ui-link break-all" href="{% url 'document-review' document.pk %}?ciclo={{ cycle.pk }}">{{ document.document_key }}</a>
+      <p class="text-sm">{{ document.family }} · {{ document.counterpart_name }} · {{ document.fiscal_state }} · versão {{ document.provider_version }}</p>
+      <p class="text-sm text-ink-600">{% if document.source == 'captura' %}Capturado do provedor{% elif document.source == 'upload_cliente' %}Enviado pelo cliente{% else %}Importado pela equipe{% endif %} · {{ document.provider }} · {{ document.environment }} · {{ document.observed_at|data_hora }}</p>
+      <p class="text-sm">{% if document.summary_only %}Resumo · requer XML completo{% endif %}{% if document.review_decision == 'aceito' %} · Aceito pela equipe{% elif document.review_decision == 'rejeitado' %} · Não aceito{% elif document.review_decision == 'requer_xml' %} · Revisão: requer XML{% elif document.review_decision == 'documento_de_terceiro' %} · Documento de terceiro{% else %} · Aguardando revisão{% endif %}</p>
+    </li>{% empty %}<li>Nenhum documento fiscal capturado ou importado neste período.</li>{% endfor %}
+  </ul>
+</section>

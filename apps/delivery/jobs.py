@@ -27,6 +27,7 @@ JOB_LABELS: Final = {
     "scan_quarantine": "Verificação de arquivos",
     "ping_scanner": "Verificador antivírus",
     "extract_documents": "Extração de documentos",
+    "capture_documents": "Captura de documentos fiscais",
     "open_deterministic_exceptions": "Abertura de exceções",
     "purge_access_logs": "Retenção de registros de acesso",
     "materialize_receipt_observations": "Leitura de comprovantes",

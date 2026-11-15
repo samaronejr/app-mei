@@ -85,7 +85,8 @@ RUNTIME_ROLE = "app_runtime"
 # AXRM-015 adds PAGTOWEB consultations (85) and their kept paid pages: 85 + 1.
 # AXRM-016 adds the client-paired private SITFIS review (both policies): 86 + 1.
 # AXRM-020 adds the private fiscal identity, revision and artifact tables: 87 + 3.
-EXPECTED_TENANT_TABLE_COUNT = 90
+# AXRM-021 adds three capture records and one exact-revision review.
+EXPECTED_TENANT_TABLE_COUNT = 94
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -126,6 +127,10 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "obligations_fiscaldocument",
         "obligations_fiscalrevision",
         "obligations_revisionartifact",
+        "cycles_fiscaldocumentreview",
+        "integrations_syncstream",
+        "integrations_syncrun",
+        "integrations_captureacquisition",
     }
 )
 
@@ -641,6 +646,11 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "obligations_fiscaldocument",
         "obligations_fiscalrevision",
         "obligations_revisionartifact",
+        # AXRM-021: capture records and exact-revision reviews are portal NONE.
+        "integrations_syncstream",
+        "integrations_syncrun",
+        "integrations_captureacquisition",
+        "cycles_fiscaldocumentreview",
     },
 )
 

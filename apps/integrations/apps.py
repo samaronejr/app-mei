@@ -26,6 +26,12 @@ class IntegrationsConfig(AppConfig):
             REASONS as BUDGET_REASONS,
         )
         from apps.integrations.checks import check_provider_settings  # noqa: PLC0415
+        from apps.integrations.focus.capture import (  # noqa: PLC0415
+            FAILURE_REASON,
+        )
+        from apps.integrations.focus.capture import (  # noqa: PLC0415
+            REASON as CAPTURE_REASON,
+        )
         from apps.integrations.focus.registration import (  # noqa: PLC0415
             register_focus_operations,
         )
@@ -63,6 +69,7 @@ class IntegrationsConfig(AppConfig):
         )
         for code, reason in reasons.items():
             register_exception_reason(code, reason)
+        register_exception_reason(FAILURE_REASON, CAPTURE_REASON)
         TENANT_EVALUATORS.extend(
             (
                 evaluate_provider_conditions,
@@ -84,5 +91,7 @@ class IntegrationsConfig(AppConfig):
             "apps.integrations.serpro.sitfis_qualification",
             "apps.integrations.serpro.sitfis_tasks",
             "apps.integrations.focus.qualification",
+            "apps.integrations.focus.tasks",
+            "apps.integrations.focus.capture_qualification",
         ):
             importlib.import_module(module)

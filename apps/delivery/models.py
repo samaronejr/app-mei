@@ -175,6 +175,8 @@ class AutomationPause(TenantScopedModel):
     # A run takes the next 20 after it (wrapping), so no client is starved.
     federal_sitfis_cursor = models.UUIDField(null=True, blank=True)
     federal_payments_cursor = models.UUIDField(null=True, blank=True)
+    # AXRM-021: the last client visited by the bounded hourly capture sweep.
+    capture_documents_cursor = models.UUIDField(null=True, blank=True)
 
     class Meta(TenantScopedModel.Meta):
         """One dispatcher coordination row per firm."""

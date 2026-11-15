@@ -166,7 +166,15 @@ def resolve(
         "update",
         (("dry_run", "1"),),
     )
-    if not dry_run and (len(keys) != len(set(keys)) or set(keys) - {"cnpj", "versao"}):
+    query_keys = {"cnpj", "versao"}
+    complete = (code, request.variant) == ("FC-NFS", "default")
+    if complete:
+        query_keys.add("completa")
+    if not dry_run and (
+        len(keys) != len(set(keys))
+        or set(keys) - query_keys
+        or ("completa" in keys and dict(request.query)["completa"] != "1")
+    ):
         raise OperacaoNaoPermitida
     if request.query and not dry_run and (provider != "focus" or route.method != "GET"):
         raise OperacaoNaoPermitida

@@ -114,6 +114,10 @@ PORTAL_DENIED_TABLES = (
     # AXRM-016: the SITFIS review is firm-side; DenyPortalAccess from cycles.0022.
     # Mirrors `-- PORTAL_NONE: cycles_federalreportreview` in ops/sql/roles.sql.
     "cycles_federalreportreview",
+    "cycles_fiscaldocumentreview",
+    "integrations_syncstream",
+    "integrations_syncrun",
+    "integrations_captureacquisition",
     "tenants_billingaccount",
     "tenants_usagerecord",
     "tenants_notificationpreference",
@@ -154,6 +158,8 @@ APPEND_ONLY_TABLES = (
     "obligations_revisionartifact",
     # AXRM-016: SITFIS reviews are append-only.
     "cycles_federalreportreview",
+    "cycles_fiscaldocumentreview",
+    "integrations_captureacquisition",
 )
 
 # AXRM-015: the one column UPDATE an append-only table admits. obligations.0026's

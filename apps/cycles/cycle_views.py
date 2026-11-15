@@ -288,6 +288,7 @@ def _render_detail(
     # command receives this projection; services still reload and lock their scope.
     reads = load_cycle_detail(request.user, pk)
     cycle = reads.cycle
+    fiscal_enabled = tenant_has(cycle.tenant_id, "document_capture")
     steps = {step.key: step for step in reads.steps}
     tasks = [
         {
@@ -341,6 +342,8 @@ def _render_detail(
         "cycles/cycle_detail.html",
         {
             "cycle": cycle,
+            "fiscal_documents_enabled": fiscal_enabled,
+            "fiscal_documents": reads.fiscal_documents,
             "coverage": reads.coverage,
             # AXRM-015: the Receita Federal section loads from its own endpoint.
             "federal_payments_enabled": tenant_has(cycle.tenant_id, "federal_checks"),

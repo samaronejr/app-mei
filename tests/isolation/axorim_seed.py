@@ -184,6 +184,7 @@ _SEEDED_PARENT: Final = object()
 
 # Required-by-constraint-but-nullable columns the generic seeder leaves blank.
 _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
+    "integrations.SyncRun": {"state": "concluida"},
     # federalreportreview_pendencias_by_outcome / _input_digest: an unreadable
     # report carries no pendencias, and the digest is a synthetic SHA-256 shape.
     "cycles.FederalReportReview": {
@@ -990,6 +991,68 @@ def paired_parent_constraints() -> frozenset[tuple[str, str, str]]:
 # probe into a schema-null skip.
 REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
     {
+        ("integrations_syncstream", "link_id", "syncstream_link_id_scope_fk"),
+        ("integrations_syncrun", "stream_id", "syncrun_stream_id_scope_fk"),
+        (
+            "integrations_captureacquisition",
+            "stream_id",
+            "captureacquisition_stream_id_scope_fk",
+        ),
+        (
+            "integrations_captureacquisition",
+            "run_id",
+            "captureacquisition_run_id_scope_fk",
+        ),
+        (
+            "integrations_captureacquisition",
+            "revision_id",
+            "captureacquisition_revision_id_scope_fk",
+        ),
+        (
+            "integrations_captureacquisition",
+            "document_id",
+            "captureacquisition_document_id_scope_fk",
+        ),
+        (
+            "integrations_captureacquisition",
+            "call_id",
+            "captureacquisition_call_id_scope_fk",
+        ),
+        (
+            "integrations_captureacquisition",
+            "stream_id",
+            "captureacquisition_exact_run_fk",
+        ),
+        (
+            "integrations_captureacquisition",
+            "run_id",
+            "captureacquisition_exact_run_fk",
+        ),
+        (
+            "cycles_fiscaldocumentreview",
+            "document_id",
+            "fiscaldocumentreview_document_id_scope_fk",
+        ),
+        (
+            "cycles_fiscaldocumentreview",
+            "revision_id",
+            "fiscaldocumentreview_revision_id_scope_fk",
+        ),
+        (
+            "cycles_fiscaldocumentreview",
+            "cycle_id",
+            "fiscaldocumentreview_cycle_id_scope_fk",
+        ),
+        (
+            "cycles_fiscaldocumentreview",
+            "document_id",
+            "fiscaldocumentreview_exact_revision_fk",
+        ),
+        (
+            "cycles_fiscaldocumentreview",
+            "revision_id",
+            "fiscaldocumentreview_exact_revision_fk",
+        ),
         ("automation_agentrun", "document_id", "agentrun_document_fk"),
         ("clients_clientcompany", "import_batch_id", "clientcompany_tenant_batch_fk"),
         ("clients_clienttag", "tag_id", "clienttag_tenant_tag_fk"),
