@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from apps.integrations.serpro.qualification_wire import (
-    ExpectedWire,
     inspect_wire,
     refusal_body,
 )
@@ -13,13 +12,11 @@ from tests.fakes.provider import Received, Reply, ScriptedProvider
 _WIRE = Path(__file__).parents[1] / "fixtures" / "providers" / "serpro" / "wire"
 
 
-def _fixture_wire() -> dict[str, ExpectedWire]:
+def _fixture_wire() -> dict[str, tuple[str, str]]:
     expected = {}
     for fixture in _WIRE.glob("*.json"):
         pedido = json.loads(fixture.read_text())["body"]["pedidoDados"]
-        expected[fixture.stem] = ExpectedWire(
-            pedido["versaoSistema"], empty_dados=pedido["dados"] == ""
-        )
+        expected[fixture.stem] = (pedido["idSistema"], pedido["versaoSistema"])
     return expected
 
 

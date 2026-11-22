@@ -67,8 +67,13 @@ def test_catalog_envelope_uses_only_the_allowlisted_route(
 ) -> None:
     # Given an A6 operation and a real loopback peer.
     adapter = serpro_module("adapter")
+    dados = json.loads((FIXTURES / "wire" / f"{service}.json").read_text())["body"][
+        "pedidoDados"
+    ]["dados"]
     request = adapter.build_request(
-        operation, adapter.Parties(CONTRATANTE, FIRM, CLIENT), {}
+        operation,
+        adapter.Parties(CONTRATANTE, FIRM, CLIENT),
+        json.loads(dados) if dados else None,
     )
     with FakeSerpro((Reply(),)) as peer:
         # When the envelope uses AXRM-011's allowlist and single-use window.

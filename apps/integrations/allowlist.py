@@ -41,6 +41,7 @@ class SerproService:
     dados_shape: Literal["empty", "json"]
     production_page: str
     production_verified: bool = True
+    version_source_environment: Literal["producao", "trial"] = "producao"
     read_date: str = "2026-11-22"
     trial_version: str | None = None
     trial_page: str | None = None
@@ -105,6 +106,7 @@ SERPRO_SERVICES: Final = MappingProxyType(
             "json",
             _SERPRO_DOCS + "solucoes/integra-mei/pgmei/servicos/gerar_das/",
             production_verified=False,
+            version_source_environment="trial",
             trial_page=_SERPRO_DOCS + "cenarios_trial/cenarios_pgmei/",
             production_schema=_SERPRO_DOCS
             + "chamadas/api_reference/api-integra-contador-sp.yaml",

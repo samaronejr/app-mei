@@ -38,7 +38,7 @@ from apps.integrations.serpro.qualification import (
     synthetic_termo,
 )
 from apps.integrations.serpro.qualification_wire import (
-    ExpectedWire,
+    QUALIFICATION_WIRE,
     inspect_wire,
     refusal_body,
 )
@@ -56,13 +56,6 @@ if TYPE_CHECKING:
 
 SYNTHETIC_PRICES: Final = {"serpro_consulta": "0.24", "serpro_emissao": "0.32"}
 SYNTHETIC_PDF: Final = b"%PDF-1.7\n% synthetic qualification report\n%%EOF\n"
-# Reviewed production examples (tests/fixtures/providers/serpro/wire), not
-# the sender's catalog: regressing the sender must fail this qualification.
-_FAKE_WIRE: Final = {
-    "ENVIOXMLASSINADO81": ExpectedWire("1.0"),
-    "SOLICITARPROTOCOLO91": ExpectedWire("2.0", empty_dados=True),
-    "RELATORIOSITFIS92": ExpectedWire("2.0"),
-}
 # The longest provider-mandated wait the operator run sits through per attempt.
 MAX_QUALIFICATION_WAIT: Final = timedelta(minutes=5)
 
@@ -98,8 +91,13 @@ def _fake_origin() -> Iterator[str]:
 
         def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            service, error = inspect_wire(raw, _FAKE_WIRE)
-            body = refusal_body(error) if error else replies[service]
+            service, error = inspect_wire(raw, QUALIFICATION_WIRE)
+            # Only the three SITFIS-flow services simulate a domain result.
+            body = (
+                refusal_body(error)
+                if error
+                else replies.get(service, b'{"status":200}')
+            )
             self.send_response(400 if error else 200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

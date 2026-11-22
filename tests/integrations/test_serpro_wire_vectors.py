@@ -5,9 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
-from datetime import date
+from datetime import UTC, date, datetime
 from http.client import HTTPConnection
-from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -19,6 +18,7 @@ from apps.integrations import allowlist
 from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import begin_io, claim, reserve
+from apps.integrations.serpro import adapter as serpro_adapter
 from apps.integrations.serpro import sitfis_qualification
 from apps.integrations.serpro.codec import Parties, build_request
 from apps.integrations.serpro.sitfis_qualification import _fake_origin
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from pytest_django.fixtures import SettingsWrapper
 
     from apps.integrations.transport_types import Environment, JSONValue
+    from tests.integrations.sitfis_support import Clock
 
 __all__ = ["clock", "world"]
 
@@ -93,9 +94,10 @@ def test_built_body_matches_official_example(operation: str) -> None:
     if example_data:
         pedido["dados"] = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     actual = build_request(operation, PARTIES, data)
-    assert json.loads(actual.body) == expected
-    if not example_data:
-        assert b'"dados":""' in actual.body
+    assert (
+        actual.body
+        == json.dumps(expected, ensure_ascii=False, separators=(",", ":")).encode()
+    )
 
 
 @pytest.mark.parametrize("operation", ["SP-SIT-P", "SP-SIT-R"])
@@ -109,7 +111,6 @@ def test_sitfis_selects_gateway_version(
     if environment == "trial":
         pedido["versaoSistema"] = vector["trial_version"]
     data = json.loads(pedido["dados"]) if pedido["dados"] else ""
-    assert "environment" in signature(build_request).parameters
     request = build_request(operation, PARTIES, data, environment=environment)
     assert (
         json.loads(request.body)["pedidoDados"]["versaoSistema"]
@@ -131,13 +132,19 @@ def test_only_pgmei_has_an_unverified_production_version() -> None:
         assert getattr(contract, "production_verified", None) is verified
         assert vector["production_verified"] is verified
         assert contract.production_page == vector["production_page"]
+        source = "producao" if verified else "trial"
+        assert contract.version_source_environment == source
+        assert vector["version_source_environment"] == source
+        assert (
+            contract.production_version
+            == vector["body"]["pedidoDados"]["versaoSistema"]
+        )
         assert date.fromisoformat(contract.read_date) == date.fromisoformat(
             vector["read_date"]
         )
         if not verified:
             assert contract.trial_page == vector["trial_page"]
             assert contract.production_schema == vector["production_schema"]
-            assert contract.version_source == vector["version_source"]
 
 
 @pytest.mark.parametrize("operation", ["SP-SIT-P", "SP-SIT-R"])
@@ -206,10 +213,93 @@ def test_fixture_backed_peer_accepts_the_built_envelope(operation: str) -> None:
     assert (status, response) == (200, Reply().body)
 
 
+@pytest.mark.parametrize("peer_kind", ["scripted", "qualification"])
+@pytest.mark.parametrize("operation", SERVICES)
+def test_fake_requires_documented_input_shape(peer_kind: str, operation: str) -> None:
+    expected = _fixture(operation)["body"]
+    path = SERVICES[operation][1]
+    variants = []
+    dados = expected["pedidoDados"]["dados"]
+    if dados:
+        fields = json.loads(dados)
+        variants.append(("empty", ""))
+        variants.append(("array", "[]"))
+        for key, value in fields.items():
+            if key != "intervaloDataArrecadacao":
+                variants.append(
+                    (
+                        f"missing-{key}",
+                        json.dumps({k: v for k, v in fields.items() if k != key}),
+                    )
+                )
+            variants.append(
+                (f"type-{key}", json.dumps({**fields, key: not bool(value)}))
+            )
+        if operation == "SP-PAG":
+            variants.append(
+                (
+                    "date-type",
+                    json.dumps(
+                        {
+                            **fields,
+                            "intervaloDataArrecadacao": {"dataInicial": 1},
+                        }
+                    ),
+                )
+            )
+        if operation == "SP-DAS":
+            variants.append(
+                (
+                    "consolidation-type",
+                    json.dumps(
+                        {
+                            **fields,
+                            "dataConsolidacao": 1,
+                        }
+                    ),
+                )
+            )
+    else:
+        variants.extend([("object", "{}"), ("encoded-empty", '""')])
+    if peer_kind == "scripted":
+        with FakeSerpro((Reply(),) * (1 + len(variants) + 7)) as peer:
+            _assert_fake_variants(peer.origin, path, expected, variants)
+    else:
+        with _fake_origin() as origin:
+            _assert_fake_variants(origin, path, expected, variants)
+
+
+def _assert_fake_variants(
+    origin: str, path: str, expected: dict[str, Any], variants: list[tuple[str, str]]
+) -> None:
+    assert _post(origin, path, expected)[0] == 200
+    for label, value in variants:
+        body = deepcopy(expected)
+        body["pedidoDados"]["dados"] = value
+        assert _post(origin, path, body)[0] == 400, label
+    for party in ("contratante", "autorPedidoDados", "contribuinte"):
+        body = deepcopy(expected)
+        del body[party]
+        assert _post(origin, path, body)[0] == 400, party
+        body = deepcopy(expected)
+        body[party]["tipo"] = True
+        assert _post(origin, path, body)[0] == 400, f"type-{party}"
+    body = deepcopy(expected)
+    body["pedidoDados"]["idSistema"] = "OTHER"
+    assert _post(origin, path, body)[0] == 400
+
+
 @pytest.mark.django_db(transaction=True)
 def test_trial_sitfis_binds_the_trial_bytes_to_the_journal(
-    settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    clock: Clock,
 ) -> None:
+    clock.current = datetime(2026, 12, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        serpro_adapter, "time", SimpleNamespace(time=lambda: clock.now().timestamp())
+    )
     settings.MEDIA_ROOT = tmp_path
     settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "10.00"}
     settings.USAGE_UNIT_PRICES_BRL = sitfis_qualification.SYNTHETIC_PRICES
