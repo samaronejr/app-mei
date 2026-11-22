@@ -79,21 +79,29 @@ UNCLEARED_NAME: Final = re.compile(r"axorim", re.IGNORECASE)
 # AXRM-051 check; the R1 source scans below stay as they were.
 RENDERED_CLAIMS: Final = {
     **FORBIDDEN_CLAIMS,
+    **OVERBROAD_CLAIMS,
     **REGIONAL_CLAIMS,
     "price amount before OD-07": PRICE_AMOUNT,
     "public name before OD-01": UNCLEARED_NAME,
 }
 SEM_PENDENCIAS: Final = re.compile(r"\bsem\s+pend[êe]ncias?\b", re.IGNORECASE)
+# The whole date token: dd/mm, dd/mm/aa or dd/mm/aaaa, with nothing glued after it.
 DATED_SOURCES: Final = re.compile(
-    r"\s+nas\s+fontes\s+verificadas\s+em\s+(\d{1,2})/(\d{1,2})(?:/(\d{4}))?\b",
+    r"\s+nas\s+fontes\s+verificadas\s+em\s+"
+    r"(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?(?![\w/])",
     re.IGNORECASE,
 )
 
 
 def _real_date(day: str, month: str, year: str | None) -> bool:
+    if year is None:
+        resolved = 2000  # a leap year: a 29/02 written without its year is real
+    elif len(year) == 2:
+        resolved = 2000 + int(year)
+    else:
+        resolved = int(year)
     try:
-        # 2000 is a leap year, so a 29/02 written without its year is a real date.
-        date(int(year or 2000), int(month), int(day))
+        date(resolved, int(month), int(day))
     except ValueError:
         return False
     return True
@@ -125,8 +133,63 @@ def _hits(pattern: re.Pattern[str], paths: list[Path]) -> list[str]:
     return found
 
 
+# Elements that start a new line of text; every other element runs inline, so its
+# text joins its neighbours' with no separator ("<span>reg</span>ular" reads "regular").
+BLOCK_ELEMENTS: Final = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "body",
+        "br",
+        "button",
+        "dd",
+        "details",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "header",
+        "hr",
+        "html",
+        "input",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "option",
+        "p",
+        "pre",
+        "section",
+        "select",
+        "summary",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "title",
+        "tr",
+        "ul",
+    }
+)
+
+
 class _VisibleText(HTMLParser):
-    """The text a reader gets: every data node outside script and style."""
+    """The text a reader gets: data outside script and style, laid out by blocks."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -136,22 +199,30 @@ class _VisibleText(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style"}:
             self._hidden += 1
+        elif tag in BLOCK_ELEMENTS:
+            self.parts.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style"} and self._hidden:
             self._hidden -= 1
+        elif tag in BLOCK_ELEMENTS:
+            self.parts.append(" ")
 
     def handle_data(self, data: str) -> None:
         if not self._hidden:
             self.parts.append(data)
 
 
+def visible_text(html: str) -> str:
+    reader = _VisibleText()
+    reader.feed(html)
+    return " ".join("".join(reader.parts).split())
+
+
 def _rendered(client: Client, name: str) -> str:
     response = client.get(reverse(name))
     assert response.status_code == HTTPStatus.OK, name
-    reader = _VisibleText()
-    reader.feed(response.content.decode())
-    return " ".join(" ".join(reader.parts).split())
+    return visible_text(response.content.decode())
 
 
 def _rendered_hits() -> list[str]:
@@ -216,6 +287,10 @@ def test_no_rendered_public_or_help_page_makes_a_forbidden_claim() -> None:
         ("ISS confirmado pela prefeitura.", "confirmado pela prefeitura"),
         ("Cobertura de 100% das notas.", "100%"),
         ("A partir de R$ 390 por mês.", "price amount before OD-07"),
+        (
+            "Tudo o que sai para o cliente passa por uma aprovação.",
+            "approval before any send",
+        ),
         ("Sem pendências.", "sem pendências"),
         ("Sem pendências nas fontes verificadas em breve.", "sem pendências"),
         ("Sem pendências nas fontes verificadas em 31/02/2026.", "sem pendências"),
@@ -240,6 +315,9 @@ def test_a_view_supplied_summary_is_read_as_rendered(
         ("Sem pendências nas fontes verificadas em 03/11/2026.", False),
         ("Sem pendências nas fontes verificadas em 29/02.", False),
         ("Sem pendências nas fontes verificadas em 29/02/2027.", True),
+        ("Sem pendências nas fontes verificadas em 29/02/27.", True),
+        ("Sem pendências nas fontes verificadas em 29/02/28.", False),
+        ("Sem pendências nas fontes verificadas em 03/11/2026x.", True),
         ("Sem pendências nas fontes verificadas em 03/13.", True),
         ("Regularize o cadastro; sem pendências nas fontes.", True),
     ],
@@ -249,6 +327,20 @@ def test_sem_pendencias_needs_its_sources_and_a_real_date(
 ) -> None:
     assert undated_sem_pendencias(text) is flagged, text
     assert not REGIONAL_CLAIMS["regular"].search("Regularize o cadastro.")
+
+
+@pytest.mark.parametrize(
+    ("html", "text"),
+    [
+        ("<p>Empresa <span>reg</span>ular.</p>", "Empresa regular."),
+        ("<li>um</li><li>dois</li>", "um dois"),
+        ("<p>linha<br>outra</p><script>regular()</script>", "linha outra"),
+    ],
+)
+def test_visible_text_joins_inline_elements_and_separates_blocks(
+    html: str, text: str
+) -> None:
+    assert visible_text(html) == text
 
 
 @pytest.mark.django_db
