@@ -38,7 +38,6 @@ from apps.integrations.serpro.qualification import (
     synthetic_termo,
 )
 from apps.integrations.serpro.qualification_wire import (
-    QUALIFICATION_WIRE,
     inspect_wire,
     refusal_body,
 )
@@ -91,7 +90,7 @@ def _fake_origin() -> Iterator[str]:
 
         def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            service, error = inspect_wire(raw, QUALIFICATION_WIRE)
+            service, error = inspect_wire(self.command, self.path, raw)
             # Only the three SITFIS-flow services simulate a domain result.
             body = (
                 refusal_body(error)

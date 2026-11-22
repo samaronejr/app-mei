@@ -1,6 +1,9 @@
 {
   "production_page": "https://apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/solucoes/integra-contador-gerenciador/autenticaprocurador/servicos/envio_de_xml_assinado/",
   "production_verified": true,
+  "route": ["POST", "/Apoiar"],
+  "parties": {"contratante": [2], "autorPedidoDados": [1, 2], "contribuinte": [1, 2]},
+  "dados": {"form": "json", "required": {"xml": "base64"}, "optional": {}},
   "version_source_environment": "producao",
   "read_date": "2026-11-22",
   "example_note": "Substitute synthetic base64 for the example signed XML; signature validity is outside the wire vector.",

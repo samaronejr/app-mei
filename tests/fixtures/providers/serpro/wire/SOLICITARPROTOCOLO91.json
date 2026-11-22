@@ -1,6 +1,9 @@
 {
   "production_page": "https://apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/solucoes/integra-sitfis/sitfis/servicos/apoiar_relatorio/",
   "production_verified": true,
+  "route": ["POST", "/Apoiar"],
+  "parties": {"contratante": [2], "autorPedidoDados": [1, 2], "contribuinte": [1, 2]},
+  "dados": {"form": "empty"},
   "version_source_environment": "producao",
   "read_date": "2026-11-22",
   "trial_page": "https://apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/cenarios_trial/cenarios_sitfis/",

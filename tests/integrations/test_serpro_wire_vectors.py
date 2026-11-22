@@ -5,10 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
-from datetime import UTC, date, datetime
+from datetime import date
 from http.client import HTTPConnection
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -18,7 +17,7 @@ from apps.integrations import allowlist
 from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import begin_io, claim, reserve
-from apps.integrations.serpro import adapter as serpro_adapter
+from apps.integrations.provider_journal import read as read_journal
 from apps.integrations.serpro import sitfis_qualification
 from apps.integrations.serpro.codec import Parties, build_request
 from apps.integrations.serpro.sitfis_qualification import _fake_origin
@@ -26,9 +25,10 @@ from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import OperacaoNaoPermitida, ProviderRequest
 from apps.obligations.models import FederalConsultation
 from apps.tenants.models import Tenant
-from tests.fakes.provider import Reply, ScriptedProvider, permitted_send
+from tests.fakes.provider import Reply, permitted_send
 from tests.fakes.serpro import FakeSerpro
 from tests.integrations.serpro_support import CLIENT, CONTRATANTE, FIRM
+from tests.integrations.serpro_wire_clock import wire_clock
 from tests.integrations.sitfis_support import (
     World,
     clock,
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from apps.integrations.transport_types import Environment, JSONValue
     from tests.integrations.sitfis_support import Clock
 
-__all__ = ["clock", "world"]
+__all__ = ["clock", "wire_clock", "world"]
 
 WIRE = Path(__file__).parents[1] / "fixtures" / "providers" / "serpro" / "wire"
 SERVICES = {
@@ -75,10 +75,12 @@ def _expected(operation: str) -> dict[str, Any]:
     return body
 
 
-def _post(origin: str, path: str, body: dict[str, Any]) -> tuple[int, bytes]:
+def _post(
+    origin: str, path: str, body: dict[str, Any], *, method: str = "POST"
+) -> tuple[int, bytes]:
     connection = HTTPConnection(origin.removeprefix("http://"), timeout=5)
     try:
-        connection.request("POST", path, json.dumps(body).encode())
+        connection.request(method, path, json.dumps(body).encode())
         response = connection.getresponse()
         return response.status, response.read()
     finally:
@@ -216,9 +218,10 @@ def test_fixture_backed_peer_accepts_the_built_envelope(operation: str) -> None:
 @pytest.mark.parametrize("peer_kind", ["scripted", "qualification"])
 @pytest.mark.parametrize("operation", SERVICES)
 def test_fake_requires_documented_input_shape(peer_kind: str, operation: str) -> None:
-    expected = _fixture(operation)["body"]
-    path = SERVICES[operation][1]
-    variants = []
+    vector = _fixture(operation)
+    expected = vector["body"]
+    _, path = vector["route"]
+    variants: list[tuple[str, JSONValue]] = []
     dados = expected["pedidoDados"]["dados"]
     if dados:
         fields = json.loads(dados)
@@ -261,16 +264,60 @@ def test_fake_requires_documented_input_shape(peer_kind: str, operation: str) ->
             )
     else:
         variants.extend([("object", "{}"), ("encoded-empty", '""')])
+    if dados:
+        invalid = {
+            "base64": "<xml/>",
+            "text": " \t",
+            "document-number": "é" * 9,
+            "period": "\uff12\uff10\uff12\uff16\uff11\uff12",
+            "page-offset": -1,
+            "page-size": 101,
+        }
+        for key, rule in vector["dados"]["required"].items():
+            variants.append(
+                (f"format-{key}", json.dumps({**fields, key: invalid[rule]}))
+            )
+    else:
+        variants.extend([("null", None), ("json-object", {})])
     if peer_kind == "scripted":
-        with FakeSerpro((Reply(),) * (1 + len(variants) + 7)) as peer:
+        with FakeSerpro((Reply(status=403), Reply(), Reply(), Reply())) as peer:
+            wrong = deepcopy(expected)
+            wrong["pedidoDados"]["versaoSistema"] = "9.0"
+            assert _post(peer.origin, path, wrong)[0] == 400
+            assert _post(peer.origin, path, expected)[0] == 403
             _assert_fake_variants(peer.origin, path, expected, variants)
+            assert _post(peer.origin, path, expected)[0] == 200
     else:
         with _fake_origin() as origin:
             _assert_fake_variants(origin, path, expected, variants)
 
 
+@pytest.mark.parametrize("peer_kind", ["scripted", "qualification"])
+@pytest.mark.parametrize("attack", ["contractor-cpf", "raw-xml", "wrong-endpoint"])
+def test_fake_rejects_wire_contract_attack(peer_kind: str, attack: str) -> None:
+    operation = "SP-TERMO" if attack == "raw-xml" else "SP-SIT-P"
+    body = _fixture(operation)["body"]
+    path = SERVICES[operation][1]
+    if attack == "contractor-cpf":
+        body["contratante"] = {"numero": "99999999999", "tipo": 1}
+    elif attack == "raw-xml":
+        body["pedidoDados"]["dados"] = '{"xml":"<termo-sintetico-assinado/>"}'
+    else:
+        path = "/Emitir"
+    if peer_kind == "scripted":
+        with FakeSerpro((Reply(),)) as peer:
+            response = _post(peer.origin, path, body)
+    else:
+        with _fake_origin() as origin:
+            response = _post(origin, path, body)
+    assert response[0] == 400
+
+
 def _assert_fake_variants(
-    origin: str, path: str, expected: dict[str, Any], variants: list[tuple[str, str]]
+    origin: str,
+    path: str,
+    expected: dict[str, Any],
+    variants: list[tuple[str, JSONValue]],
 ) -> None:
     assert _post(origin, path, expected)[0] == 200
     for label, value in variants:
@@ -284,9 +331,27 @@ def _assert_fake_variants(
         body = deepcopy(expected)
         body[party]["tipo"] = True
         assert _post(origin, path, body)[0] == 400, f"type-{party}"
+        for invalid in ("", "123.456.789-01", 99999999999999):
+            body = deepcopy(expected)
+            body[party]["numero"] = invalid
+            assert _post(origin, path, body)[0] == 400, f"number-{party}"
+    positive = deepcopy(expected)
+    positive["contratante"] = {"numero": "12ABC34501DE35", "tipo": 2}
+    positive["autorPedidoDados"] = {"numero": "00000000001", "tipo": 1}
+    if positive["pedidoDados"]["idServico"] == "PAGAMENTOS71":
+        positive["pedidoDados"]["dados"] = '{"primeiroDaPagina":0,"tamanhoDaPagina":1}'
+    assert _post(origin, path, positive)[0] == 200
     body = deepcopy(expected)
     body["pedidoDados"]["idSistema"] = "OTHER"
     assert _post(origin, path, body)[0] == 400
+    body = deepcopy(expected)
+    del body["pedidoDados"]["versaoSistema"]
+    assert _post(origin, path, body)[0] == 400
+    if expected["pedidoDados"]["idServico"] == "GERARDASPDF21":
+        body = deepcopy(expected)
+        body["contribuinte"] = {"numero": "00000000001", "tipo": 1}
+        assert _post(origin, path, body)[0] == 400
+    assert _post(origin, path, expected, method="PUT")[0] in (400, 405, 501)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -294,23 +359,17 @@ def test_trial_sitfis_binds_the_trial_bytes_to_the_journal(
     settings: SettingsWrapper,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    clock: Clock,
+    wire_clock: Clock,
 ) -> None:
-    clock.current = datetime(2026, 12, 1, tzinfo=UTC)
-    monkeypatch.setattr(
-        serpro_adapter, "time", SimpleNamespace(time=lambda: clock.now().timestamp())
-    )
     settings.MEDIA_ROOT = tmp_path
     settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "10.00"}
     settings.USAGE_UNIT_PRICES_BRL = sitfis_qualification.SYNTHETIC_PRICES
     monkeypatch.setenv("SERPRO_TRIAL_BEARER", "synthetic-wire-test")
 
-    def no_wait(_seconds: float) -> None:
-        pytest.fail("the loopback trial returns a protocol immediately")
-
     # Keep production transport and protocol code; substitute only the network origin.
-    monkeypatch.setattr(sitfis_qualification, "time", SimpleNamespace(sleep=no_wait))
-    with ScriptedProvider((termo_reply(), protocol_reply(0), report_reply())) as peer:
+    with FakeSerpro(
+        (termo_reply(), protocol_reply(0), report_reply()), trial=True
+    ) as peer:
         monkeypatch.setattr(ProviderTransport, "_origin", lambda _self: peer.origin)
         result = sitfis_qualification.qualify_sitfis("trial")
     assert result.parsed_fields["state"] == "emitido"
@@ -322,19 +381,36 @@ def test_trial_sitfis_binds_the_trial_bytes_to_the_journal(
     _, protocol, emission = peer.requests
     calls = result.parsed_fields["calls"]
     assert isinstance(calls, list)
+    assert [call["operation"] for call in calls] == ["SP-SIT-P", "SP-SIT-R"]
+    by_digest = {}
     for request, call in zip((protocol, emission), calls, strict=True):
         assert isinstance(call, dict)
         assert json.loads(request.body)["pedidoDados"]["versaoSistema"] == "1.0"
         assert call["request_digest"] == hashlib.sha256(request.body).hexdigest()
+        by_digest[call["request_digest"]] = dict(request.headers)["X-Request-Tag"]
     assert json.loads(protocol.body)["pedidoDados"]["dados"] == ""
     # The synthetic trial created exactly one tenant and one consultation.
     tenant = Tenant.objects.get(slug__startswith="pq-serpro-")
+    receipts = [record for record in read_journal(tenant.pk) if record.result is None]
+    assert len(receipts) == 2
     with tenant_context(tenant.pk):
+        rows = list(ProviderCall.objects.order_by("created_at"))
         consultation = FederalConsultation.objects.get()
         assert consultation.scope_digest == hashlib.sha256(protocol.body).hexdigest()
+    before, after = rows
+    assert before.created_at < after.created_at
+    assert before.next_attempt_at == before.created_at
+    assert after.next_attempt_at == after.created_at == wire_clock.now()
+    for receipt in receipts:
+        row = {row.pk: row for row in rows}[receipt.call_id]
+        assert receipt.request_digest == row.request_digest
+        assert by_digest[receipt.request_digest] == receipt.attempt_id.hex
+        assert receipt.occurred_at == row.dispatch_started_at
+        assert f"/{wire_clock.now():%Y/%m}/" in receipt.path
 
 
 @pytest.mark.django_db(transaction=True)
+@pytest.mark.usefixtures("wire_clock")
 @pytest.mark.parametrize("operation", ["SP-SIT-P", "SP-SIT-R"])
 def test_old_revision_refused_at_dispatch(world: World, operation: str) -> None:
     old_body = _expected(operation)

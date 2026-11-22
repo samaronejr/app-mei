@@ -1,5 +1,6 @@
 """Firm termo submissions receive the same single definitive-401 exception."""
 
+import base64
 import json
 
 import pytest
@@ -44,7 +45,7 @@ def test_firm_401_retry_is_fresh_bounded_and_clientless(
     # Given one firm submission and a complete 401, then success or another 401.
     module = serpro_module("adapter")
     parties = module.Parties(CONTRATANTE, FIRM, FIRM)
-    data = {"xml": "<termo-sintetico-assinado/>"}
+    data = {"xml": base64.b64encode(b"<termo-sintetico-assinado/>").decode()}
     wire = module.build_request("SP-TERMO", parties, data)
     row = reserve(termo, termo_request(body=wire.body.decode()))
     ticket = firm_claim(termo.tenant_id, row.pk)
@@ -87,7 +88,7 @@ def test_exhausted_firm_retry_cannot_reopen_at_either_boundary(
     # Given two complete 401s under the real firm protocol and its latest fence.
     module = serpro_module("adapter")
     parties = module.Parties(CONTRATANTE, FIRM, FIRM)
-    data = {"xml": "<termo-sintetico-assinado/>"}
+    data = {"xml": base64.b64encode(b"<termo-sintetico-assinado/>").decode()}
     wire = module.build_request("SP-TERMO", parties, data)
     row = reserve(termo, termo_request(body=wire.body.decode()))
     ticket = firm_claim(termo.tenant_id, row.pk)
@@ -140,7 +141,7 @@ def test_ambiguous_termo_submission_never_resends(
     # Given an upstream outcome which may have accepted the signed termo.
     module = serpro_module("adapter")
     parties = module.Parties(CONTRATANTE, FIRM, FIRM)
-    data = {"xml": "<termo-sintetico-assinado/>"}
+    data = {"xml": base64.b64encode(b"<termo-sintetico-assinado/>").decode()}
     wire = module.build_request("SP-TERMO", parties, data)
     row = reserve(termo, termo_request(body=wire.body.decode()))
     ticket = firm_claim(termo.tenant_id, row.pk)
