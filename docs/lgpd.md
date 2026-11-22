@@ -41,15 +41,23 @@ withdraw it that does not actually exist — which is worse than not asking.
 
 ## 3. The encarregado (DPO)
 
+Encarregado: Samarone Fialho Lima - samarone.lima@lps.ufrj.br
+
+The owner supplied this identity on 2026-10-22 (decision OD-10). Naming it here
+does not prove the channel works: that a message to this address is received and
+answered remains operator evidence for OG-01 (`.evidence/AXRM-OG01-channel.txt`).
+
 | | |
 | --- | --- |
-| **Name** | *(to be filled before the pilot — this row is a deployment blocker, not a placeholder to ship)* |
-| **Contact** | `LGPD_ENCARREGADO_EMAIL` (see `.env.example`); published on the public site and in the intake form's confirmation |
+| **Name** | Samarone Fialho Lima |
+| **Contact** | samarone.lima@lps.ufrj.br. A deployment sets `LGPD_ENCARREGADO_EMAIL` (see `.env.example`) to this address; it is published on the public site and in the intake form's confirmation |
 | **Duties** | Receive requests from data subjects and from the ANPD, advise on processing, and own the incident runbook in §4 |
 
-Every submission through `/lgpd/solicitacao/` is delivered to this address and recorded
-as a `PlatformEvent` with `action="dsr_submitted"`. The event carries the request's
-identifier — never the CPF.
+Every submission through `/lgpd/solicitacao/` is recorded as a `PlatformEvent` with
+`action="dsr_submitted"`, and a notification is then sent to `LGPD_ENCARREGADO_EMAIL`;
+the request keeps the time it was sent or the last sending error, so a failed
+notification is visible rather than assumed delivered. The event carries the
+request's identifier — never the CPF.
 
 ## 4. Incident runbook
 
@@ -105,6 +113,20 @@ a data exposure, not a diagnostic to forward. The outbox canary suite exercises
 the production scrubber, including payloads captured outside the egress redaction
 scope. Record reference ids and timestamps in the incident record, not those
 payloads.
+
+### Provider containment switches (federal stage)
+
+For a suspected incident through the SERPRO integration, the operator sets
+`SERPRO_PAUSED=true` (or `PROVIDERS_PAUSED=true` for every provider) in the
+configuration web, workers and beat read, and restarts them together. Every sweep
+and staff action checks the pause at claim time and again at the dispatch-start
+commit, so a call already claimed is still stopped before it is sent. Restarting
+the `serpro-broker` container drops every SERPRO token it holds in memory; no
+SERPRO call is needed to cut access. A firm's federal stage is left by turning
+`federal_checks` off for its tenant. Pausing deletes nothing: consultations,
+payments, reports, guides and the provider journal stay as records. After a
+restore, providers stay paused until `reconcile_provider_operations` has run
+(`ops/RESTORE.md`).
 
 ## 5. Erasure requests and why some data cannot be deleted
 

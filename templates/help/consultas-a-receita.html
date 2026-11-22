@@ -1,0 +1,53 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    AXRM-051: the federal stage. States and labels come from
+    docs/product/vocabulary.md and the payment, report and guide records. The
+    refusal causes are the SERPRO denial classes of plan todo 45 and the notice is
+    the one todo 50 shows: both describe the stage as activated, with those todos
+    in place. Static copy only.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="quando">
+    <h2 id="quando" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando as consultas aparecem{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}As consultas à Receita Federal só aparecem para o escritório que tem essa etapa ligada. Elas passam pelo Integra Contador do SERPRO e dependem de duas autorizações: o termo de autorização assinado pelo escritório e a procuração eletrônica de cada cliente no e-CAC (códigos 00002 e 00004).{% endblocktranslate %}</p>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Cada consulta mostra o que a Receita informou no dia e na hora da consulta. Ela não atesta a situação da empresa em outra data.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="pagamentos">
+    <h2 id="pagamentos" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Consulta de pagamentos{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Na fila e Em andamento: a consulta foi pedida e ainda não terminou.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Pagamentos encontrados: a Receita informou pagamentos no período consultado. Um pagamento associado à obrigação do mês aparece como "Pagamento encontrado na Receita", com a data da consulta.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Nada localizado: a Receita não informou nenhum pagamento no período consultado. Isso registra a consulta (quando e qual período). Não quer dizer "não pago": o pagamento pode ter sido feito em outro período ou ainda não constar na Receita.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Sem procuração, Falha, Limite de consultas atingido e Incerto: a consulta não chegou a uma resposta sobre os pagamentos. A seção "Quando a Receita recusa" explica cada caso.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="relatorio">
+    <h2 id="relatorio" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Relatório de situação fiscal{% endblocktranslate %}</h2>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Solicitado, Protocolo recebido, Aguardando e Emitindo: a Receita gera o relatório em duas etapas e informa quanto tempo esperar entre elas. O sistema espera esse tempo antes de pedir o relatório.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Emitido: o relatório em PDF foi guardado de forma privada para o escritório. Ele não é publicado para o cliente.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Negado, Falha, Incerto, Protocolo expirado e Limite de tentativas: o relatório não foi obtido. O sistema não pede outro no mesmo mês sozinho; um novo pedido é uma decisão da equipe.{% endblocktranslate %}</li>
+    </ul>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O sistema não lê o conteúdo do relatório. Quem revisa registra o resultado: "Nada registrado nas fontes", que mostra a frase "Nenhuma pendência registrada nas fontes verificadas em" seguida da data da emissão; "Pendências registradas", em que cada pendência vira uma pendência do ciclo com responsável; ou "Relatório ilegível".{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="guia">
+    <h2 id="guia" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Guia DAS oficial{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}A equipe pede a guia DAS do mês no ciclo; ela nunca é pedida automaticamente. A guia fica privada até ser publicada para o cliente com aprovação. Emitir a guia não é pagar: o pagamento só aparece quando a consulta de pagamentos o encontra.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="recusas">
+    <h2 id="recusas" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Quando a Receita recusa{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Uma recusa pode ser cobrada pelo provedor. Por isso o sistema não repete uma consulta recusada sozinho. Na etapa federal, o que acontece depende da causa que a Receita informa:{% endblocktranslate %}</p>
+    <ul class="list-disc space-y-2 pl-5 text-sm text-ink-600">
+      <li>{% blocktranslate trimmed %}Procuração do cliente: a tela mostra "Sem procuração" para aquele cliente, abre uma pendência e não faz novas consultas dele até a equipe registrar e conferir a procuração de novo.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Termo de autorização do escritório: abre um aviso para o escritório e suspende as consultas do escritório até o termo ser enviado de novo. Nenhum cliente é marcado como sem procuração.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Credencial da plataforma ou serviço não liberado: o problema é da plataforma. A equipe da plataforma é avisada e as consultas ficam suspensas até ela resolver. O escritório não precisa fazer nada.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Falha do provedor: a tentativa termina como falha e nada muda nas autorizações. A próxima consulta agendada ou um novo pedido da equipe tenta de novo.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Código desconhecido: a consulta fica Incerto, com o código mostrado; nada muda nas autorizações e a consulta não é repetida sozinha.{% endblocktranslate %}</li>
+      <li>{% blocktranslate trimmed %}Limite de consultas atingido e Integração pausada: o escritório chegou ao limite do mês ou a integração foi pausada. Nenhuma consulta é feita até isso mudar.{% endblocktranslate %}</li>
+    </ul>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="aviso">
+    <h2 id="aviso" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}O aviso da etapa federal{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Durante a etapa federal, o ciclo e a tela de conclusão avisam: "A conclusão do ciclo ainda não exige o relatório de situação fiscal revisado nem a consulta de pagamentos completa. Confira-os antes de concluir." Um pagamento encontrado na Receita e associado à obrigação do mês já conta como evidência da guia, e uma pendência registrada na revisão do relatório já impede a conclusão. O aviso sai quando a conclusão passar a exigir o relatório revisado e a consulta completa.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

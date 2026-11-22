@@ -1,0 +1,24 @@
+{% extends "help/_layout.html" %}{% load i18n %}
+{% block article %}
+  {% comment %}
+    AXRM-051: the limits of the product for the federal stage. Excluded operations
+    follow docs/decisions/0008-provider-integrations-and-credential-custody.md.
+    Static copy only.
+  {% endcomment %}
+  <section class="card p-6 space-y-3" aria-labelledby="declaracoes">
+    <h2 id="declaracoes" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Não transmite declarações{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O {{ product_name }} consulta a Receita e obtém documentos oficiais, como o relatório de situação fiscal e a guia DAS. Ele não transmite declarações, como a declaração anual do MEI, não muda opções de regime e não pede parcelamento. Isso continua sendo feito pela equipe nos sistemas oficiais.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="pagamento">
+    <h2 id="pagamento" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Não faz pagamentos{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O {{ product_name }} não paga guias nem débitos e não guarda dados bancários. A guia DAS que ele emite é um documento para o cliente pagar. Um pagamento só aparece como "Pagamento encontrado na Receita" quando a consulta de pagamentos o encontra.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="iss">
+    <h2 id="iss" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Não calcula ISS{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}O {{ product_name }} não apura nem calcula ISS e não emite guias municipais.{% endblocktranslate %}</p>
+  </section>
+  <section class="card p-6 space-y-3" aria-labelledby="atestado">
+    <h2 id="atestado" class="text-sm font-semibold text-ink-700">{% blocktranslate trimmed %}Não atesta a situação da empresa{% endblocktranslate %}</h2>
+    <p class="text-sm text-ink-600">{% blocktranslate trimmed %}Uma consulta mostra o que a fonte informou no momento da consulta. Nenhum resultado é uma certidão, e as decisões fiscais continuam com o contador responsável.{% endblocktranslate %}</p>
+  </section>
+{% endblock %}

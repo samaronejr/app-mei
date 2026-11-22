@@ -33,10 +33,32 @@ provider:
 What a call *produces* lives where R1 already keeps that kind of fact. Fiscal documents,
 their revisions and federal observations (payments found, fiscal-situation reports, DAS
 guides) live in `apps/obligations`. Reviews, exceptions and approvals live in
-`apps/cycles`. The dependency points one way: `integrations` writes into those apps
-through their services, and `obligations` and `cycles` never import `integrations`. A
-fiscal record therefore stays readable and reviewable after a provider is switched off
-or replaced.
+`apps/cycles`. `integrations` writes into those apps through their services.
+
+**Dependency rule, as built (amended by AXRM-051, before the custody review of todo
+50).** This section first said that `obligations` and `cycles` never import
+`integrations`. The delivered code does, and this ADR accepts the exception for these
+uses only:
+
+- views and routes compose integration panels and actions: `apps/cycles/cycle_views.py`
+  (the DAS guide panel), `apps/cycles/workspace_views.py` (the authority panel),
+  `apps/cycles/urls.py` (the guide route) and `apps/cycles/bulk_views.py` (the guide
+  refusal labels);
+- the bulk DAS guide effect runs the PGMEI service: `apps/cycles/bulk_runner.py` and
+  `apps/cycles/bulk_effects.py`, importing it inside the function;
+- the federal records read provider call records: `apps/obligations/federal.py`.
+
+Pending, not yet on this branch: the fiscal document register of AXRM-021 adds
+`apps/obligations/fiscal_ingest.py`, which reads client links and authority, and
+AXRM-022 adds a Ciencia record reader to the existing
+`apps/cycles/workspace_queries.py`; both arrive with the other wave-A lane. The
+retention part of AXRM-051 amends this list for any read of SERPRO records it adds.
+The wave candidate's review re-checks the list against the merged code.
+
+What the rule protected still holds: no `obligations` or `cycles` table has a foreign
+key into `integrations`, and no migration of theirs depends on an `integrations`
+migration. A fiscal record therefore stays readable and reviewable after a provider is
+switched off or replaced. A new import outside this list needs an amendment here.
 
 ### Operation classes and the allowlist
 
@@ -109,8 +131,15 @@ it to each new model and to a settings scan.
 ## Threat model
 
 This section is the threat-model record R1 decision OD-06 asked for. It closes OD-06
-only after it is reviewed in the final verification wave (F2) and the owner reads it
-back; until then OD-06 stays open in `ops/AXORIM-R1-GO-NO-GO.md`.
+in two steps (plan `axorim-regional-mvp` A12, amended by AXRM-051), each with the
+owner's read-back. First, todo 50's independent custody review takes each threat
+below and checks its control against the code delivered for the federal stage and the
+SERPRO broker, or records it as not applicable to a stage without capture (the Focus
+download links, the capture cursors, the Ciencia approval) and deferred to F2; that
+review closes the federal part, which the federal stage and the SERPRO grants need.
+Second, the final verification wave (F2) reviews the whole section, which the Focus
+grants and the full cohort need. Until each step's evidence exists, OD-06 stays open
+in `ops/AXORIM-R1-GO-NO-GO.md`.
 
 | Threat | Where it enters | Control |
 | --- | --- | --- |

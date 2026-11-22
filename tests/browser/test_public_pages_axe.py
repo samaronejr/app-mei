@@ -1,4 +1,4 @@
-"""axe-core on the anonymous public and help pages, at 1440x900 and 360x760.
+"""axe-core on the anonymous public and help pages, at 1440x900, 390x844 and 360x760.
 
 T29 added `/ajuda/` (index + nine articles) plus apex-only `/produto/` and
 `/precos/`. The existing axe sweep (test_a11y_axe) covers signed-in firm and
@@ -7,9 +7,10 @@ route is opened unsigned-in, the single visible H1 is asserted, axe runs, and
 every serious or critical violation across the whole matrix is collected before
 the test fails, so one run names them all.
 
-360 px (not the 390 of the shared fixture) is the narrow width the T29 reviewer
-required for these pages. An axe pass is not a WCAG claim: the manual NVDA and
-VoiceOver passes in ops/AXORIM-A11Y-CHECKLIST.md stay open with the operator.
+360 px is the narrow width the T29 reviewer required for these pages; 390x844 is
+the regional matrix width (AXRM-051), kept alongside it. An axe pass is not a WCAG
+claim: the manual NVDA and VoiceOver passes in ops/AXORIM-A11Y-CHECKLIST.md stay open
+with the operator.
 """
 
 from collections.abc import Iterator
@@ -26,6 +27,7 @@ from tests.ui.factories import make_firm
 
 PUBLIC_WIDTHS: Final = {
     "desktop-1440": ViewportSize(width=1440, height=900),
+    "mobile-390": ViewportSize(width=390, height=844),
     "mobile-360": ViewportSize(width=360, height=760),
 }
 
