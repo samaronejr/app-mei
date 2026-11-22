@@ -16,6 +16,7 @@ the copy as rendered (AXRM-051), because a page's title and summary come from
 
 import re
 from dataclasses import replace
+from datetime import date
 from html.parser import HTMLParser
 from http import HTTPStatus
 from pathlib import Path
@@ -61,16 +62,11 @@ FORBIDDEN_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
     "entregue": re.compile(r"\bentregues?\b", re.IGNORECASE),
     "conformidade garantida": re.compile(r"conformidade\s+garantida", re.IGNORECASE),
     "sem erros": re.compile(r"\bsem\s+erros?\b", re.IGNORECASE),
+}
+REGIONAL_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
     # The regional forbidden wording of docs/product/vocabulary.md (AXRM-051).
     "regular": re.compile(r"\bregular(?:es)?\b", re.IGNORECASE),
     "em dia": re.compile(r"\bem\s+dia\b", re.IGNORECASE),
-    # Allowed only as "sem pendências nas fontes verificadas em {data}": the
-    # sources AND a date (dd/mm[/aaaa], or the template variable that renders it).
-    "sem pendências": re.compile(
-        r"\bsem\s+pend[êe]ncias?\b(?!\s+nas\s+fontes\s+verificadas\s+em\s+"
-        r"(?:\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\{\{[^}]+\}\}))",
-        re.IGNORECASE,
-    ),
     "confirmado pela prefeitura": re.compile(
         r"\bconfirmad[oa]s?\s+pela\s+prefeitura\b", re.IGNORECASE
     ),
@@ -79,25 +75,38 @@ FORBIDDEN_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
 FEDERAL_STAGE_PAGES: Final = ("consultas-a-receita", "o-que-nao-faz")
 PRICE_AMOUNT: Final = re.compile(r"R\$\s*\d")
 UNCLEARED_NAME: Final = re.compile(r"axorim", re.IGNORECASE)
-# Rendered copy has no template variables left: only a real date is allowed there,
-# so `{{ emitted_on }}` that reached the page literally is a forbidden claim.
+# One rendered text per page (title, view-supplied summaries and body) carries every
+# AXRM-051 check; the R1 source scans below stay as they were.
 RENDERED_CLAIMS: Final = {
     **FORBIDDEN_CLAIMS,
-    "sem pendências": re.compile(
-        r"\bsem\s+pend[êe]ncias?\b(?!\s+nas\s+fontes\s+verificadas\s+em\s+"
-        r"\d{1,2}/\d{1,2}(?:/\d{2,4})?\b)",
-        re.IGNORECASE,
-    ),
+    **REGIONAL_CLAIMS,
+    "price amount before OD-07": PRICE_AMOUNT,
     "public name before OD-01": UNCLEARED_NAME,
 }
-# OD-R4a keeps the PAGTOWEB receipt (SP-COMP) out of ordinary use unless it is
-# authorized on its own, so the federal-stage pages never say the product gets it.
-# A receipt the client sends is ordinary evidence and is not matched.
-RECEIPT_OFFER: Final = re.compile(
-    r"\b(?:obt[ée]m|emite|gera|pede|solicita|busca)\b[^.]{0,120}"
-    r"\bcomprovantes?\s+de\s+(?:pagamento|arrecada[çc][ãa]o)",
+SEM_PENDENCIAS: Final = re.compile(r"\bsem\s+pend[êe]ncias?\b", re.IGNORECASE)
+DATED_SOURCES: Final = re.compile(
+    r"\s+nas\s+fontes\s+verificadas\s+em\s+(\d{1,2})/(\d{1,2})(?:/(\d{4}))?\b",
     re.IGNORECASE,
 )
+
+
+def _real_date(day: str, month: str, year: str | None) -> bool:
+    try:
+        # 2000 is a leap year, so a 29/02 written without its year is a real date.
+        date(int(year or 2000), int(month), int(day))
+    except ValueError:
+        return False
+    return True
+
+
+def undated_sem_pendencias(text: str) -> bool:
+    """Tell whether "sem pendências" appears without its sources and a real date."""
+    for found in SEM_PENDENCIAS.finditer(text):
+        dated = DATED_SOURCES.match(text, found.end())
+        if dated is None or not _real_date(*dated.groups()):
+            return True
+    return False
+
 
 PUBLIC_ROUTES: Final = ("public-product", "public-pricing")
 
@@ -148,12 +157,17 @@ def _rendered(client: Client, name: str) -> str:
 def _rendered_hits() -> list[str]:
     client = Client(SERVER_NAME="localhost")
     names = ["help-index", *(page.url_name for page in HELP_PAGES), *PUBLIC_ROUTES]
-    return [
-        f"{name}: {phrase}"
-        for name in names
-        for phrase, pattern in RENDERED_CLAIMS.items()
-        if pattern.search(_rendered(client, name))
-    ]
+    hits: list[str] = []
+    for name in names:
+        text = _rendered(client, name)
+        hits += [
+            f"{name}: {phrase}"
+            for phrase, pattern in RENDERED_CLAIMS.items()
+            if pattern.search(text)
+        ]
+        if undated_sem_pendencias(text):
+            hits.append(f"{name}: sem pendências")
+    return hits
 
 
 def test_the_scan_covers_every_public_and_help_page() -> None:
@@ -181,32 +195,10 @@ def test_no_public_or_help_template_makes_a_forbidden_claim(phrase: str) -> None
         ("entregue", "Mensagem entregue ao cliente."),
         ("conformidade garantida", "Conformidade garantida com a Receita."),
         ("sem erros", "Fechamento sem erros."),
-        ("regular", "A empresa regular perante a Receita."),
-        ("em dia", "Tudo em dia com o fisco."),
-        ("sem pendências", "Cliente sem pendências."),
-        ("confirmado pela prefeitura", "ISS confirmado pela prefeitura."),
-        ("100%", "Cobertura de 100% das notas."),
-        ("sem pendências", "Sem pendências nas fontes verificadas em breve."),
-        ("sem pendências", "Sem pendências nas fontes verificadas em março."),
     ],
 )
 def test_each_detector_finds_its_planted_phrase(phrase: str, planted: str) -> None:
     assert FORBIDDEN_CLAIMS[phrase].search(planted), planted
-
-
-@pytest.mark.parametrize(
-    "allowed",
-    [
-        "Sem pendências nas fontes verificadas em 03/11.",
-        "Sem pendências nas fontes verificadas em 03/11/2026.",
-        "Sem pendências nas fontes verificadas em {{ emitted_on }}.",
-    ],
-)
-def test_the_dated_sources_sentence_is_the_one_allowed_sem_pendencias(
-    allowed: str,
-) -> None:
-    assert not FORBIDDEN_CLAIMS["sem pendências"].search(allowed)
-    assert not FORBIDDEN_CLAIMS["regular"].search("Regularize o cadastro.")
 
 
 @pytest.mark.django_db
@@ -216,58 +208,47 @@ def test_no_rendered_public_or_help_page_makes_a_forbidden_claim() -> None:
 
 
 @pytest.mark.django_db
-def test_the_rendered_scan_reads_the_summaries_the_views_supply(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("summary", "hit"),
+    [
+        ("Atestamos que a empresa regular nada deve.", "regular"),
+        ("Tudo em dia com o fisco.", "em dia"),
+        ("ISS confirmado pela prefeitura.", "confirmado pela prefeitura"),
+        ("Cobertura de 100% das notas.", "100%"),
+        ("A partir de R$ 390 por mês.", "price amount before OD-07"),
+        ("Sem pendências.", "sem pendências"),
+        ("Sem pendências nas fontes verificadas em breve.", "sem pendências"),
+        ("Sem pendências nas fontes verificadas em 31/02/2026.", "sem pendências"),
+        (
+            "Sem pendências nas fontes verificadas em {{ emitted_on }}.",
+            "sem pendências",
+        ),
+    ],
+)
+def test_a_view_supplied_summary_is_read_as_rendered(
+    monkeypatch: pytest.MonkeyPatch, summary: str, hit: str
 ) -> None:
     first, *rest = HELP_PAGES
-    planted = replace(
-        first, summary=gettext_lazy("Atestamos que a empresa regular nada deve.")
-    )
+    planted = replace(first, summary=gettext_lazy(summary))
     monkeypatch.setattr(public_views, "HELP_PAGES", (planted, *rest))
-    assert "help-index: regular" in _rendered_hits()
-
-
-@pytest.mark.django_db
-def test_a_template_variable_shown_literally_is_not_a_date(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    literal = "Sem pendências nas fontes verificadas em {{ emitted_on }}."
-    # Allowed in template source, where the variable renders the date ...
-    assert not FORBIDDEN_CLAIMS["sem pendências"].search(literal)
-    # ... but a summary is not a template: the braces reach the page as text.
-    first, *rest = HELP_PAGES
-    planted = replace(first, summary=gettext_lazy(literal))
-    monkeypatch.setattr(public_views, "HELP_PAGES", (planted, *rest))
-    assert "help-index: sem pendências" in _rendered_hits()
-    assert not RENDERED_CLAIMS["sem pendências"].search(
-        "Sem pendências nas fontes verificadas em 03/11/2026."
-    )
-
-
-@pytest.mark.django_db
-def test_the_federal_stage_pages_do_not_offer_the_payment_receipt() -> None:
-    client = Client(SERVER_NAME="localhost")
-    offered = [
-        slug
-        for slug in FEDERAL_STAGE_PAGES
-        if RECEIPT_OFFER.search(_rendered(client, f"help-{slug}"))
-    ]
-    assert offered == [], offered
+    assert f"help-index: {hit}" in _rendered_hits()
 
 
 @pytest.mark.parametrize(
-    ("text", "offers"),
+    ("text", "flagged"),
     [
-        ("O produto obtém o relatório, a guia DAS e o comprovante de pagamento.", True),
-        ("O sistema emite o comprovante de arrecadação do pagamento.", True),
-        ("O comprovante de pagamento enviado pelo cliente é evidência manual.", False),
-        ("Pagamento informado: o comprovante foi registrado pela equipe.", False),
+        ("Sem pendências nas fontes verificadas em 03/11/2026.", False),
+        ("Sem pendências nas fontes verificadas em 29/02.", False),
+        ("Sem pendências nas fontes verificadas em 29/02/2027.", True),
+        ("Sem pendências nas fontes verificadas em 03/13.", True),
+        ("Regularize o cadastro; sem pendências nas fontes.", True),
     ],
 )
-def test_the_receipt_guard_matches_the_offer_not_the_word(
-    text: str, offers: bool
+def test_sem_pendencias_needs_its_sources_and_a_real_date(
+    text: str, flagged: bool
 ) -> None:
-    assert bool(RECEIPT_OFFER.search(text)) is offers, text
+    assert undated_sem_pendencias(text) is flagged, text
+    assert not REGIONAL_CLAIMS["regular"].search("Regularize o cadastro.")
 
 
 @pytest.mark.django_db
