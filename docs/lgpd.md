@@ -50,7 +50,7 @@ answered remains operator evidence for OG-01 (`.evidence/AXRM-OG01-channel.txt`)
 | | |
 | --- | --- |
 | **Name** | Samarone Fialho Lima |
-| **Contact** | samarone.lima@lps.ufrj.br. A deployment sets `LGPD_ENCARREGADO_EMAIL` (see `.env.example`) to this address, which receives the request notifications. No product page shows the address: after a submission, `/lgpd/solicitacao/recebida/` says only that the request was registered and forwarded to the encarregado |
+| **Contact** | samarone.lima@lps.ufrj.br. A deployment sets `LGPD_ENCARREGADO_EMAIL` (see `.env.example`) to this address, which receives the request notifications. No product page shows the address; the confirmation at `/lgpd/solicitacao/recebida/` does not display it |
 | **Duties** | Receive requests from data subjects and from the ANPD, advise on processing, and own the incident runbook in §4 |
 
 Every submission through `/lgpd/solicitacao/` is recorded as a `PlatformEvent` with
