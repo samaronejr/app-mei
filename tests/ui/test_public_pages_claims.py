@@ -79,14 +79,24 @@ FORBIDDEN_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
 FEDERAL_STAGE_PAGES: Final = ("consultas-a-receita", "o-que-nao-faz")
 PRICE_AMOUNT: Final = re.compile(r"R\$\s*\d")
 UNCLEARED_NAME: Final = re.compile(r"axorim", re.IGNORECASE)
+# Rendered copy has no template variables left: only a real date is allowed there,
+# so `{{ emitted_on }}` that reached the page literally is a forbidden claim.
 RENDERED_CLAIMS: Final = {
     **FORBIDDEN_CLAIMS,
+    "sem pendências": re.compile(
+        r"\bsem\s+pend[êe]ncias?\b(?!\s+nas\s+fontes\s+verificadas\s+em\s+"
+        r"\d{1,2}/\d{1,2}(?:/\d{2,4})?\b)",
+        re.IGNORECASE,
+    ),
     "public name before OD-01": UNCLEARED_NAME,
 }
 # OD-R4a keeps the PAGTOWEB receipt (SP-COMP) out of ordinary use unless it is
-# authorized on its own, so the federal-stage pages never offer it.
-UNAUTHORIZED_RECEIPT: Final = re.compile(
-    r"comprovante\s+de\s+(?:pagamento|arrecada)", re.IGNORECASE
+# authorized on its own, so the federal-stage pages never say the product gets it.
+# A receipt the client sends is ordinary evidence and is not matched.
+RECEIPT_OFFER: Final = re.compile(
+    r"\b(?:obt[ée]m|emite|gera|pede|solicita|busca)\b[^.]{0,120}"
+    r"\bcomprovantes?\s+de\s+(?:pagamento|arrecada[çc][ãa]o)",
+    re.IGNORECASE,
 )
 
 PUBLIC_ROUTES: Final = ("public-product", "public-pricing")
@@ -218,15 +228,46 @@ def test_the_rendered_scan_reads_the_summaries_the_views_supply(
 
 
 @pytest.mark.django_db
+def test_a_template_variable_shown_literally_is_not_a_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    literal = "Sem pendências nas fontes verificadas em {{ emitted_on }}."
+    # Allowed in template source, where the variable renders the date ...
+    assert not FORBIDDEN_CLAIMS["sem pendências"].search(literal)
+    # ... but a summary is not a template: the braces reach the page as text.
+    first, *rest = HELP_PAGES
+    planted = replace(first, summary=gettext_lazy(literal))
+    monkeypatch.setattr(public_views, "HELP_PAGES", (planted, *rest))
+    assert "help-index: sem pendências" in _rendered_hits()
+    assert not RENDERED_CLAIMS["sem pendências"].search(
+        "Sem pendências nas fontes verificadas em 03/11/2026."
+    )
+
+
+@pytest.mark.django_db
 def test_the_federal_stage_pages_do_not_offer_the_payment_receipt() -> None:
     client = Client(SERVER_NAME="localhost")
     offered = [
         slug
         for slug in FEDERAL_STAGE_PAGES
-        if UNAUTHORIZED_RECEIPT.search(_rendered(client, f"help-{slug}"))
+        if RECEIPT_OFFER.search(_rendered(client, f"help-{slug}"))
     ]
     assert offered == [], offered
-    assert UNAUTHORIZED_RECEIPT.search("a guia DAS e o comprovante de pagamento")
+
+
+@pytest.mark.parametrize(
+    ("text", "offers"),
+    [
+        ("O produto obtém o relatório, a guia DAS e o comprovante de pagamento.", True),
+        ("O sistema emite o comprovante de arrecadação do pagamento.", True),
+        ("O comprovante de pagamento enviado pelo cliente é evidência manual.", False),
+        ("Pagamento informado: o comprovante foi registrado pela equipe.", False),
+    ],
+)
+def test_the_receipt_guard_matches_the_offer_not_the_word(
+    text: str, offers: bool
+) -> None:
+    assert bool(RECEIPT_OFFER.search(text)) is offers, text
 
 
 @pytest.mark.django_db
