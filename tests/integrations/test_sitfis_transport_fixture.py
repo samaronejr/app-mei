@@ -21,7 +21,7 @@ def test_synthetic_sitfis_transport_has_explicit_test_admission() -> None:
         response = permitted_send(
             ProviderTransport("serpro", "fake", peer.origin),
             "SP-SIT-R",
-            serpro_request("RELATORIOSITFIS92", "SITFIS"),
+            serpro_request("RELATORIOSITFIS92", "SITFIS", version="2.0"),
         )
         assert response.body == pdf
         assert [request.path for request in peer.requests] == ["/Emitir"]
@@ -36,5 +36,7 @@ def test_synthetic_fixture_does_not_admit_an_unguarded_production_window() -> No
             ),
             pytest.raises(EnvioNaoAutorizado),
         ):
-            client.send("SP-SIT-R", serpro_request("RELATORIOSITFIS92", "SITFIS"))
+            client.send(
+                "SP-SIT-R", serpro_request("RELATORIOSITFIS92", "SITFIS", version="2.0")
+            )
         assert peer.requests == []

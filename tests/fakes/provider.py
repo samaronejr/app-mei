@@ -95,7 +95,7 @@ class _Handler(BaseHTTPRequestHandler):
             Received(self.command, self.path, body, tuple(self.headers.items()))
         )
         peer.received.set()
-        reply = peer.replies.popleft() if peer.replies else Reply(status=500)
+        reply = peer.reply_for(peer.requests[-1])
         if reply.reset:
             self.connection.shutdown(socket.SHUT_RDWR)
             return
@@ -143,6 +143,10 @@ class ScriptedProvider:
     def _serve(self) -> None:
         while not self.closed.is_set():
             self.server.handle_request()
+
+    def reply_for(self, request: Received) -> Reply:
+        """Consume one scripted outcome for an accepted request."""
+        return self.replies.popleft() if self.replies else Reply(status=500)
 
     def __enter__(self) -> Self:
         return self

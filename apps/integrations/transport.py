@@ -106,7 +106,9 @@ class ProviderTransport:
     def send(self, operation: str, request: ProviderRequest) -> ProviderResponse:
         """Resolve before touching the network; discard every credential on PDF hop."""
         assert_no_transaction()
-        route, path = resolve(self.provider, operation, request)
+        route, path = resolve(
+            self.provider, operation, request, environment=self.environment
+        )
         origin = self._origin()
         open_wire(self.provider, self.environment, operation)
         limits = WireLimits(

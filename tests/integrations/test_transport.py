@@ -26,7 +26,7 @@ KEY = "0" * 44
 
 
 def serpro_request(
-    service: str = "PAGAMENTOS71", system: str = "PAGTOWEB"
+    service: str = "PAGAMENTOS71", system: str = "PAGTOWEB", *, version: str = "1.0"
 ) -> ProviderRequest:
     return ProviderRequest(
         body=json.dumps(
@@ -34,7 +34,8 @@ def serpro_request(
                 "pedidoDados": {
                     "idSistema": system,
                     "idServico": service,
-                    "versaoSistema": "1.0",
+                    "versaoSistema": version,
+                    "dados": "{}",
                 }
             }
         ).encode()

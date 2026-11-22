@@ -1,0 +1,17 @@
+{
+  "production_page": "https://apicenter.estaleiro.serpro.gov.br/documentacao/api-integra-contador/pt/solucoes/integra-pagamento/pagtoweb/servicos/emite_comprovante_pagamento/",
+  "production_verified": true,
+  "read_date": "2026-11-22",
+  "example_note": "Version 1.0 is from the PedidoDados identification, above the example.",
+  "body": {
+    "contratante": {"numero": "99999999999999", "tipo": 2},
+    "autorPedidoDados": {"numero": "99999999999", "tipo": 1},
+    "contribuinte": {"numero": "99999999999", "tipo": 1},
+    "pedidoDados": {
+      "idSistema": "PAGTOWEB",
+      "idServico": "COMPARRECADACAO72",
+      "versaoSistema": "1.0",
+      "dados": "{\"numeroDocumento\": \"99999999999999999\"}"
+    }
+  }
+}

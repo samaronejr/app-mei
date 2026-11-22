@@ -37,6 +37,11 @@ from apps.integrations.serpro.qualification import (
     register_scenario,
     synthetic_termo,
 )
+from apps.integrations.serpro.qualification_wire import (
+    ExpectedWire,
+    inspect_wire,
+    refusal_body,
+)
 from apps.integrations.serpro.sitfis import (
     FINAL_STATES,
     advance_situation_report,
@@ -51,6 +56,13 @@ if TYPE_CHECKING:
 
 SYNTHETIC_PRICES: Final = {"serpro_consulta": "0.24", "serpro_emissao": "0.32"}
 SYNTHETIC_PDF: Final = b"%PDF-1.7\n% synthetic qualification report\n%%EOF\n"
+# Reviewed production examples (tests/fixtures/providers/serpro/wire), not
+# the sender's catalog: regressing the sender must fail this qualification.
+_FAKE_WIRE: Final = {
+    "ENVIOXMLASSINADO81": ExpectedWire("1.0"),
+    "SOLICITARPROTOCOLO91": ExpectedWire("2.0", empty_dados=True),
+    "RELATORIOSITFIS92": ExpectedWire("2.0"),
+}
 # The longest provider-mandated wait the operator run sits through per attempt.
 MAX_QUALIFICATION_WAIT: Final = timedelta(minutes=5)
 
@@ -86,12 +98,9 @@ def _fake_origin() -> Iterator[str]:
 
         def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            try:
-                service = json.loads(raw)["pedidoDados"]["idServico"]
-            except (ValueError, KeyError, TypeError):
-                service = ""
-            body = replies.get(service, b"")
-            self.send_response(200 if body else 404)
+            service, error = inspect_wire(raw, _FAKE_WIRE)
+            body = refusal_body(error) if error else replies[service]
+            self.send_response(400 if error else 200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

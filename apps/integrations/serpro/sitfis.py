@@ -860,7 +860,7 @@ class _Step:
     data: JSONValue = field(repr=False)
     parties: Parties = field(repr=False)
     link_id: UUID
-    environment: str
+    environment: Environment
 
 
 def _admissible(client: ClientCompany) -> tuple[ClientProviderLink, Parties]:
@@ -904,7 +904,12 @@ def request_situation_report(
             raise PermissionDenied
     link, parties = _admissible(client)
     digest = hashlib.sha256(
-        build_request(PROTOCOL_OPERATION, parties, "").body
+        build_request(
+            PROTOCOL_OPERATION,
+            parties,
+            None,
+            environment=cast("Environment", link.connection.environment),
+        ).body
     ).hexdigest()
     with transaction.atomic():
         locked = ClientCompany.objects.select_for_update(no_key=True).get(pk=client.pk)
@@ -983,12 +988,18 @@ def _step(
         _finish(report, FiscalReportState.FALHA, operation, None)
         return None
     data: JSONValue = (
-        ""
+        None
         if operation == PROTOCOL_OPERATION
         else {"protocoloRelatorio": report.protocol}
     )
     return _Step(
-        operation, key, attempt, data, parties, link.pk, link.connection.environment
+        operation,
+        key,
+        attempt,
+        data,
+        parties,
+        link.pk,
+        cast("Environment", link.connection.environment),
     )
 
 
@@ -1210,7 +1221,9 @@ def _deferred(
 
 def _run(tenant_id: UUID, report_id: UUID, step: _Step) -> None:
     """Make (or resume) the one call; each protocol phase owns its transaction."""
-    body = build_request(step.operation, step.parties, step.data).body
+    body = build_request(
+        step.operation, step.parties, step.data, environment=step.environment
+    ).body
     request = CallRequest(
         step.operation, step.key, hashlib.sha256(body).hexdigest(), step.key
     )
@@ -1223,7 +1236,7 @@ def _run(tenant_id: UUID, report_id: UUID, step: _Step) -> None:
             return  # Another runner's live lease, refusal or quarantined lease.
         adapter = SitfisAdapter(
             SerproAdapter(
-                _transport(cast("Environment", step.environment)),
+                _transport(step.environment),
                 step.parties,
                 step.data,
             ),

@@ -120,7 +120,8 @@ def register_serpro_operations() -> None:
             Operation(
                 code,
                 "serpro",
-                "v1",
+                # Reserve, claim and dispatch already fence on this revision.
+                "v2" if code in {"SP-SIT-P", "SP-SIT-R"} else "v1",
                 kind,
                 "federal_checks",
                 billing,

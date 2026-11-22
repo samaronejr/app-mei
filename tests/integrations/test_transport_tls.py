@@ -139,17 +139,17 @@ def test_focus_pdf_one_hop_drops_all_credentials(
 
 
 @pytest.mark.parametrize(
-    ("operation", "service", "system", "read_timeout"),
+    ("operation", "request_args", "version", "read_timeout"),
     [
-        ("SP-PAG", "PAGAMENTOS71", "PAGTOWEB", 30.0),
-        ("SP-SIT-R", "RELATORIOSITFIS92", "SITFIS", 60.0),
+        ("SP-PAG", ("PAGAMENTOS71", "PAGTOWEB"), "1.0", 30.0),
+        ("SP-SIT-R", ("RELATORIOSITFIS92", "SITFIS"), "2.0", 60.0),
     ],
 )
 def test_socket_is_configured_with_split_operation_timeouts(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
-    service: str,
-    system: str,
+    request_args: tuple[str, str],
+    version: str,
     read_timeout: float,
 ) -> None:
     seen: list[float | None] = []
@@ -164,7 +164,7 @@ def test_socket_is_configured_with_split_operation_timeouts(
         permitted_send(
             ProviderTransport("serpro", "fake", peer.origin),
             operation,
-            serpro_request(service, system),
+            serpro_request(*request_args, version=version),
         )
     assert 5.0 in seen
     assert read_timeout in seen

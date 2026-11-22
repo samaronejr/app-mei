@@ -1,13 +1,16 @@
 """SERPRO envelopes, escaped results, billing and definitive authentication refusals."""
 
 import json
+from contextlib import nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
 import pytest
+from django.utils import timezone
 
+from apps.integrations.call_dispatch import _wire_window
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import (
     OperacaoNaoPermitida,
@@ -69,10 +72,21 @@ def test_catalog_envelope_uses_only_the_allowlisted_route(
     )
     with FakeSerpro((Reply(),)) as peer:
         # When the envelope uses AXRM-011's allowlist and single-use window.
-        permitted_send(
-            ProviderTransport("serpro", "fake", peer.origin), operation, request
-        )
+        transport = ProviderTransport("serpro", "fake", peer.origin)
+        if operation == "SP-SIT-R":
+            # Isolate routing from the domain emission guard tested by the SITFIS suite.
+            with _wire_window(
+                "serpro",
+                "fake",
+                operation,
+                timezone.now() + timedelta(hours=1),
+                guard=nullcontext,
+            ):
+                response = transport.send(operation, request)
+        else:
+            response = permitted_send(transport, operation, request)
         # Then only the registered operation reaches the expected path.
+        assert response.status == 200
         assert [(r.method, r.path) for r in peer.requests] == [("POST", path)]
         pedido = json.loads(peer.requests[0].body)["pedidoDados"]
         assert (pedido["idSistema"], pedido["idServico"]) == (system, service)

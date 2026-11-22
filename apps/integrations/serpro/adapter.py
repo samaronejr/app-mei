@@ -141,7 +141,9 @@ class SerproAdapter:
 
     def _request(self, dispatch: Dispatch | FirmDispatch) -> ProviderRequest:
         operation = dispatch.receipt.operation
-        request = build_request(operation, self.parties, self.data)
+        request = build_request(
+            operation, self.parties, self.data, environment=self.transport.environment
+        )
         if hashlib.sha256(request.body).hexdigest() != dispatch.receipt.request_digest:
             code = "pedido_divergente"
             raise TransportFailure(code)
