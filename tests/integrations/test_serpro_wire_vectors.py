@@ -76,15 +76,50 @@ def _expected(operation: str) -> dict[str, Any]:
 
 
 def _post(
-    origin: str, path: str, body: dict[str, Any], *, method: str = "POST"
+    origin: str, path: str, body: dict[str, Any] | bytes, *, method: str = "POST"
 ) -> tuple[int, bytes]:
     connection = HTTPConnection(origin.removeprefix("http://"), timeout=5)
     try:
-        connection.request(method, path, json.dumps(body).encode())
+        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+        connection.request(method, path, raw)
         response = connection.getresponse()
         return response.status, response.read()
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize("peer_kind", ["scripted", "qualification"])
+@pytest.mark.parametrize("encoding", ["utf-16le", "utf-16be", "utf-8-sig", "invalid"])
+@pytest.mark.parametrize("nested", [False, True], ids=["envelope", "dados"])
+def test_fake_rejects_non_utf8_json(
+    peer_kind: str, encoding: str, nested: bool
+) -> None:
+    operation = "SP-SIT-R" if nested else "SP-SIT-P"
+    vector = _fixture(operation)
+    canonical = vector["body"]
+    path = vector["route"][1]
+    body = deepcopy(canonical)
+    text = body["pedidoDados"]["dados"] if nested else json.dumps(body)
+    if encoding == "invalid":
+        raw = b"\xff" + text.encode()
+        if nested:
+            body["pedidoDados"]["dados"] = "\udcff" + text
+    else:
+        raw = text.encode(encoding)
+        if nested:
+            body["pedidoDados"]["dados"] = raw.decode("utf-8", errors="surrogateescape")
+    bad = body if nested else raw
+    if peer_kind == "scripted":
+        with FakeSerpro((Reply(),)) as peer:
+            status, refused = _post(peer.origin, path, bad)
+            assert status == 400
+            assert _post(peer.origin, path, canonical)[0] == 200
+    else:
+        with _fake_origin() as origin:
+            status, refused = _post(origin, path, bad)
+            assert status == 400
+            assert _post(origin, path, canonical)[0] == 200
+    assert json.loads(refused)["mensagens"] == [{"codigo": "fake_pedido_invalido"}]
 
 
 @pytest.mark.parametrize("operation", SERVICES)

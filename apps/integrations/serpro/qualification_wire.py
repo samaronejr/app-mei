@@ -107,7 +107,7 @@ def _dados_valid(dados: JSONValue, rule: dict[str, Any]) -> bool:
         return False
     if rule["form"] == "empty":
         return dados == ""
-    parsed = decode_json(dados.encode())
+    parsed = decode_json(dados)
     return (
         isinstance(parsed, dict)
         and all(
@@ -123,7 +123,8 @@ def inspect_wire(
 ) -> tuple[str, str]:
     """Return (service, refusal code) without consulting the sender or reply queue."""
     try:
-        envelope = decode_json(raw.decode("utf-8").encode("utf-8"))
+        # The text parser rejects a BOM and cannot auto-detect UTF-16/32.
+        envelope = decode_json(raw.decode("utf-8"))
         pedido = envelope.get("pedidoDados") if isinstance(envelope, dict) else None
         if not isinstance(pedido, dict):
             return "", INVALID_REQUEST

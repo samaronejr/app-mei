@@ -20,10 +20,11 @@ _DATES = (
     datetime(2026, 11, 30, 23, 59, 59, tzinfo=UTC),
     datetime(2026, 12, 1, 0, 0, 1, tzinfo=UTC),
     datetime(2076, 12, 2, 12, tzinfo=UTC),
+    datetime(2100, 1, 1, tzinfo=UTC),
 )
 
 
-@pytest.fixture(params=_DATES, ids=["before-month", "after-month", "future"])
+@pytest.fixture(params=_DATES, ids=["before-month", "after-month", "future", "2100"])
 def wire_clock(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, clock: Clock
 ) -> Iterator[Clock]:

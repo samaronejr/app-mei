@@ -3,7 +3,8 @@
 import json
 from contextlib import nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, timedelta
+from email.utils import format_datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -25,8 +26,10 @@ from tests.integrations.serpro_support import (
     FIRM,
     serpro_module,
 )
+from tests.integrations.serpro_wire_clock import clock, wire_clock
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "providers" / "serpro"
+__all__ = ["clock", "wire_clock"]
 
 
 def test_envelope_matches_golden_and_keeps_alphanumeric_cnpj_as_string() -> None:
@@ -222,10 +225,12 @@ def test_complete_401_is_distinguishable_from_partial_401_failure() -> None:
     assert not retry.definitive_401(partial)
 
 
+@pytest.mark.usefixtures("wire_clock")
 def test_304_termo_token_survives_wire_filtering_but_not_diagnostic_repr() -> None:
     # Given the documented body-less response carrying token and expiry in headers.
     adapter = serpro_module("adapter")
     token = str(UUID(int=13))
+    expiry = timezone.now().astimezone(UTC) + timedelta(days=30)
     request = adapter.build_request(
         "SP-TERMO",
         adapter.Parties(CONTRATANTE, FIRM, FIRM),
@@ -238,7 +243,7 @@ def test_304_termo_token_survives_wire_filtering_but_not_diagnostic_repr() -> No
                 body=b"",
                 headers=(
                     ("etag", f"autenticar_procurador_token:{token}"),
-                    ("expires", "Mon, 25 Oct 2027 00:00:00 GMT"),
+                    ("expires", format_datetime(expiry, usegmt=True)),
                 ),
             ),
         )
@@ -250,14 +255,16 @@ def test_304_termo_token_survives_wire_filtering_but_not_diagnostic_repr() -> No
         parsed = adapter.parse_termo_response(response)
     # Then header filtering cannot discard authority, or leak it through repr.
     assert parsed.procurador_token == token
-    assert parsed.expires_at == datetime(2027, 10, 25, tzinfo=UTC).timestamp()
+    assert parsed.expires_at == expiry.timestamp()
     assert token not in repr(parsed) + repr(response)
 
 
+@pytest.mark.usefixtures("wire_clock")
 def test_200_termo_reads_the_documented_expiration_field() -> None:
     # Given the current provider's escaped Autentica payload, not an invented TTL.
     adapter = serpro_module("adapter")
     expected = "synthetic-termo-token"
+    expiry = timezone.now().astimezone(UTC) + timedelta(days=30)
     body = json.dumps(
         {
             "status": 200,
@@ -265,7 +272,7 @@ def test_200_termo_reads_the_documented_expiration_field() -> None:
             "dados": json.dumps(
                 {
                     "autenticar_procurador_token": expected,
-                    "data_hora_expiracao": "2027-10-25T00:00:00",
+                    "data_hora_expiracao": expiry.strftime("%Y-%m-%dT%H:%M:%S"),
                 }
             ),
         }
@@ -273,5 +280,5 @@ def test_200_termo_reads_the_documented_expiration_field() -> None:
     # When the response is parsed, then it retains only transient token material.
     parsed = adapter.parse_termo_response(ProviderResponse(200, body))
     assert parsed.procurador_token == expected
-    assert parsed.expires_at == datetime(2027, 10, 25, tzinfo=UTC).timestamp()
+    assert parsed.expires_at == expiry.timestamp()
     assert expected not in repr(parsed)

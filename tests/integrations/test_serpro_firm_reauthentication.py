@@ -1,7 +1,6 @@
 """Firm termo submissions receive the same single definitive-401 exception."""
 
 import base64
-import json
 
 import pytest
 
@@ -17,25 +16,15 @@ from apps.integrations.transport import ProviderTransport
 from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
 from tests.integrations.serpro_support import CONTRATANTE, FIRM, serpro_module
+from tests.integrations.serpro_wire_clock import clock, wire_clock
+from tests.integrations.sitfis_support import termo_reply
 from tests.integrations.test_firm_termo_journal import reserve, termo, termo_request
 
-pytestmark = pytest.mark.django_db(transaction=True)
-__all__ = ["termo"]
-# A complete termo success carries a usable token; one without it is unresolved.
-ISSUED = Reply(
-    body=json.dumps(
-        {
-            "status": 200,
-            "mensagens": [],
-            "dados": json.dumps(
-                {
-                    "autenticar_procurador_token": "synthetic-retry-procurador",
-                    "data_hora_expiracao": "2099-12-31T00:00:00",
-                }
-            ),
-        }
-    ).encode()
-)
+pytestmark = [
+    pytest.mark.django_db(transaction=True),
+    pytest.mark.usefixtures("wire_clock"),
+]
+__all__ = ["clock", "termo", "wire_clock"]
 
 
 @pytest.mark.parametrize(("second", "state"), [(200, "sucesso"), (401, "falhou")])
@@ -50,7 +39,7 @@ def test_firm_401_retry_is_fresh_bounded_and_clientless(
     row = reserve(termo, termo_request(body=wire.body.decode()))
     ticket = firm_claim(termo.tenant_id, row.pk)
     assert ticket is not None
-    reply = ISSUED if second == 200 else Reply(status=second)
+    reply = termo_reply() if second == 200 else Reply(status=second)
     with FakeSerpro((Reply(status=401), reply, Reply())) as peer:
         adapter = module.SerproAdapter(
             ProviderTransport("serpro", "fake", peer.origin),
