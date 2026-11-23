@@ -60,11 +60,14 @@ VERSION_ERROR = "EntradaIncorreta-ICGERENCIADOR-040"
 
 
 def _fixture(operation: str) -> dict[str, Any]:
-    return json.loads((WIRE / f"{SERVICES[operation][0]}.json").read_text())
+    vector = json.loads((WIRE / f"{SERVICES[operation][0]}.json").read_text())
+    assert isinstance(vector, dict)
+    return vector
 
 
 def _expected(operation: str) -> dict[str, Any]:
     body = deepcopy(_fixture(operation)["body"])
+    assert isinstance(body, dict)
     # This application only sends CNPJs, not the CPF identifiers in some examples.
     for field, cnpj in (
         ("contratante", PARTIES.contratante),
@@ -213,7 +216,7 @@ def test_sitfis_selects_gateway_version(
     )
     path = allowlist.resolve("serpro", operation, request, environment=environment)[1]
     assert path == SERVICES[operation][1]
-    other = "trial" if environment == "producao" else "producao"
+    other: Environment = "trial" if environment == "producao" else "producao"
     with pytest.raises(OperacaoNaoPermitida):
         allowlist.resolve("serpro", operation, request, environment=other)
 
@@ -474,10 +477,12 @@ def test_trial_sitfis_binds_the_trial_bytes_to_the_journal(
     _, protocol, emission = peer.requests
     calls = result.parsed_fields["calls"]
     assert isinstance(calls, list)
-    assert [call["operation"] for call in calls] == ["SP-SIT-P", "SP-SIT-R"]
     by_digest = {}
-    for request, call in zip((protocol, emission), calls, strict=True):
+    for request, call, operation in zip(
+        (protocol, emission), calls, ("SP-SIT-P", "SP-SIT-R"), strict=True
+    ):
         assert isinstance(call, dict)
+        assert call["operation"] == operation
         assert json.loads(request.body)["pedidoDados"]["versaoSistema"] == "1.0"
         assert call["request_digest"] == hashlib.sha256(request.body).hexdigest()
         by_digest[call["request_digest"]] = dict(request.headers)["X-Request-Tag"]

@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime, tzinfo
 from types import SimpleNamespace
+from typing import Self
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -11,6 +12,7 @@ from django.utils import timezone
 
 from apps.integrations.call_contracts import CallRequest
 from apps.integrations.call_models import ProviderCall
+from apps.integrations.call_reservation import reserve as reserve_call
 from apps.integrations.serpro import adapter, sitfis, sitfis_qualification
 from tests.integrations.sitfis_support import Clock, clock
 
@@ -33,23 +35,22 @@ def wire_clock(
 
     class FrozenDatetime(datetime):
         @classmethod
-        def now(cls, tz: tzinfo | None = None) -> datetime:
+        def now(cls, tz: tzinfo | None = None) -> Self:
             # Imported Django defaults still use timezone.now's datetime global.
-            if tz is None:
-                return current.now().replace(tzinfo=None)
-            return current.now().astimezone(tz)
+            now = current.now()
+            instant = now.replace(tzinfo=None) if tz is None else now.astimezone(tz)
+            return cls.combine(instant.date(), instant.timetz())
 
     monkeypatch.setattr(timezone, "datetime", FrozenDatetime)
     monkeypatch.setattr(timezone, "now", current.now)
     monkeypatch.setattr(
         adapter, "time", SimpleNamespace(time=lambda: current.now().timestamp())
     )
-    original = sitfis.reserve
 
     def reserve(tenant: UUID, link: UUID, call: CallRequest) -> ProviderCall:
         if call.operation == "SP-SIT-R":
             current.advance(microseconds=1)
-        return original(tenant, link, call)
+        return reserve_call(tenant, link, call)
 
     # Emit in a later controlled instant, not in UUID tie-break order.
     monkeypatch.setattr(sitfis, "reserve", reserve)
