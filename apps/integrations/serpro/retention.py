@@ -36,6 +36,15 @@ from apps.obligations.models import (
 )
 
 Found = tuple[list[RetentionAnchor], list[str]]
+REPORT_OPERATION = "SP-SIT-R"
+# States in which a call never stored bytes; any other state may have.
+NO_BYTES_STATES = (
+    CallState.QUEUED,
+    CallState.RESERVED,
+    CallState.FAILED,
+    CallState.DENIED,
+    CallState.QUOTA,
+)
 
 
 def federal_document_anchors(document: Document) -> tuple[list[RetentionAnchor], str]:
@@ -52,6 +61,9 @@ def federal_document_anchors(document: Document) -> tuple[list[RetentionAnchor],
         found, missing = _acquisition_anchors(document)
         anchors += found
         gaps += missing
+    if not document.portal_visible:
+        # Intake reuses private bytes whatever their first origin, so any private
+        # original of the client may be the one an unaccounted acquisition reused.
         gaps += _shared_bytes(document)
     return anchors, gaps[0] if gaps else ""
 
@@ -82,11 +94,20 @@ def _acquisition_anchors(document: Document) -> Found:
         return _guide_anchors(call)
     if call.operation == RECEIPT_OPERATION:
         return _receipt_anchors(call)
-    return [], []
+    if call.operation == REPORT_OPERATION:
+        # The report's emission dates these bytes only if it holds this original.
+        held = FiscalSituationReport.objects.filter(
+            client_id=document.client_id, document=document
+        ).exists()
+        return [], [] if held else ["relatorio_ausente"]
+    return [], ["operacao_nao_reconhecida"]
 
 
 def _guide_anchors(call: ProviderCall) -> Found:
-    requested = _requested(call)
+    try:
+        requested = _requested(call)
+    except ValueError:  # the event's object id is plain text, e.g. a restored row
+        return [], ["pedido_invalido"]
     cycle = (
         None
         if requested is None
@@ -120,8 +141,9 @@ def _receipt_anchors(call: ProviderCall) -> Found:
 def _shared_bytes(document: Document) -> list[str]:
     """Flag bytes another acquisition may share without a recorded association.
 
-    Intake deduplicates identical content, so a successful guide or receipt call
-    without an original of its own reused the bytes of another one.
+    Intake deduplicates identical private content, so a guide or receipt call that
+    may have stored bytes (any state but a definite refusal) and has no original of
+    its own may have reused this one.
     """
     owned = Document.objects.filter(
         client_id=document.client_id,
@@ -131,8 +153,8 @@ def _shared_bytes(document: Document) -> list[str]:
         ProviderCall.objects.filter(
             client_id=document.client_id,
             operation__in=(GUIDE_OPERATION, RECEIPT_OPERATION),
-            state=CallState.SUCCESS,
         )
+        .exclude(state__in=NO_BYTES_STATES)
         .exclude(pk__in=[ref for ref in owned if _is_uuid(ref)])
         .exists()
     )

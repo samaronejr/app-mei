@@ -16,9 +16,11 @@ from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.objects import load_visible_client
 from apps.authz.services import can
+from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_row_has
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
+from apps.cycles.retention_records import ContentPurgeClaim
 from apps.integrations.call_contracts import (
     AdmissionDeniedError,
     CallRequest,
@@ -94,7 +96,15 @@ def _locked_document(
         raise PermissionDenied
     document = Document.objects.get(pk=submission.document_id)
     load_visible_client(actor, document.client_id)
-    if not scanned_private_document(document):
+    # Under the client lock the purge claims under: a termo never attaches an
+    # original whose retention disposal has started (AXRM-051).
+    ClientCompany.objects.select_for_update(no_key=True).get(pk=document.client_id)
+    if (
+        not scanned_private_document(document)
+        or ContentPurgeClaim.objects.filter(
+            content_kind="document", content_id=document.pk
+        ).exists()
+    ):
         raise TermoInvalidoError
     return connection, document
 

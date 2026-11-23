@@ -8,31 +8,46 @@ and authority evidence all keep the original before any claim exists.
 """
 
 import base64
+import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
+from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db import transaction
 from django.utils import timezone
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.cycles import retention_tasks
 from apps.cycles.errors import IllegalTransition
+from apps.cycles.evidence import DocumentIntake, IntakeState, ScanVerdict
+from apps.cycles.intake import UploadRejected
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.retention_tasks import Candidate, disposal_refusal, purge_tenant
 from apps.cycles.scanning import FakeScanner
 from apps.cycles.tasks import scan_quarantine
 from apps.integrations.authority import declare_authority, head_record
 from apps.integrations.call_models import ProviderCall
-from apps.integrations.models import FirmAuthorization
-from apps.integrations.serpro import pgmei
+from apps.integrations.models import FirmAuthorization, ProviderConnection
+from apps.integrations.serpro import authorization, pgmei
 from apps.integrations.serpro import retention as serpro_retention
+from apps.integrations.serpro.authorization import TermoSubmission
 from apps.integrations.serpro.payments import emit_payment_receipt
-from apps.obligations.models import AcquisitionOrigin, Document, FederalPayment
+from apps.integrations.serpro.termo import TermoInvalidoError
+from apps.obligations.models import (
+    AcquisitionOrigin,
+    Document,
+    FederalPayment,
+    Obligation,
+    ObligationType,
+)
+from apps.obligations.system_ingest import ingest_system_document
 from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
 from tests.integrations.pagtoweb_support import PDF, World, page, receipt_body, world
@@ -271,3 +286,150 @@ def test_a_guide_still_in_quarantine_is_kept(
         assert disposal_refusal(candidate) == "verificacao_pendente"
     purge_tenant(guide_world.tenant_id, dry_run=False, now=expiry)
     assert not _claimed(guide_world.tenant_id, document.pk)
+
+
+def _staff_original(world: World, payload: bytes) -> Document:
+    """A private, clean staff upload dated by an old obligation (2018)."""
+    termo = world.termo
+    with tenant_context(termo.tenant.pk):
+        kind, _ = ObligationType.objects.get_or_create(
+            code="DAS", defaults={"name": "DAS", "periodicity": "monthly"}
+        )
+        obligation = Obligation.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            obligation_type=kind,
+            competence_month=date(2018, 9, 1),
+            nominal_due_date=date(2018, 10, 20),
+            resolved_due_date=date(2018, 10, 20),
+        )
+        document = Document.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            obligation=obligation,
+            storage_key=default_storage.save(
+                "originals/staff-051.pdf", ContentFile(payload)
+            ),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            original_filename="staff-051.pdf",
+            content_type="application/pdf",
+            byte_size=len(payload),
+            uploaded_by=termo.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        DocumentIntake.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            document=document,
+            state=IntakeState.VERIFIED,
+            verdict=ScanVerdict.CLEAN,
+            scanned_at=timezone.now(),
+        )
+        return document
+
+
+def test_a_receipt_reusing_a_staff_original_keeps_it(world: World) -> None:
+    tenant_id = world.termo.tenant.pk
+    staff = _staff_original(world, PDF)
+    [payment] = _payments(world, _collected("2026-10-20"))
+    call = _receipt(world, payment)
+    with tenant_context(tenant_id):
+        # Intake reused the staff upload; nothing records the receipt's use of it.
+        assert not Document.objects.filter(
+            acquisition_receipt_ref=str(call.pk)
+        ).exists()
+        anchors, gap = retention_tasks._document_anchors(staff)
+    assert gap == "proveniencia_incompleta"
+    assert [a.basis for a in anchors] == ["obrigacao"]
+    purge_tenant(tenant_id, dry_run=False, now=_expiry(2030))
+    assert not _claimed(tenant_id, staff.pk)
+    assert default_storage.exists(staff.storage_key)
+
+
+def test_a_call_of_an_unrelated_operation_never_dates_an_original(
+    world: World,
+) -> None:
+    tenant_id = world.termo.tenant.pk
+    _payments(world, _collected("2026-10-20"))
+    with tenant_context(tenant_id):
+        consultation = ProviderCall.objects.get(operation="SP-PAG")
+    original = ingest_system_document(
+        tenant_id=tenant_id,
+        client_id=world.termo.client.pk,
+        origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+        receipt_ref=str(consultation.pk),
+        payload=b"%PDF-1.7\n% names a consultation call AXRM-051\n%%EOF\n",
+        filename="consulta.pdf",
+        content_type="application/pdf",
+        retention_class="fiscal_evidence",
+    )
+    with tenant_context(tenant_id):
+        assert retention_tasks._document_anchors(original)[1] == (
+            "operacao_nao_reconhecida"
+        )
+
+
+def test_writers_refuse_bytes_whose_disposal_started(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    termo = world.termo
+    staff = _staff_original(world, b"%PDF-1.7\n% staff original AXRM-051\n%%EOF\n")
+
+    def refuse(key: str) -> None:
+        message = "synthetic storage refusal"
+        raise OSError(message)
+
+    monkeypatch.setattr(default_storage, "delete", refuse)
+    purge_tenant(termo.tenant.pk, dry_run=False, now=_expiry(2030))
+    assert _claimed(termo.tenant.pk, staff.pk)
+    with tenant_context(termo.tenant.pk):
+        head = head_record(termo.client.pk, "sitfis")
+    with tenant_context(termo.tenant.pk), pytest.raises(ValidationError):
+        declare_authority(
+            termo.actor,
+            termo.client.pk,
+            service="sitfis",
+            code="00002",
+            valid_from=timezone.localdate(),
+            expected_version=head.version if head else 0,
+            evidence_document=staff,
+        )
+    with pytest.raises(UploadRejected):
+        ingest_system_document(
+            tenant_id=termo.tenant.pk,
+            client_id=termo.client.pk,
+            origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+            receipt_ref=str(uuid4()),
+            payload=b"%PDF-1.7\n% staff original AXRM-051\n%%EOF\n",
+            filename="reuso.pdf",
+            content_type="application/pdf",
+            retention_class="fiscal_evidence",
+        )
+
+
+def test_the_signed_termo_writer_refuses_bytes_whose_disposal_started(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    termo = world.termo
+    staff = _staff_original(world, b"%PDF-1.7\n% signed termo copy AXRM-051\n%%EOF\n")
+
+    def locked() -> None:
+        with tenant_context(termo.tenant.pk), transaction.atomic():
+            connection = ProviderConnection.objects.get(pk=termo.connection.pk)
+            submission = TermoSubmission(
+                connection.pk, staff.pk, connection.version, termo.parties
+            )
+            authorization._locked_document(termo.actor, submission)
+
+    locked()  # a clean, unclaimed staff original is accepted
+
+    def refuse(key: str) -> None:
+        message = "synthetic storage refusal"
+        raise OSError(message)
+
+    monkeypatch.setattr(default_storage, "delete", refuse)
+    purge_tenant(termo.tenant.pk, dry_run=False, now=_expiry(2030))
+    assert _claimed(termo.tenant.pk, staff.pk)
+    with pytest.raises(TermoInvalidoError):
+        locked()

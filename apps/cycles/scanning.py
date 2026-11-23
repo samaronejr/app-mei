@@ -55,6 +55,8 @@ from apps.cycles.evidence import (
     ScanVerdict,
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
+from apps.cycles.retention import federal_content, single_copy_storage
+from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
 from apps.cycles.services.exceptions import open_exception
 
 EICAR: Final = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
@@ -315,6 +317,8 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
             _read_verified(storage, ticket.storage_key, ticket.sha256)
             return
         payload = _read_verified(storage, ticket.object_key, ticket.sha256)
+        if not _write_current(ticket):
+            return  # a stale ticket writes nothing; its verdict is ignored too
         saved = storage.save(ticket.storage_key, ContentFile(payload))
     except OSError as error:
         msg = "promotion copy failed"
@@ -323,6 +327,49 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
         _discard(storage, saved)
         msg = "storage changed the requested document key"
         raise RuntimeError(msg)
+    if not _write_current(ticket):
+        # Another scan finished meanwhile and the original may since have been
+        # disposed of: this stale copy must not bring it back (AXRM-051).
+        _discard(storage, saved)
+
+
+def _write_current(ticket: ScanTicket) -> bool:
+    """Tell whether the ticket is still the pending scan and no disposal started."""
+    with tenant_context(ticket.tenant_id):
+        document_id = (
+            DocumentIntake.objects.filter(
+                pk=ticket.intake_id,
+                version=ticket.version,
+                state__in=PENDING_SCAN_STATES,
+            )
+            .values_list("document_id", flat=True)
+            .first()
+        )
+        return (
+            document_id is not None
+            and not ContentPurgeClaim.objects.filter(
+                content_kind="document", content_id=document_id
+            ).exists()
+        )
+
+
+def _keeps_quarantine(ticket: ScanTicket, storage: Storage) -> bool:
+    """Keep the quarantine copy of federal content a delete could not dispose of.
+
+    On versioned or unrecognized storage the delete only hides the copy, and a
+    client hold covers every copy: both keep it, and the purge then refuses the
+    original until that copy is accounted for (AXRM-051).
+    """
+    with tenant_context(ticket.tenant_id):
+        intake = DocumentIntake.objects.select_related("document").get(
+            pk=ticket.intake_id
+        )
+        if not federal_content(intake.document):
+            return False
+        held = LegalHold.objects.filter(
+            client_id=intake.client_id, released_at=None
+        ).exists()
+        return held or not single_copy_storage(storage)
 
 
 def _discard(storage: Storage, key: str) -> None:
@@ -483,7 +530,11 @@ def scan_intake(
     except ScannerUnavailable:
         return record_failure(ticket, now=now)
     outcome = record_verdict(ticket, verdict, now=now)
-    if outcome is ScanOutcome.VERIFIED and ticket.quarantined:
+    if (
+        outcome is ScanOutcome.VERIFIED
+        and ticket.quarantined
+        and not _keeps_quarantine(ticket, storage)
+    ):
         _discard(storage, ticket.object_key)
     return outcome
 

@@ -19,7 +19,7 @@ from storages.backends.s3 import S3Storage
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
-from apps.cycles import retention_tasks
+from apps.cycles import retention, retention_tasks
 from apps.cycles.errors import IllegalTransition
 from apps.cycles.models import ServiceCycle
 from apps.cycles.retention import place_hold
@@ -312,6 +312,7 @@ def test_versioned_storage_is_unsupported_for_federal_disposal(
         access_key="synthetic-access",
         secret_key="synthetic-secret",  # noqa: S106 - no request is ever sent
     )
+    monkeypatch.setattr(retention, "default_storage", bucket)
     monkeypatch.setattr(retention_tasks, "default_storage", bucket)
     with tenant_context(world.tenant_id):
         candidate = next(
