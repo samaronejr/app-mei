@@ -50,7 +50,9 @@ uses only:
 - the retention path dates SERPRO originals from the records that obtained them and
   keeps authority evidence out of ordinary disposal: `apps/cycles/retention_tasks.py`
   reads `apps/integrations/serpro/retention.py` and the authority models of
-  `apps/integrations/models.py` (AXRM-051).
+  `apps/integrations/models.py`, and `apps/cycles/retention.py` reads the provider
+  calls of `apps/integrations/call_models.py` to tell whether a client's content
+  may be federal (AXRM-051).
 
 Pending, not yet on this branch: the fiscal document register of AXRM-021 adds
 `apps/obligations/fiscal_ingest.py`, which reads client links and authority, and

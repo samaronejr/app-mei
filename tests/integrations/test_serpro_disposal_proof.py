@@ -17,6 +17,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from storages.backends.s3 import S3Storage
 
@@ -293,9 +295,8 @@ def test_a_held_clients_quarantine_copy_is_kept_by_the_scanner(world: World) -> 
     assert default_storage.exists(_original(world, report).storage_key)
 
 
-@pytest.mark.parametrize("window", ["before_write", "after_write"])
 def test_a_stale_scanner_never_writes_a_disposed_original_back(
-    world: World, monkeypatch: pytest.MonkeyPatch, window: str
+    world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     report = _emit(world)
     with tenant_context(world.tenant_id):
@@ -309,16 +310,6 @@ def test_a_stale_scanner_never_writes_a_disposed_original_back(
     )
     original = _original(world, report)
     assert not default_storage.exists(original.storage_key)
-    if window == "after_write":
-        # A passed its check just before B finished: only the second check is left.
-        real = scanning._write_current
-        seen: list[object] = []
-
-        def passed_once(ticket: scanning.ScanTicket) -> bool:
-            seen.append(ticket)
-            return True if len(seen) == 1 else real(ticket)
-
-        monkeypatch.setattr(scanning, "_write_current", passed_once)
     default_storage.save(stale.object_key, ContentFile(PDF))
     saved: list[str] = []
     save = default_storage.save
@@ -330,8 +321,37 @@ def test_a_stale_scanner_never_writes_a_disposed_original_back(
     monkeypatch.setattr(default_storage, "save", recorded)
     scanning.promote(stale, default_storage)
     assert not default_storage.exists(original.storage_key)
-    # Before the write the stale ticket writes nothing at all.
-    assert saved == ([] if window == "before_write" else [original.storage_key])
+    assert saved == []  # the stale ticket writes nothing at all
+
+
+def test_a_stale_scanner_never_removes_what_another_scanner_verified(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _emit(world)
+    original = _original(world, report)
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=original)
+    first = scanning.claim_scan(world.tenant_id, intake.pk)
+    assert first is not None
+    save = default_storage.save
+    interleaved: list[str] = []
+
+    def save_then_let_the_other_scanner_finish(
+        name: str, content: ContentFile[bytes]
+    ) -> str:
+        stored = save(name, content)
+        if not interleaved:
+            interleaved.append(stored)
+            monkeypatch.setattr(default_storage, "save", save)
+            world.scan()  # scanner B verifies A's copy and removes the quarantine
+        return stored
+
+    monkeypatch.setattr(default_storage, "save", save_then_let_the_other_scanner_finish)
+    scanning.promote(first, default_storage)
+    assert interleaved == [original.storage_key]
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in CLEAN_STATES
+    assert default_storage.exists(original.storage_key)
 
 
 def test_a_review_is_refused_once_the_original_was_disposed_of(world: World) -> None:
@@ -447,15 +467,18 @@ def test_a_key_another_clients_row_names_is_not_disposed_of(world: World) -> Non
             acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
             portal_visible=False,
         )
-        candidate = Candidate(world.termo.client.pk, "document", original.pk, None)
+        candidate = next(
+            c for c in retention_tasks._candidates() if c.id == original.pk
+        )
         assert disposal_refusal(candidate) == "chave_compartilhada"
     purge_tenant(world.tenant_id, dry_run=False, now=_expiry(report))
     assert _claim(world, original.pk) is None
     assert default_storage.exists(original.storage_key)
 
 
-def test_a_leftover_copy_or_an_undone_delete_never_completes_a_claim(
-    world: World, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("leftover", ["same_bytes", "other_bytes"])
+def test_a_kept_copy_is_disposed_of_only_when_it_is_the_original(
+    world: World, leftover: str
 ) -> None:
     report = _emit(world)
     with tenant_context(world.tenant_id):
@@ -466,13 +489,25 @@ def test_a_leftover_copy_or_an_undone_delete_never_completes_a_claim(
             reason="Fiscalização em andamento",
             expected_version=client.version,
         )
+        intake = DocumentIntake.objects.get(document=_original(world, report))
     world.scan()  # the held client's quarantine copy is kept
+    assert default_storage.exists(intake.object_key)
+    if leftover == "other_bytes":
+        default_storage.delete(intake.object_key)
+        default_storage.save(intake.object_key, ContentFile(b"not the original"))
     with tenant_context(world.tenant_id):
         release_hold(world.termo.actor, hold.pk, expected_version=hold.version)
     purge_tenant(world.tenant_id, dry_run=False, now=_expiry(report))
     claim = _claim(world, report.document_id)
     assert claim is not None
-    assert (claim.completed_at, claim.error_code) == (None, "copias_multiplas")
+    if leftover == "same_bytes":
+        # Both copies are proved the original's and both are gone.
+        assert claim.completed_at is not None
+        assert not default_storage.exists(intake.object_key)
+        assert not default_storage.exists(_original(world, report).storage_key)
+    else:
+        assert (claim.completed_at, claim.error_code) == (None, "conteudo_divergente")
+        assert default_storage.exists(intake.object_key)
 
 
 def test_a_delete_that_leaves_the_bytes_never_completes_a_claim(
@@ -509,3 +544,176 @@ def test_a_federal_original_without_an_intake_is_not_disposed_of(
         )
         candidate = Candidate(termo.client.pk, "document", original.pk, None)
         assert disposal_refusal(candidate) == "verificacao_pendente"
+
+
+def _clone_call(world: World, operation: str, state: str) -> ProviderCall:
+    """Another call of the client like an existing one, with no record of its own."""
+    with tenant_context(world.tenant_id):
+        model = ProviderCall.objects.filter(operation=operation).first()
+        assert model is not None
+        columns = {
+            field.attname: getattr(model, field.attname)
+            for field in ProviderCall._meta.concrete_fields
+            if not field.primary_key
+        }
+        columns.update(state=state, request_key=f"{model.request_key[:40]}-clone")
+        return ProviderCall.objects.create(**columns)
+
+
+def test_a_report_call_without_its_attachment_keeps_private_originals(
+    world: World,
+) -> None:
+    report = _emit(world)
+    world.scan()
+    staff = _staff_original(
+        world, b"%PDF-1.7\n% staff original 2018\n%%EOF\n", date(2018, 9, 1)
+    )
+    # A later SP-SIT-R call that may have reused the bytes, with no report holding it.
+    later = _clone_call(world, "SP-SIT-R", "sucesso")
+    with tenant_context(world.tenant_id):
+        assert retention_tasks._document_anchors(staff)[1] == "proveniencia_incompleta"
+        # A report holding an original resolves only its own call, never another.
+        original = _original(world, report)
+        assert (
+            retention_tasks._document_anchors(original)[1] == "proveniencia_incompleta"
+        )
+        original.acquisition_receipt_ref = str(later.pk)
+        assert serpro_retention._acquisition_anchors(original) == (
+            [],
+            ["relatorio_ausente"],
+        )
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2040, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert _claim(world, staff.pk) is None
+    assert default_storage.exists(staff.storage_key)
+
+
+def test_an_ordinary_row_never_deletes_a_held_federal_siblings_key(
+    world: World,
+) -> None:
+    report = _emit(world)
+    world.scan()
+    original = _original(world, report)
+    termo = world.termo
+    with tenant_context(world.tenant_id):
+        client = termo.client.__class__.objects.get(pk=termo.client.pk)
+        place_hold(
+            termo.actor,
+            client.pk,
+            reason="Fiscalização",
+            expected_version=client.version,
+        )
+        sibling = termo.client.__class__.objects.create(
+            tenant=termo.tenant, cnpj="11444777000161", legal_name="Sibling"
+        )
+        kind, _ = ObligationType.objects.get_or_create(
+            code="DAS", defaults={"name": "DAS", "periodicity": "monthly"}
+        )
+        old = Obligation.objects.create(
+            tenant=termo.tenant,
+            client=sibling,
+            obligation_type=kind,
+            competence_month=date(2018, 9, 1),
+            nominal_due_date=date(2018, 10, 20),
+            resolved_due_date=date(2018, 10, 20),
+        )
+        alias = Document.objects.create(
+            tenant=termo.tenant,
+            client=sibling,
+            obligation=old,
+            storage_key=original.storage_key,
+            sha256=original.sha256,
+            original_filename="alias.pdf",
+            content_type="application/pdf",
+            byte_size=original.byte_size,
+            uploaded_by=termo.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2040, 1, 1, tzinfo=SAO_PAULO)
+    )
+    with tenant_context(world.tenant_id):
+        assert not ContentPurgeClaim.objects.filter(content_id=alias.pk).exists()
+    assert default_storage.exists(original.storage_key)
+
+
+def test_a_key_another_session_holds_is_not_deleted(world: World) -> None:
+    report = _emit(world)
+    world.scan()
+    original = _original(world, report)
+    other = connection.get_new_connection(connection.get_connection_params())
+    try:
+        other.autocommit = True
+        lock_id = retention._key_lock_id(original.storage_key)
+        other.execute("SELECT pg_advisory_lock(%s)", [lock_id])
+        counts = purge_tenant(world.tenant_id, dry_run=False, now=_expiry(report))
+        assert counts["purged"] == 0
+        claim = _claim(world, original.pk)
+        assert claim is not None
+        assert (claim.completed_at, claim.error_code) == (None, "chave_em_uso")
+        assert default_storage.exists(original.storage_key)
+        other.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
+    finally:
+        other.close()
+    # Released, the next run proves and completes the same claim once.
+    assert (
+        purge_tenant(world.tenant_id, dry_run=False, now=_expiry(report))["purged"] == 1
+    )
+    claim = _claim(world, original.pk)
+    assert claim is not None
+    assert claim.completed_at is not None
+    keys = tuple(claim.storage_keys)
+    assert (
+        retention_tasks._dispose(world.tenant_id, claim.pk, keys, None) == "concluida"
+    )
+
+
+def test_the_scanner_removes_a_quarantine_copy_only_under_the_client_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _emit(world)
+    observed: list[tuple[bool, list[str]]] = []
+    discard = scanning._discard
+
+    def watched(storage: Storage, key: str) -> None:
+        if key.startswith("quarantine/"):
+            locks = [
+                query["sql"]
+                for query in connection.queries
+                if "clients_clientcompany" in query["sql"]
+                and "FOR NO KEY UPDATE" in query["sql"]
+            ]
+            observed.append((connection.in_atomic_block, locks))
+        discard(storage, key)
+
+    monkeypatch.setattr(scanning, "_discard", watched)
+    with CaptureQueriesContext(connection):
+        world.scan()
+    assert observed, "the verified quarantine copy was removed"
+    in_transaction, locks = observed[0]
+    assert in_transaction
+    assert locks
+
+
+def test_a_scanner_never_writes_a_key_a_disposal_holds(world: World) -> None:
+    report = _emit(world)
+    original = _original(world, report)
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=original)
+    ticket = scanning.claim_scan(world.tenant_id, intake.pk)
+    assert ticket is not None
+    other = connection.get_new_connection(connection.get_connection_params())
+    try:
+        other.autocommit = True
+        lock_id = retention._key_lock_id(original.storage_key)
+        other.execute("SELECT pg_advisory_lock(%s)", [lock_id])
+        with pytest.raises(scanning.ScannerUnavailable):
+            scanning.promote(ticket, default_storage)
+        assert not default_storage.exists(original.storage_key)
+        other.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
+    finally:
+        other.close()
+    scanning.promote(ticket, default_storage)
+    assert default_storage.exists(original.storage_key)
