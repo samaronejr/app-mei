@@ -100,6 +100,7 @@ def _item(
 ) -> BriefingItem:
     path = path or _Paths()
     title = row.title
+    review_cycle_id = None
     match row.kind:
         case "obligation":
             facts = PriorityFacts(statutory_due_on=row.due_on)
@@ -140,7 +141,9 @@ def _item(
             url = path("client-detail", row.client_id)
         case "fiscal_document":
             facts = PriorityFacts()
-            url = path("document-review", row.target_id)
+            review_cycle_id = row.target_id
+            url = path("document-review", row.subject_ref)
+            url += f"?ciclo={review_cycle_id}" if review_cycle_id is not None else ""
         case _:
             # Only the registered SQL projections can produce this internal code.
             raise LookupError(row.kind)
@@ -163,6 +166,7 @@ def _item(
         service_kind=row.service_kind,
         work_state=row.work_state,
         freshness=CoverageState.UNKNOWN,
+        review_cycle_id=review_cycle_id,
     )
 
 

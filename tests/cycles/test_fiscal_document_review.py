@@ -298,7 +298,8 @@ def test_briefing_surfaces_captured_documents_pending_review(
     assert captured[0].period == MONTH
     assert captured[0].subject_ref == fiscal.pk
     assert "capturado" in captured[0].title.lower()
-    assert captured[0].url == reverse("document-review", args=[fiscal.pk])
+    path = reverse("document-review", args=[fiscal.pk])
+    assert captured[0].url == f"{path}?ciclo={world.setup.cycle.pk}"
 
 
 def test_captured_queue_and_cycle_section_are_inert_when_the_flag_is_off(

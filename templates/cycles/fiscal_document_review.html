@@ -6,7 +6,7 @@
   <header class="ui-panel p-4">
     <p>{{ fiscal.client.legal_name }} · CNPJ {{ fiscal.client.cnpj|cnpj_mask }}</p>
     <h2 class="mt-2 font-semibold break-all">{{ fiscal.document_key }}</h2>
-    <p class="mt-2">{{ fiscal.family }} · {% if fiscal.client_role == 'destinatario' or fiscal.client_role == 'tomador' %}Recebido{% else %}Emitido{% endif %} · {{ fiscal.fiscal_state }}</p>
+    <p class="mt-2" data-fiscal-state="{{ fiscal.fiscal_state }}">{{ fiscal.family }} · {% if fiscal.client_role == 'destinatario' or fiscal.client_role == 'tomador' %}Recebido{% else %}Emitido{% endif %} · {{ fiscal.fiscal_state }}</p>
     <p class="text-sm">{% if fiscal.source == 'captura' %}Capturado do provedor{% elif fiscal.source == 'upload_cliente' %}Enviado pelo cliente{% else %}Importado pela equipe{% endif %} · {{ fiscal.provider }} · {{ fiscal.environment }} · versão {{ fiscal.current_revision.provider_version }}</p>
     <p class="text-sm">Observado em {{ fiscal.current_revision.observed_at|data_hora }} · contraparte {{ fiscal.counterpart_name }} · {{ fiscal.counterpart_id }}</p>
     <p class="text-sm">Emissão {{ fiscal.issue_date|date:'d/m/Y'|default:'não informada' }} · competência {{ fiscal.competence|date:'m/Y'|default:'não informada' }} · total {{ fiscal.total|default_if_none:'não informado' }}</p>
@@ -17,27 +17,27 @@
   {% if fiscal.role_verification == 'divergent' %}<p class="ui-panel p-4" role="status">O CNPJ diverge do cliente. Trate a pendência de atribuição; este documento não é vinculado ao ciclo.</p>{% endif %}
   <section class="ui-panel p-4" aria-labelledby="fiscal-revisions-title">
     <h2 id="fiscal-revisions-title" class="ui-panel-heading">Revisões e arquivos retidos</h2>
-    <ul class="mt-3 grid gap-3">{% for revision in revisions %}<li>
+    <ul class="mt-3 grid gap-3">{% for revision in revisions %}<li id="fiscal-revision-{{ revision.pk }}">
       <h3 class="font-semibold">Versão {{ revision.provider_version }} · {{ revision.fiscal_state }}</h3>
       <p class="text-sm">{{ revision.source_namespace }} · observado em {{ revision.observed_at|data_hora }}{% if revision.source_effective_at %} · efeito em {{ revision.source_effective_at|data_hora }}{% endif %}</p>
       {% if revision.replacement_key %}<p class="text-sm break-all">Documento substituto: {{ revision.replacement_key }}</p>{% endif %}
-      <ul class="mt-2 flex flex-wrap gap-4">{% for artifact in revision.artifacts.all %}<li>{% if artifact.document.purged_at %}Arquivo removido pela política de retenção{% else %}<a class="ui-link" href="{% url 'staff-document-download' artifact.document_id %}">{% if artifact.role == 'xml_cce' %}XML da carta de correção{% elif artifact.role == 'xml_original' %}XML original{% elif artifact.role == 'resumo' %}Resumo retido{% else %}PDF retido{% endif %}</a>{% endif %}</li>{% endfor %}</ul>
+      <ul class="mt-2 flex flex-wrap gap-4">{% for artifact in revision.artifacts.all %}<li>{% if artifact.document.purged_at %}Arquivo removido pela política de retenção{% else %}<a class="ui-link" data-fiscal-artifact-role="{{ artifact.role }}" href="{% url 'staff-document-download' artifact.document_id %}">{% if artifact.role == 'xml_cce' %}XML da carta de correção{% elif artifact.role == 'xml_original' %}XML original{% elif artifact.role == 'resumo' %}Resumo retido{% else %}PDF retido{% endif %}</a>{% endif %}</li>{% endfor %}</ul>
     </li>{% endfor %}</ul>
   </section>
   <section class="ui-panel p-4" aria-labelledby="fiscal-decision-title">
     <h2 id="fiscal-decision-title" class="ui-panel-heading">Revisão no ciclo</h2>
-    {% if cycles %}<nav class="mt-2 flex flex-wrap gap-4" aria-label="Ciclos deste período">{% for option in cycles %}<a class="ui-link" href="?ciclo={{ option.pk }}"{% if option.pk == cycle.pk %} aria-current="page"{% endif %}>Ciclo {{ option.period_start|date:'m/Y' }} · {{ option.get_state_display }}</a>{% endfor %}</nav>{% endif %}
-    {% if decided %}<p class="mt-3">Esta revisão já recebeu uma decisão neste ciclo. Uma nova versão exige outra revisão.</p>
-    {% elif cycle %}<form method="post" class="mt-3 grid gap-3">{% csrf_token %}
-      <input type="hidden" name="cycle_id" value="{{ cycle.pk }}"><input type="hidden" name="revision_id" value="{{ fiscal.current_revision_id }}"><input type="hidden" name="expected_version" value="{{ cycle.version }}"><input type="hidden" name="input_digest" value="{{ input_digest }}">
+    {% if cycles %}<nav class="mt-2 flex flex-wrap gap-4" aria-label="Ciclos do documento">{% for option in cycles %}<a class="ui-link" href="?ciclo={{ option.pk }}"{% if option.pk == cycle.pk %} aria-current="page"{% endif %}>Ciclo {{ option.period_start|date:'m/Y' }} · {{ option.get_state_display }}</a>{% endfor %}</nav>{% endif %}
+    {% if head %}<p class="mt-3" data-fiscal-review-head="{{ head.pk }}" data-review-freshness="{% if head_current %}current{% else %}stale{% endif %}">{% if head_current %}Decisão atual: {{ head.decision_label }}.{% else %}A decisão anterior não cobre os dados ou arquivos atuais. Confira-os antes de revisar novamente.{% endif %}</p>{% endif %}
+    {% if review_open %}<form method="post" action="?ciclo={{ cycle.pk }}" class="mt-3 grid gap-3">{% csrf_token %}
+      <input type="hidden" name="cycle_id" value="{{ cycle.pk }}"><input type="hidden" name="revision_id" value="{{ fiscal.current_revision_id }}"><input type="hidden" name="expected_version" value="{{ cycle.version }}"><input type="hidden" name="input_digest" value="{{ fiscal.review_material }}"><input type="hidden" name="expected_head_id" value="{{ head.pk|default_if_none:'' }}">
       <div><label class="ui-field-label" for="fiscal-decision">Decisão sobre esta versão</label><select class="ui-field-input" id="fiscal-decision" name="decision" required><option value="">Escolha uma decisão</option>{% for value,label in decisions %}<option value="{{ value }}"{% if value == 'aceito' and fiscal.summary_only %} disabled{% endif %}>{{ label }}</option>{% endfor %}</select></div>
-      <div><label class="ui-field-label" for="fiscal-note">Nota interna</label><textarea class="ui-field-input" id="fiscal-note" name="note" maxlength="2000" rows="3"></textarea><p class="text-sm text-ink-600">A decisão e a nota ficam na equipe; não aparecem no portal.</p></div>
-      <div><button class="ui-btn ui-btn-primary" type="submit">Registrar revisão</button></div>
-    </form>{% else %}<p class="mt-3">Não há ciclo elegível para este cliente e período.</p>{% endif %}
+      <div><label class="ui-field-label" for="fiscal-note">{% if head %}Motivo da correção{% else %}Nota interna{% endif %}</label><textarea class="ui-field-input" id="fiscal-note" name="note" maxlength="2000" rows="3"{% if head %} required{% endif %}></textarea><p class="text-sm text-ink-600">A decisão e a nota ficam na equipe; não aparecem no portal.</p></div>
+      <div><button class="ui-btn ui-btn-primary" type="submit">{% if head %}Corrigir decisão{% else %}Registrar revisão{% endif %}</button></div>
+    </form>{% elif cycle and review_eligible %}<p class="mt-3">Reabra o ciclo encerrado para registrar uma revisão.</p>{% elif cycle %}<p class="mt-3">Este ciclo mostra somente o histórico deste documento.</p>{% else %}<p class="mt-3">Não há ciclo elegível para este cliente e período.</p>{% endif %}
   </section>
   <section class="ui-panel p-4" aria-labelledby="fiscal-history-title">
     <h2 id="fiscal-history-title" class="ui-panel-heading">Decisões anteriores</h2>
-    <ul class="mt-3 grid gap-3">{% for review in reviews %}<li>{{ review.get_decision_display }} · {{ review.reviewer }} · {{ review.reviewed_at|data_hora }} · ciclo {{ review.cycle.period_start|date:'m/Y' }}{% if review.note %}<p class="whitespace-pre-wrap break-words">{{ review.note }}</p>{% endif %}</li>{% empty %}<li>Nenhuma decisão registrada.</li>{% endfor %}</ul>
+    <ul class="mt-3 grid gap-3">{% for review in reviews %}<li data-fiscal-review-row="{{ review.pk }}">{{ review.decision_label }} · {{ review.reviewer }} · {{ review.reviewed_at|data_hora }} · ciclo {{ review.cycle.period_start|date:'m/Y' }} · <a class="ui-link" href="#fiscal-revision-{{ review.revision_id }}">Versão {{ review.revision.provider_version }} · {{ review.revision.source_namespace }}</a>{% if review.pk == head.pk %} · {% if head_current %}Atual{% else %}Desatualizada{% endif %}{% endif %}{% if review.note %}<p class="whitespace-pre-wrap break-words">{{ review.note }}</p>{% endif %}</li>{% empty %}<li>Nenhuma decisão registrada.</li>{% endfor %}</ul>
   </section>
 </div>
 {% endblock %}
