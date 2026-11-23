@@ -1053,6 +1053,21 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
             "revision_id",
             "fiscaldocumentreview_exact_revision_fk",
         ),
+        (
+            "cycles_fiscaldocumentreview",
+            "revision_id",
+            "fiscaldocumentreview_supersedes_chain_fk",
+        ),
+        (
+            "cycles_fiscaldocumentreview",
+            "cycle_id",
+            "fiscaldocumentreview_supersedes_chain_fk",
+        ),
+        (
+            "cycles_fiscaldocumentreview",
+            "supersedes_id",
+            "fiscaldocumentreview_supersedes_chain_fk",
+        ),
         ("automation_agentrun", "document_id", "agentrun_document_fk"),
         ("clients_clientcompany", "import_batch_id", "clientcompany_tenant_batch_fk"),
         ("clients_clienttag", "tag_id", "clienttag_tenant_tag_fk"),
