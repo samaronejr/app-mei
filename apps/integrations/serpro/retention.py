@@ -16,6 +16,7 @@ and the caller keeps the original: the latest known date cannot prove that every
 of the bytes has expired.
 """
 
+from collections import Counter
 from uuid import UUID
 
 from django.utils import timezone
@@ -70,7 +71,10 @@ def _report_anchors(report: FiscalSituationReport) -> Found:
     if report.emitted_at is None:
         # A request date is not evidence of when these bytes were emitted.
         return reviewed, ["emissao_ausente"]
-    emitted = timezone.localdate(report.emitted_at)
+    try:
+        emitted = timezone.localdate(report.emitted_at)
+    except (OverflowError, ValueError):  # a stored instant with no local date
+        return reviewed, ["data_fora_do_intervalo"]
     return [*reviewed, RetentionAnchor("emissao_relatorio", emitted, report.pk)], []
 
 
@@ -148,7 +152,7 @@ def _shared_bytes(document: Document) -> list[str]:
     claim to one of them.
     """
     client_id = document.client_id
-    owned = set(
+    claimants = Counter(
         Document.objects.filter(
             client_id=client_id, acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER
         ).values_list("acquisition_receipt_ref", flat=True)
@@ -171,9 +175,9 @@ def _shared_bytes(document: Document) -> list[str]:
                 call_replies__has_key=str(call_id),
             ).exists()
         else:
-            # A guide or receipt stores new bytes under an original naming it; any
-            # other original of the client has other bytes, so it was not reused.
-            accounted = str(call_id) in owned
+            # A guide or receipt stores new bytes under the one original naming
+            # it; a call two originals claim has no single proven owner.
+            accounted = claimants[str(call_id)] == 1
         if not accounted:
             return ["proveniencia_incompleta"]
     return []

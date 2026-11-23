@@ -570,3 +570,25 @@ def test_an_archive_of_a_staff_first_guide_is_unsupported_on_versioned_storage(
             client.pk, "export", uuid4(), None, (f"exports/{uuid4().hex}.zip",)
         )
         assert disposal_refusal(archive) == "armazenamento_nao_suportado"
+
+
+def test_a_call_two_originals_claim_has_no_proven_owner(world: World) -> None:
+    tenant_id = world.termo.tenant.pk
+    staff = _staff_original(
+        world, b"%PDF-1.7\n% staff original, two claimants\n%%EOF\n"
+    )
+    [payment] = _payments(world, _collected("2026-10-20"))
+    call = _receipt(world, payment)
+    # A restored second provider row names the same receipt call.
+    ingest_system_document(
+        tenant_id=tenant_id,
+        client_id=world.termo.client.pk,
+        origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+        receipt_ref=str(call.pk),
+        payload=b"%PDF-1.7\n% second row naming the call\n%%EOF\n",
+        filename="segundo.pdf",
+        content_type="application/pdf",
+        retention_class="fiscal_evidence",
+    )
+    with tenant_context(tenant_id):
+        assert retention_tasks._document_anchors(staff)[1] == "proveniencia_incompleta"

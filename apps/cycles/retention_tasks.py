@@ -41,6 +41,7 @@ from apps.cycles.retention import (
     client_federal_involvement,
     federal_content,
     fiscal_expiry,
+    foreign_storage_keys,
     ordered_anchors,
     retention_decision,
     single_copy_storage,
@@ -389,7 +390,7 @@ def _physical_refusal(keys: tuple[str, ...], final_key: str, sha256: str) -> str
 
 
 PROOF_REFUSALS: Final = frozenset(
-    {"arquivo_ausente", "conteudo_divergente", "chave_em_uso"}
+    {"arquivo_ausente", "conteudo_divergente", "chave_em_uso", "chaves_divergentes"}
 )
 COMPLETED: Final = "concluida"
 PURGED: Final = "removida"
@@ -459,7 +460,7 @@ def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
         return PURGED if _finish(tid, client_id, claim_id, now) else COMPLETED
 
 
-def _kept_as(candidate: Candidate, now: datetime) -> str:
+def _kept_as(candidate: Candidate, now: datetime, foreign: set[str]) -> str:
     """Return the count a retained candidate falls under; empty when it may be claimed.
 
     The refusal runs before a claim exists and before an open claim (recovery)
@@ -468,6 +469,8 @@ def _kept_as(candidate: Candidate, now: datetime) -> str:
     decision = retention_decision(candidate.client_id, candidate.expires_at, now=now)
     if not decision.eligible:
         return "held" if decision.reason == "legal_hold" else "retained"
+    if foreign.intersection(candidate.keys):
+        return "retained"  # another tenant's row names one of these keys
     return "retained" if disposal_refusal(candidate) else ""
 
 
@@ -505,6 +508,8 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
         if not tenant_has(tid, "cycles_r1"):
             return counts
         candidates = _candidates()
+    # Storage keys are global: a key a row of another tenant names is never deleted.
+    foreign = foreign_storage_keys(tid, [key for c in candidates for key in c.keys])
     for candidate in candidates:
         with tenant_context(tid):
             # PLATFORM_QUERY_OK: cancellation and deletion claims share this fence.
@@ -521,7 +526,7 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             if not fresh_rows:
                 continue
             fresh = fresh_rows[0]
-            kept = _kept_as(fresh, now)
+            kept = _kept_as(fresh, now, foreign)
             if kept:
                 counts[kept] += 1
                 continue
@@ -538,13 +543,20 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
                 continue
             claim_id, keys = claim.pk, tuple(claim.storage_keys)
             identity = _identity(fresh)
-        outcome = _dispose(
-            tid,
-            client_id=candidate.client_id,
-            claim_id=claim_id,
-            keys=keys,
-            identity=identity,
-            now=now,
+            agreed = set(keys) == set(fresh.keys)
+        # A recovered claim deletes only the keys it was taken for and that the
+        # row still names; any difference leaves it open with the reason.
+        outcome = (
+            _dispose(
+                tid,
+                client_id=candidate.client_id,
+                claim_id=claim_id,
+                keys=keys,
+                identity=identity,
+                now=now,
+            )
+            if agreed
+            else "chaves_divergentes"
         )
         _count(tid, claim_id, outcome, counts)
     return counts

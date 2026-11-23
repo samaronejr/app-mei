@@ -58,6 +58,7 @@ from apps.cycles.evidence import (
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
 from apps.cycles.retention import (
+    foreign_storage_keys,
     single_copy_storage,
     storage_key_aliased,
     storage_keys_locked,
@@ -380,7 +381,9 @@ def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
     left for the purge to account for, never deleted remotely inside the lock
     (AXRM-051).
     """
-    if not single_copy_storage(storage):
+    if not single_copy_storage(storage) or foreign_storage_keys(
+        ticket.tenant_id, [ticket.object_key]
+    ):
         return
     with storage_keys_locked([ticket.object_key], wait=False) as locked:
         if not locked:
@@ -397,6 +400,10 @@ def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
                 [ticket.object_key], document_id=intake.document_id
             ):
                 return
+            try:
+                _read_verified(storage, ticket.object_key, ticket.sha256)
+            except (IntegrityMismatch, OSError):
+                return  # not the promoted original's bytes: keep whatever is there
             _discard(storage, ticket.object_key)
 
 
@@ -477,6 +484,16 @@ def record_verdict(
         intake = _locked(ticket)
         if intake is None:
             return ScanOutcome.STALE
+        if (
+            verdict is not None
+            and not verdict.infected
+            and ContentPurgeClaim.objects.filter(
+                content_kind="document", content_id=intake.document_id
+            ).exists()
+        ):
+            # A disposal started: never verified now, in the verdict's own
+            # transaction and under the final key's lock (AXRM-051).
+            return ScanOutcome.SKIPPED
         intake.next_scan_at = None
         if verdict is None:
             intake.state = IntakeState.SCAN_UNAVAILABLE
@@ -536,6 +553,28 @@ def record_failure(ticket: ScanTicket, *, now: datetime) -> ScanOutcome:
         return ScanOutcome.UNAVAILABLE
 
 
+def _promote_and_record(
+    ticket: ScanTicket, verdict: Verdict, storage: Storage, now: datetime
+) -> ScanOutcome:
+    """Copy and record under the final key's lock, which the purge also takes.
+
+    The lock spans the copy and the verdict, so a disposal never falls between
+    them (it is re-entrant for `promote`). Contention means someone else is on it:
+    no verdict, and the intake stays due.
+    """
+    with storage_keys_locked([ticket.storage_key], wait=False) as locked:
+        if not locked:
+            return ScanOutcome.SKIPPED
+        try:
+            if not verdict.infected:
+                promote(ticket, storage)
+        except ScanDeferred:
+            return ScanOutcome.SKIPPED
+        except ScannerUnavailable:
+            return record_failure(ticket, now=now)
+        return record_verdict(ticket, verdict, now=now)
+
+
 def scan_intake(
     tenant_id: UUID,
     intake_id: UUID,
@@ -553,14 +592,9 @@ def scan_intake(
         return record_verdict(ticket, None, now=now)
     try:
         verdict = run_scan(ticket, scanner, storage)
-        if not verdict.infected:
-            promote(ticket, storage)
-    except ScanDeferred:
-        # Someone else is on it: no verdict now, and the intake stays due.
-        return ScanOutcome.SKIPPED
     except ScannerUnavailable:
         return record_failure(ticket, now=now)
-    outcome = record_verdict(ticket, verdict, now=now)
+    outcome = _promote_and_record(ticket, verdict, storage, now)
     if outcome is ScanOutcome.VERIFIED and ticket.quarantined:
         _discard_quarantine(ticket, storage)
     return outcome
