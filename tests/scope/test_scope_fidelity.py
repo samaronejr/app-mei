@@ -492,6 +492,14 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         "Stores family labels for received/imported register identities."
         + FISCAL_RECEIPT_ONLY,
     ),
+    # AXRM-046 records the reported ISS retention party as a municipal fact.
+    (
+        "apps/obligations/models/fiscal.py",
+        '"""Party reported by the NFS-e; unknown is not a negative assertion."""',
+        1,
+        "Documents the ISS retention party in the fiscal register."
+        + FISCAL_RECEIPT_ONLY,
+    ),
     (
         "apps/obligations/migrations/0029_fiscal_register.py",
         '(v, v) for v in ("nfe", "nfse_nacional", "nfse_municipal")',
