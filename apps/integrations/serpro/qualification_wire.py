@@ -102,12 +102,30 @@ def _matches(value: JSONValue, rule: JSONValue) -> bool:
     return isinstance(rule, str) and _primitive(value, rule)
 
 
+def _check_unicode_scalars(value: JSONValue) -> None:
+    if isinstance(value, str):
+        value.encode("utf-8")
+    elif isinstance(value, list):
+        for item in value:
+            _check_unicode_scalars(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _check_unicode_scalars(key)
+            _check_unicode_scalars(item)
+
+
+def _decode_wire_json(text: str) -> JSONValue:
+    value = decode_json(text)
+    _check_unicode_scalars(value)
+    return value
+
+
 def _dados_valid(dados: JSONValue, rule: dict[str, Any]) -> bool:
     if not isinstance(dados, str):
         return False
     if rule["form"] == "empty":
         return dados == ""
-    parsed = decode_json(dados)
+    parsed = _decode_wire_json(dados)
     return (
         isinstance(parsed, dict)
         and all(
@@ -124,7 +142,7 @@ def inspect_wire(
     """Return (service, refusal code) without consulting the sender or reply queue."""
     try:
         # The text parser rejects a BOM and cannot auto-detect UTF-16/32.
-        envelope = decode_json(raw.decode("utf-8"))
+        envelope = _decode_wire_json(raw.decode("utf-8"))
         pedido = envelope.get("pedidoDados") if isinstance(envelope, dict) else None
         if not isinstance(pedido, dict):
             return "", INVALID_REQUEST

@@ -122,6 +122,64 @@ def test_fake_rejects_non_utf8_json(
     assert json.loads(refused)["mensagens"] == [{"codigo": "fake_pedido_invalido"}]
 
 
+@pytest.mark.parametrize("peer_kind", ["scripted", "qualification"])
+@pytest.mark.parametrize(
+    ("location", "value", "valid"),
+    [
+        ("dados", '{"protocoloRelatorio":"\udcff"}', False),
+        ("dados", r'{"protocoloRelatorio":"\ud800"}', False),
+        ("dados", r'{"protocoloRelatorio":"\udcff"}', False),
+        ("dados", r'{"protocoloRelatorio":"\ud83d\ude00"}', True),
+        ("dados", r'{"protocoloRelatorio":"synthetic","\ud800":0}', False),
+        (
+            "dados",
+            r'{"protocoloRelatorio":"synthetic","extra":[{"value":"\udcff"}]}',
+            False,
+        ),
+        ("envelope", {"extension": "\ud800"}, False),
+        ("envelope", {"\udcff": "extension"}, False),
+        ("envelope", {"extension": [{"value": "\udcff"}]}, False),
+        ("envelope", {"extension": "\U0001f600"}, True),
+    ],
+    ids=[
+        "dados-literal-low",
+        "dados-escaped-high",
+        "dados-escaped-low",
+        "dados-pair",
+        "dados-key",
+        "dados-deep",
+        "envelope-high",
+        "envelope-key",
+        "envelope-deep",
+        "envelope-pair",
+    ],
+)
+def test_fake_requires_unicode_scalar_json(
+    peer_kind: str, location: str, value: JSONValue, valid: bool
+) -> None:
+    vector = _fixture("SP-SIT-R")
+    canonical = vector["body"]
+    body = deepcopy(canonical)
+    if location == "dados":
+        body["pedidoDados"]["dados"] = value
+    else:
+        assert isinstance(value, dict)
+        body.update(value)
+    path = vector["route"][1]
+    if peer_kind == "scripted":
+        with FakeSerpro((Reply(),)) as peer:
+            status, response = _post(peer.origin, path, body)
+            assert status == (200 if valid else 400)
+            if not valid:
+                assert _post(peer.origin, path, canonical)[0] == 200
+    else:
+        with _fake_origin() as origin:
+            status, response = _post(origin, path, body)
+            assert status == (200 if valid else 400)
+    if not valid:
+        assert json.loads(response)["mensagens"] == [{"codigo": "fake_pedido_invalido"}]
+
+
 @pytest.mark.parametrize("operation", SERVICES)
 def test_built_body_matches_official_example(operation: str) -> None:
     expected = _expected(operation)
