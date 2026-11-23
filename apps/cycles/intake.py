@@ -252,11 +252,13 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
                 # its intake are the record. No link, no submission event.
                 raise UploadRejected
             return document, False
-    # Bytes whose retention disposal has started are never reused (AXRM-051): the
-    # purge's locked recheck sees any use committed before its claim.
-    if (
-        document.purged_at is not None
-        or ContentPurgeClaim.objects.filter(
+    # Private bytes whose retention disposal has started are never reused
+    # (AXRM-051): the purge's locked recheck sees any use committed before its
+    # claim. Federal content is always private, and the portal role, which
+    # reuses only visible rows, cannot read disposal claims.
+    if document.purged_at is not None or (
+        not source.portal_visible
+        and ContentPurgeClaim.objects.filter(
             content_kind="document", content_id=document.pk
         ).exists()
     ):
