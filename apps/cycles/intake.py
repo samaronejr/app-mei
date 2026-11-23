@@ -67,6 +67,7 @@ from apps.cycles.evidence import (
     quarantine_key,
 )
 from apps.cycles.records import CycleEvent
+from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.scanning import scan_required
 from apps.cycles.sniffing import sniff
 from apps.obligations.models import AcquisitionOrigin, Document, Obligation
@@ -251,7 +252,14 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
                 # its intake are the record. No link, no submission event.
                 raise UploadRejected
             return document, False
-    if document.purged_at is not None:
+    # Bytes whose retention disposal has started are never reused (AXRM-051): the
+    # purge's locked recheck sees any use committed before its claim.
+    if (
+        document.purged_at is not None
+        or ContentPurgeClaim.objects.filter(
+            content_kind="document", content_id=document.pk
+        ).exists()
+    ):
         raise UploadRejected
     if DocumentIntake.objects.filter(
         document=document, state__in=REJECTED_STATES

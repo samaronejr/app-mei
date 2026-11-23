@@ -84,6 +84,31 @@ def _scanned(document: Document) -> bool:
     )
 
 
+def _lock_client_of(cycle_id: UUID) -> None:
+    """Lock the cycle's client first, as the cycle services and the purge do."""
+    client_id = (
+        ServiceCycle.objects.filter(pk=cycle_id)
+        .values_list("client_id", flat=True)
+        .first()
+    )
+    if client_id is not None:
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=client_id)
+
+
+def _refuse_disposed(report: FiscalSituationReport) -> None:
+    """Refuse a review of bytes whose disposal claim is open or completed."""
+    if (
+        report.document_id is not None
+        and ContentPurgeClaim.objects.filter(
+            client_id=report.client_id,
+            content_kind="document",
+            content_id=report.document_id,
+        ).exists()
+    ):
+        msg = "O relatório está em remoção pelo prazo de guarda."
+        raise ValidationError(msg)
+
+
 def _pendencias(outcome: str, items: list[str]) -> list[str]:
     """Pendencias exist exactly for `pendencias_registradas`, each non-empty."""
     if outcome not in FederalReportOutcome.values:
@@ -126,6 +151,10 @@ def record_federal_report_review(  # noqa: PLR0913 - the rendered form's fields
     """Append one review; every refusal precedes every write."""
     items = _pendencias(outcome, pendencias)
     with transaction.atomic():
+        # The purge claims a dated original under the client lock, so the client is
+        # locked first (client before cycle, as the cycle services do) and the
+        # report and its original are read under it (AXRM-051).
+        _lock_client_of(cycle_id)
         cycle = load_cycle(actor, cycle_id, lock=True)
         # No row lock: an emitted report is never written again, and the SITFIS
         # worker locks report before cycle; locking it here (cycle first) would
@@ -138,20 +167,9 @@ def record_federal_report_review(  # noqa: PLR0913 - the rendered form's fields
         if report is None:
             raise Http404
         check_version(cycle.version, expected_version)
-        # The purge claims a dated original under this client lock; a review that
-        # would add a later date must not slip in after the claim (AXRM-051).
-        ClientCompany.objects.select_for_update(no_key=True).get(pk=cycle.client_id)
-        if (
-            report.document_id is not None
-            and ContentPurgeClaim.objects.filter(
-                client_id=cycle.client_id,
-                content_kind="document",
-                content_id=report.document_id,
-                completed_at=None,
-            ).exists()
-        ):
-            msg = "O relatório está em remoção pelo prazo de guarda."
-            raise ValidationError(msg)
+        # An open or completed disposal claim: a new review must not date bytes that
+        # are being, or were, disposed of.
+        _refuse_disposed(report)
         require_actor(actor, CYCLES_REVIEW)
         if report.state != FiscalReportState.EMITIDO or report.document is None:
             msg = "O relatório ainda não foi emitido."

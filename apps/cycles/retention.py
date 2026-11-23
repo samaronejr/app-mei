@@ -9,6 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
+from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.db import transaction
 from django.http import Http404
 
@@ -22,6 +23,11 @@ from apps.cycles.services.cycle import (
     require_actor,
     require_enabled,
     tenant_id,
+)
+from apps.obligations.models import (
+    AcquisitionOrigin,
+    Document,
+    FiscalSituationReport,
 )
 
 MAX_HOLD_REASON = 2000
@@ -47,6 +53,28 @@ class RetentionAnchor:
     basis: str
     on: date
     source_id: UUID
+
+
+SINGLE_COPY_STORAGES: Final = (FileSystemStorage,)
+
+
+def single_copy_storage(storage: Storage | None = None) -> bool:
+    """Tell whether a key delete removes the only stored copy (an allow-list).
+
+    A versioned bucket keeps noncurrent versions that a client hold cannot
+    protect, and an unrecognized backend may do the same: neither is supported
+    for disposing of federal content.
+    """
+    chosen = default_storage if storage is None else storage
+    return chosen.__class__ in SINGLE_COPY_STORAGES
+
+
+def federal_content(document: Document) -> bool:
+    """Tell whether SERPRO obtained these bytes or a SITFIS report holds them."""
+    return (
+        document.acquisition_origin == AcquisitionOrigin.FEDERAL_PROVIDER
+        or FiscalSituationReport.objects.filter(document=document).exists()
+    )
 
 
 def ordered_anchors(anchors: Iterable[RetentionAnchor]) -> tuple[RetentionAnchor, ...]:
