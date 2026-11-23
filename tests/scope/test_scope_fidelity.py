@@ -344,10 +344,17 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         "Selects existing cycles for a received document review." + FISCAL_RECEIPT_ONLY,
     ),
     (
-        "apps/cycles/services/fiscal_review.py",
-        'period = fiscal.issue_date if fiscal.family == "nfe" else fiscal.competence',
+        "apps/cycles/fiscal_material.py",
+        'When(family="nfe", then=F("issue_date")),',
         1,
-        "Refuses reviewing received documents outside their fiscal period."
+        "Uses the recorded issue date to scope and fingerprint received NF-e reviews."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/fiscal_material.py",
+        '"""Use issue date for NF-e and competence for NFS-e."""',
+        1,
+        "Documents which recorded date scopes and fingerprints received reviews."
         + FISCAL_RECEIPT_ONLY,
     ),
     (
