@@ -19,6 +19,8 @@ from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
 from apps.clients.maintenance import load_client
 from apps.cycles.errors import IllegalTransition
+from apps.cycles.evidence import DocumentIntake
+from apps.cycles.export_records import EvidenceExport
 from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
 from apps.cycles.services.cycle import (
     check_version,
@@ -99,6 +101,29 @@ def client_federal_involvement(client_id: UUID) -> bool:
         .exclude(state__in=NO_BYTES_STATES)
         .exists()
     )
+
+
+def storage_key_aliased(
+    keys: Iterable[str],
+    *,
+    document_id: UUID | None = None,
+    export_id: UUID | None = None,
+) -> bool:
+    """Tell whether any row other than this one names one of these storage keys.
+
+    Every row kind that names a key counts: an original's final key, an intake's
+    quarantine copy and an evidence archive, of any client of the tenant.
+    """
+    named = [key for key in keys if key]
+    finals = Document.objects.filter(storage_key__in=named)
+    copies = DocumentIntake.objects.filter(quarantine_key__in=named)
+    archives = EvidenceExport.objects.filter(storage_key__in=named)
+    if document_id is not None:
+        finals = finals.exclude(pk=document_id)
+        copies = copies.exclude(document_id=document_id)
+    if export_id is not None:
+        archives = archives.exclude(pk=export_id)
+    return finals.exists() or copies.exists() or archives.exists()
 
 
 def _key_lock_id(key: str) -> int:

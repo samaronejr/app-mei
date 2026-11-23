@@ -8,7 +8,8 @@ use refuse once a disposal claim exists, also across tenants.
 """
 
 import hashlib
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -17,19 +18,30 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
+from django.db.transaction import TransactionManagementError
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from storages.backends.s3 import S3Storage
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
+from apps.cycles import intake as intake_module
 from apps.cycles import retention, retention_tasks, scanning
-from apps.cycles.evidence import CLEAN_STATES, DocumentIntake, IntakeState, ScanVerdict
+from apps.cycles.evidence import (
+    CLEAN_STATES,
+    PENDING_SCAN_STATES,
+    DocumentIntake,
+    IntakeState,
+    ScanVerdict,
+)
+from apps.cycles.export_records import EvidenceExport
 from apps.cycles.models import ServiceCycle
 from apps.cycles.retention import place_hold, release_hold
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.retention_tasks import Candidate, disposal_refusal, purge_tenant
+from apps.cycles.scanning import FakeScanner
 from apps.cycles.services.federal_review import (
     record_federal_report_review,
     report_input_digest,
@@ -665,9 +677,21 @@ def test_a_key_another_session_holds_is_not_deleted(world: World) -> None:
     assert claim is not None
     assert claim.completed_at is not None
     keys = tuple(claim.storage_keys)
+    # A worker still carrying the completed claim re-reads it under the key lock
+    # and leaves alone what has since been written at the key.
+    default_storage.save(original.storage_key, ContentFile(b"written later"))
     assert (
-        retention_tasks._dispose(world.tenant_id, claim.pk, keys, None) == "concluida"
+        retention_tasks._dispose(
+            world.tenant_id,
+            client_id=claim.client_id,
+            claim_id=claim.pk,
+            keys=keys,
+            identity=None,
+            now=_expiry(report),
+        )
+        == "concluida"
     )
+    assert default_storage.exists(original.storage_key)
 
 
 def test_the_scanner_removes_a_quarantine_copy_only_under_the_client_lock(
@@ -709,7 +733,7 @@ def test_a_scanner_never_writes_a_key_a_disposal_holds(world: World) -> None:
         other.autocommit = True
         lock_id = retention._key_lock_id(original.storage_key)
         other.execute("SELECT pg_advisory_lock(%s)", [lock_id])
-        with pytest.raises(scanning.ScannerUnavailable):
+        with pytest.raises(scanning.ScanDeferred):
             scanning.promote(ticket, default_storage)
         assert not default_storage.exists(original.storage_key)
         other.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
@@ -717,3 +741,234 @@ def test_a_scanner_never_writes_a_key_a_disposal_holds(world: World) -> None:
         other.close()
     scanning.promote(ticket, default_storage)
     assert default_storage.exists(original.storage_key)
+
+
+def test_a_provider_row_naming_a_report_call_never_discharges_another_original(
+    world: World,
+) -> None:
+    _emit(world)
+    world.scan()
+    staff = _staff_original(
+        world, b"%PDF-1.7\n% staff original reused by C\n%%EOF\n", date(2018, 9, 1)
+    )
+    later = _clone_call(world, "SP-SIT-R", "sucesso")
+    # A restored provider row names the call C, but no report attaches it.
+    ingest_system_document(
+        tenant_id=world.tenant_id,
+        client_id=world.termo.client.pk,
+        origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+        receipt_ref=str(later.pk),
+        payload=b"%PDF-1.7\n% restored row naming C\n%%EOF\n",
+        filename="restaurado.pdf",
+        content_type="application/pdf",
+        retention_class="fiscal_evidence",
+    )
+    with tenant_context(world.tenant_id):
+        assert retention_tasks._document_anchors(staff)[1] == "proveniencia_incompleta"
+
+
+def test_an_unrepresentable_archive_date_keeps_the_original_and_the_sweep_goes_on(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _emit(world)
+    world.scan()
+    original = _original(world, report)
+    pending = SimpleNamespace(
+        expires_at=None, created_at=datetime(9999, 12, 20, tzinfo=UTC)
+    )
+    real_filter = EvidenceExport.objects.filter
+
+    def with_pending(*args: object, **kwargs: object) -> object:
+        if "index__data__documents__contains" in kwargs:
+            return [pending]
+        return real_filter(*args, **kwargs)
+
+    monkeypatch.setattr(EvidenceExport.objects, "filter", with_pending)
+    with tenant_context(world.tenant_id):
+        try:
+            outcome: tuple[object, ...] | None = retention_tasks._document_retention(
+                original
+            )
+        except OverflowError:
+            outcome = None
+    assert outcome is not None
+    assert (outcome[0], outcome[2]) == (None, "data_fora_do_intervalo")
+    try:
+        counts: dict[str, int] | None = purge_tenant(
+            world.tenant_id, dry_run=False, now=_expiry(report)
+        )
+    except OverflowError:
+        counts = None
+    assert counts is not None
+    assert _claim(world, original.pk) is None
+
+
+def test_the_scanner_keeps_a_quarantine_key_another_clients_row_names(
+    world: World,
+) -> None:
+    report = _emit(world)
+    original = _original(world, report)
+    termo = world.termo
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=original)
+        sibling = termo.client.__class__.objects.create(
+            tenant=termo.tenant, cnpj="11444777000161", legal_name="Sibling"
+        )
+        # A held sibling's restored original names this intake's quarantine key.
+        Document.objects.create(
+            tenant=termo.tenant,
+            client=sibling,
+            storage_key=intake.quarantine_key,
+            sha256=original.sha256,
+            original_filename="alias.pdf",
+            content_type="application/pdf",
+            byte_size=original.byte_size,
+            uploaded_by=termo.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        place_hold(
+            termo.actor,
+            sibling.pk,
+            reason="Fiscalização",
+            expected_version=sibling.version,
+        )
+    world.scan()
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in CLEAN_STATES
+    assert default_storage.exists(intake.quarantine_key)
+
+
+def test_a_scanner_that_loses_the_key_lock_defers_instead_of_failing(
+    world: World,
+) -> None:
+    report = _emit(world)
+    original = _original(world, report)
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=original)
+    late = intake.created_at + timedelta(hours=25)
+    other = connection.get_new_connection(connection.get_connection_params())
+    try:
+        other.autocommit = True
+        lock_id = retention._key_lock_id(original.storage_key)
+        other.execute("SELECT pg_advisory_lock(%s)", [lock_id])
+        outcome = scanning.scan_intake(
+            world.tenant_id, intake.pk, scanner=FakeScanner(), now=late
+        )
+        other.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
+    finally:
+        other.close()
+    assert outcome == scanning.ScanOutcome.SKIPPED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
+    # The winner's later scan is still a clean verdict.
+    assert (
+        scanning.scan_intake(
+            world.tenant_id, intake.pk, scanner=FakeScanner(), now=late
+        )
+        == scanning.ScanOutcome.VERIFIED
+    )
+
+
+def test_a_scan_never_verifies_an_original_whose_disposal_started(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    termo = world.termo
+    payload = b"%PDF-1.7\n% ordinary original in quarantine\n%%EOF\n"
+    with tenant_context(world.tenant_id):
+        kind, _ = ObligationType.objects.get_or_create(
+            code="DAS", defaults={"name": "DAS", "periodicity": "monthly"}
+        )
+        old = Obligation.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            obligation_type=kind,
+            competence_month=date(2018, 9, 1),
+            nominal_due_date=date(2018, 10, 20),
+            resolved_due_date=date(2018, 10, 20),
+        )
+        quarantined = default_storage.save(
+            f"quarantine/{termo.tenant.pk}/{termo.client.pk}/{uuid4().hex}",
+            ContentFile(payload),
+        )
+        document = Document.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            obligation=old,
+            storage_key=f"originals/{uuid4().hex}.pdf",
+            sha256=hashlib.sha256(payload).hexdigest(),
+            original_filename="pendente.pdf",
+            content_type="application/pdf",
+            byte_size=len(payload),
+            uploaded_by=termo.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        intake = DocumentIntake.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            document=document,
+            state=IntakeState.QUARANTINED,
+            quarantine_key=quarantined,
+        )
+
+    def refuse(key: str) -> None:
+        message = "synthetic storage refusal"
+        raise OSError(message)
+
+    monkeypatch.setattr(default_storage, "delete", refuse)
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    monkeypatch.undo()
+    assert _claim(world, document.pk) is not None
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert outcome == scanning.ScanOutcome.SKIPPED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state == IntakeState.QUARANTINED
+    assert not default_storage.exists(document.storage_key)
+    assert default_storage.exists(quarantined)
+
+
+def test_private_reuse_refuses_to_run_without_the_callers_transaction(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"%PDF-1.7\n% reused outside a transaction\n%%EOF\n"
+    _staff_original(world, payload)
+    outside = SimpleNamespace(in_atomic_block=False)
+    monkeypatch.setattr("apps.cycles.intake.connection", outside)
+    with tenant_context(world.tenant_id), pytest.raises(TransactionManagementError):
+        intake_module.staff_upload(
+            world.termo.actor,
+            SimpleUploadedFile("reuso.pdf", payload, content_type="application/pdf"),
+            tenant=world.termo.tenant,
+            client=world.termo.client,
+        )
+
+
+def test_an_unrepresentable_derived_date_means_no_expiry() -> None:
+    try:
+        derived: datetime | str | None = retention_tasks._after(
+            datetime(9999, 6, 1, tzinfo=UTC), 5
+        )
+    except (OverflowError, ValueError) as error:
+        derived = f"raised {type(error).__name__}"
+    assert derived is None
+    assert retention_tasks._after(datetime(2020, 2, 29, tzinfo=UTC), 1) == datetime(
+        2021, 2, 28, tzinfo=UTC
+    )
+
+
+def test_the_scanner_never_deletes_a_quarantine_copy_on_remote_storage(
+    world: World,
+) -> None:
+    report = _emit(world)
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=_original(world, report))
+    ticket = scanning.claim_scan(world.tenant_id, intake.pk)
+    assert ticket is not None
+    bucket = RecordingBucket()
+    scanning._discard_quarantine(ticket, bucket)
+    assert bucket.calls == []
