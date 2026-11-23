@@ -12,6 +12,7 @@ import pytest
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
 from botocore.compat import HTTPHeaders
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError, ConnectTimeoutError
 from storages.backends.s3 import S3Storage
 
 from apps.obligations import iss_retention_evidence_v1 as evidence
@@ -23,6 +24,25 @@ class WireBody(BytesIO):
         yield self.read()
 
 
+class BrokenBody(WireBody):
+    def __init__(self, payload: bytes, *, prefix: int = 0) -> None:
+        super().__init__(payload)
+        self.prefix = prefix
+        self.consumed = 0
+        self.attempted = False
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        assert size is not None
+        assert size > 0
+        self.attempted = True
+        self.consumed += len(super().read(self.prefix))
+        if self.prefix:
+            message = "synthetic connection reset after receiving bytes"
+            raise ConnectionResetError(message)
+        message = "synthetic body decoder failure"
+        raise ValueError(message)
+
+
 class ISSVault:
     """Keep the real S3Storage, botocore parser, and stream; intercept only HTTP."""
 
@@ -32,7 +52,7 @@ class ISSVault:
         *,
         status: int = 200,
         content_range: str | None = None,
-        body: bytes | None = None,
+        body: bytes | WireBody | None = None,
         content_length: int | None = None,
     ) -> None:
         self.storage = S3Storage(
@@ -48,7 +68,11 @@ class ISSVault:
                 retries={"total_max_attempts": 1},
             ),
         )
-        self.body = WireBody(payload if body is None else body)
+        self.body = (
+            body
+            if isinstance(body, WireBody)
+            else WireBody(payload if body is None else body)
+        )
         self.size = len(payload)
         self.status = status
         self.headers = {
@@ -89,7 +113,7 @@ def _verify(vault: ISSVault, payload: bytes) -> evidence.ISSDecision:
     with vault.intercept():
         try:
             return evidence.verify_iss_original(original)
-        except ValueError as error:
+        except (BotoCoreError, ClientError, OSError, ValueError) as error:
             message = f"Retained object read escaped as {error!r}"
             raise AssertionError(message) from error
 
@@ -128,3 +152,34 @@ def test_iss_vault_unusable_response_is_not_xml_evidence(fault: str) -> None:
         actual = _verify(vault, payload)
     assert actual == evidence.ISSDecision(cause=evidence.EVIDENCE_UNAVAILABLE)
     parse.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "fault", ["slow-down", "connect-timeout", "decode", "mid-stream"]
+)
+def test_iss_retained_read_exceptions_return_unavailable_without_parsing(
+    fault: str,
+) -> None:
+    payload = nfse()
+    body = BrokenBody(payload, prefix=17 if fault == "mid-stream" else 0)
+    if fault == "slow-down":
+        # The real SDK maps this HTTP error to ClientError (SlowDown).
+        xml = b"<Error><Code>SlowDown</Code><Message>synthetic outage</Message></Error>"
+        vault = ISSVault(payload, status=503, body=xml, content_length=len(xml))
+    else:
+        vault = ISSVault(payload, body=body)
+    with patch.object(evidence, "corroborated_iss_code") as parse:
+        if fault == "connect-timeout":
+            timeout = ConnectTimeoutError(endpoint_url="https://vault.invalid")
+            with patch.object(vault, "send", side_effect=timeout) as send:
+                actual = _verify(vault, payload)
+            assert send.call_count == 1
+        else:
+            actual = _verify(vault, payload)
+            assert [request.method for request in vault.requests] == ["GET"]
+    assert actual == evidence.ISSDecision(cause=evidence.EVIDENCE_UNAVAILABLE)
+    parse.assert_not_called()
+    if fault in ("decode", "mid-stream"):
+        assert body.attempted
+        assert body.closed
+        assert body.consumed == body.prefix
