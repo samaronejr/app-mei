@@ -93,10 +93,11 @@ def test_decisions_append_the_exact_revision_digest_reviewer_and_cycle_event(
             revision_id=fiscal.current_revision_id, role="xml_original"
         )
         expected = hashlib.sha256(f"1:{artifact.document.sha256}".encode()).hexdigest()
-        assert api.input_digest(fiscal) == expected
+        material = api.input_digest(fiscal)
+        assert material != expected
     review = record(world, fiscal, decision)
     assert review.decision == decision
-    assert review.input_digest == expected
+    assert review.input_digest == material
     assert review.revision_id == fiscal.current_revision_id
     assert review.cycle_id == world.setup.cycle.pk
     assert review.reviewer_id == world.setup.graph.actor.pk

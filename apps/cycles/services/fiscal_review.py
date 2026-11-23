@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import TYPE_CHECKING, Final
 
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -15,11 +14,15 @@ from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
 from apps.core.tenancy import tenant_context
 from apps.cycles.capabilities import CYCLES_REVIEW
-from apps.cycles.errors import VersionConflict
+from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.evidence import CLEAN_STATES, ScanVerdict
-from apps.cycles.fiscal_records import FiscalDocumentReview
+from apps.cycles.fiscal_material import material_digest
+from apps.cycles.fiscal_records import DECISIONS, FiscalDocumentReview
+from apps.cycles.fiscal_review_reason import REVIEW_REASON_WHITESPACE_V1
+from apps.cycles.fiscal_scope import review_head, reviewable_documents
 from apps.cycles.records import CycleEvent, ServiceCycle
 from apps.cycles.services.cycle import (
+    OPEN_STATES,
     check_version,
     load_cycle,
     require_actor,
@@ -32,17 +35,10 @@ if TYPE_CHECKING:
 
     from apps.accounts.models import User
 
-DECISIONS: Final = (
-    ("aceito", "Aceito pela equipe"),
-    ("rejeitado", "Não aceito"),
-    ("requer_xml", "Requer XML completo"),
-    ("documento_de_terceiro", "Documento de terceiro"),
-)
 NOTE_MAX_LENGTH: Final = 2000
 
 
-def _review_input(fiscal: FiscalDocument) -> tuple[Document, str]:
-    revision = fiscal.current_revision
+def _retained_original(fiscal: FiscalDocument) -> Document:
     artifact = (
         RevisionArtifact.objects.select_related("document")
         .filter(
@@ -52,19 +48,31 @@ def _review_input(fiscal: FiscalDocument) -> tuple[Document, str]:
         .order_by("pk")
         .first()
     )
-    if revision is None or artifact is None:
+    if fiscal.current_revision_id is None or artifact is None:
         message = "O original desta revisão ainda não foi retido."
         raise ValidationError(message)
-    digest = hashlib.sha256(
-        f"{revision.provider_version}:{artifact.document.sha256}".encode()
-    ).hexdigest()
-    return artifact.document, digest
+    return artifact.document
+
+
+def _stored_material(fiscal: FiscalDocument) -> str:
+    digest: str | None = (
+        FiscalDocument.objects.filter(
+            pk=fiscal.pk, current_revision_id=fiscal.current_revision_id
+        )
+        .annotate(review_material=material_digest())
+        .values_list("review_material", flat=True)
+        .first()
+    )
+    if digest is None:
+        message = "A revisão fiscal mudou. Recarregue antes de salvar."
+        raise VersionConflict(message)
+    return digest
 
 
 def input_digest(fiscal: FiscalDocument) -> str:
-    """Bind the provider version to the exact retained original shown to staff."""
+    """Read material for the given stored current revision, not a stale object."""
     with tenant_context(fiscal.tenant_id):
-        return _review_input(fiscal)[1]
+        return _stored_material(fiscal)
 
 
 def _require_reviewable(
@@ -73,11 +81,12 @@ def _require_reviewable(
     original: Document,
     decision: str,
 ) -> None:
-    period = fiscal.issue_date if fiscal.family == "nfe" else fiscal.competence
-    if (
-        period is None
-        or not cycle.period_start <= period <= cycle.period_end
-        or fiscal.role_verification == "divergent"
+    if not (
+        reviewable_documents(
+            client_id=cycle.client_id, start=cycle.period_start, end=cycle.period_end
+        )
+        .filter(pk=fiscal.pk)
+        .exists()
     ):
         message = "O documento não pertence a este cliente e período."
         raise ValidationError(message)
@@ -100,7 +109,7 @@ def _require_reviewable(
         raise ValidationError(message)
 
 
-def record_fiscal_document_review(  # noqa: PLR0913 - exact review-form contract
+def _append_review(  # noqa: PLR0913 - exact review-form contract
     actor: User,
     cycle_id: UUID,
     document_id: UUID,
@@ -109,6 +118,7 @@ def record_fiscal_document_review(  # noqa: PLR0913 - exact review-form contract
     decision: str,
     input_digest: str,
     expected_version: int,
+    expected_head_id: UUID | None = None,
     note: str = "",
 ) -> FiscalDocumentReview:
     """Lock client, fiscal identity and cycle, then append without changing history."""
@@ -128,23 +138,29 @@ def record_fiscal_document_review(  # noqa: PLR0913 - exact review-form contract
         require_actor(actor, CYCLES_REVIEW)
         if in_support_mode():
             raise PermissionDenied
-        check_version(cycle.version, expected_version)
+        if cycle.state not in OPEN_STATES:
+            message = "Este ciclo está encerrado. Reabra-o antes de revisar."
+            raise IllegalTransition(message)
         if fiscal.current_revision_id != revision_id:
             message = "A revisão fiscal mudou. Recarregue antes de salvar."
             raise VersionConflict(message)
-        original, actual_digest = _review_input(fiscal)
+        head = review_head(cycle_id=cycle.pk, revision_id=revision_id).first()
+        if expected_head_id != (head.pk if head is not None else None):
+            message = "A decisão atual mudou. Recarregue antes de salvar."
+            raise VersionConflict(message)
+        check_version(cycle.version, expected_version)
+        actual_digest = _stored_material(fiscal)
         if input_digest != actual_digest:
-            message = "O original mudou. Recarregue antes de salvar."
+            message = "Os dados ou arquivos fiscais mudaram. Recarregue a revisão."
             raise VersionConflict(message)
         if decision not in dict(DECISIONS) or len(note) > NOTE_MAX_LENGTH:
             message = "Escolha uma decisão e use uma nota de até 2000 caracteres."
             raise ValidationError(message)
-        _require_reviewable(fiscal, cycle, original, decision)
-        if FiscalDocumentReview.objects.filter(
-            revision_id=revision_id, cycle=cycle
-        ).exists():
-            message = "Esta revisão já recebeu uma decisão neste ciclo."
-            raise VersionConflict(message)
+        reason = note.strip(REVIEW_REASON_WHITESPACE_V1)
+        if head is not None and not reason:
+            message = "Informe o motivo para corrigir a decisão."
+            raise ValidationError(message)
+        _require_reviewable(fiscal, cycle, _retained_original(fiscal), decision)
         review = FiscalDocumentReview.objects.create(
             tenant_id=cycle.tenant_id,
             client_id=cycle.client_id,
@@ -153,8 +169,9 @@ def record_fiscal_document_review(  # noqa: PLR0913 - exact review-form contract
             cycle=cycle,
             decision=decision,
             reviewer=actor,
-            input_digest=input_digest,
-            note=note.strip(),
+            input_digest=actual_digest,
+            note=reason,
+            supersedes=head,
             reviewed_at=timezone.now(),
         )
         cycle.version += 1
@@ -176,3 +193,31 @@ def record_fiscal_document_review(  # noqa: PLR0913 - exact review-form contract
             },
         )
     return review
+
+
+def record_fiscal_document_review(  # noqa: PLR0913 - existing first-only HTTP contract
+    actor: User,
+    cycle_id: UUID,
+    document_id: UUID,
+    *,
+    revision_id: UUID,
+    decision: str,
+    input_digest: str,
+    expected_version: int,
+    note: str = "",
+) -> FiscalDocumentReview:
+    """Admit roots only until every reader adopts the successor protocol."""
+    try:
+        return _append_review(
+            actor,
+            cycle_id,
+            document_id,
+            revision_id=revision_id,
+            decision=decision,
+            input_digest=input_digest,
+            expected_version=expected_version,
+            note=note,
+        )
+    except IllegalTransition as closed:
+        # The unchanged workspace handles conflicts, not writer transitions.
+        raise VersionConflict(str(closed)) from closed
