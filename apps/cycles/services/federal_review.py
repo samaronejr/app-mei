@@ -20,6 +20,7 @@ from django.db import transaction
 from django.http import Http404
 from django.utils import timezone
 
+from apps.clients.models import ClientCompany
 from apps.cycles.capabilities import CYCLES_REVIEW
 from apps.cycles.errors import VersionConflict
 from apps.cycles.evidence import CLEAN_STATES, ScanVerdict
@@ -31,6 +32,7 @@ from apps.cycles.federal_records import (
 )
 from apps.cycles.openers import owner_for
 from apps.cycles.records import CycleEvent, ServiceCycle
+from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.services.cycle import check_version, load_cycle, require_actor
 from apps.cycles.services.exceptions import ExceptionReason, open_exception
 from apps.obligations.models import (
@@ -136,6 +138,20 @@ def record_federal_report_review(  # noqa: PLR0913 - the rendered form's fields
         if report is None:
             raise Http404
         check_version(cycle.version, expected_version)
+        # The purge claims a dated original under this client lock; a review that
+        # would add a later date must not slip in after the claim (AXRM-051).
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=cycle.client_id)
+        if (
+            report.document_id is not None
+            and ContentPurgeClaim.objects.filter(
+                client_id=cycle.client_id,
+                content_kind="document",
+                content_id=report.document_id,
+                completed_at=None,
+            ).exists()
+        ):
+            msg = "O relatório está em remoção pelo prazo de guarda."
+            raise ValidationError(msg)
         require_actor(actor, CYCLES_REVIEW)
         if report.state != FiscalReportState.EMITIDO or report.document is None:
             msg = "O relatório ainda não foi emitido."

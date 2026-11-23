@@ -1,0 +1,147 @@
+"""The fiscal dates of a SERPRO original, read from the same client's records.
+
+AXRM-051 (plan todo 51, A11). The purge path (`apps.cycles.retention_tasks`) dates a
+fiscal original by the cycles and obligations linked to it. A SERPRO original can have
+neither, so its other references are read here and added, never substituted:
+
+* every fiscal-situation report holding these bytes: the cycle of each review AND the
+  report's emission date (a report without an emission date dates nothing);
+* a PGMEI guide (SP-DAS): the competence of the cycle its request was recorded for;
+* a PAGTOWEB receipt (SP-COMP): the collection date of the payment whose id is the
+  request identity, when that date lies inside the payment's own consultation window.
+
+Every lookup stays inside the original's client. When a reference cannot be resolved,
+or identical bytes may have been reused by another acquisition, the reason is returned
+and the caller keeps the original: the latest known date cannot prove that every use
+of the bytes has expired.
+"""
+
+from uuid import UUID
+
+from django.utils import timezone
+
+from apps.cycles.federal_records import FederalReportReview
+from apps.cycles.models import ServiceCycle
+from apps.cycles.retention import RetentionAnchor
+from apps.integrations.call_models import CallState, ProviderCall
+from apps.integrations.serpro.pagtoweb import RECEIPT_OPERATION
+from apps.integrations.serpro.payments import receipt_request_key
+from apps.integrations.serpro.pgmei import OPERATION as GUIDE_OPERATION
+from apps.integrations.serpro.pgmei import _requested
+from apps.obligations.models import (
+    AcquisitionOrigin,
+    Document,
+    FederalPayment,
+    FiscalSituationReport,
+)
+
+Found = tuple[list[RetentionAnchor], list[str]]
+
+
+def federal_document_anchors(document: Document) -> tuple[list[RetentionAnchor], str]:
+    """Return every federal reference of an original and the first unresolved one."""
+    anchors: list[RetentionAnchor] = []
+    gaps: list[str] = []
+    for report in FiscalSituationReport.objects.filter(
+        client_id=document.client_id, document=document
+    ):
+        found, missing = _report_anchors(report)
+        anchors += found
+        gaps += missing
+    if document.acquisition_origin == AcquisitionOrigin.FEDERAL_PROVIDER:
+        found, missing = _acquisition_anchors(document)
+        anchors += found
+        gaps += missing
+        gaps += _shared_bytes(document)
+    return anchors, gaps[0] if gaps else ""
+
+
+def _report_anchors(report: FiscalSituationReport) -> Found:
+    reviewed = [
+        RetentionAnchor("revisao_ciclo", period_end, cycle_id)
+        for cycle_id, period_end in FederalReportReview.objects.filter(
+            client_id=report.client_id, report=report
+        ).values_list("cycle_id", "cycle__period_end")
+    ]
+    if report.emitted_at is None:
+        # A request date is not evidence of when these bytes were emitted.
+        return reviewed, ["emissao_ausente"]
+    emitted = timezone.localdate(report.emitted_at)
+    return [*reviewed, RetentionAnchor("emissao_relatorio", emitted, report.pk)], []
+
+
+def _acquisition_anchors(document: Document) -> Found:
+    try:
+        call_id = UUID(document.acquisition_receipt_ref)
+    except ValueError:
+        return [], ["recibo_invalido"]
+    call = ProviderCall.objects.filter(pk=call_id, client_id=document.client_id).first()
+    if call is None:
+        return [], ["chamada_ausente"]
+    if call.operation == GUIDE_OPERATION:
+        return _guide_anchors(call)
+    if call.operation == RECEIPT_OPERATION:
+        return _receipt_anchors(call)
+    return [], []
+
+
+def _guide_anchors(call: ProviderCall) -> Found:
+    requested = _requested(call)
+    cycle = (
+        None
+        if requested is None
+        else ServiceCycle.objects.filter(
+            pk=requested[0], client_id=call.client_id
+        ).first()
+    )
+    if cycle is None:
+        return [], ["pedido_sem_ciclo"]
+    return [RetentionAnchor("competencia_guia", cycle.period_start, cycle.pk)], []
+
+
+def _receipt_anchors(call: ProviderCall) -> Found:
+    payments = FederalPayment.objects.filter(client_id=call.client_id).select_related(
+        "consultation"
+    )
+    for payment in payments:
+        if receipt_request_key(payment.pk) != call.request_key:
+            continue
+        window = payment.consultation
+        start, end = window.range_start, window.range_end
+        if start is None or end is None or not start <= payment.data_arrecadacao <= end:
+            return [], ["data_contraditoria"]
+        anchor = RetentionAnchor(
+            "arrecadacao_pagamento", payment.data_arrecadacao, payment.pk
+        )
+        return [anchor], []
+    return [], ["pagamento_ausente"]
+
+
+def _shared_bytes(document: Document) -> list[str]:
+    """Flag bytes another acquisition may share without a recorded association.
+
+    Intake deduplicates identical content, so a successful guide or receipt call
+    without an original of its own reused the bytes of another one.
+    """
+    owned = Document.objects.filter(
+        client_id=document.client_id,
+        acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+    ).values_list("acquisition_receipt_ref", flat=True)
+    orphaned = (
+        ProviderCall.objects.filter(
+            client_id=document.client_id,
+            operation__in=(GUIDE_OPERATION, RECEIPT_OPERATION),
+            state=CallState.SUCCESS,
+        )
+        .exclude(pk__in=[ref for ref in owned if _is_uuid(ref)])
+        .exists()
+    )
+    return ["proveniencia_incompleta"] if orphaned else []
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True

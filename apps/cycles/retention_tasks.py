@@ -4,13 +4,13 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 from celery import shared_task
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.utils import timezone
+from storages.backends.s3 import S3Storage
 
 from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
@@ -20,6 +20,7 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.completion_records import CompletionJustification
 from apps.cycles.content_redaction import redact_proposal, redact_publication
 from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.evidence import CLEAN_STATES
 from apps.cycles.export_records import EvidenceExport, ExportState
 from apps.cycles.models import (
     ActionProposal,
@@ -33,10 +34,18 @@ from apps.cycles.models import (
     RequestInternal,
     Review,
 )
-from apps.cycles.retention import after_years, retention_decision
+from apps.cycles.retention import (
+    RetentionAnchor,
+    after_years,
+    fiscal_expiry,
+    ordered_anchors,
+    retention_decision,
+)
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.delivery.models import OutboundMessage
-from apps.obligations.models import Document
+from apps.integrations.models import AuthorityRecord, FirmAuthorization
+from apps.integrations.serpro.retention import federal_document_anchors
+from apps.obligations.models import AcquisitionOrigin, Document, FiscalSituationReport
 from apps.tenants.account_state import export_available
 from apps.tenants.models import Tenant
 
@@ -45,28 +54,56 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
-    """Only authorized storage descriptors leave a retention transaction."""
+    """Only authorized storage descriptors leave a retention transaction.
+
+    `anchors` and `gap` say why a document has its expiry, or why it has none.
+    The operator inventory prints them; the purge decision reads only the expiry.
+    """
 
     client_id: UUID
     kind: str
     id: UUID
     expires_at: datetime | None
     keys: tuple[str, ...] = ()
+    anchors: tuple[RetentionAnchor, ...] = ()
+    gap: str = ""
 
 
-def _document_expiry(document: Document) -> datetime | None:
-    years = list(
-        EvidenceLink.objects.filter(document=document).values_list(
-            "request__cycle__period_end__year", flat=True
-        )
-    )
+def _document_anchors(document: Document) -> tuple[tuple[RetentionAnchor, ...], str]:
+    """Every verified reference dating an original, or the reason none does."""
+    anchors = [
+        RetentionAnchor("ciclo", period_end, cycle_id)
+        for cycle_id, period_end in EvidenceLink.objects.filter(
+            document=document
+        ).values_list("request__cycle_id", "request__cycle__period_end")
+    ]
     if document.obligation is not None:
-        years.append(document.obligation.competence_month.year)
-    expiry = (
-        datetime(max(years) + 6, 1, 1, tzinfo=ZoneInfo("America/Sao_Paulo"))
-        if years and document.retention_class == RetentionClass.FISCAL_EVIDENCE
-        else None
-    )
+        anchors.append(
+            RetentionAnchor(
+                "obrigacao",
+                document.obligation.competence_month,
+                document.obligation.pk,
+            )
+        )
+    # Federal references count with the R1 ones; an unresolved one keeps the original.
+    federal, gap = federal_document_anchors(document)
+    anchors.extend(federal)
+    ordered = ordered_anchors(anchors)
+    if gap:
+        return ordered, gap
+    return ordered, "" if ordered else "sem_vinculo"
+
+
+def _document_retention(
+    document: Document,
+) -> tuple[datetime | None, tuple[RetentionAnchor, ...], str]:
+    """(expiry, anchors, gap): the latest anchored fiscal year, or why none."""
+    if document.retention_class != RetentionClass.FISCAL_EVIDENCE:
+        return None, (), "classe_sem_prazo"
+    anchors, gap = _document_anchors(document)
+    expiry = None if gap else fiscal_expiry(anchors)
+    if expiry is None:
+        return None, anchors, gap
     # A disposable derivative must never outlive its original's retention.
     # Export claim/request and this decision serialize on the same client.
     for export in EvidenceExport.objects.filter(
@@ -75,9 +112,27 @@ def _document_expiry(document: Document) -> datetime | None:
         index__data__documents__contains=[{"id": str(document.pk)}],
     ):
         derivative_expiry = export.expires_at or export.created_at + timedelta(days=30)
-        if expiry is not None:
-            expiry = max(expiry, derivative_expiry)
-    return expiry
+        expiry = max(expiry, derivative_expiry)
+    return expiry, anchors, ""
+
+
+def _claim_keys(document: Document) -> tuple[str, ...]:
+    """Return the final and quarantine keys in the order the claim trigger expects.
+
+    The trigger aggregates them `ORDER BY key` under the database collation, which is
+    not Python's code-point order: under `en_US` a `quarantine/...` key sorts before
+    a random final key that starts with "Z", and a claim in the other order is
+    refused as a different storage descriptor.
+    """
+    final = Document.objects.filter(pk=document.pk).values_list(
+        "storage_key", flat=True
+    )
+    held = (
+        DocumentIntake.objects.filter(document=document)
+        .exclude(quarantine_key="")
+        .values_list("quarantine_key", flat=True)
+    )
+    return tuple(final.union(held).order_by("storage_key"))
 
 
 def _candidates(target: Candidate | None = None) -> list[Candidate]:
@@ -91,14 +146,16 @@ def _candidates(target: Candidate | None = None) -> list[Candidate]:
             else documents.none()
         )
     for document in documents.select_related("obligation"):
-        expiry = _document_expiry(document)
-        intake = DocumentIntake.objects.filter(document=document).first()
-        keys = {document.storage_key}
-        if intake is not None and intake.quarantine_key:
-            keys.add(intake.quarantine_key)
+        expiry, anchors, gap = _document_retention(document)
         candidates.append(
             Candidate(
-                document.client_id, "document", document.pk, expiry, tuple(sorted(keys))
+                document.client_id,
+                "document",
+                document.pk,
+                expiry,
+                _claim_keys(document),
+                anchors,
+                gap,
             )
         )
     exports = EvidenceExport.objects.filter(state=ExportState.READY)
@@ -253,6 +310,62 @@ def _redact_private(claim: ContentPurgeClaim, now: datetime) -> None:
             raise ValueError(message)
 
 
+def disposal_refusal(candidate: Candidate) -> str:
+    """Name what is unproved about destroying an original; empty when it is safe.
+
+    Authority evidence is never ordinary evidence. A federal original (one SERPRO
+    obtained, or one a fiscal-situation report holds) is destroyed only on storage
+    whose single stored copy the key delete removes and only after its clean scan:
+    a versioned bucket keeps noncurrent versions a client hold cannot protect.
+    """
+    if candidate.kind != "document":
+        return ""
+    document = Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
+    if (
+        AuthorityRecord.objects.filter(evidence_document=document).exists()
+        or FirmAuthorization.objects.filter(signed_document=document).exists()
+    ):
+        return "evidencia_de_autorizacao"
+    federal = (
+        document.acquisition_origin == AcquisitionOrigin.FEDERAL_PROVIDER
+        or FiscalSituationReport.objects.filter(document=document).exists()
+    )
+    if not federal:
+        return ""
+    if isinstance(default_storage, S3Storage):
+        return "armazenamento_nao_suportado"
+    intake = DocumentIntake.objects.filter(document=document).first()
+    if intake is not None and intake.state not in CLEAN_STATES:
+        return "verificacao_pendente"
+    return ""
+
+
+def _kept_as(candidate: Candidate, now: datetime) -> str:
+    """Return the count a retained candidate falls under; empty when it may be claimed.
+
+    The refusal runs before a claim exists and before an open claim (recovery)
+    deletes anything, so a refused original keeps its bytes and its evidence.
+    """
+    decision = retention_decision(candidate.client_id, candidate.expires_at, now=now)
+    if not decision.eligible:
+        return "held" if decision.reason == "legal_hold" else "retained"
+    return "retained" if disposal_refusal(candidate) else ""
+
+
+def _finish(tid: UUID, client_id: UUID, claim_id: UUID, now: datetime) -> bool:
+    """Complete one claim once; an overlapping run that finished it first wins."""
+    with tenant_context(tid):
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=client_id)
+        claim = ContentPurgeClaim.objects.select_for_update().get(pk=claim_id)
+        if claim.completed_at is not None:
+            return False
+        _redact(claim, now)
+        claim.completed_at = now
+        claim.error_code = ""
+        claim.save(update_fields=["completed_at", "error_code"])
+        return True
+
+
 def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
     """Honor holds committed before the deletion claim and retain retry evidence."""
     assert_no_transaction()
@@ -277,9 +390,9 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             if not fresh_rows:
                 continue
             fresh = fresh_rows[0]
-            decision = retention_decision(fresh.client_id, fresh.expires_at, now=now)
-            if not decision.eligible:
-                counts["held" if decision.reason == "legal_hold" else "retained"] += 1
+            kept = _kept_as(fresh, now)
+            if kept:
+                counts[kept] += 1
                 continue
             counts["eligible"] += 1
             if dry_run:
@@ -304,16 +417,7 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
                     error_code="storage_failed"
                 )
             continue
-        with tenant_context(tid):
-            ClientCompany.objects.select_for_update(no_key=True).get(
-                pk=candidate.client_id
-            )
-            claim = ContentPurgeClaim.objects.select_for_update().get(pk=claim_id)
-            _redact(claim, now)
-            claim.completed_at = now
-            claim.error_code = ""
-            claim.save(update_fields=["completed_at", "error_code"])
-            counts["purged"] += 1
+        counts["purged"] += int(_finish(tid, candidate.client_id, claim_id, now))
     return counts
 
 

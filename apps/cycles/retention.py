@@ -1,9 +1,12 @@
 """One hold/eligibility decision and explicit, versioned hold commands."""
 
 import calendar
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+from typing import Final
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -22,6 +25,7 @@ from apps.cycles.services.cycle import (
 )
 
 MAX_HOLD_REASON = 2000
+FISCAL_TIMEZONE: Final = ZoneInfo("America/Sao_Paulo")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,39 @@ class RetentionDecision:
 
     eligible: bool
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionAnchor:
+    """One verified reference that places a retained copy in a fiscal year.
+
+    `basis` names where the date comes from (a linked cycle, an obligation, a report
+    emission...), `on` is that date and `source_id` the row that holds it.
+    """
+
+    basis: str
+    on: date
+    source_id: UUID
+
+
+def ordered_anchors(anchors: Iterable[RetentionAnchor]) -> tuple[RetentionAnchor, ...]:
+    """Distinct anchors in a stable order: date, then basis, then source."""
+    return tuple(
+        sorted(
+            set(anchors),
+            key=lambda anchor: (anchor.on, anchor.basis, str(anchor.source_id)),
+        )
+    )
+
+
+def fiscal_expiry(anchors: Iterable[RetentionAnchor]) -> datetime | None:
+    """January 1 of the latest anchored year + 6, in Sao Paulo; None without anchors.
+
+    The latest reference wins, so bytes several records share are kept for the
+    longest of their periods. The R1 period stays provisional until OG-08.
+    """
+    years = [anchor.on.year for anchor in anchors]
+    return datetime(max(years) + 6, 1, 1, tzinfo=FISCAL_TIMEZONE) if years else None
 
 
 def after_years(value: datetime, years: int) -> datetime:
