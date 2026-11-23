@@ -137,6 +137,8 @@ class Event(TenantScopedModel):
     object_id = models.CharField(_("object id"), max_length=64, blank=True)
     metadata = models.JSONField(_("metadata"), default=dict, blank=True)
     created_at = models.DateTimeField(_("created at"), auto_now_add=True)
+    # Assigned by the database for fiscal lifecycle events, even on code rollback.
+    fiscal_order = models.BigIntegerField(null=True, editable=False)
 
     class Meta(TenantScopedModel.Meta):
         """Model metadata."""

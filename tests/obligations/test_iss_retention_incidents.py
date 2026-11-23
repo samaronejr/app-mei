@@ -10,6 +10,8 @@ from unittest.mock import patch
 from uuid import UUID
 
 import pytest
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
 
 from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
@@ -21,6 +23,7 @@ from apps.obligations.iss_retention_evidence_v1 import (
     ISSOriginal,
 )
 from apps.obligations.models import FiscalDocument, FiscalRevision
+from tests.integrations.test_migration_rollback import _as_migrator
 from tests.portal.request_fixtures import portal_setup
 
 if TYPE_CHECKING:
@@ -64,7 +67,11 @@ def _fiscal_ref(fiscal: FiscalDocument) -> ObjectRef:
 
 
 def _promote(
-    fiscal: FiscalDocument, version: str, observed_at: datetime
+    fiscal: FiscalDocument,
+    version: str,
+    observed_at: datetime,
+    *,
+    registered: bool = True,
 ) -> FiscalRevision:
     revision = FiscalRevision.objects.create(
         tenant_id=fiscal.tenant_id,
@@ -76,12 +83,19 @@ def _promote(
         observed_at=observed_at,
         fiscal_state="autorizada",
     )
+    ref = ObjectRef("FiscalRevision", str(revision.pk))
+    if registered:
+        record_event(
+            action="fiscal.revision_registered",
+            obj=ref,
+            metadata={"document_id": str(fiscal.pk)},
+        )
     fiscal.current_revision = revision
     fiscal.fiscal_state = revision.fiscal_state
     fiscal.save(update_fields=["current_revision", "fiscal_state"])
     record_event(
         action="fiscal.head_changed",
-        obj=ObjectRef("FiscalRevision", str(revision.pk)),
+        obj=ref,
         metadata={"document_id": str(fiscal.pk)},
     )
     return revision
@@ -107,19 +121,53 @@ def _record_outage(
 
 
 @pytest.mark.parametrize(
-    "new_head", [False, True], ids=["already-existed", "created-after"]
+    ("case", "new_head", "legacy_offset", "registered"),
+    [
+        ("already-existed", False, 2, True),
+        ("created-after", True, -2, True),
+        ("backward-clock", False, -1, True),
+        ("forward-skew", True, 10, True),
+        ("missing-registration", False, -1, False),
+    ],
+    ids=[
+        "already-existed",
+        "created-after",
+        "backward-clock",
+        "forward-skew",
+        "missing-registration",
+    ],
 )
 def test_unscoped_contradiction_only_blocks_revisions_alive_at_the_time(
-    fiscal: FiscalDocument, new_head: bool
+    fiscal: FiscalDocument,
+    case: str,
+    new_head: bool,
+    legacy_offset: int,
+    registered: bool,
 ) -> None:
     support = _support()
+    at = _LEGACY_EVENT_AT
     with tenant_context(fiscal.tenant_id):
-        old = _promote(fiscal, "1", _LEGACY_EVENT_AT - timedelta(days=1))
+        with patch("django.utils.timezone.now", return_value=at):
+            old = _promote(fiscal, "1", at, registered=registered)
         if not new_head:
-            _record_outage(fiscal, old, derive_fields=True)
+            with patch(
+                "django.utils.timezone.now", return_value=at + timedelta(seconds=1)
+            ):
+                _record_outage(fiscal, old, derive_fields=True)
 
         # The accepted revision isn't named in the historical audit shape.
-        with patch("django.utils.timezone.now", return_value=_LEGACY_EVENT_AT):
+        stamp = at + timedelta(seconds=legacy_offset)
+        # A rollback process can also mint a wall-clock-derived UUID whose
+        # sort position disagrees with insertion order.
+        legacy_pk = (
+            UUID("00000000-0001-7000-8000-000000000000")
+            if not new_head
+            else UUID("eeeeeeee-eeee-7000-8000-000000000000")
+        )
+        with (
+            patch("django.utils.timezone.now", return_value=stamp),
+            patch.object(Event._meta.pk, "_get_default", lambda: legacy_pk),
+        ):
             legacy = record_event(
                 action=_CONSISTENCY_INCIDENT,
                 obj=_fiscal_ref(fiscal),
@@ -130,8 +178,14 @@ def test_unscoped_contradiction_only_blocks_revisions_alive_at_the_time(
 
         head = old
         if new_head:
-            head = _promote(fiscal, "2", _LEGACY_EVENT_AT + timedelta(days=1))
-            _record_outage(fiscal, head, derive_fields=True)
+            with patch(
+                "django.utils.timezone.now", return_value=at + timedelta(seconds=4)
+            ):
+                head = _promote(fiscal, "2", at + timedelta(seconds=4))
+            with patch(
+                "django.utils.timezone.now", return_value=at + timedelta(seconds=5)
+            ):
+                _record_outage(fiscal, head, derive_fields=True)
         resolution = support.reconcile_iss_incident(
             fiscal, head, _VERIFIED, evidence_key=""
         )
@@ -141,11 +195,137 @@ def test_unscoped_contradiction_only_blocks_revisions_alive_at_the_time(
             else ("incerta", ISSDecision(cause=EVIDENCE_DISAGREES), False)
         )
         assert Event.objects.filter(pk=legacy.pk).exists()
-        assert Event.objects.filter(
+        blocked = Event.objects.filter(
             action="fiscal.iss_recovery_blocked",
             object_id=str(fiscal.pk),
             metadata__revision_id=str(head.pk),
-        ).count() == (0 if new_head else 1)
+        )
+        assert blocked.count() == (0 if new_head else 1), case
+        if not new_head:
+            assert blocked.get().metadata["reason"] == (
+                "legacy_incident_without_revision"
+                if registered
+                else "legacy_incident_order_unknown"
+            )
+
+
+def test_pre_sequence_legacy_incident_is_retained_and_blocks_recovery(
+    fiscal: FiscalDocument,
+) -> None:
+    before = ("audit", "0007_datasubjectrequest_notification_bookkeeping")
+    with _as_migrator():
+        executor = MigrationExecutor(connection)
+        assert [
+            (m.app_label, m.name, reverse)
+            for m, reverse in executor.migration_plan([before])
+        ] == [("audit", "0008_fiscal_event_order", True)]
+        executor.migrate([before])
+        old_event = executor.loader.project_state([before]).apps.get_model(
+            "audit", "Event"
+        )
+        # _as_migrator restores the installed schema on context exit.
+        with tenant_context(fiscal.tenant_id):
+            historic = old_event._base_manager.create(
+                tenant_id=fiscal.tenant_id,
+                action=_CONSISTENCY_INCIDENT,
+                object_type="FiscalDocument",
+                object_id=str(fiscal.pk),
+                metadata={"original_document_id": "historic-original"},
+            )
+
+    with tenant_context(fiscal.tenant_id):
+        historic_after = Event.objects.get(pk=historic.pk)
+        assert historic_after.fiscal_order is None
+        assert historic_after.created_at == historic.created_at
+        assert historic_after.metadata == historic.metadata
+        head = _promote(fiscal, "2", _LEGACY_EVENT_AT)
+        _record_outage(fiscal, head)
+        # A code-only rollback uses the old INSERT shape after migration.
+        rollback = old_event._base_manager.create(
+            tenant_id=fiscal.tenant_id,
+            action=_CONSISTENCY_INCIDENT,
+            object_type="FiscalDocument",
+            object_id=str(fiscal.pk),
+            metadata={"original_document_id": "rollback-original"},
+        )
+        order = Event.objects.get(pk=rollback.pk).fiscal_order
+        registration = Event.objects.get(
+            action="fiscal.revision_registered", object_id=str(head.pk)
+        ).fiscal_order
+        assert registration is not None
+        assert order is not None
+        assert registration < order
+        result = _support().reconcile_iss_incident(
+            fiscal, head, _VERIFIED, evidence_key=""
+        )
+        assert result.state == "incerta"
+        reason = Event.objects.get(
+            action="fiscal.iss_recovery_blocked",
+            object_id=str(fiscal.pk),
+            metadata__revision_id=str(head.pk),
+        ).metadata["reason"]
+        assert reason == "legacy_incident_order_unknown"
+
+
+def test_scoped_hard_incident_survives_backward_clock(fiscal: FiscalDocument) -> None:
+    support = _support()
+    at = _LEGACY_EVENT_AT
+    with tenant_context(fiscal.tenant_id):
+        with patch("django.utils.timezone.now", return_value=at):
+            head = _promote(fiscal, "1", at)
+        with patch("django.utils.timezone.now", return_value=at + timedelta(seconds=1)):
+            _record_outage(fiscal, head)
+        with patch("django.utils.timezone.now", return_value=at - timedelta(seconds=1)):
+            hard = record_event(
+                action=_CONSISTENCY_INCIDENT,
+                obj=_fiscal_ref(fiscal),
+                metadata={
+                    "revision_id": str(head.pk),
+                    "cause": EVIDENCE_DISAGREES,
+                },
+            )
+        assert (
+            support.incident_episode(_fiscal_ref(fiscal), str(head.pk))
+            .filter(pk=hard.pk)
+            .exists()
+        )
+        result = support.reconcile_iss_incident(
+            fiscal, head, _VERIFIED, evidence_key=""
+        )
+        assert (result.state, result.decision) == (
+            "incerta",
+            ISSDecision(cause=EVIDENCE_DISAGREES),
+        )
+
+
+def test_repromotion_does_not_move_revision_creation_anchor(
+    fiscal: FiscalDocument,
+) -> None:
+    support = _support()
+    with tenant_context(fiscal.tenant_id):
+        v1 = _promote(fiscal, "1", _LEGACY_EVENT_AT)
+        record_event(
+            action=_CONSISTENCY_INCIDENT,
+            obj=_fiscal_ref(fiscal),
+            metadata={"original_document_id": "rejected-original"},
+        )
+        _promote(fiscal, "2", _LEGACY_EVENT_AT)
+        fiscal.current_revision = v1
+        fiscal.save(update_fields=["current_revision"])
+        record_event(
+            action="fiscal.head_changed",
+            obj=ObjectRef("FiscalRevision", str(v1.pk)),
+            metadata={"document_id": str(fiscal.pk)},
+        )
+        _record_outage(fiscal, v1)
+        result = support.reconcile_iss_incident(fiscal, v1, _VERIFIED, evidence_key="")
+        assert result.state == "incerta"
+        assert Event.objects.filter(
+            action="fiscal.iss_recovery_blocked",
+            object_id=str(fiscal.pk),
+            metadata__revision_id=str(v1.pk),
+            metadata__reason="legacy_incident_without_revision",
+        ).exists()
 
 
 def test_outage_identity_includes_original_set_not_unrelated_latest_event(

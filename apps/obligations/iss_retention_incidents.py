@@ -66,36 +66,64 @@ def incident_episode(ref: ObjectRef, revision_id: str) -> "QuerySet[Event]":
                 object_id=revision_id,
             )
         )
-        .order_by("-created_at", "-pk")
+        .exclude(fiscal_order__isnull=True)
+        .order_by("-fiscal_order")
+        .values_list("fiscal_order", flat=True)
         .first()
     )
     if boundary is not None:
         episode = episode.filter(
-            Q(created_at__gt=boundary.created_at)
-            | Q(created_at=boundary.created_at, pk__gt=boundary.pk)
+            Q(fiscal_order__gt=boundary) | Q(fiscal_order__isnull=True)
         )
     return episode
+
+
+def _revision_registration_order(
+    fiscal: "FiscalDocument", revision: "FiscalRevision"
+) -> int | None:
+    # Both old and current writers log this link in the same locked
+    # transaction as creation. A promotion can happen much later.
+    anchors = list(
+        Event.objects.filter(
+            action="fiscal.revision_registered",
+            object_type="FiscalRevision",
+            object_id=str(revision.pk),
+            metadata__document_id=str(fiscal.pk),
+        )
+        .order_by()
+        .values_list("fiscal_order", flat=True)[:2]
+    )
+    return anchors[0] if len(anchors) == 1 else None
 
 
 def _legacy_incident_blocks_recovery(
     fiscal: "FiscalDocument", ref: ObjectRef, revision: "FiscalRevision"
 ) -> bool:
     events = Event.objects.filter(object_type=ref.type, object_id=ref.id)
-    # A rollback writer did not name the affected revision. A head may be
-    # re-promoted, but an event cannot refer to a revision not yet observed.
-    unscoped = events.filter(
-        action=CONSISTENCY_INCIDENT,
-        created_at__gte=revision.observed_at,
-    ).filter(
+    unscoped = events.filter(action=CONSISTENCY_INCIDENT).filter(
         Q(metadata__revision_id__isnull=True)
         | Q(metadata__revision_id=None)
         | Q(metadata__revision_id="")
     )
     if not unscoped.exists():
         return False
+    registration = _revision_registration_order(fiscal, revision)
+    if registration is not None:
+        unscoped = unscoped.filter(
+            Q(fiscal_order__isnull=True) | Q(fiscal_order__gte=registration)
+        )
+        if not unscoped.exists():
+            return False
+    unordered = (
+        registration is None or unscoped.filter(fiscal_order__isnull=True).exists()
+    )
     metadata: dict[str, object] = {
         "revision_id": str(revision.pk),
-        "reason": "legacy_incident_without_revision",
+        "reason": (
+            "legacy_incident_order_unknown"
+            if unordered
+            else "legacy_incident_without_revision"
+        ),
     }
     if not events.filter(action=_ISS_RECOVERY_BLOCKED, metadata=metadata).exists():
         record_event(
@@ -123,7 +151,9 @@ def reconcile_iss_incident(
     revision_id = str(revision.pk)
     episode = incident_episode(ref, revision_id)
     outage = episode.filter(
-        metadata__cause=EVIDENCE_UNAVAILABLE, metadata__retryable=True
+        fiscal_order__isnull=False,
+        metadata__cause=EVIDENCE_UNAVAILABLE,
+        metadata__retryable=True,
     )
     can_recover = (
         state == "incerta"
