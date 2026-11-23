@@ -4,8 +4,10 @@ from uuid import UUID
 
 from django import forms
 from django.contrib.auth.decorators import login_required
-from django.db import IntegrityError, transaction
-from django.http import Http404, HttpResponse
+from django.db import IntegrityError, connection, transaction
+from django.db.models import UUIDField
+from django.db.models.expressions import RawSQL
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_http_methods
 from psycopg.errors import UniqueViolation
@@ -15,12 +17,34 @@ from apps.cycles.models import (
     ClientAcknowledgement,
     ClientPublication,
     CycleEvent,
-    EvidenceLink,
     PublicationState,
-    ReviewDecision,
 )
 from apps.portal.request_views import _require_flag
-from apps.portal.views import PortalVaultRequest, document_download
+from apps.portal.views import PortalVaultRequest, servable_documents, serve_document
+
+
+def _documents(publication: ClientPublication) -> list[dict[str, str | UUID]]:
+    if not publication.documents or publication.state != PublicationState.PUBLISHED:
+        return []
+    # Keep ordinary links as visible under their own RLS. For hidden links only
+    # the exact approved document ID crosses the boundary; names come from RLS.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT selected.link_id, document.original_filename
+            FROM pg_catalog.unnest(%s::uuid[]) AS selected(link_id)
+            LEFT JOIN public.cycles_evidencelink AS visible
+              ON visible.id = selected.link_id
+            JOIN public.obligations_document AS document
+              ON document.id = COALESCE(
+                  visible.document_id,
+                  public.cycles_portal_publication_document(%s, selected.link_id)
+              )
+            ORDER BY selected.link_id
+            """,
+            [[item["link_id"] for item in publication.documents], publication.pk],
+        )
+        return [{"id": link_id, "name": name} for link_id, name in cursor.fetchall()]
 
 
 class ReceiptForm(forms.Form):
@@ -92,15 +116,6 @@ def publication_detail(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
             aggregate_version=publication.version,
             payload={"digest": publication.publication_digest},
         )
-    links = (
-        EvidenceLink.objects.filter(
-            pk__in=[item["link_id"] for item in publication.documents]
-        )
-        .select_related("document")
-        .order_by("pk")
-        if published
-        else []
-    )
     return render(
         request,
         "portal/publication.html",
@@ -116,10 +131,7 @@ def publication_detail(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
                 "published": published,
                 "revision_id": revision.pk if revision else None,
             },
-            "documents": [
-                {"id": link.pk, "name": link.document.original_filename}
-                for link in links
-            ],
+            "documents": _documents(publication),
             "acknowledged": acknowledged,
             "error": error,
         },
@@ -135,23 +147,10 @@ def publication_download(
 ) -> HttpResponse:
     """Authorize the exact link revision before the existing safe storage adapter."""
     _require_flag(request)
-    publication = get_object_or_404(
-        ClientPublication.objects, pk=pk, state=PublicationState.PUBLISHED
+    document_id = RawSQL(
+        "public.cycles_portal_publication_document(%s, %s)",
+        (pk, link_id),
+        output_field=UUIDField(),
     )
-    selected = next(
-        (row for row in publication.documents if row["link_id"] == str(link_id)),
-        None,
-    )
-    if selected is None:
-        raise Http404
-    link = get_object_or_404(
-        EvidenceLink.objects.select_related("document"),
-        pk=link_id,
-        request__cycle_id=publication.cycle_id,
-        version=selected["link_revision"],
-        document_id=selected["document_id"],
-        document__sha256=selected["sha256"],
-        document__byte_size=selected["size"],
-        review_decision=ReviewDecision.ACCEPTED,
-    )
-    return document_download(request, link.document.storage_key)
+    document = get_object_or_404(servable_documents(request), pk=document_id)
+    return serve_document(document)

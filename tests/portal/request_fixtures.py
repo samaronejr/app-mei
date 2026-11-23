@@ -5,16 +5,21 @@ the portal session passes the real middleware (role switch, RLS, MFA session), a
 a second client with its own open request is the foreign-id control.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+from uuid import UUID
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
+from django.db.backends.utils import CursorWrapper
 from django.test import Client
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, ClientContact, Engagement
-from apps.core.tenancy import tenant_context
+from apps.core.tenancy import client_context, tenant_context
 from apps.cycles.models import (
     EvidenceRequest,
     RequestInternal,
@@ -167,3 +172,20 @@ def portal_setup(slug: str = "t11-portal") -> PortalSetup:
         portal_user,
         contact,
     )
+
+
+@contextmanager
+def scoped_portal_cursor(tenant_id: UUID, client_id: UUID) -> Iterator[CursorWrapper]:
+    """Use a nonprivileged portal cursor for exactly one verified client scope."""
+    with (
+        tenant_context(tenant_id),
+        client_context(client_id),
+        connection.cursor() as cursor,
+    ):
+        cursor.execute("SET LOCAL ROLE app_portal")
+        cursor.execute(
+            "SELECT current_user, rolsuper, rolbypassrls FROM pg_roles "
+            "WHERE rolname = current_user"
+        )
+        assert cursor.fetchone() == ("app_portal", False, False)
+        yield cursor
