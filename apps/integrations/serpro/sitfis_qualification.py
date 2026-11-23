@@ -37,6 +37,10 @@ from apps.integrations.serpro.qualification import (
     register_scenario,
     synthetic_termo,
 )
+from apps.integrations.serpro.qualification_wire import (
+    inspect_wire,
+    refusal_body,
+)
 from apps.integrations.serpro.sitfis import (
     FINAL_STATES,
     advance_situation_report,
@@ -86,12 +90,14 @@ def _fake_origin() -> Iterator[str]:
 
         def do_POST(self) -> None:
             raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            try:
-                service = json.loads(raw)["pedidoDados"]["idServico"]
-            except (ValueError, KeyError, TypeError):
-                service = ""
-            body = replies.get(service, b"")
-            self.send_response(200 if body else 404)
+            service, error = inspect_wire(self.command, self.path, raw)
+            # Only the three SITFIS-flow services simulate a domain result.
+            body = (
+                refusal_body(error)
+                if error
+                else replies.get(service, b'{"status":200}')
+            )
+            self.send_response(400 if error else 200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

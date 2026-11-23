@@ -1,13 +1,17 @@
 """SERPRO envelopes, escaped results, billing and definitive authentication refusals."""
 
 import json
+from contextlib import nullcontext
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, timedelta
+from email.utils import format_datetime
 from pathlib import Path
 from uuid import UUID
 
 import pytest
+from django.utils import timezone
 
+from apps.integrations.call_dispatch import _wire_window
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import (
     OperacaoNaoPermitida,
@@ -22,8 +26,10 @@ from tests.integrations.serpro_support import (
     FIRM,
     serpro_module,
 )
+from tests.integrations.serpro_wire_clock import clock, wire_clock
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "providers" / "serpro"
+__all__ = ["clock", "wire_clock"]
 
 
 def test_envelope_matches_golden_and_keeps_alphanumeric_cnpj_as_string() -> None:
@@ -64,15 +70,31 @@ def test_catalog_envelope_uses_only_the_allowlisted_route(
 ) -> None:
     # Given an A6 operation and a real loopback peer.
     adapter = serpro_module("adapter")
+    dados = json.loads((FIXTURES / "wire" / f"{service}.json").read_text())["body"][
+        "pedidoDados"
+    ]["dados"]
     request = adapter.build_request(
-        operation, adapter.Parties(CONTRATANTE, FIRM, CLIENT), {}
+        operation,
+        adapter.Parties(CONTRATANTE, FIRM, CLIENT),
+        json.loads(dados) if dados else None,
     )
     with FakeSerpro((Reply(),)) as peer:
         # When the envelope uses AXRM-011's allowlist and single-use window.
-        permitted_send(
-            ProviderTransport("serpro", "fake", peer.origin), operation, request
-        )
+        transport = ProviderTransport("serpro", "fake", peer.origin)
+        if operation == "SP-SIT-R":
+            # Isolate routing from the domain emission guard tested by the SITFIS suite.
+            with _wire_window(
+                "serpro",
+                "fake",
+                operation,
+                timezone.now() + timedelta(hours=1),
+                guard=nullcontext,
+            ):
+                response = transport.send(operation, request)
+        else:
+            response = permitted_send(transport, operation, request)
         # Then only the registered operation reaches the expected path.
+        assert response.status == 200
         assert [(r.method, r.path) for r in peer.requests] == [("POST", path)]
         pedido = json.loads(peer.requests[0].body)["pedidoDados"]
         assert (pedido["idSistema"], pedido["idServico"]) == (system, service)
@@ -203,10 +225,12 @@ def test_complete_401_is_distinguishable_from_partial_401_failure() -> None:
     assert not retry.definitive_401(partial)
 
 
+@pytest.mark.usefixtures("wire_clock")
 def test_304_termo_token_survives_wire_filtering_but_not_diagnostic_repr() -> None:
     # Given the documented body-less response carrying token and expiry in headers.
     adapter = serpro_module("adapter")
     token = str(UUID(int=13))
+    expiry = timezone.now().astimezone(UTC) + timedelta(days=30)
     request = adapter.build_request(
         "SP-TERMO",
         adapter.Parties(CONTRATANTE, FIRM, FIRM),
@@ -219,7 +243,7 @@ def test_304_termo_token_survives_wire_filtering_but_not_diagnostic_repr() -> No
                 body=b"",
                 headers=(
                     ("etag", f"autenticar_procurador_token:{token}"),
-                    ("expires", "Mon, 25 Oct 2027 00:00:00 GMT"),
+                    ("expires", format_datetime(expiry, usegmt=True)),
                 ),
             ),
         )
@@ -231,14 +255,16 @@ def test_304_termo_token_survives_wire_filtering_but_not_diagnostic_repr() -> No
         parsed = adapter.parse_termo_response(response)
     # Then header filtering cannot discard authority, or leak it through repr.
     assert parsed.procurador_token == token
-    assert parsed.expires_at == datetime(2027, 10, 25, tzinfo=UTC).timestamp()
+    assert parsed.expires_at == expiry.timestamp()
     assert token not in repr(parsed) + repr(response)
 
 
+@pytest.mark.usefixtures("wire_clock")
 def test_200_termo_reads_the_documented_expiration_field() -> None:
     # Given the current provider's escaped Autentica payload, not an invented TTL.
     adapter = serpro_module("adapter")
     expected = "synthetic-termo-token"
+    expiry = timezone.now().astimezone(UTC) + timedelta(days=30)
     body = json.dumps(
         {
             "status": 200,
@@ -246,7 +272,7 @@ def test_200_termo_reads_the_documented_expiration_field() -> None:
             "dados": json.dumps(
                 {
                     "autenticar_procurador_token": expected,
-                    "data_hora_expiracao": "2027-10-25T00:00:00",
+                    "data_hora_expiracao": expiry.strftime("%Y-%m-%dT%H:%M:%S"),
                 }
             ),
         }
@@ -254,5 +280,5 @@ def test_200_termo_reads_the_documented_expiration_field() -> None:
     # When the response is parsed, then it retains only transient token material.
     parsed = adapter.parse_termo_response(ProviderResponse(200, body))
     assert parsed.procurador_token == expected
-    assert parsed.expires_at == datetime(2027, 10, 25, tzinfo=UTC).timestamp()
+    assert parsed.expires_at == expiry.timestamp()
     assert expected not in repr(parsed)

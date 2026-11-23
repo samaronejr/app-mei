@@ -12,6 +12,9 @@ from pytest_django.fixtures import SettingsWrapper
 
 from apps.integrations.serpro.qualification import SCENARIOS
 from apps.tenants.models import Tenant
+from tests.integrations.serpro_wire_clock import clock, wire_clock
+
+__all__ = ["clock", "wire_clock"]
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -21,6 +24,7 @@ def test_the_sitfis_scenario_is_registered_for_fake_and_trial_only() -> None:
     assert SCENARIOS["serpro", "sitfis"].environments == frozenset({"fake", "trial"})
 
 
+@pytest.mark.usefixtures("wire_clock")
 def test_fake_sitfis_scenario_writes_minimized_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
 ) -> None:

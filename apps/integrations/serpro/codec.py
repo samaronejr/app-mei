@@ -7,6 +7,7 @@ from typing import assert_never
 
 from apps.integrations.allowlist import SERPRO_SERVICES
 from apps.integrations.transport_types import (
+    Environment,
     JSONValue,
     OperacaoNaoPermitida,
     ProviderRequest,
@@ -52,7 +53,13 @@ class Parties:
         object.__setattr__(self, "client", _cnpj(self.client))
 
 
-def build_request(operation: str, parties: Parties, data: JSONValue) -> ProviderRequest:
+def build_request(
+    operation: str,
+    parties: Parties,
+    data: JSONValue,
+    *,
+    environment: Environment = "producao",
+) -> ProviderRequest:
     """Build only a registered service's fixed envelope, never a caller-supplied URL."""
     service = SERPRO_SERVICES.get(operation)
     if service is None:
@@ -62,10 +69,14 @@ def build_request(operation: str, parties: Parties, data: JSONValue) -> Provider
         "autorPedidoDados": {"numero": parties.firm, "tipo": 2},
         "contribuinte": {"numero": parties.client, "tipo": 2},
         "pedidoDados": {
-            "idSistema": service[0],
-            "idServico": service[1],
-            "versaoSistema": "1.0",
-            "dados": json.dumps(data, ensure_ascii=False, separators=(",", ":")),
+            "idSistema": service.system,
+            "idServico": service.service,
+            "versaoSistema": service.version(environment),
+            "dados": (
+                ""
+                if service.dados_shape == "empty"
+                else json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+            ),
         },
     }
     return ProviderRequest(

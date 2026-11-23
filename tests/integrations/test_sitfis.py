@@ -88,7 +88,8 @@ def test_protocol_is_free_and_nothing_is_emitted_before_wait_until(
         "SITFIS",
         "SOLICITARPROTOCOLO91",
     )
-    assert json.loads(pedido["dados"]) in ("", {})
+    assert pedido["versaoSistema"] == "2.0"
+    assert pedido["dados"] == ""
     assert report.state == "aguardando"
     assert report.protocol == PROTOCOL
     assert report.wait_until == world.clock.now() + timedelta(seconds=30)
@@ -107,6 +108,7 @@ def test_protocol_is_free_and_nothing_is_emitted_before_wait_until(
     world.script(report_reply())
     emitted = world.advance(report)
     [body] = _emission_bodies(world)
+    assert body["pedidoDados"]["versaoSistema"] == "2.0"
     assert json.loads(body["pedidoDados"]["dados"]) == {"protocoloRelatorio": PROTOCOL}
     assert emitted.state == "emitido"
     assert emitted.emission_attempts == 1

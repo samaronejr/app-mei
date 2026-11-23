@@ -26,7 +26,7 @@ def _reject_constant(_value: str) -> Never:
     raise ValueError(msg)
 
 
-def decode_json(data: bytes) -> JSONValue:
+def decode_json(data: bytes | str) -> JSONValue:
     """Reject ambiguous objects and non-JSON numbers at the wire boundary."""
     value: JSONValue = json.loads(
         data, object_pairs_hook=_unique_object, parse_constant=_reject_constant

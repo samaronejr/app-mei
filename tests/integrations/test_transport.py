@@ -26,16 +26,27 @@ KEY = "0" * 44
 
 
 def serpro_request(
-    service: str = "PAGAMENTOS71", system: str = "PAGTOWEB"
+    service: str = "PAGAMENTOS71", system: str = "PAGTOWEB", *, version: str = "1.0"
 ) -> ProviderRequest:
+    fixture = FIXTURES / "serpro" / "wire" / f"{service}.json"
+    dados = (
+        json.loads(fixture.read_text())["body"]["pedidoDados"]["dados"]
+        if fixture.is_file()
+        else "{}"
+    )
     return ProviderRequest(
         body=json.dumps(
             {
+                **{
+                    party: {"numero": "99999999999999", "tipo": 2}
+                    for party in ("contratante", "autorPedidoDados", "contribuinte")
+                },
                 "pedidoDados": {
                     "idSistema": system,
                     "idServico": service,
-                    "versaoSistema": "1.0",
-                }
+                    "versaoSistema": version,
+                    "dados": dados,
+                },
             }
         ).encode()
     )

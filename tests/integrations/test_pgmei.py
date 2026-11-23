@@ -262,7 +262,9 @@ def test_budget_exhausted_is_refused_before_any_io(guide_world: GuideWorld) -> N
 
 def test_only_the_guide_operation_of_pgmei_is_implementable() -> None:
     pgmei_services = {
-        service for system, service in SERPRO_SERVICES.values() if system == "PGMEI"
+        contract.service
+        for contract in SERPRO_SERVICES.values()
+        if contract.system == "PGMEI"
     }
     assert pgmei_services == {"GERARDASPDF21"}
     # Never scheduled: no beat entry reaches the guide task.
