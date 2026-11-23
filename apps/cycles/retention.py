@@ -1,7 +1,9 @@
 """One hold/eligibility decision and explicit, versioned hold commands."""
 
 import calendar
-from collections.abc import Iterable
+import hashlib
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Final
@@ -10,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
-from django.db import transaction
+from django.db import connection, transaction
 from django.http import Http404
 
 from apps.accounts.models import User
@@ -24,6 +26,7 @@ from apps.cycles.services.cycle import (
     require_enabled,
     tenant_id,
 )
+from apps.integrations.call_models import NO_BYTES_STATES, ProviderCall
 from apps.obligations.models import (
     AcquisitionOrigin,
     Document,
@@ -75,6 +78,60 @@ def federal_content(document: Document) -> bool:
         document.acquisition_origin == AcquisitionOrigin.FEDERAL_PROVIDER
         or FiscalSituationReport.objects.filter(document=document).exists()
     )
+
+
+def client_federal_involvement(client_id: UUID) -> bool:
+    """Tell whether any of a client's content may be federal, whatever its origin.
+
+    True for a SERPRO original, a report holding an original, or any provider call
+    that may have stored bytes: a staff-first original SERPRO reused carries no
+    federal mark of its own, so a copy of the client's content is classified by
+    this, not by the origin of its first copy.
+    """
+    return (
+        Document.objects.filter(
+            client_id=client_id, acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER
+        ).exists()
+        or FiscalSituationReport.objects.filter(
+            client_id=client_id, document__isnull=False
+        ).exists()
+        or ProviderCall.objects.filter(client_id=client_id)
+        .exclude(state__in=NO_BYTES_STATES)
+        .exists()
+    )
+
+
+def _key_lock_id(key: str) -> int:
+    digest = hashlib.sha256(f"axorim-storage-key:{key}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+@contextmanager
+def storage_keys_locked(keys: Iterable[str], *, wait: bool) -> Iterator[bool]:
+    """Hold a session advisory lock per storage key; yield whether all were taken.
+
+    Every writer of an original's final key and every disposal of it takes these
+    locks, outside any transaction, so verifying the bytes and deleting them (or
+    checking for a claim and writing them) is one step no other holder can split.
+    """
+    lock_ids = sorted({_key_lock_id(key) for key in keys if key})
+    taken: list[int] = []
+    try:
+        with connection.cursor() as cursor:
+            for lock_id in lock_ids:
+                if wait:
+                    cursor.execute("SELECT pg_advisory_lock(%s)", [lock_id])
+                else:
+                    cursor.execute("SELECT pg_try_advisory_lock(%s)", [lock_id])
+                    row = cursor.fetchone()
+                    if not (row and row[0]):
+                        break
+                taken.append(lock_id)
+        yield len(taken) == len(lock_ids)
+    finally:
+        with connection.cursor() as cursor:
+            for lock_id in reversed(taken):
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
 
 
 def ordered_anchors(anchors: Iterable[RetentionAnchor]) -> tuple[RetentionAnchor, ...]:

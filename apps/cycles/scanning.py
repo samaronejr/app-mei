@@ -40,10 +40,12 @@ import sentry_sdk
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import Storage, default_storage
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
@@ -55,7 +57,11 @@ from apps.cycles.evidence import (
     ScanVerdict,
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
-from apps.cycles.retention import federal_content, single_copy_storage
+from apps.cycles.retention import (
+    client_federal_involvement,
+    single_copy_storage,
+    storage_keys_locked,
+)
 from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
 from apps.cycles.services.exceptions import open_exception
 
@@ -307,30 +313,35 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
     """Phase B, clean file: copy the quarantined bytes to the final key (no delete).
 
     Idempotent across a crash between the copy and phase C: an object already at the
-    final key is accepted only if it hashes to the document's sha256.
+    final key is accepted only if it hashes to the document's sha256. The copy is
+    made under the final key's lock, which the purge also takes, and only while the
+    ticket is the pending scan and no disposal claim exists (AXRM-051): a stale
+    scanner never writes a disposed original back, and never deletes what another
+    scanner may have verified.
     """
     assert_no_transaction()
     if not ticket.quarantined:
         return
-    try:
-        if storage.exists(ticket.storage_key):
-            _read_verified(storage, ticket.storage_key, ticket.sha256)
-            return
-        payload = _read_verified(storage, ticket.object_key, ticket.sha256)
-        if not _write_current(ticket):
-            return  # a stale ticket writes nothing; its verdict is ignored too
-        saved = storage.save(ticket.storage_key, ContentFile(payload))
-    except OSError as error:
-        msg = "promotion copy failed"
-        raise ScannerUnavailable(msg) from error
+    with storage_keys_locked([ticket.storage_key], wait=False) as locked:
+        if not locked:
+            # A disposal (or another writer) holds the final key: retry later.
+            msg = "final key in use"
+            raise ScannerUnavailable(msg)
+        try:
+            if storage.exists(ticket.storage_key):
+                _read_verified(storage, ticket.storage_key, ticket.sha256)
+                return
+            payload = _read_verified(storage, ticket.object_key, ticket.sha256)
+            if not _write_current(ticket):
+                return  # a stale ticket writes nothing; its verdict is ignored too
+            saved = storage.save(ticket.storage_key, ContentFile(payload))
+        except OSError as error:
+            msg = "promotion copy failed"
+            raise ScannerUnavailable(msg) from error
     if saved != ticket.storage_key:
         _discard(storage, saved)
         msg = "storage changed the requested document key"
         raise RuntimeError(msg)
-    if not _write_current(ticket):
-        # Another scan finished meanwhile and the original may since have been
-        # disposed of: this stale copy must not bring it back (AXRM-051).
-        _discard(storage, saved)
 
 
 def _write_current(ticket: ScanTicket) -> bool:
@@ -353,23 +364,26 @@ def _write_current(ticket: ScanTicket) -> bool:
         )
 
 
-def _keeps_quarantine(ticket: ScanTicket, storage: Storage) -> bool:
-    """Keep the quarantine copy of federal content a delete could not dispose of.
+def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
+    """Remove the verified quarantine copy unless a hold or federal content keeps it.
 
-    On versioned or unrecognized storage the delete only hides the copy, and a
-    client hold covers every copy: both keep it, and the purge then refuses the
-    original until that copy is accounted for (AXRM-051).
+    The decision and the delete happen under the client lock `place_hold` takes,
+    so a hold that commits first keeps the copy and one that comes later finds it
+    already gone. On versioned or unrecognized storage the delete only hides a copy
+    of possibly federal content, so that copy is kept for the purge (AXRM-051).
     """
-    with tenant_context(ticket.tenant_id):
-        intake = DocumentIntake.objects.select_related("document").get(
-            pk=ticket.intake_id
-        )
-        if not federal_content(intake.document):
-            return False
+    with tenant_context(ticket.tenant_id), transaction.atomic():
+        intake = DocumentIntake.objects.get(pk=ticket.intake_id)
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=intake.client_id)
         held = LegalHold.objects.filter(
             client_id=intake.client_id, released_at=None
         ).exists()
-        return held or not single_copy_storage(storage)
+        if held or (
+            not single_copy_storage(storage)
+            and client_federal_involvement(intake.client_id)
+        ):
+            return
+        _discard(storage, ticket.object_key)
 
 
 def _discard(storage: Storage, key: str) -> None:
@@ -530,12 +544,8 @@ def scan_intake(
     except ScannerUnavailable:
         return record_failure(ticket, now=now)
     outcome = record_verdict(ticket, verdict, now=now)
-    if (
-        outcome is ScanOutcome.VERIFIED
-        and ticket.quarantined
-        and not _keeps_quarantine(ticket, storage)
-    ):
-        _discard(storage, ticket.object_key)
+    if outcome is ScanOutcome.VERIFIED and ticket.quarantined:
+        _discard_quarantine(ticket, storage)
     return outcome
 
 

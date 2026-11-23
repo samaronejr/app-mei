@@ -253,15 +253,21 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
                 raise UploadRejected
             return document, False
     # Private bytes whose retention disposal has started are never reused
-    # (AXRM-051): the purge's locked recheck sees any use committed before its
-    # claim. Federal content is always private, and the portal role, which
+    # (AXRM-051). Federal content is always private, and the portal role, which
     # reuses only visible rows, cannot read disposal claims.
-    if document.purged_at is not None or (
-        not source.portal_visible
-        and ContentPurgeClaim.objects.filter(
-            content_kind="document", content_id=document.pk
-        ).exists()
-    ):
+    if not source.portal_visible:
+        # Under the client lock the purge claims under, held to the caller's commit
+        # so the link that follows lands before any later claim (AXRM-051); the row
+        # is read again under it.
+        with transaction.atomic():
+            ClientCompany.objects.select_for_update(no_key=True).get(pk=client.pk)
+            document = Document.objects.get(pk=document.pk)
+            claimed = ContentPurgeClaim.objects.filter(
+                content_kind="document", content_id=document.pk
+            ).exists()
+        if claimed:
+            raise UploadRejected
+    if document.purged_at is not None:
         raise UploadRejected
     if DocumentIntake.objects.filter(
         document=document, state__in=REJECTED_STATES

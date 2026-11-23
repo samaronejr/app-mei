@@ -38,17 +38,19 @@ from apps.cycles.models import (
 from apps.cycles.retention import (
     RetentionAnchor,
     after_years,
+    client_federal_involvement,
     federal_content,
     fiscal_expiry,
     ordered_anchors,
     retention_decision,
     single_copy_storage,
+    storage_keys_locked,
 )
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.delivery.models import OutboundMessage
 from apps.integrations.models import AuthorityRecord, FirmAuthorization
 from apps.integrations.serpro.retention import federal_document_anchors
-from apps.obligations.models import AcquisitionOrigin, Document, FiscalSituationReport
+from apps.obligations.models import Document
 from apps.tenants.account_state import export_available
 from apps.tenants.models import Tenant
 
@@ -316,33 +318,38 @@ def _redact_private(claim: ContentPurgeClaim, now: datetime) -> None:
             raise ValueError(message)
 
 
-def _client_has_federal_content(client_id: UUID) -> bool:
-    return (
-        Document.objects.filter(
-            client_id=client_id, acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER
-        ).exists()
-        or FiscalSituationReport.objects.filter(
-            client_id=client_id, document__isnull=False
-        ).exists()
-    )
+def _aliased(keys: tuple[str, ...], *, document_id: UUID | None = None) -> bool:
+    """Tell whether a row other than this one names any of these storage keys."""
+    named = [key for key in keys if key]
+    other_finals = Document.objects.filter(storage_key__in=named)
+    other_copies = DocumentIntake.objects.filter(quarantine_key__in=named)
+    if document_id is not None:
+        other_finals = other_finals.exclude(pk=document_id)
+        other_copies = other_copies.exclude(document_id=document_id)
+    return other_finals.exists() or other_copies.exists()
 
 
 def disposal_refusal(candidate: Candidate) -> str:
     """Name what is unproved about destroying a copy; empty when it may be claimed.
 
-    Authority evidence is never ordinary evidence. Federal content (an original
-    SERPRO obtained or a report holds, or an evidence archive of a client that has
-    any) is disposed of only on single-copy storage; a federal original also needs
-    every intake clean and a storage key no other row names. Whether the stored
-    bytes are still the original is proved again before the delete.
+    A key another row names is never deleted through this one, whatever either
+    row is. Authority evidence is never ordinary evidence. Federal content (an
+    original SERPRO obtained or a report holds, or an archive of a client whose
+    content may be federal) is disposed of only on single-copy storage, and a
+    federal original also needs every intake clean. Whether the stored bytes are
+    still the original is proved again, under the key lock, before the delete.
     """
     if candidate.kind == "export":
-        unsupported = not single_copy_storage() and _client_has_federal_content(
+        if _aliased(candidate.keys):
+            return "chave_compartilhada"
+        unsupported = not single_copy_storage() and client_federal_involvement(
             candidate.client_id
         )
         return "armazenamento_nao_suportado" if unsupported else ""
     if candidate.kind != "document":
         return ""
+    if _aliased(candidate.keys, document_id=candidate.id):
+        return "chave_compartilhada"
     return _document_refusal(
         Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
     )
@@ -361,25 +368,82 @@ def _document_refusal(document: Document) -> str:
     intakes = DocumentIntake.objects.filter(document=document)
     if not intakes.exists() or intakes.exclude(state__in=CLEAN_STATES).exists():
         return "verificacao_pendente"
-    if (
-        Document.objects.filter(storage_key=document.storage_key)
-        .exclude(pk=document.pk)
-        .exists()
-    ):
-        return "chave_compartilhada"
     return ""
 
 
 def _physical_refusal(keys: tuple[str, ...], final_key: str, sha256: str) -> str:
-    """Prove the stored bytes are the original's only copy (outside a transaction)."""
+    """Prove every stored copy is the original's bytes (outside a transaction)."""
     assert_no_transaction()
     if not default_storage.exists(final_key):
         return "arquivo_ausente"
-    with default_storage.open(final_key, "rb") as handle:
-        if hashlib.sha256(handle.read()).hexdigest() != sha256:
-            return "conteudo_divergente"
-    if any(default_storage.exists(key) for key in keys if key != final_key):
-        return "copias_multiplas"
+    for key in keys:
+        if key != final_key and not default_storage.exists(key):
+            continue
+        with default_storage.open(key, "rb") as handle:
+            if hashlib.sha256(handle.read()).hexdigest() != sha256:
+                return "conteudo_divergente"
+    return ""
+
+
+PROOF_REFUSALS: Final = frozenset(
+    {"arquivo_ausente", "conteudo_divergente", "chave_em_uso"}
+)
+COMPLETED: Final = "concluida"
+
+
+def _identity(candidate: Candidate) -> tuple[str, str] | None:
+    """Return the final key and sha256 a disposal must prove, read under the lock.
+
+    A federal original, and an archive of a client whose content may be federal,
+    are deleted only once their stored bytes are proved.
+    """
+    if candidate.kind == "export":
+        export = EvidenceExport.objects.get(
+            pk=candidate.id, client_id=candidate.client_id
+        )
+        if not client_federal_involvement(candidate.client_id):
+            return None
+        return export.storage_key, export.sha256
+    if candidate.kind != "document":
+        return None
+    document = Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
+    if not federal_content(document):
+        return None
+    return document.storage_key, document.sha256
+
+
+def _dispose(
+    tid: UUID, claim_id: UUID, keys: tuple[str, ...], identity: tuple[str, str] | None
+) -> str:
+    """Delete a claim's keys; return why the disposal is unproved, or empty.
+
+    Under the key locks, which every writer of these keys also takes, the claim is
+    re-read (an overlapping worker may have completed it), the bytes are proved to
+    be the original, deleted, and proved gone. A claim whose keys another holder
+    has locked stays open for a later run.
+    """
+    assert_no_transaction()
+    with storage_keys_locked(keys, wait=False) as locked:
+        if not locked:
+            return "chave_em_uso"
+        with tenant_context(tid):
+            if ContentPurgeClaim.objects.filter(
+                pk=claim_id, completed_at__isnull=False
+            ).exists():
+                return COMPLETED
+        try:
+            if identity is not None:
+                refused = _physical_refusal(keys, *identity)
+                if refused:
+                    return refused
+            for key in keys:
+                default_storage.delete(key)
+            if identity is not None and any(
+                default_storage.exists(key) for key in keys
+            ):
+                return "exclusao_nao_comprovada"
+        except (OSError, BotoCoreError, ClientError):
+            return "storage_failed"
     return ""
 
 
@@ -407,43 +471,6 @@ def _finish(tid: UUID, client_id: UUID, claim_id: UUID, now: datetime) -> bool:
         claim.error_code = ""
         claim.save(update_fields=["completed_at", "error_code"])
         return True
-
-
-PROOF_REFUSALS: Final = frozenset(
-    {"arquivo_ausente", "conteudo_divergente", "copias_multiplas"}
-)
-
-
-def _federal_identity(candidate: Candidate) -> tuple[str, str] | None:
-    """Return a federal original's final key and sha256, read under the client lock."""
-    if candidate.kind != "document":
-        return None
-    document = Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
-    if not federal_content(document):
-        return None
-    return document.storage_key, document.sha256
-
-
-def _dispose(keys: tuple[str, ...], identity: tuple[str, str] | None) -> str:
-    """Delete a claim's keys; return why the disposal is unproved, or empty.
-
-    A federal original is deleted only after its bytes are proved to be the single
-    stored copy, and counts as disposed of only when no key remains afterwards: a
-    retry after an interrupted delete keeps whatever now sits at the key.
-    """
-    assert_no_transaction()
-    try:
-        if identity is not None:
-            refused = _physical_refusal(keys, *identity)
-            if refused:
-                return refused
-        for key in keys:
-            default_storage.delete(key)
-        if identity is not None and any(default_storage.exists(key) for key in keys):
-            return "exclusao_nao_comprovada"
-    except (OSError, BotoCoreError, ClientError):
-        return "storage_failed"
-    return ""
 
 
 def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
@@ -486,13 +513,17 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             if claim.completed_at is not None:
                 continue
             claim_id, keys = claim.pk, tuple(claim.storage_keys)
-            identity = _federal_identity(fresh)
-        outcome = _dispose(keys, identity)
+            identity = _identity(fresh)
+        outcome = _dispose(tid, claim_id, keys, identity)
+        if outcome == COMPLETED:
+            continue
         if outcome:
             counts["retained" if outcome in PROOF_REFUSALS else "failed"] += 1
             with tenant_context(tid):
                 # The claim stays open with the reason; it is never completed.
-                ContentPurgeClaim.objects.filter(pk=claim_id).update(error_code=outcome)
+                ContentPurgeClaim.objects.filter(pk=claim_id, completed_at=None).update(
+                    error_code=outcome
+                )
             continue
         counts["purged"] += int(_finish(tid, candidate.client_id, claim_id, now))
     return counts

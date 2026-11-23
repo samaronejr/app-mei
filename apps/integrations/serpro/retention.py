@@ -23,7 +23,7 @@ from django.utils import timezone
 from apps.cycles.federal_records import FederalReportReview
 from apps.cycles.models import ServiceCycle
 from apps.cycles.retention import RetentionAnchor
-from apps.integrations.call_models import CallState, ProviderCall
+from apps.integrations.call_models import NO_BYTES_STATES, ProviderCall
 from apps.integrations.serpro.pagtoweb import RECEIPT_OPERATION
 from apps.integrations.serpro.payments import receipt_request_key
 from apps.integrations.serpro.pgmei import OPERATION as GUIDE_OPERATION
@@ -37,14 +37,6 @@ from apps.obligations.models import (
 
 Found = tuple[list[RetentionAnchor], list[str]]
 REPORT_OPERATION = "SP-SIT-R"
-# States in which a call never stored bytes; any other state may have.
-NO_BYTES_STATES = (
-    CallState.QUEUED,
-    CallState.RESERVED,
-    CallState.FAILED,
-    CallState.DENIED,
-    CallState.QUOTA,
-)
 
 
 def federal_document_anchors(document: Document) -> tuple[list[RetentionAnchor], str]:
@@ -90,14 +82,22 @@ def _acquisition_anchors(document: Document) -> Found:
     call = ProviderCall.objects.filter(pk=call_id, client_id=document.client_id).first()
     if call is None:
         return [], ["chamada_ausente"]
+    if call.state in NO_BYTES_STATES:
+        return [], ["chamada_sem_bytes"]  # it never stored the bytes it is named for
+    return _call_anchors(call, document)
+
+
+def _call_anchors(call: ProviderCall, document: Document) -> Found:
     if call.operation == GUIDE_OPERATION:
         return _guide_anchors(call)
     if call.operation == RECEIPT_OPERATION:
         return _receipt_anchors(call)
     if call.operation == REPORT_OPERATION:
-        # The report's emission dates these bytes only if it holds this original.
+        # Only this call's own report, holding this original, dates its bytes.
         held = FiscalSituationReport.objects.filter(
-            client_id=document.client_id, document=document
+            client_id=document.client_id,
+            document=document,
+            call_replies__has_key=str(call.pk),
         ).exists()
         return [], [] if held else ["relatorio_ausente"]
     return [], ["operacao_nao_reconhecida"]
@@ -141,29 +141,35 @@ def _receipt_anchors(call: ProviderCall) -> Found:
 def _shared_bytes(document: Document) -> list[str]:
     """Flag bytes another acquisition may share without a recorded association.
 
-    Intake deduplicates identical private content, so a guide or receipt call that
-    may have stored bytes (any state but a definite refusal) and has no original of
-    its own may have reused this one.
+    Intake deduplicates identical private content, so any guide, receipt or report
+    call that may have stored bytes and is not accounted for (an original of its
+    own, or its own report holding a document) may have reused this original.
     """
-    owned = Document.objects.filter(
-        client_id=document.client_id,
-        acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER,
-    ).values_list("acquisition_receipt_ref", flat=True)
-    orphaned = (
+    client_id = document.client_id
+    owned = set(
+        Document.objects.filter(
+            client_id=client_id, acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER
+        ).values_list("acquisition_receipt_ref", flat=True)
+    )
+    calls = (
         ProviderCall.objects.filter(
-            client_id=document.client_id,
-            operation__in=(GUIDE_OPERATION, RECEIPT_OPERATION),
+            client_id=client_id,
+            operation__in=(GUIDE_OPERATION, RECEIPT_OPERATION, REPORT_OPERATION),
         )
         .exclude(state__in=NO_BYTES_STATES)
-        .exclude(pk__in=[ref for ref in owned if _is_uuid(ref)])
-        .exists()
+        .values_list("pk", "operation")
     )
-    return ["proveniencia_incompleta"] if orphaned else []
-
-
-def _is_uuid(value: str) -> bool:
-    try:
-        UUID(value)
-    except ValueError:
-        return False
-    return True
+    for call_id, operation in calls:
+        if str(call_id) in owned:
+            continue
+        if (
+            operation == REPORT_OPERATION
+            and FiscalSituationReport.objects.filter(
+                client_id=client_id,
+                document__isnull=False,
+                call_replies__has_key=str(call_id),
+            ).exists()
+        ):
+            continue
+        return ["proveniencia_incompleta"]
+    return []
