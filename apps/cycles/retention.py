@@ -18,6 +18,7 @@ from django.http import Http404
 from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
 from apps.clients.maintenance import load_client
+from apps.core.tenancy import tenant_context
 from apps.cycles.errors import IllegalTransition
 from apps.cycles.evidence import DocumentIntake
 from apps.cycles.export_records import EvidenceExport
@@ -34,6 +35,7 @@ from apps.obligations.models import (
     Document,
     FiscalSituationReport,
 )
+from apps.tenants.models import Tenant
 
 MAX_HOLD_REASON = 2000
 FISCAL_TIMEZONE: Final = ZoneInfo("America/Sao_Paulo")
@@ -124,6 +126,39 @@ def storage_key_aliased(
     if export_id is not None:
         archives = archives.exclude(pk=export_id)
     return finals.exists() or copies.exists() or archives.exists()
+
+
+def foreign_storage_keys(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
+    """Return which of these keys a row of another tenant names.
+
+    Storage keys are global while rows are tenant-scoped, so every other tenant is
+    read in its own context: an original's final key, an intake's quarantine copy
+    or an evidence archive there keeps the key here.
+    """
+    named = sorted({key for key in keys if key})
+    found: set[str] = set()
+    if not named:
+        return found
+    # PLATFORM_QUERY_OK: storage keys are global, so every other tenant is checked.
+    others = Tenant.objects.exclude(pk=tenant_id).values_list("pk", flat=True)
+    for other in list(others):
+        with tenant_context(other):
+            found.update(
+                Document.objects.filter(storage_key__in=named).values_list(
+                    "storage_key", flat=True
+                )
+            )
+            found.update(
+                DocumentIntake.objects.filter(quarantine_key__in=named).values_list(
+                    "quarantine_key", flat=True
+                )
+            )
+            found.update(
+                EvidenceExport.objects.filter(storage_key__in=named).values_list(
+                    "storage_key", flat=True
+                )
+            )
+    return found
 
 
 def _key_lock_id(key: str) -> int:
