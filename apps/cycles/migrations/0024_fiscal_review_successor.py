@@ -35,7 +35,7 @@ class Migration(migrations.Migration):
             model_name="fiscaldocumentreview",
             name="supersedes",
             field=models.ForeignKey(
-                "self",
+                to="cycles.fiscaldocumentreview",
                 on_delete=models.PROTECT,
                 null=True,
                 blank=True,
