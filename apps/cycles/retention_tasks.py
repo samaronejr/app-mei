@@ -44,6 +44,7 @@ from apps.cycles.retention import (
     ordered_anchors,
     retention_decision,
     single_copy_storage,
+    storage_key_aliased,
     storage_keys_locked,
 )
 from apps.cycles.retention_records import ContentPurgeClaim
@@ -119,7 +120,12 @@ def _document_retention(
         state__in=[ExportState.PENDING, ExportState.BUILDING, ExportState.READY],
         index__data__documents__contains=[{"id": str(document.pk)}],
     ):
-        derivative_expiry = export.expires_at or export.created_at + timedelta(days=30)
+        try:
+            derivative_expiry = export.expires_at or (
+                export.created_at + timedelta(days=30)
+            )
+        except OverflowError:  # a representable date whose fallback is not
+            return None, anchors, "data_fora_do_intervalo"
         expiry = max(expiry, derivative_expiry)
     return expiry, anchors, ""
 
@@ -202,7 +208,7 @@ def _candidates(target: Candidate | None = None) -> list[Candidate]:
                 proposal.client_id,
                 "proposal",
                 proposal.pk,
-                after_years(proposal.created_at, retention_years),
+                _after(proposal.created_at, retention_years),
             )
         )
     candidates.extend(_text_candidates(target))
@@ -255,7 +261,7 @@ def _text_candidates(target: Candidate | None) -> list[Candidate]:
                 continue
             query = query.filter(pk=target.id, client_id=target.client_id)
         candidates.extend(
-            Candidate(client_id, kind, pk, after_years(when, years))
+            Candidate(client_id, kind, pk, _after(when, years))
             for client_id, pk, when in query.values_list("client_id", "pk", created)
         )
     return candidates
@@ -318,15 +324,12 @@ def _redact_private(claim: ContentPurgeClaim, now: datetime) -> None:
             raise ValueError(message)
 
 
-def _aliased(keys: tuple[str, ...], *, document_id: UUID | None = None) -> bool:
-    """Tell whether a row other than this one names any of these storage keys."""
-    named = [key for key in keys if key]
-    other_finals = Document.objects.filter(storage_key__in=named)
-    other_copies = DocumentIntake.objects.filter(quarantine_key__in=named)
-    if document_id is not None:
-        other_finals = other_finals.exclude(pk=document_id)
-        other_copies = other_copies.exclude(document_id=document_id)
-    return other_finals.exists() or other_copies.exists()
+def _after(value: datetime, years: int) -> datetime | None:
+    """Return `after_years`, or None (no expiry: kept) when the date cannot exist."""
+    try:
+        return after_years(value, years)
+    except (OverflowError, ValueError):
+        return None
 
 
 def disposal_refusal(candidate: Candidate) -> str:
@@ -340,7 +343,7 @@ def disposal_refusal(candidate: Candidate) -> str:
     still the original is proved again, under the key lock, before the delete.
     """
     if candidate.kind == "export":
-        if _aliased(candidate.keys):
+        if storage_key_aliased(candidate.keys, export_id=candidate.id):
             return "chave_compartilhada"
         unsupported = not single_copy_storage() and client_federal_involvement(
             candidate.client_id
@@ -348,7 +351,7 @@ def disposal_refusal(candidate: Candidate) -> str:
         return "armazenamento_nao_suportado" if unsupported else ""
     if candidate.kind != "document":
         return ""
-    if _aliased(candidate.keys, document_id=candidate.id):
+    if storage_key_aliased(candidate.keys, document_id=candidate.id):
         return "chave_compartilhada"
     return _document_refusal(
         Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
@@ -389,6 +392,7 @@ PROOF_REFUSALS: Final = frozenset(
     {"arquivo_ausente", "conteudo_divergente", "chave_em_uso"}
 )
 COMPLETED: Final = "concluida"
+PURGED: Final = "removida"
 
 
 def _identity(candidate: Candidate) -> tuple[str, str] | None:
@@ -412,14 +416,22 @@ def _identity(candidate: Candidate) -> tuple[str, str] | None:
     return document.storage_key, document.sha256
 
 
-def _dispose(
-    tid: UUID, claim_id: UUID, keys: tuple[str, ...], identity: tuple[str, str] | None
+def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
+    tid: UUID,
+    *,
+    client_id: UUID,
+    claim_id: UUID,
+    keys: tuple[str, ...],
+    identity: tuple[str, str] | None,
+    now: datetime,
 ) -> str:
-    """Delete a claim's keys; return why the disposal is unproved, or empty.
+    """Dispose of a claim's keys and complete it; return the outcome.
 
-    Under the key locks, which every writer of these keys also takes, the claim is
-    re-read (an overlapping worker may have completed it), the bytes are proved to
-    be the original, deleted, and proved gone. A claim whose keys another holder
+    Everything happens under the key locks, which every writer of these keys also
+    takes: the claim is re-read (an overlapping worker may have completed it), the
+    bytes are proved to be the original, deleted, proved gone, and the claim is
+    completed before the locks are released, so no other holder can act on the
+    keys between the delete and the completion. A claim whose keys another holder
     has locked stays open for a later run.
     """
     assert_no_transaction()
@@ -444,7 +456,7 @@ def _dispose(
                 return "exclusao_nao_comprovada"
         except (OSError, BotoCoreError, ClientError):
             return "storage_failed"
-    return ""
+        return PURGED if _finish(tid, client_id, claim_id, now) else COMPLETED
 
 
 def _kept_as(candidate: Candidate, now: datetime) -> str:
@@ -471,6 +483,18 @@ def _finish(tid: UUID, client_id: UUID, claim_id: UUID, now: datetime) -> bool:
         claim.error_code = ""
         claim.save(update_fields=["completed_at", "error_code"])
         return True
+
+
+def _count(tid: UUID, claim_id: UUID, outcome: str, counts: dict[str, int]) -> None:
+    """Count one disposal; an unproved one leaves its claim open with the reason."""
+    if outcome == PURGED:
+        counts["purged"] += 1
+    elif outcome != COMPLETED:
+        counts["retained" if outcome in PROOF_REFUSALS else "failed"] += 1
+        with tenant_context(tid):
+            ContentPurgeClaim.objects.filter(pk=claim_id, completed_at=None).update(
+                error_code=outcome
+            )
 
 
 def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
@@ -514,18 +538,15 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
                 continue
             claim_id, keys = claim.pk, tuple(claim.storage_keys)
             identity = _identity(fresh)
-        outcome = _dispose(tid, claim_id, keys, identity)
-        if outcome == COMPLETED:
-            continue
-        if outcome:
-            counts["retained" if outcome in PROOF_REFUSALS else "failed"] += 1
-            with tenant_context(tid):
-                # The claim stays open with the reason; it is never completed.
-                ContentPurgeClaim.objects.filter(pk=claim_id, completed_at=None).update(
-                    error_code=outcome
-                )
-            continue
-        counts["purged"] += int(_finish(tid, candidate.client_id, claim_id, now))
+        outcome = _dispose(
+            tid,
+            client_id=candidate.client_id,
+            claim_id=claim_id,
+            keys=keys,
+            identity=identity,
+            now=now,
+        )
+        _count(tid, claim_id, outcome, counts)
     return counts
 
 

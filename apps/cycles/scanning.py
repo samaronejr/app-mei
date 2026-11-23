@@ -58,8 +58,8 @@ from apps.cycles.evidence import (
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
 from apps.cycles.retention import (
-    client_federal_involvement,
     single_copy_storage,
+    storage_key_aliased,
     storage_keys_locked,
 )
 from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
@@ -296,6 +296,10 @@ def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
         raise ScannerUnavailable(msg) from error
 
 
+class ScanDeferred(Exception):  # noqa: N818 - domain vocabulary
+    """Another scanner or a disposal holds the original: scan again later."""
+
+
 class IntegrityMismatch(Exception):  # noqa: N818 - domain vocabulary
     """The stored bytes no longer hash to the document's sha256."""
 
@@ -324,16 +328,17 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
         return
     with storage_keys_locked([ticket.storage_key], wait=False) as locked:
         if not locked:
-            # A disposal (or another writer) holds the final key: retry later.
-            msg = "final key in use"
-            raise ScannerUnavailable(msg)
+            raise ScanDeferred  # another scanner or a disposal holds the final key
         try:
             if storage.exists(ticket.storage_key):
                 _read_verified(storage, ticket.storage_key, ticket.sha256)
                 return
             payload = _read_verified(storage, ticket.object_key, ticket.sha256)
-            if not _write_current(ticket):
+            state = _write_state(ticket)
+            if state == "stale":
                 return  # a stale ticket writes nothing; its verdict is ignored too
+            if state == "claimed":
+                raise ScanDeferred  # never verified without the final copy
             saved = storage.save(ticket.storage_key, ContentFile(payload))
         except OSError as error:
             msg = "promotion copy failed"
@@ -344,8 +349,8 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
         raise RuntimeError(msg)
 
 
-def _write_current(ticket: ScanTicket) -> bool:
-    """Tell whether the ticket is still the pending scan and no disposal started."""
+def _write_state(ticket: ScanTicket) -> str:
+    """Say whether the ticket may write: `stale`, `claimed` (disposal started) or ``."""
     with tenant_context(ticket.tenant_id):
         document_id = (
             DocumentIntake.objects.filter(
@@ -356,34 +361,43 @@ def _write_current(ticket: ScanTicket) -> bool:
             .values_list("document_id", flat=True)
             .first()
         )
-        return (
-            document_id is not None
-            and not ContentPurgeClaim.objects.filter(
-                content_kind="document", content_id=document_id
-            ).exists()
-        )
+        if document_id is None:
+            return "stale"
+        claimed = ContentPurgeClaim.objects.filter(
+            content_kind="document", content_id=document_id
+        ).exists()
+        return "claimed" if claimed else ""
 
 
 def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
-    """Remove the verified quarantine copy unless a hold or federal content keeps it.
+    """Remove the verified quarantine copy unless anything else may still need it.
 
-    The decision and the delete happen under the client lock `place_hold` takes,
-    so a hold that commits first keeps the copy and one that comes later finds it
-    already gone. On versioned or unrecognized storage the delete only hides a copy
-    of possibly federal content, so that copy is kept for the purge (AXRM-051).
+    Only on single-copy (local) storage, where the delete is a local unlink that
+    may run under the client lock `place_hold` takes: a hold that commits first
+    keeps the copy, a later one finds it gone. The key is locked like every other
+    writer's, and kept when any other row of the tenant (an original, another
+    intake's copy or an archive, of any client) names it. Elsewhere the copy is
+    left for the purge to account for, never deleted remotely inside the lock
+    (AXRM-051).
     """
-    with tenant_context(ticket.tenant_id), transaction.atomic():
-        intake = DocumentIntake.objects.get(pk=ticket.intake_id)
-        ClientCompany.objects.select_for_update(no_key=True).get(pk=intake.client_id)
-        held = LegalHold.objects.filter(
-            client_id=intake.client_id, released_at=None
-        ).exists()
-        if held or (
-            not single_copy_storage(storage)
-            and client_federal_involvement(intake.client_id)
-        ):
+    if not single_copy_storage(storage):
+        return
+    with storage_keys_locked([ticket.object_key], wait=False) as locked:
+        if not locked:
             return
-        _discard(storage, ticket.object_key)
+        with tenant_context(ticket.tenant_id), transaction.atomic():
+            intake = DocumentIntake.objects.get(pk=ticket.intake_id)
+            ClientCompany.objects.select_for_update(no_key=True).get(
+                pk=intake.client_id
+            )
+            held = LegalHold.objects.filter(
+                client_id=intake.client_id, released_at=None
+            ).exists()
+            if held or storage_key_aliased(
+                [ticket.object_key], document_id=intake.document_id
+            ):
+                return
+            _discard(storage, ticket.object_key)
 
 
 def _discard(storage: Storage, key: str) -> None:
@@ -541,6 +555,9 @@ def scan_intake(
         verdict = run_scan(ticket, scanner, storage)
         if not verdict.infected:
             promote(ticket, storage)
+    except ScanDeferred:
+        # Someone else is on it: no verdict now, and the intake stays due.
+        return ScanOutcome.SKIPPED
     except ScannerUnavailable:
         return record_failure(ticket, now=now)
     outcome = record_verdict(ticket, verdict, now=now)

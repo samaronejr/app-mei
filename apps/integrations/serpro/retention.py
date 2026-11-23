@@ -143,7 +143,9 @@ def _shared_bytes(document: Document) -> list[str]:
 
     Intake deduplicates identical private content, so any guide, receipt or report
     call that may have stored bytes and is not accounted for (an original of its
-    own, or its own report holding a document) may have reused this original.
+    own, or the report that recorded it holding a document) may have reused this
+    original. Each original is decided by these calls, never by another original's
+    claim to one of them.
     """
     client_id = document.client_id
     owned = set(
@@ -160,16 +162,18 @@ def _shared_bytes(document: Document) -> list[str]:
         .values_list("pk", "operation")
     )
     for call_id, operation in calls:
-        if str(call_id) in owned:
-            continue
-        if (
-            operation == REPORT_OPERATION
-            and FiscalSituationReport.objects.filter(
+        if operation == REPORT_OPERATION:
+            # Only the report that recorded the call proves where its bytes went; a
+            # provider row merely naming the call does not (it may be a restore).
+            accounted = FiscalSituationReport.objects.filter(
                 client_id=client_id,
                 document__isnull=False,
                 call_replies__has_key=str(call_id),
             ).exists()
-        ):
-            continue
-        return ["proveniencia_incompleta"]
+        else:
+            # A guide or receipt stores new bytes under an original naming it; any
+            # other original of the client has other bytes, so it was not reused.
+            accounted = str(call_id) in owned
+        if not accounted:
+            return ["proveniencia_incompleta"]
     return []
