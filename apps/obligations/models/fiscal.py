@@ -11,6 +11,14 @@ from apps.core.models import TenantScopedModel
 class FiscalDocument(TenantScopedModel):
     """One identity; its mutable projection is pinned to an immutable revision."""
 
+    class ISSRetentionParty(models.TextChoices):
+        """Party reported by the NFS-e; unknown is not a negative assertion."""
+
+        NAO_RETIDO = "nao_retido", "ISS não retido"
+        TOMADOR = "tomador", "ISS retido pelo tomador"
+        INTERMEDIARIO = "intermediario", "ISS retido pelo intermediário"
+        DESCONHECIDO = "desconhecido", "Retenção do ISS desconhecida"
+
     client = models.ForeignKey("clients.ClientCompany", on_delete=models.PROTECT)
     environment = models.CharField(max_length=16)
     family = models.CharField(
@@ -35,6 +43,12 @@ class FiscalDocument(TenantScopedModel):
     municipality_incidence = models.CharField(max_length=7, blank=True)
     total = models.DecimalField(max_digits=14, decimal_places=2, null=True)
     iss_stated = models.DecimalField(max_digits=14, decimal_places=2, null=True)
+    iss_retention_party = models.CharField(
+        max_length=13,
+        choices=ISSRetentionParty.choices,
+        default=ISSRetentionParty.DESCONHECIDO,
+        db_default=ISSRetentionParty.DESCONHECIDO,
+    )
     iss_withheld_flag = models.BooleanField(null=True)
     iss_withheld_amount = models.DecimalField(
         max_digits=14, decimal_places=2, null=True
