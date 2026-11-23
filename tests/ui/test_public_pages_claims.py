@@ -9,10 +9,15 @@ source included: a phrase inside a comment is one edit away from the page.
 The scan also holds three launch decisions in place until their owner decisions close:
 no price amount (OD-07, "Fale conosco"), no public "Axorim" name (OD-01), and the
 pricing page saying "Fale conosco". The render half checks the routes really serve
-these templates, and that the public pages stay off a firm's subdomain.
+these templates, and that the public pages stay off a firm's subdomain. It also reads
+the copy as rendered (AXRM-051), because a page's title and summary come from
+`apps/core/public_views.py`, not from its template.
 """
 
 import re
+from dataclasses import replace
+from datetime import date
+from html.parser import HTMLParser
 from http import HTTPStatus
 from pathlib import Path
 from typing import Final
@@ -20,7 +25,9 @@ from typing import Final
 import pytest
 from django.test import Client
 from django.urls import reverse
+from django.utils.translation import gettext_lazy
 
+from apps.core import public_views
 from apps.core.public_views import HELP_PAGES
 from tests.ui.factories import make_firm
 
@@ -56,8 +63,58 @@ FORBIDDEN_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
     "conformidade garantida": re.compile(r"conformidade\s+garantida", re.IGNORECASE),
     "sem erros": re.compile(r"\bsem\s+erros?\b", re.IGNORECASE),
 }
+REGIONAL_CLAIMS: Final[dict[str, re.Pattern[str]]] = {
+    # The regional forbidden wording of docs/product/vocabulary.md (AXRM-051).
+    "regular": re.compile(r"\bregular(?:es)?\b", re.IGNORECASE),
+    "em dia": re.compile(r"\bem\s+dia\b", re.IGNORECASE),
+    "confirmado pela prefeitura": re.compile(
+        r"\bconfirmad[oa]s?\s+pela\s+prefeitura\b", re.IGNORECASE
+    ),
+    "100%": re.compile(r"\b100\s*%"),
+}
+FEDERAL_STAGE_PAGES: Final = ("consultas-a-receita", "o-que-nao-faz")
 PRICE_AMOUNT: Final = re.compile(r"R\$\s*\d")
 UNCLEARED_NAME: Final = re.compile(r"axorim", re.IGNORECASE)
+# One rendered text per page (title, view-supplied summaries and body) carries every
+# AXRM-051 check; the R1 source scans below stay as they were.
+RENDERED_CLAIMS: Final = {
+    **FORBIDDEN_CLAIMS,
+    **OVERBROAD_CLAIMS,
+    **REGIONAL_CLAIMS,
+    "price amount before OD-07": PRICE_AMOUNT,
+    "public name before OD-01": UNCLEARED_NAME,
+}
+SEM_PENDENCIAS: Final = re.compile(r"\bsem\s+pend[êe]ncias?\b", re.IGNORECASE)
+# The whole date token: dd/mm, dd/mm/aa or dd/mm/aaaa, with nothing glued after it.
+DATED_SOURCES: Final = re.compile(
+    r"\s+nas\s+fontes\s+verificadas\s+em\s+"
+    r"(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?(?![\w/])",
+    re.IGNORECASE,
+)
+
+
+def _real_date(day: str, month: str, year: str | None) -> bool:
+    if year is None:
+        resolved = 2000  # a leap year: a 29/02 written without its year is real
+    elif len(year) == 2:
+        resolved = 2000 + int(year)
+    else:
+        resolved = int(year)
+    try:
+        date(resolved, int(month), int(day))
+    except ValueError:
+        return False
+    return True
+
+
+def undated_sem_pendencias(text: str) -> bool:
+    """Tell whether "sem pendências" appears without its sources and a real date."""
+    for found in SEM_PENDENCIAS.finditer(text):
+        dated = DATED_SOURCES.match(text, found.end())
+        if dated is None or not _real_date(*dated.groups()):
+            return True
+    return False
+
 
 PUBLIC_ROUTES: Final = ("public-product", "public-pricing")
 
@@ -74,6 +131,114 @@ def _hits(pattern: re.Pattern[str], paths: list[Path]) -> list[str]:
             if pattern.search(line):
                 found.append(f"{location}:{number}: {line.strip()}")
     return found
+
+
+# Elements that start a new line of text; every other element runs inline, so its
+# text joins its neighbours' with no separator ("<span>reg</span>ular" reads "regular").
+BLOCK_ELEMENTS: Final = frozenset(
+    {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "body",
+        "br",
+        "button",
+        "dd",
+        "details",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "header",
+        "hr",
+        "html",
+        "input",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "option",
+        "p",
+        "pre",
+        "section",
+        "select",
+        "summary",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "title",
+        "tr",
+        "ul",
+    }
+)
+
+
+class _VisibleText(HTMLParser):
+    """The text a reader gets: data outside script and style, laid out by blocks."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._hidden = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"script", "style"}:
+            self._hidden += 1
+        elif tag in BLOCK_ELEMENTS:
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"} and self._hidden:
+            self._hidden -= 1
+        elif tag in BLOCK_ELEMENTS:
+            self.parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden:
+            self.parts.append(data)
+
+
+def visible_text(html: str) -> str:
+    reader = _VisibleText()
+    reader.feed(html)
+    return " ".join("".join(reader.parts).split())
+
+
+def _rendered(client: Client, name: str) -> str:
+    response = client.get(reverse(name))
+    assert response.status_code == HTTPStatus.OK, name
+    return visible_text(response.content.decode())
+
+
+def _rendered_hits() -> list[str]:
+    client = Client(SERVER_NAME="localhost")
+    names = ["help-index", *(page.url_name for page in HELP_PAGES), *PUBLIC_ROUTES]
+    hits: list[str] = []
+    for name in names:
+        text = _rendered(client, name)
+        hits += [
+            f"{name}: {phrase}"
+            for phrase, pattern in RENDERED_CLAIMS.items()
+            if pattern.search(text)
+        ]
+        if undated_sem_pendencias(text):
+            hits.append(f"{name}: sem pendências")
+    return hits
 
 
 def test_the_scan_covers_every_public_and_help_page() -> None:
@@ -105,6 +270,86 @@ def test_no_public_or_help_template_makes_a_forbidden_claim(phrase: str) -> None
 )
 def test_each_detector_finds_its_planted_phrase(phrase: str, planted: str) -> None:
     assert FORBIDDEN_CLAIMS[phrase].search(planted), planted
+
+
+@pytest.mark.django_db
+def test_no_rendered_public_or_help_page_makes_a_forbidden_claim() -> None:
+    hits = _rendered_hits()
+    assert hits == [], "forbidden claim in rendered copy:\n" + "\n".join(hits)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("summary", "hit"),
+    [
+        ("Atestamos que a empresa regular nada deve.", "regular"),
+        ("Tudo em dia com o fisco.", "em dia"),
+        ("ISS confirmado pela prefeitura.", "confirmado pela prefeitura"),
+        ("Cobertura de 100% das notas.", "100%"),
+        ("A partir de R$ 390 por mês.", "price amount before OD-07"),
+        (
+            "Tudo o que sai para o cliente passa por uma aprovação.",
+            "approval before any send",
+        ),
+        ("Sem pendências.", "sem pendências"),
+        ("Sem pendências nas fontes verificadas em breve.", "sem pendências"),
+        ("Sem pendências nas fontes verificadas em 31/02/2026.", "sem pendências"),
+        (
+            "Sem pendências nas fontes verificadas em {{ emitted_on }}.",
+            "sem pendências",
+        ),
+    ],
+)
+def test_a_view_supplied_summary_is_read_as_rendered(
+    monkeypatch: pytest.MonkeyPatch, summary: str, hit: str
+) -> None:
+    first, *rest = HELP_PAGES
+    planted = replace(first, summary=gettext_lazy(summary))
+    monkeypatch.setattr(public_views, "HELP_PAGES", (planted, *rest))
+    assert f"help-index: {hit}" in _rendered_hits()
+
+
+@pytest.mark.parametrize(
+    ("text", "flagged"),
+    [
+        ("Sem pendências nas fontes verificadas em 03/11/2026.", False),
+        ("Sem pendências nas fontes verificadas em 29/02.", False),
+        ("Sem pendências nas fontes verificadas em 29/02/2027.", True),
+        ("Sem pendências nas fontes verificadas em 29/02/27.", True),
+        ("Sem pendências nas fontes verificadas em 29/02/28.", False),
+        ("Sem pendências nas fontes verificadas em 03/11/2026x.", True),
+        ("Sem pendências nas fontes verificadas em 03/13.", True),
+        ("Regularize o cadastro; sem pendências nas fontes.", True),
+    ],
+)
+def test_sem_pendencias_needs_its_sources_and_a_real_date(
+    text: str, flagged: bool
+) -> None:
+    assert undated_sem_pendencias(text) is flagged, text
+    assert not REGIONAL_CLAIMS["regular"].search("Regularize o cadastro.")
+
+
+@pytest.mark.parametrize(
+    ("html", "text"),
+    [
+        ("<p>Empresa <span>reg</span>ular.</p>", "Empresa regular."),
+        ("<li>um</li><li>dois</li>", "um dois"),
+        ("<p>linha<br>outra</p><script>regular()</script>", "linha outra"),
+    ],
+)
+def test_visible_text_joins_inline_elements_and_separates_blocks(
+    html: str, text: str
+) -> None:
+    assert visible_text(html) == text
+
+
+@pytest.mark.django_db
+def test_the_help_index_lists_the_federal_stage_pages() -> None:
+    slugs = {page.slug for page in HELP_PAGES}
+    assert set(FEDERAL_STAGE_PAGES) <= slugs, sorted(set(FEDERAL_STAGE_PAGES) - slugs)
+    body = Client(SERVER_NAME="localhost").get(reverse("help-index")).content.decode()
+    for slug in FEDERAL_STAGE_PAGES:
+        assert f'href="{reverse(f"help-{slug}")}"' in body, slug
 
 
 def test_no_price_amount_is_published_before_od_07() -> None:

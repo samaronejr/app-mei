@@ -20,14 +20,14 @@ person or decision reads `open (needs …)` until its evidence exists. It's neve
 
 | id | gate | blocks | evidence | status |
 | --- | --- | --- | --- | --- |
-| OG-01 | Encarregado (DPO) named in `docs/lgpd.md` §3 (decision OD-10) | Real-data cohorts | Commit naming the encarregado in `docs/lgpd.md` | open (needs contact-channel verification, `.evidence/AXRM-OG01-channel.txt`; naming commit = todo 42 of `axorim-regional-mvp`; source: plan `axorim-regional-mvp` A12, recorded by AXRM-001) |
+| OG-01 | Encarregado (DPO) named in `docs/lgpd.md` §3 (decision OD-10) | Real-data cohorts | Commit naming the encarregado in `docs/lgpd.md` | open (needs contact-channel verification, `.evidence/AXRM-OG01-channel.txt`; naming commit = todo 51 of `axorim-regional-mvp` (AXRM-051); source: plan `axorim-regional-mvp` A12, recorded by AXRM-001) |
 | OG-02 | Pilot-readiness-v2 F1-F4 completed and pilot start authorized by the owner (policy in OD-02) | Cohort 2 | `docs/project-status.md` pilot authorization line; `.evidence/AXRM-002-pilot2-reconciliation.txt` | open (closes by the owner's OD-02 decision: the v2 obligations carry to the current release, or a re-run); F1-F4 recorded complete and pilot start authorized 2026-09-26 for `a962173` (tag `v0.2.0-rc1`) only, not `71225ef` or the regional MVP (source: AXRM-002 reconciliation; plan `axorim-regional-mvp` A1, A12) |
 | OG-03 | Real email from the production host via Resend SMTP reaches an owner mailbox, with SPF, DKIM and DMARC verified | Live email claims | `.evidence/AXR1-010-operator.txt` | GO (production receipt and authentication verified; owner read-back 2026-10-15) |
 | OG-04 | OCI bucket prefixes `quarantine/`, `exports/`, `effects-journal/` created with versioning and lifecycle rules (journal retained 5 years) | Production use of the effects journal, quarantine and exports | `.evidence/AXR1-010-operator-bucket.txt` | GO (prefixes, versioning and journal lifecycle verified; owner read-back 2026-10-15) |
 | OG-05 | ClamAV sidecar fits host memory and freshclam is updating | Malware scanning on | `.evidence/AXR1-012-operator.txt` | GO (host fit, freshclam and scan probes verified on 1.4.6; owner authorization 2026-10-15) |
 | OG-06 | Restore-replay drill on an isolated host | Restore claims | `.evidence/AXR1-027-operator.txt` | GO (isolated restore and supplemental replay witness verified; owner read-back 2026-10-15) |
 | OG-07 | Design-partner sessions run per protocol, with the pass bar met | Cohort 3 and general availability | `.evidence/AXR1-029-OG07-sessions.txt` (anonymized session notes) | open (needs recruited partner firms and moderated sessions) |
-| OG-08 | Professional legal, LGPD and accounting review of terms, DPA, retention periods and lawful bases, including employee and counterparty personal data and platform support access (owner-approved grants of at most 72 hours, AXR1-023) | Purge activation, paid launch | `.evidence/AXR1-029-OG08-review.txt` (signed review note) | open (needs professional reviewer) |
+| OG-08 | Professional legal, LGPD and accounting review of terms, DPA, retention periods and lawful bases, including employee and counterparty personal data and platform support access (owner-approved grants of at most 72 hours, AXR1-023) | Purge activation, paid launch | `.evidence/AXR1-029-OG08-review.txt` (signed review note) | open (needs professional reviewer; for the federal stage the review also covers SERPRO as subprocessor, recorded by AXRM-051 in `docs/product/subprocessors-engineering.md`, and the professional's retention periods, time anchors and hold policy for that stage; engineering text closes nothing) |
 | OG-09 | Owner go/no-go per cohort | Each cohort | The cohort lines below | open (needs owner decision per cohort) |
 
 ## Owner decisions
@@ -43,7 +43,7 @@ person or decision reads `open (needs …)` until its evidence exists. It's neve
 | OD-07 | Pricing publication | Public pricing (the pricing page says "Fale conosco" until then) | `.evidence/AXR1-029-OD07-pricing.txt` (partner interviews) | open (needs willingness-to-pay interviews) |
 | OD-08 | Supply existing accountant interview notes | Nothing (non-blocking) | Anonymized notes shared by the owner | open (needs owner to share notes) |
 | OD-09 | Add `.omo/` to this clone's `.git/info/exclude` | Nothing (non-blocking) | Command run by the owner | open (needs owner to confirm the exclude entry) |
-| OD-10 | Encarregado (DPO) named | Real-data cohorts (same person as OG-01) | `docs/lgpd.md` §3 updated | decided by owner 2026-10-22 (identity supplied); evidence = `docs/lgpd.md` §3 updated by todo 42 of `axorim-regional-mvp`; OG-01 channel verification stays open (source: plan `axorim-regional-mvp` A12, recorded by AXRM-001) |
+| OD-10 | Encarregado (DPO) named | Real-data cohorts (same person as OG-01) | `docs/lgpd.md` §3 updated | decided by owner 2026-10-22 (identity supplied); evidence = `docs/lgpd.md` §3 updated by todo 51 of `axorim-regional-mvp` (AXRM-051); OG-01 channel verification stays open (source: plan `axorim-regional-mvp` A12, recorded by AXRM-001) |
 
 ## Also tracked by the plan
 

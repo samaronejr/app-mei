@@ -6,9 +6,10 @@ the professional review of the legal texts (OG-08). It isn't a legal subprocesso
 list, and it isn't a contract. The customer-facing list, the terms of use and the
 operator DPA are drafts kept outside this repository until that review is done.
 
-Sources: `ops/README.md` (hosting, storage, email, monitoring runbooks) and
-`config/settings/prod.py` (storage and Sentry configuration). When a provider changes
-there, this list changes in the same pull request.
+Sources: `ops/README.md` (hosting, storage, email, monitoring runbooks),
+`config/settings/prod.py` (storage and Sentry configuration) and
+`docs/decisions/0008-provider-integrations-and-credential-custody.md` (fiscal data
+providers). When a provider changes there, this list changes in the same pull request.
 
 ## Services that process customer data
 
@@ -18,6 +19,7 @@ there, this list changes in the same pull request.
 | Oracle Cloud Infrastructure (OCI) Object Storage | Documents bucket, through the S3-compatible API (`OCI_S3_ENDPOINT_URL`); off-host copies of the nightly database backup | Uploaded document bytes (which can hold employee payroll data and counterparty invoice data), quarantine and export prefixes once OG-04 closes, and full database backups | OCI bucket; region set by the operator in the environment |
 | Resend (relaying through Amazon SES) | Outbound email over SMTP: invitations, password resets, requests and messages to clients | Recipient addresses, sender identity, subject and body of each message, and the provider's response | Resend domain verified in `sa-east-1`; delivery relayed through Amazon SES `sa-east-1` |
 | Sentry | Error and performance events from the web app and workers | Stack traces and request context after scrubbing: passwords, codes, request bodies and credential URLs are filtered before sending (`config/settings/prod.py`) | Sentry project set by `SENTRY_DSN` |
+| SERPRO (Integra Contador) | Federal stage: the firm's termo de autorizacao, the fiscal-situation report (SITFIS), payment consultation and receipt (PAGTOWEB) and the MEI DAS guide (PGMEI). Axorim contracts it; the firm is the controller, Axorim the operator and SERPRO a sub-operator for this processing (plan `axorim-regional-mvp` A10) | CNPJ/CPF of clients and firm, fiscal situation, payments, guides, procuracoes, the annual MEI declaration | SERPRO's own infrastructure. Axorim's contratante e-CNPJ is mounted only into the `serpro-broker` container, which keeps SERPRO tokens in its memory; a worker receives them for each call to build that call's request headers (ADR 0008) |
 
 ## Services that see no customer records
 

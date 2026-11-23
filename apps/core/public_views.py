@@ -18,9 +18,15 @@ from django.conf import settings
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import render
 from django.urls import URLPattern, path
-from django.utils.functional import Promise
+from django.utils.functional import Promise, lazy
+from django.utils.text import format_lazy
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_GET
+
+
+def _product_name() -> str:
+    """Read the product label at render time, as every template here does."""
+    return str(settings.PRODUCT_NAME)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +100,19 @@ HELP_PAGES: Final[tuple[HelpPage, ...]] = (
         "encerramento-da-conta",
         _("Encerramento e exportação"),
         _("Como sair levando os seus dados, e o que acontece depois."),
+    ),
+    HelpPage(
+        "consultas-a-receita",
+        _("Consultas à Receita"),
+        _(
+            "O que cada estado das consultas à Receita Federal quer dizer, "
+            "e por que nada localizado não quer dizer não pago."
+        ),
+    ),
+    HelpPage(
+        "o-que-nao-faz",
+        format_lazy(_("O que o {product} não faz"), product=lazy(_product_name, str)()),
+        _("Não transmite declarações, não faz pagamentos e não calcula ISS."),
     ),
 )
 

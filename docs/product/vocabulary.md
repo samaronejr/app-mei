@@ -53,6 +53,7 @@ by an authority unless an official source backs it.
 | not covered | Não coberto | "Notas fiscais de saída (NF-e): a captura automática não cobre notas emitidas pela própria empresa. Solicite o XML ao cliente." |
 | fiscal report | Relatório de situação fiscal (Receita) | "Relatório emitido pela Receita em 03/11 às 09:14. Revisado por Carla: 2 pendências registradas." |
 | payment found | Pagamento encontrado na Receita | "DAS de outubro/2026 pago em 18/11 (consulta Receita em 20/11 08:02)." |
+| nothing located | Nada localizado | "Consulta de 20/11 para setembro/2026: nada localizado. Isso não quer dizer que não foi pago." |
 | manual filing | Registrado manualmente | "Guia de ISS de outubro emitida no sistema da prefeitura por Bruno em 08/11 - não é confirmação da prefeitura." |
 | unauthorized | Sem procuração | "Sem procuração eletrônica (código 00002) para este cliente. Consulta não realizada." |
 | quota | Limite de consultas atingido | "Limite mensal de consultas atingido em 21/11. Nenhuma consulta foi feita depois disso." |
