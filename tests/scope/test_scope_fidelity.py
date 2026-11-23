@@ -501,6 +501,26 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         + FISCAL_RECEIPT_ONLY,
     ),
     (
+        "apps/obligations/iss_retention_v1.py",
+        '_NFSE: Final = "{http://www.sped.fazenda.gov.br/nfse}"',
+        1,
+        "Identifies the namespace of the retained ISS source." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/iss_retention_v1.py",
+        '_NFSE + element for element in f"infNFSe/{ISS_SOURCE_SPAN}".split("/")',
+        1,
+        "Locates the reported retention party in the retained original."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/iss_retention_v1.py",
+        'if root.tag != f"{_NFSE}NFSe" or root.get("versao") not in ("1.00", "1.01"):',
+        1,
+        "Rejects unsupported retained layouts as evidence of the ISS fact."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
         "apps/obligations/migrations/0029_fiscal_register.py",
         '(v, v) for v in ("nfe", "nfse_nacional", "nfse_municipal")',
         1,
