@@ -100,7 +100,8 @@ def test_database_rejects_malformed_review_edges(
     world: CaptureWorld, variant: str, constraint: str
 ) -> None:
     root = record(world, world.ingest(), "rejeitado")
-    key, predecessor = uuid4(), root.pk
+    key = uuid4()
+    predecessor: UUID | None = root.pk
     if variant == "root":
         predecessor = None
     elif variant == "self":
@@ -108,7 +109,9 @@ def test_database_rejects_malformed_review_edges(
     elif variant == "cycle":
         root.cycle_id = other_cycle(world).pk
     elif variant == "revision":
-        root.revision_id = world.ingest(version=2).current_revision_id
+        revision = world.ingest(version=2).current_revision_id
+        assert revision is not None
+        root.revision_id = revision
     elif variant == "missing":
         predecessor = uuid4()
     elif variant in {"tenant", "client"}:
