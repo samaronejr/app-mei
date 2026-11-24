@@ -8,6 +8,7 @@ failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 """
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from importlib import import_module
 from importlib.util import find_spec
@@ -473,7 +474,11 @@ def test_a_firm_block_cleared_before_the_refusal_settles_is_never_the_clients(
     monkeypatch.setattr(payments, "reserve", reserve_then_resolve)
     query = world.consult()
     # Then the refusal is retryable firm-side work, never "sem procuracao".
-    assert (query.state, query.failure_code) == ("falha", "bloqueio_da_firma_encerrado")
+    # Cleared since: the recorded block (the firm issue) reads as cleared.
+    assert (query.state, query.failure_code) == (
+        "falha",
+        "encerrado-autorizacao_procurador_ausente",
+    )
     assert effects(world)[1:3] == ("ativa", [])
     with tenant_context(tenant):
         assert not IntegrationIssue.objects.exists()
@@ -646,3 +651,94 @@ def test_a_client_refusal_at_claim_opens_the_clients_absence_issue(
     )
     assert effects(world)[2] == ["pagtoweb"]
     assert world.sent() == []
+
+
+def _stopped_at_settlement(
+    world: World, monkeypatch: pytest.MonkeyPatch, after_claim: Callable[[], None]
+) -> PaymentQuery:
+    """Dispatch saves a refusal caused right after the claim; the worker then dies."""
+    real = import_module("apps.integrations.call_protocol").claim
+
+    def die(*_args: object, **_kwargs: object) -> None:
+        raise SystemExit
+
+    with monkeypatch.context() as patch:
+
+        def claim_then_cause(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            ticket = real(*args, **kwargs)
+            after_claim()
+            return ticket
+
+        patch.setattr(payments, "claim", claim_then_cause)
+        patch.setattr(payments, "_refused", die)
+        with pytest.raises((SystemExit, AdmissionDeniedError)) as stopped:
+            world.consult()
+    assert stopped.type is SystemExit
+    with tenant_context(world.termo.tenant.pk):
+        return PaymentQuery.objects.get(client=world.termo.client)
+
+
+@DB
+def test_a_client_refusal_verified_again_before_settling_opens_no_work(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the client's 00004 revoked after claim, the refusal saved, and the
+    # worker dead before settling; then staff verify the procuracao again.
+    query = _stopped_at_settlement(world, monkeypatch, lambda: _revoke(world))
+    support.declare_and_verify(world.termo)
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then the refusal stays history, and no absence work is opened for it.
+    assert (settled.state, settled.failure_code) == (
+        "sem_procuracao",
+        "autorizacao_ausente",
+    )
+    assert effects(world)[1:3] == ("ativa", [])
+
+
+@DB
+def test_a_cleared_termo_refusal_reads_cleared_though_another_block_opened(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the firm's termo lapses after this client's claim, so dispatch saves
+    # `termo_nao_vigente`, and the worker dies before settling it.
+    work = import_module("apps.integrations.serpro.work")
+    lapsed = {"now": False}
+
+    def termo_in_force(*args: Any) -> bool:  # noqa: ANN401
+        return not lapsed["now"] and real_termo(*args)
+
+    real_termo = work.termo_in_force
+    monkeypatch.setattr(work, "termo_in_force", termo_in_force)
+    query = _stopped_at_settlement(world, monkeypatch, lambda: lapsed.update(now=True))
+    [call] = world.calls()
+    assert call.provider_code == "termo_nao_vigente"
+    # When the termo is in force again, and another client's 016 then opens a
+    # different block (the platform's) on the same connection.
+    lapsed["now"] = False
+    termo, platform = world.termo, "AcessoNegado-ICGERENCIADOR-016"
+    with tenant_context(termo.tenant.pk):
+        other = ClientCompany.objects.create(
+            tenant=termo.tenant, legal_name="Outro", cnpj="11444777000161", is_mei=True
+        )
+        ClientProviderLink.objects.create(
+            tenant=termo.tenant,
+            client=other,
+            connection_id=termo.connection.pk,
+            provider_company_ref="synthetic-pagtoweb-b",
+            status="ativa",
+        )
+    support.declare_and_verify(replace(termo, client=other))
+    world.script(denied(code=platform))
+    payments.consult_payments(other, support.WINDOW, actor=None, nonce="consulta-b")
+    assert effects(world)[3] != []
+    # Then this client's redelivered refusal reads as its own cleared block.
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    assert (settled.state, settled.failure_code) == (
+        "falha",
+        "encerrado-termo_nao_vigente",
+    )
+    detail = query_detail(settled)
+    assert "já está em vigor" in detail
+    assert platform not in detail
