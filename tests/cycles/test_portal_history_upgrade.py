@@ -15,7 +15,6 @@ from apps.cycles.effects import executors
 from apps.cycles.evidence import EvidenceLink, EvidenceRequest, RequestState
 from apps.cycles.models import ActionExecution, ActionProposal, CycleEvent, CycleState
 from apps.cycles.services.cycle import transition_cycle
-from apps.cycles.services.requests import RequestFields, create_request, send_requests
 from apps.integrations.serpro.pgmei import obtain_das_guide
 from apps.obligations.models import SourceObservation
 from tests.cycles.portal_upgrade_fixtures import (
@@ -25,11 +24,13 @@ from tests.cycles.portal_upgrade_fixtures import (
     attach_visible_file,
     boundary_nodes,
     complete_guide_cycle,
+    draft_history_request,
     legacy_waiver_write,
     migration_owner,
     omit_revision_two,
     pre_portal_database,
     repair_reason,
+    sent_history_requests,
 )
 from tests.fakes.serpro import FakeSerpro
 from tests.integrations.pgmei_support import (
@@ -85,17 +86,7 @@ def test_populated_upgrade_preserves_private_history_and_ordinary_control(
             former = EvidenceRequest.objects.get(pk=guide.link.request_id)
             assert former.state == RequestState.WAIVED
             assert ActionExecution.objects.filter(proposal=waiver).exists()
-            world.cycle.refresh_from_db()
-            ordinary = create_request(
-                world.owner,
-                world.cycle.pk,
-                RequestFields(former.title),
-                expected_version=world.cycle.version,
-            )
-            world.cycle.refresh_from_db()
-            send_requests(
-                world.owner, world.cycle.pk, expected_version=world.cycle.version
-            )
+            (ordinary,) = sent_history_requests(world, former.title, count=1)
             ordinary.refresh_from_db()
             ordinary_link = attach_visible_file(world, ordinary)
             # This second row has no request-history events. A legacy direct
@@ -225,22 +216,9 @@ def test_only_internal_artifacts_override_complete_ordinary_histories(
         guide = cast("PublishedGuide", request.getfixturevalue("published_guide"))
         world = guide.world
         with tenant_context(world.tenant_id):
-            rows = []
-            for _ in range(3):
-                world.cycle.refresh_from_db()
-                rows.append(
-                    create_request(
-                        world.owner,
-                        world.cycle.pk,
-                        RequestFields("Identical display label"),
-                        expected_version=world.cycle.version,
-                    )
-                )
-            world.cycle.refresh_from_db()
-            send_requests(
-                world.owner, world.cycle.pk, expected_version=world.cycle.version
+            by_document, by_fact, staff_fact = sent_history_requests(
+                world, "Identical display label", count=3
             )
-            by_document, by_fact, staff_fact = rows
             guide_link = EvidenceLink.objects.create(
                 tenant_id=world.tenant_id,
                 client_id=world.cycle.client_id,
@@ -305,13 +283,7 @@ def test_first_corrected_boundary_hides_before_releasing_its_lock(
         world = cast("GuideWorld", request.getfixturevalue("guide_world"))
         with tenant_context(world.tenant_id):
             # An exact non-title internal transition, independent of PGMEI artifacts.
-            world.cycle.refresh_from_db()
-            row = create_request(
-                world.owner,
-                world.cycle.pk,
-                RequestFields("Private record"),
-                expected_version=world.cycle.version,
-            )
+            row = draft_history_request(world, "Private record")
             EvidenceRequest.objects.filter(pk=row.pk).update(
                 state=RequestState.INTERNAL
             )

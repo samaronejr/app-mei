@@ -20,7 +20,7 @@ from apps.cycles.models import CycleEvent, CycleState, TaskState
 from apps.cycles.services.approvals import approve
 from apps.cycles.services.cycle import transition_cycle, transition_task
 from apps.cycles.services.proposed_transitions import propose_completion
-from apps.cycles.services.requests import RequestFields, create_request
+from apps.cycles.services.requests import RequestFields, create_request, send_requests
 from apps.obligations.models import Document
 from tests.integrations.pgmei_support import GuideWorld
 
@@ -167,15 +167,28 @@ def repair_reason(world: GuideWorld, request: EvidenceRequest) -> str | None:
         )
 
 
-def omit_revision_two(world: GuideWorld) -> tuple[EvidenceRequest, EvidenceLink]:
-    """Keep real creation and send-shaped revision three but no revision two."""
+def draft_history_request(world: GuideWorld, title: str) -> EvidenceRequest:
     world.cycle.refresh_from_db()
-    gap = create_request(
+    return create_request(
         world.owner,
         world.cycle.pk,
-        RequestFields("Another ordinary title"),
+        RequestFields(title),
         expected_version=world.cycle.version,
     )
+
+
+def sent_history_requests(
+    world: GuideWorld, title: str, *, count: int
+) -> list[EvidenceRequest]:
+    drafts = [draft_history_request(world, title) for _ in range(count)]
+    world.cycle.refresh_from_db()
+    send_requests(world.owner, world.cycle.pk, expected_version=world.cycle.version)
+    return drafts
+
+
+def omit_revision_two(world: GuideWorld) -> tuple[EvidenceRequest, EvidenceLink]:
+    """Keep real creation and send-shaped revision three but no revision two."""
+    gap = draft_history_request(world, "Another ordinary title")
     link = attach_visible_file(world, gap)
     CycleEvent.objects.create(
         tenant_id=gap.tenant_id,
