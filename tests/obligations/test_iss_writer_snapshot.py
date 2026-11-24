@@ -17,7 +17,11 @@ from apps.audit.services import ObjectRef, record_event
 from apps.core.tenancy import tenant_context
 from apps.cycles.archive_storage import open_archive_source
 from apps.obligations import fiscal_ingest as writer
-from apps.obligations.iss_retention_evidence_v1 import EVIDENCE_UNAVAILABLE
+from apps.obligations.iss_retention_evidence_v1 import (
+    EVIDENCE_UNAVAILABLE,
+    revision_iss_originals,
+    verify_iss_original,
+)
 from apps.obligations.iss_retention_incidents import iss_evidence_key
 from apps.obligations.models import Document, FiscalDocument, RevisionArtifact
 from tests.obligations import test_fiscal_documents as fiscal_tests
@@ -249,7 +253,7 @@ def test_manual_transaction_is_refused_before_selecting_or_reading(
     refused = False
     with (
         patch.object(
-            writer, "revision_iss_originals", wraps=writer.revision_iss_originals
+            writer, "revision_iss_originals", wraps=revision_iss_originals
         ) as select,
         patch.object(default_storage, "open", wraps=default_storage.open) as read,
         _manual_transaction(),
@@ -258,7 +262,7 @@ def test_manual_transaction_is_refused_before_selecting_or_reading(
             if entry == "prepare":
                 writer._prepare_iss_originals(*inputs)
             else:
-                writer.verify_iss_original(witness)
+                verify_iss_original(witness)
         except RuntimeError as error:
             refused = "database transaction" in str(error)
     assert select.call_count == 0
@@ -291,7 +295,7 @@ def test_raw_transaction_refuses_external_storage(
         with patch.object(default_storage, "open", wraps=default_storage.open) as read:
             try:
                 if entry == "vault":
-                    writer.verify_iss_original(witness)
+                    verify_iss_original(witness)
                 else:
                     with open_archive_source(default_storage, inputs[1].storage_key):
                         pass

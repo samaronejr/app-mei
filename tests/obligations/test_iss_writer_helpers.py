@@ -16,8 +16,12 @@ from apps.audit.services import ObjectRef, record_event
 from apps.core.tenancy import tenant_context
 from apps.cycles.extraction.v2 import extract
 from apps.cycles.models import DocumentIntake
+from apps.cycles.scanning import FakeScanner
 from apps.obligations import fiscal_ingest
-from apps.obligations.iss_retention_evidence_v1 import ISSDecision
+from apps.obligations.iss_retention_evidence_v1 import (
+    ISSDecision,
+    revision_iss_originals,
+)
 from apps.obligations.iss_retention_incidents import ISSResolution
 from apps.obligations.models import FiscalDocument, RevisionArtifact
 from tests.obligations import test_fiscal_documents as fiscal_tests
@@ -91,7 +95,7 @@ def test_prepare_reads_only_eligible_national_originals_outside_transaction(
         patch.object(
             fiscal_ingest,
             "revision_iss_originals",
-            wraps=fiscal_ingest.revision_iss_originals,
+            wraps=revision_iss_originals,
         ) as select,
         transaction.atomic(),
     ):
@@ -115,7 +119,7 @@ def test_prepare_keeps_attached_and_incoming_but_skips_unusable(
     assert eligible != nfse()
     with tenant_context(fiscal.tenant_id):
         context, attached, _ = _prepare_inputs(fiscal)
-    with patch.object(fiscal_ingest, "scanner_from_settings", fiscal_tests.FakeScanner):
+    with patch.object(fiscal_ingest, "scanner_from_settings", FakeScanner):
         incomplete = fiscal_ingest.prepare_fiscal_document(
             context, payload_bytes=no_code, summary=None
         )
