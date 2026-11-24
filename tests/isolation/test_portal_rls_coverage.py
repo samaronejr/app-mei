@@ -157,8 +157,9 @@ CLIENT_IDENTITY_COLUMN = {"clients_clientcompany": "id"}
 # client_visible), per side. A row's own flag is folded on BOTH sides; a referenced
 # parent (a document's bound obligation, an intake's document, a request's obligation,
 # a link's document and request, every member of an observation's supersedes chain) on
-# USING only, so WITH CHECK still lets the composite FKs refuse a foreign parent
-# first. Terms are compared whitespace-normalized.
+# USING; AXRM-049 also checks the link's parent request on INSERT so an invisible
+# request and a missing one cannot be distinguished through the FK. Terms are
+# compared whitespace-normalized.
 OWN_FLAG: Final = ("= CASE WHEN portal_visible THEN (NULLIF(",)
 PORTAL_VISIBILITY_FOLDS: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     "obligations_document": {
@@ -186,6 +187,7 @@ PORTAL_VISIBILITY_FOLDS: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     "cycles_evidencerequest": {
         "USING": (
             "= CASE WHEN ",
+            "(state)::text <> 'interno'::text",
             (
                 "obligation_id IS NULL) OR (EXISTS ( SELECT 1 FROM "
                 "obligations_obligation obligation "
@@ -205,6 +207,14 @@ PORTAL_VISIBILITY_FOLDS: Final[dict[str, dict[str, tuple[str, ...]]]] = {
                 "EXISTS ( SELECT 1 FROM cycles_evidencerequest parent_request "
                 "WHERE (parent_request.id = cycles_evidencelink.request_id))"
             ),
+            " THEN (NULLIF(",
+        ),
+        "WITH CHECK": (
+            (
+                "= CASE WHEN (EXISTS ( SELECT 1 FROM "
+                "cycles_evidencerequest parent_request "
+            ),
+            "WHERE (parent_request.id = cycles_evidencelink.request_id)))",
             " THEN (NULLIF(",
         ),
     },
