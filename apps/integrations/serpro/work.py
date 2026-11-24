@@ -30,6 +30,7 @@ from apps.integrations.models import (
     ProviderConnection,
 )
 from apps.integrations.serpro.denials import (
+    CAUSES,
     FIRM_DENIAL_CODES,
     PLATFORM_CAUSES,
     DenialCause,
@@ -126,7 +127,11 @@ def firm_block(connection: ProviderConnection) -> str:
         .first()
     )
     if issue is not None:
-        return f"{ISSUE_PREFIX}{issue.pk}"
+        # Frozen now: the 403 behind the issue when this refusal happened.
+        code = issue_denial_code(str(issue.pk))
+        return f"{ISSUE_PREFIX}{issue.pk}" + (
+            f"-{code.rsplit('-', 1)[-1]}" if code else ""
+        )
     if not termo_in_force(connection.pk, timezone.localdate()):
         return f"{TERMO_PREFIX}{connection.version}"
     return ""
@@ -148,6 +153,16 @@ def issue_denial_code(issue_id: str) -> str:
     )
 
 
+def frozen_code(reason: str) -> str:
+    """Return the 403 code a refusal froze when it was recorded, or ''."""
+    number = reason.removeprefix(ISSUE_PREFIX)[37:]
+    return (
+        next((code for code in CAUSES if code.endswith(f"-{number}")), "")
+        if number
+        else ""
+    )
+
+
 def block_holds(reason: str, connection: ProviderConnection) -> bool:
     """Whether the specific blocker a refusal recorded still holds.
 
@@ -155,7 +170,7 @@ def block_holds(reason: str, connection: ProviderConnection) -> bool:
     A code recorded without an identity (an older one) never holds unless proven.
     """
     if reason.startswith(ISSUE_PREFIX):
-        cited = _cited([reason.removeprefix(ISSUE_PREFIX)])
+        cited = _cited([reason.removeprefix(ISSUE_PREFIX)[:36]])
         return FirmIntegrationIssue.objects.filter(
             pk__in=cited, state__in=ACTIVE_STATES
         ).exists()

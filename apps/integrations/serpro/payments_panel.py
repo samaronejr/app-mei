@@ -48,7 +48,7 @@ from apps.integrations.serpro.work import (
     TERMO_PREFIX,
     block_holds,
     firm_reason,
-    issue_denial_code,
+    frozen_code,
 )
 from apps.obligations.models import (
     Document,
@@ -142,7 +142,7 @@ def _block_text(cause: str, *, holds: bool) -> str:
             "novamente."
         )
     if cause.startswith(ISSUE_PREFIX):
-        code = issue_denial_code(cause.removeprefix(ISSUE_PREFIX))
+        code = frozen_code(cause)
     else:
         code = (
             cause.removeprefix(BLOCK_PREFIX) if cause.startswith(BLOCK_PREFIX) else ""
