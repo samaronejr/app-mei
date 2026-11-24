@@ -259,6 +259,7 @@ PROVIDER_RECOVERY_FILES = frozenset(
 # AXRM-046 resolves availability incidents on the fiscal document's evidence
 # head. Pin the exact vocabulary for that bookkeeping, not its entire module.
 ISS_INCIDENT_FILE = "apps/obligations/iss_retention_incidents.py"
+ISS_INGEST_FILE = "apps/obligations/fiscal_ingest.py"
 ISS_INCIDENT_LINES = Counter(
     {
         (
@@ -277,6 +278,8 @@ ISS_INCIDENT_LINES = Counter(
             ),
         ): 1,
         (ISS_INCIDENT_FILE, "def reconcile_iss_incident("): 1,
+        (ISS_INGEST_FILE, "reconcile_iss_incident,"): 1,
+        (ISS_INGEST_FILE, "return reconcile_iss_incident("): 1,
     }
 )
 
@@ -508,6 +511,20 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         'SubElement(root, f"{NFE}{name}").text = summary[name]',
         1,
         "Retains fields supplied by a received provider summary." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        ISS_INGEST_FILE,
+        'if extraction.family != "nfse_nacional":',
+        1,
+        "Prepares corroborating originals only for national receipt evidence."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        ISS_INGEST_FILE,
+        'if fiscal.family != "nfse_nacional":',
+        1,
+        "Limits ISS evidence resolution to the national receipt layout."
+        + FISCAL_RECEIPT_ONLY,
     ),
     (
         "apps/obligations/models/fiscal.py",
@@ -792,6 +809,8 @@ def test_row_6_no_bank_import() -> None:
     # registered by exact file, never by app-wide or banking-vocabulary exemption.
     assert bank_hits == [], _report("bank-import reference", bank_hits)
     other_hits, iss_incident_hits = _pinned(hits, ISS_INCIDENT_FILE)
+    other_hits, iss_ingest_hits = _pinned(other_hits, ISS_INGEST_FILE)
+    iss_incident_hits.update(iss_ingest_hits)
     assert iss_incident_hits == ISS_INCIDENT_LINES, _report(
         "ISS incident references differ from the evidence recovery pins",
         _pin_difference(iss_incident_hits, ISS_INCIDENT_LINES),

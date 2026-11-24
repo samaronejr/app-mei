@@ -33,6 +33,7 @@ EVIDENCE_DISAGREES: Final = "evidence_disagrees"
 # CROSS_TENANT_OK: the maintenance pass names no tenant so it can page all heads.
 # A live query names one exact revision/client/tenant and skips the page branch.
 # Only preparation includes the incoming original before its attachment.
+# The selected original ID (not the artifact's ID) is absent after loss or claim.
 _ORIGINALS: Final = """
     WITH page AS (
         SELECT id, tenant_id, client_id, current_revision_id AS revision_id,
@@ -51,7 +52,7 @@ _ORIGINALS: Final = """
     )
     SELECT target.id, target.tenant_id, target.client_id, target.revision_id,
            target.iss_retention_party, target.fiscal_state,
-           refs.document_id, original.storage_key,
+           original.id, original.storage_key,
            original.sha256, original.byte_size,
            CASE WHEN intake.id IS NOT NULL THEN COALESCE(evidence.code,
                CASE WHEN refs.document_id = target.incoming_id AND NOT EXISTS (

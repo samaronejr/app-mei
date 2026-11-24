@@ -12,6 +12,7 @@ from uuid import UUID
 
 from celery import Task, shared_task
 from django.db import connection
+from psycopg.pq import TransactionStatus
 
 from apps.core.tenancy import MissingTenantContext, tenant_context
 
@@ -52,7 +53,15 @@ class TenantTask(Task):
 
 def assert_no_transaction() -> None:
     """Refuse external I/O while any enclosing transaction could roll back."""
-    if connection.in_atomic_block:
+    # Inspect the existing wrapper without opening a connection just to check it.
+    driver = connection.connection
+    if connection.in_atomic_block or (
+        driver is not None
+        and (
+            not connection.autocommit
+            or driver.info.transaction_status != TransactionStatus.IDLE
+        )
+    ):
         msg = "External I/O is forbidden inside a database transaction."
         raise RuntimeError(msg)
 

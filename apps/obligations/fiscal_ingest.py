@@ -16,9 +16,11 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.utils import timezone
 
 from apps.accounts.models import User
+from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
 from apps.authz.objects import load_visible_client
 from apps.authz.services import can
@@ -46,6 +48,21 @@ from apps.cycles.parsing import UnsafeDocument
 from apps.cycles.scanning import scan_intake, scanner_from_settings
 from apps.integrations.authority import Problem, raise_problem
 from apps.integrations.models import ClientProviderLink, ProviderEnvironment
+from apps.obligations.iss_retention_evidence_v1 import (
+    EVIDENCE_UNAVAILABLE,
+    ISSDecision,
+    ISSOriginal,
+    agreed_iss_code,
+    revision_iss_originals,
+    verify_iss_original,
+)
+from apps.obligations.iss_retention_incidents import (
+    ISSOutageIdentity,
+    ISSResolution,
+    iss_evidence_key,
+    reconcile_iss_incident,
+)
+from apps.obligations.iss_retention_v1 import project_iss_retention
 from apps.obligations.models import (
     AcquisitionOrigin,
     Document,
@@ -59,6 +76,7 @@ from apps.tenants.models import Membership, Tenant
 __all__ = [
     "FiscalSource",
     "PreparedFiscalDocument",
+    "StaleISSOriginalsError",
     "ingest_fiscal_document",
     "prepare_fiscal_document",
     "scanner_from_settings",
@@ -116,6 +134,150 @@ class PreparedFiscalDocument:
             self.intake,
             self.extraction,
         )
+
+
+class StaleISSOriginalsError(RuntimeError):
+    """An eligible original changed between vault preparation and commit."""
+
+
+def _prepare_iss_originals(
+    context: FiscalSource, original: Document, extraction: FiscalExtraction
+) -> dict[ISSOriginal, ISSDecision]:
+    """Capture one revision's retained set and verify only usable witnesses."""
+    assert_no_transaction()
+    if extraction.family != "nfse_nacional":
+        return {}
+    code = next(
+        (
+            field.value
+            for field in extraction.fields
+            if field.name == "iss_withheld_flag"
+        ),
+        None,
+    )
+    with tenant_context(context.tenant_id):
+        revision_id = (
+            FiscalRevision.objects.filter(
+                client_id=context.client_id,
+                document__environment=context.environment,
+                document__family=extraction.family,
+                document__key_namespace=extraction.key_namespace,
+                document__document_key=extraction.document_key,
+                provider_version=context.provider_version,
+                source_namespace=context.source_namespace,
+            )
+            .values_list("id", flat=True)
+            .first()
+        )
+        originals = revision_iss_originals(
+            connection,
+            (context.tenant_id, context.client_id, revision_id),
+            incoming=(original.pk, code),
+        )
+    return {
+        witness: verify_iss_original(witness) if witness.usable() else ISSDecision()
+        for witness in originals
+        if witness.document_id is not None
+    }
+
+
+def _current_iss_resolution(
+    fiscal: FiscalDocument,
+    revision: FiscalRevision,
+    prepared: Mapping[ISSOriginal, ISSDecision],
+    *,
+    derive_on_recovery: bool = False,
+) -> ISSResolution:
+    if fiscal.family != "nfse_nacional":
+        return ISSResolution(fiscal.fiscal_state, ISSDecision())
+    originals = [
+        witness
+        for witness in revision_iss_originals(
+            connection, (revision.tenant_id, revision.client_id, revision.pk)
+        )
+        if witness.document_id is not None
+    ]
+    # Validate membership and verification metadata before reducing decisions:
+    # an early outage must not hide another original that was never prepared.
+    if prepared.keys() != set(originals):
+        message = "Os originais do ISS mudaram durante a preparação."
+        raise StaleISSOriginalsError(message)
+    decision = agreed_iss_code(originals, prepared.__getitem__)
+    evidence_key: str | ISSOutageIdentity = (
+        iss_evidence_key(originals) if decision.cause else ""
+    )
+    if decision.cause == EVIDENCE_UNAVAILABLE:
+        failed_key = iss_evidence_key(
+            witness
+            for witness, result in prepared.items()
+            if result.cause == EVIDENCE_UNAVAILABLE
+        )
+        evidence_key = ISSOutageIdentity(
+            iss_evidence_key(originals, failed_key=failed_key), failed_key
+        )
+    return reconcile_iss_incident(
+        fiscal,
+        revision,
+        decision,
+        evidence_key=evidence_key,
+        derive_on_recovery=derive_on_recovery,
+    )
+
+
+def _set_iss_projection(
+    fiscal: FiscalDocument, code: str | None, *, new_projection: bool
+) -> list[str]:
+    """Update owned columns only when the verified projection differs."""
+    changed = []
+    values = _iss_projection(code, fiscal.iss_stated)
+    if not new_projection:
+        values = {"iss_retention_party": values["iss_retention_party"]}
+    for name, value in values.items():
+        if getattr(fiscal, name) != value:
+            setattr(fiscal, name, value)
+            changed.append(name)
+    return changed
+
+
+def iss_old_fields_may_change(
+    fiscal: FiscalDocument,
+    revision: FiscalRevision,
+    resolution: ISSResolution,
+) -> bool:
+    """Owned projections follow healthy evidence; preserve established legacy tuples."""
+    if resolution.decision.cause or resolution.state == "incerta":
+        return False
+    recovered = (
+        fiscal.fiscal_state == "incerta" and resolution.state == revision.fiscal_state
+    )
+    if (
+        recovered
+        and resolution.derive_fields
+        and fiscal.iss_withheld_flag is None
+        and fiscal.iss_withheld_amount is None
+    ):
+        return True
+    metadata = (
+        Event.objects.filter(
+            action="fiscal.head_changed",
+            object_type="FiscalRevision",
+            object_id=str(revision.pk),
+            fiscal_order__isnull=False,
+        )
+        .order_by("-fiscal_order")
+        .values_list("metadata", flat=True)
+        .first()
+    )
+    return metadata is not None and metadata.get("iss_projection_owned") is True
+
+
+def _iss_projection(code: str | None, stated: Decimal | None) -> dict[str, object]:
+    party, withheld = project_iss_retention(code)
+    return {
+        "iss_retention_party": party,
+        "iss_withheld_flag": withheld,
+        "iss_withheld_amount": stated if withheld is True else None,
+    }
 
 
 def _money(raw: str) -> Decimal:
