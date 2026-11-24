@@ -52,7 +52,10 @@ class TenantTask(Task):
 
 def assert_no_transaction() -> None:
     """Refuse external I/O while any enclosing transaction could roll back."""
-    if connection.in_atomic_block:
+    # Inspect the existing wrapper without opening a connection just to check it.
+    if connection.in_atomic_block or (
+        connection.connection is not None and not connection.autocommit
+    ):
         msg = "External I/O is forbidden inside a database transaction."
         raise RuntimeError(msg)
 

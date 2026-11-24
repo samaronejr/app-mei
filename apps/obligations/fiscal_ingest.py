@@ -49,6 +49,7 @@ from apps.cycles.scanning import scan_intake, scanner_from_settings
 from apps.integrations.authority import Problem, raise_problem
 from apps.integrations.models import ClientProviderLink, ProviderEnvironment
 from apps.obligations.iss_retention_evidence_v1 import (
+    EVIDENCE_UNAVAILABLE,
     ISSDecision,
     ISSOriginal,
     agreed_iss_code,
@@ -141,6 +142,7 @@ class StaleISSOriginalsError(RuntimeError):
 def _prepare_iss_originals(
     context: FiscalSource, original: Document, extraction: FiscalExtraction
 ) -> dict[ISSOriginal, ISSDecision]:
+    """Capture one revision's retained set and verify only usable witnesses."""
     assert_no_transaction()
     if extraction.family != "nfse_nacional":
         return {}
@@ -172,9 +174,9 @@ def _prepare_iss_originals(
             incoming=(original.pk, code),
         )
     return {
-        witness: verify_iss_original(witness)
+        witness: verify_iss_original(witness) if witness.usable() else ISSDecision()
         for witness in originals
-        if witness.usable()
+        if witness.document_id is not None
     }
 
 
@@ -187,19 +189,31 @@ def _current_iss_resolution(
 ) -> ISSResolution:
     if fiscal.family != "nfse_nacional":
         return ISSResolution(fiscal.fiscal_state, ISSDecision())
-    originals = revision_iss_originals(
-        connection, (revision.tenant_id, revision.client_id, revision.pk)
-    )
-    try:
-        decision = agreed_iss_code(originals, prepared.__getitem__)
-    except KeyError as error:
+    originals = [
+        witness
+        for witness in revision_iss_originals(
+            connection, (revision.tenant_id, revision.client_id, revision.pk)
+        )
+        if witness.document_id is not None
+    ]
+    # Validate membership and verification metadata before reducing decisions:
+    # an early outage must not hide another original that was never prepared.
+    if prepared.keys() != set(originals):
         message = "Os originais do ISS mudaram durante a preparação."
-        raise StaleISSOriginalsError(message) from error
+        raise StaleISSOriginalsError(message)
+    decision = agreed_iss_code(originals, prepared.__getitem__)
+    incident_originals = originals
+    if decision.cause == EVIDENCE_UNAVAILABLE:
+        incident_originals = [
+            witness
+            for witness, result in prepared.items()
+            if result.cause == EVIDENCE_UNAVAILABLE
+        ]
     return reconcile_iss_incident(
         fiscal,
         revision,
         decision,
-        evidence_key=iss_evidence_key(originals) if decision.cause else "",
+        evidence_key=iss_evidence_key(incident_originals) if decision.cause else "",
         derive_on_recovery=derive_on_recovery,
     )
 
@@ -207,7 +221,7 @@ def _current_iss_resolution(
 def _set_iss_projection(
     fiscal: FiscalDocument, code: str | None, *, new_projection: bool
 ) -> list[str]:
-    """Project current ISS without rewriting old values on unchanged replays."""
+    """Update owned columns only when the verified projection differs."""
     changed = []
     values = _iss_projection(code, fiscal.iss_stated)
     if not new_projection:
@@ -223,17 +237,13 @@ def iss_old_fields_may_change(
     fiscal: FiscalDocument,
     revision: FiscalRevision,
     resolution: ISSResolution,
-    *,
-    added: bool = False,
 ) -> bool:
-    """Authorize old-column writes without changing legacy projections."""
-    if resolution.decision.cause:
+    """Owned projections follow healthy evidence; preserve established legacy tuples."""
+    if resolution.decision.cause or resolution.state == "incerta":
         return False
     recovered = (
         fiscal.fiscal_state == "incerta" and resolution.state == revision.fiscal_state
     )
-    if not added and not recovered:
-        return False
     if (
         recovered
         and resolution.derive_fields

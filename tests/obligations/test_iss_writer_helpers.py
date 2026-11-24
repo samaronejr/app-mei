@@ -126,9 +126,18 @@ def test_prepare_keeps_attached_and_incoming_but_skips_unusable(
     assert incoming is not None
     distinct = replace(incomplete.extraction, document_key="different-key")
     prepared = prepare(context, incomplete.original, distinct)
-    assert prepared == {}
+    assert {witness.document_id for witness in prepared} == {incomplete.original.pk}
+    assert list(prepared.values()) == [ISSDecision()]
     prepared = prepare(context, incomplete.original, incomplete.extraction)
-    assert {witness.document_id for witness in prepared} == {attached.pk}
+    assert {witness.document_id for witness in prepared} == {
+        attached.pk,
+        incomplete.original.pk,
+    }
+    assert all(
+        prepared[witness] == ISSDecision()
+        for witness in prepared
+        if witness.document_id == incomplete.original.pk
+    )
     union = prepare(context, incoming.original, incoming.extraction)
     assert {witness.document_id for witness in union} == {
         attached.pk,
@@ -163,75 +172,75 @@ def test_current_resolution_rejects_a_stale_snapshot(setup: PortalSetup) -> None
 
 
 @pytest.mark.parametrize(
-    ("old", "resolution", "authority", "expected"),
+    ("old", "resolution", "owner", "expected"),
     [
         pytest.param(
             ("incerta", True, STATED),
             ("autorizada", "", False),
-            (False, True),
+            True,
             True,
             id="owned-recovery",
         ),
         pytest.param(
             ("autorizada", True, STATED),
             ("autorizada", "", False),
-            (True, True),
+            True,
             True,
             id="owned-attachment",
         ),
         pytest.param(
             ("autorizada", True, STATED),
             ("autorizada", "", False),
-            (False, True),
-            False,
-            id="identical",
+            True,
+            True,
+            id="owned-healthy-replay",
         ),
         pytest.param(
             ("incerta", None, None),
             ("incerta", "", True),
-            (False, True),
+            True,
             False,
             id="not-restored",
         ),
         pytest.param(
             ("incerta", None, None),
             ("incerta", "evidence_unavailable", True),
-            (True, True),
+            True,
             False,
             id="unavailable",
         ),
         pytest.param(
             ("incerta", None, None),
             ("autorizada", "", False),
-            (False, False),
+            False,
             False,
             id="no-derive",
         ),
         pytest.param(
             ("incerta", None, None),
             ("autorizada", "", True),
-            (False, False),
+            False,
             True,
             id="unfinished",
         ),
         pytest.param(
             ("incerta", True, None),
             ("autorizada", "", True),
-            (False, False),
+            False,
             False,
             id="legacy-flag",
         ),
         pytest.param(
             ("incerta", None, STATED),
             ("autorizada", "", True),
-            (False, False),
+            False,
             False,
             id="legacy-amount",
         ),
         pytest.param(
             ("autorizada", None, None),
             ("autorizada", "", True),
-            (True, False),
+            False,
             False,
             id="legacy-attachment",
         ),
@@ -241,7 +250,7 @@ def test_old_iss_values_change_only_with_projection_authority(
     setup: PortalSetup,
     old: tuple[str, bool | None, Decimal | None],
     resolution: tuple[str, str, bool],
-    authority: tuple[bool, bool],
+    owner: bool,
     expected: bool,
 ) -> None:
     may_change = getattr(fiscal_ingest, "iss_old_fields_may_change", None)
@@ -250,7 +259,6 @@ def test_old_iss_values_change_only_with_projection_authority(
     revision = fiscal_tests.revision_of(fiscal)
     fiscal.fiscal_state, fiscal.iss_withheld_flag, fiscal.iss_withheld_amount = old
     state, cause, derive = resolution
-    added, owner = authority
     decision = ISSResolution(state, ISSDecision(cause=cause), derive)
     with tenant_context(fiscal.tenant_id):
         # Latest by append order, although timestamped before the old promotion.
@@ -262,7 +270,7 @@ def test_old_iss_values_change_only_with_projection_authority(
                 obj=ObjectRef("FiscalRevision", str(revision.pk)),
                 metadata={"iss_projection_owned": True} if owner else {},
             )
-        assert may_change(fiscal, revision, decision, added=added) is expected
+        assert may_change(fiscal, revision, decision) is expected
 
 
 def test_projection_keeps_legacy_tuple_without_old_column_authority() -> None:
