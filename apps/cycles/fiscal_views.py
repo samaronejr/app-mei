@@ -65,7 +65,9 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
             review_material=material_digest()
         )
     )
-    fiscal = get_object_or_404(fiscals, pk=pk)
+    fiscal: WithAnnotations[FiscalDocument, ReviewPreview] = get_object_or_404(
+        fiscals, pk=pk
+    )
     load_visible_client(request.user, fiscal.client_id)
     if request.method == "POST" and in_support_mode():
         raise PermissionDenied
