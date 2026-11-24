@@ -19,11 +19,9 @@ of the bytes has expired.
 from collections import Counter
 from uuid import UUID
 
-from django.utils import timezone
-
 from apps.cycles.federal_records import FederalReportReview
 from apps.cycles.models import ServiceCycle
-from apps.cycles.retention import RetentionAnchor
+from apps.cycles.retention import FISCAL_TIMEZONE, RetentionAnchor
 from apps.integrations.call_models import NO_BYTES_STATES, ProviderCall
 from apps.integrations.serpro.pagtoweb import RECEIPT_OPERATION
 from apps.integrations.serpro.payments import receipt_request_key
@@ -72,16 +70,28 @@ def _report_anchors(report: FiscalSituationReport) -> Found:
         # A request date is not evidence of when these bytes were emitted.
         return reviewed, ["emissao_ausente"]
     try:
-        emitted = timezone.localdate(report.emitted_at)
+        # The fiscal year is São Paulo's, whatever zone the caller runs in.
+        emitted = report.emitted_at.astimezone(FISCAL_TIMEZONE).date()
     except (OverflowError, ValueError):  # a stored instant with no local date
         return reviewed, ["data_fora_do_intervalo"]
     return [*reviewed, RetentionAnchor("emissao_relatorio", emitted, report.pk)], []
 
 
-def _acquisition_anchors(document: Document) -> Found:
+def call_reference(ref: str) -> UUID | None:
+    """Read a stored receipt reference as the call it names, or None.
+
+    The one reading both the resolver and the ownership count use, so two
+    spellings of one UUID are one call.
+    """
     try:
-        call_id = UUID(document.acquisition_receipt_ref)
-    except ValueError:
+        return UUID(ref)
+    except (TypeError, ValueError):
+        return None
+
+
+def _acquisition_anchors(document: Document) -> Found:
+    call_id = call_reference(document.acquisition_receipt_ref)
+    if call_id is None:
         return [], ["recibo_invalido"]
     call = ProviderCall.objects.filter(pk=call_id, client_id=document.client_id).first()
     if call is None:
@@ -152,8 +162,10 @@ def _shared_bytes(document: Document) -> list[str]:
     claim to one of them.
     """
     client_id = document.client_id
+    # Counted as the resolver reads them: one call however its UUID is spelled.
     claimants = Counter(
-        Document.objects.filter(
+        call_reference(ref)
+        for ref in Document.objects.filter(
             client_id=client_id, acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER
         ).values_list("acquisition_receipt_ref", flat=True)
     )
@@ -177,7 +189,7 @@ def _shared_bytes(document: Document) -> list[str]:
         else:
             # A guide or receipt stores new bytes under the one original naming
             # it; a call two originals claim has no single proven owner.
-            accounted = claimants[str(call_id)] == 1
+            accounted = claimants[call_id] == 1
         if not accounted:
             return ["proveniencia_incompleta"]
     return []

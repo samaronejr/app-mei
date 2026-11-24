@@ -592,3 +592,25 @@ def test_a_call_two_originals_claim_has_no_proven_owner(world: World) -> None:
     )
     with tenant_context(tenant_id):
         assert retention_tasks._document_anchors(staff)[1] == "proveniencia_incompleta"
+
+
+def test_two_spellings_of_one_call_are_two_claimants(world: World) -> None:
+    tenant_id = world.termo.tenant.pk
+    staff = _staff_original(
+        world, b"%PDF-1.7\n% staff original, two spellings\n%%EOF\n"
+    )
+    [payment] = _payments(world, _collected("2026-10-20"))
+    call = _receipt(world, payment)
+    # A restored second provider row names the same call in upper case.
+    ingest_system_document(
+        tenant_id=tenant_id,
+        client_id=world.termo.client.pk,
+        origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+        receipt_ref=str(call.pk).upper(),
+        payload=b"%PDF-1.7\n% second row, upper-case call\n%%EOF\n",
+        filename="maiusculo.pdf",
+        content_type="application/pdf",
+        retention_class="fiscal_evidence",
+    )
+    with tenant_context(tenant_id):
+        assert retention_tasks._document_anchors(staff)[1] == "proveniencia_incompleta"

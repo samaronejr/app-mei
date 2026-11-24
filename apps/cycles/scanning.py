@@ -274,8 +274,8 @@ def claim_scan(tenant_id: UUID, intake_id: UUID) -> ScanTicket | None:
             .filter(pk=intake_id, state__in=PENDING_SCAN_STATES)
             .first()
         )
-        if intake is None:
-            return None
+        if intake is None or _disposal_started(intake.document_id):
+            return None  # disposed work is not scanned (AXRM-051)
         return ScanTicket(
             tenant_id=tenant_id,
             intake_id=intake.pk,
@@ -291,10 +291,39 @@ def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
     assert_no_transaction()
     try:
         with storage.open(ticket.object_key, "rb") as handle:
-            return scanner.scan(handle)
+            stream = _Digesting(handle)
+            verdict = scanner.scan(stream)
+            digest = stream.finish()
     except OSError as error:
         msg = "quarantined object unreadable"
         raise ScannerUnavailable(msg) from error
+    if not verdict.infected and digest != ticket.sha256:
+        # A clean verdict certifies only the bytes scanned (AXRM-051): these are
+        # not the original's, so nothing is certified.
+        raise ContentMismatch
+    return verdict
+
+
+class _Digesting:
+    """Hash what the scanner reads, then whatever it left unread."""
+
+    def __init__(self, handle: ByteStream) -> None:
+        self._handle = handle
+        self._digest = hashlib.sha256()
+
+    def read(self, size: int = -1, /) -> bytes:
+        chunk = self._handle.read(size)
+        self._digest.update(chunk)
+        return chunk
+
+    def finish(self) -> str:
+        while chunk := self._handle.read(CHUNK_BYTES):
+            self._digest.update(chunk)
+        return self._digest.hexdigest()
+
+
+class ContentMismatch(Exception):  # noqa: N818 - domain vocabulary
+    """The quarantined bytes are not the document's: no clean verdict for them."""
 
 
 class ScanDeferred(Exception):  # noqa: N818 - domain vocabulary
@@ -376,35 +405,46 @@ def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
     Only on single-copy (local) storage, where the delete is a local unlink that
     may run under the client lock `place_hold` takes: a hold that commits first
     keeps the copy, a later one finds it gone. The key is locked like every other
-    writer's, and kept when any other row of the tenant (an original, another
-    intake's copy or an archive, of any client) names it. Elsewhere the copy is
-    left for the purge to account for, never deleted remotely inside the lock
-    (AXRM-051).
+    writer's, and every check runs under that lock (see `_copy_is_spare`).
+    Elsewhere the copy is left for the purge to account for, never deleted
+    remotely inside the lock (AXRM-051).
     """
-    if not single_copy_storage(storage) or foreign_storage_keys(
-        ticket.tenant_id, [ticket.object_key]
-    ):
+    if not single_copy_storage(storage):
         return
     with storage_keys_locked([ticket.object_key], wait=False) as locked:
-        if not locked:
+        if not locked or foreign_storage_keys(ticket.tenant_id, [ticket.object_key]):
             return
         with tenant_context(ticket.tenant_id), transaction.atomic():
             intake = DocumentIntake.objects.get(pk=ticket.intake_id)
             ClientCompany.objects.select_for_update(no_key=True).get(
                 pk=intake.client_id
             )
-            held = LegalHold.objects.filter(
-                client_id=intake.client_id, released_at=None
-            ).exists()
-            if held or storage_key_aliased(
-                [ticket.object_key], document_id=intake.document_id
-            ):
+            if not _copy_is_spare(ticket, storage, intake):
                 return
-            try:
-                _read_verified(storage, ticket.object_key, ticket.sha256)
-            except (IntegrityMismatch, OSError):
-                return  # not the promoted original's bytes: keep whatever is there
             _discard(storage, ticket.object_key)
+
+
+def _copy_is_spare(
+    ticket: ScanTicket, storage: Storage, intake: DocumentIntake
+) -> bool:
+    """Under the copy's lock: whether nothing else may still need this copy.
+
+    Not when the client is held, another row names the key, a disposal of the
+    original has started (the copy may be its last surviving one), the final copy
+    is gone or no longer the original, or the copy itself is not the original.
+    """
+    if (
+        LegalHold.objects.filter(client_id=intake.client_id, released_at=None).exists()
+        or storage_key_aliased([ticket.object_key], document_id=intake.document_id)
+        or _disposal_started(intake.document_id)
+    ):
+        return False
+    try:
+        _read_verified(storage, ticket.storage_key, ticket.sha256)
+        _read_verified(storage, ticket.object_key, ticket.sha256)
+    except (IntegrityMismatch, OSError):
+        return False
+    return True
 
 
 def _discard(storage: Storage, key: str) -> None:
@@ -524,12 +564,21 @@ def backoff(attempts: int) -> timedelta:
     return timedelta(minutes=BACKOFF_MINUTES[min(attempts, len(BACKOFF_MINUTES)) - 1])
 
 
+def _disposal_started(document_id: UUID) -> bool:
+    return ContentPurgeClaim.objects.filter(
+        content_kind="document", content_id=document_id
+    ).exists()
+
+
 def record_failure(ticket: ScanTicket, *, now: datetime) -> ScanOutcome:
     """Phase C, scanner down: schedule a retry, or give up 24 h after the upload."""
     with tenant_context(ticket.tenant_id):
         intake = _locked(ticket)
         if intake is None:
             return ScanOutcome.STALE
+        if _disposal_started(intake.document_id):
+            # A source missing because it was disposed of is not an outage.
+            return ScanOutcome.SKIPPED
         intake.scan_attempts += 1
         if now - intake.created_at < RETRY_DEADLINE:
             intake.next_scan_at = now + backoff(intake.scan_attempts)
@@ -592,7 +641,7 @@ def scan_intake(
         return record_verdict(ticket, None, now=now)
     try:
         verdict = run_scan(ticket, scanner, storage)
-    except ScannerUnavailable:
+    except (ScannerUnavailable, ContentMismatch):
         return record_failure(ticket, now=now)
     outcome = _promote_and_record(ticket, verdict, storage, now)
     if outcome is ScanOutcome.VERIFIED and ticket.quarantined:
@@ -609,8 +658,14 @@ def due_intakes(
     request links -- which every firm scans, flagged or not.
     """
     with tenant_context(tenant_id):
-        pending = DocumentIntake.objects.filter(state__in=PENDING_SCAN_STATES).filter(
-            Q(next_scan_at__isnull=True) | Q(next_scan_at__lte=now)
+        pending = (
+            DocumentIntake.objects.filter(state__in=PENDING_SCAN_STATES)
+            .filter(Q(next_scan_at__isnull=True) | Q(next_scan_at__lte=now))
+            .exclude(
+                document_id__in=ContentPurgeClaim.objects.filter(
+                    content_kind="document"
+                ).values("content_id")
+            )
         )
         if vault_only:
             pending = pending.filter(document__evidence_links__isnull=True)

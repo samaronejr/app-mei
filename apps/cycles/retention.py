@@ -2,17 +2,20 @@
 
 import calendar
 import hashlib
+import posixpath
+import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.db import connection, transaction
+from django.db.models import F, Func, Q, QuerySet, Value
 from django.http import Http404
 
 from apps.accounts.models import User
@@ -105,6 +108,44 @@ def client_federal_involvement(client_id: UUID) -> bool:
     )
 
 
+def physical_key(key: str) -> str:
+    """Return the one name storage resolves a key to: `a//b` and `a/./b` are `a/b`."""
+    return posixpath.normpath(key.replace("\\", "/")).lstrip("/") if key else ""
+
+
+# Names that resolve to one object differ only in separators and `.` segments, so
+# rows are matched with both removed: a coarser match only keeps more.
+_LOOSE: Final = r"[/\\.]"
+
+
+def _loose(key: str) -> str:
+    return re.sub(_LOOSE, "", key)
+
+
+def _naming(
+    model: type[Document] | type[DocumentIntake] | type[EvidenceExport],
+    field: str,
+    keys: Iterable[str],
+) -> QuerySet[Any]:
+    named = [key for key in keys if key]
+    loose = {_loose(key) for key in named} | {_loose(physical_key(k)) for k in named}
+    # A `..` segment resolves elsewhere, which stripping cannot see: such rows
+    # (restored descriptors, rare) are resolved here, one by one.
+    physical = {physical_key(key) for key in named}
+    dotted = [
+        pk
+        for pk, raw in model.objects.filter(**{f"{field}__contains": ".."}).values_list(
+            "pk", field
+        )
+        if physical_key(raw) in physical
+    ]
+    return model.objects.annotate(
+        loose_key=Func(
+            F(field), Value(_LOOSE), Value(""), Value("g"), function="regexp_replace"
+        )
+    ).filter(Q(loose_key__in=loose) | Q(pk__in=dotted))
+
+
 def storage_key_aliased(
     keys: Iterable[str],
     *,
@@ -114,12 +155,13 @@ def storage_key_aliased(
     """Tell whether any row other than this one names one of these storage keys.
 
     Every row kind that names a key counts: an original's final key, an intake's
-    quarantine copy and an evidence archive, of any client of the tenant.
+    quarantine copy and an evidence archive, of any client of the tenant, under
+    any spelling that resolves to the same object.
     """
     named = [key for key in keys if key]
-    finals = Document.objects.filter(storage_key__in=named)
-    copies = DocumentIntake.objects.filter(quarantine_key__in=named)
-    archives = EvidenceExport.objects.filter(storage_key__in=named)
+    finals = _naming(Document, "storage_key", named)
+    copies = _naming(DocumentIntake, "quarantine_key", named)
+    archives = _naming(EvidenceExport, "storage_key", named)
     if document_id is not None:
         finals = finals.exclude(pk=document_id)
         copies = copies.exclude(document_id=document_id)
@@ -129,7 +171,7 @@ def storage_key_aliased(
 
 
 def foreign_storage_keys(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
-    """Return which of these keys a row of another tenant names.
+    """Return which of these keys a row of another tenant names, under any spelling.
 
     Storage keys are global while rows are tenant-scoped, so every other tenant is
     read in its own context: an original's final key, an intake's quarantine copy
@@ -138,31 +180,29 @@ def foreign_storage_keys(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
     named = sorted({key for key in keys if key})
     found: set[str] = set()
     if not named:
-        return found
+        return set()
     # PLATFORM_QUERY_OK: storage keys are global, so every other tenant is checked.
     others = Tenant.objects.exclude(pk=tenant_id).values_list("pk", flat=True)
     for other in list(others):
         with tenant_context(other):
-            found.update(
-                Document.objects.filter(storage_key__in=named).values_list(
-                    "storage_key", flat=True
-                )
-            )
-            found.update(
-                DocumentIntake.objects.filter(quarantine_key__in=named).values_list(
-                    "quarantine_key", flat=True
-                )
-            )
-            found.update(
-                EvidenceExport.objects.filter(storage_key__in=named).values_list(
-                    "storage_key", flat=True
-                )
-            )
-    return found
+            for model, field in (
+                (Document, "storage_key"),
+                (DocumentIntake, "quarantine_key"),
+                (EvidenceExport, "storage_key"),
+            ):
+                found.update(_naming(model, field, named).values_list(field, flat=True))
+    return {
+        key
+        for key in named
+        for raw in found
+        if _loose(key) == _loose(raw) or physical_key(key) == physical_key(raw)
+    }
 
 
 def _key_lock_id(key: str) -> int:
-    digest = hashlib.sha256(f"axorim-storage-key:{key}".encode()).digest()
+    # One lock per object, whatever spelling of its key a caller holds.
+    name = physical_key(key)
+    digest = hashlib.sha256(f"axorim-storage-key:{name}".encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
 
