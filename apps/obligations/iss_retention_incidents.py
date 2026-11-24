@@ -29,16 +29,26 @@ _ISS_RECOVERY: Final = "fiscal.iss_evidence_recovered"
 _ISS_RECOVERY_BLOCKED: Final = "fiscal.iss_recovery_blocked"
 
 
-def iss_evidence_key(originals: "Iterable[ISSOriginal]") -> str:
+def iss_evidence_key(
+    originals: "Iterable[ISSOriginal]", *, failed_key: str = ""
+) -> str:
     """Order-independent, bounded audit identity; no copied vault keys or XML."""
     current = sorted(
         (str(original.document_id), original.sha256 or "", original.code or "")
         for original in originals
         if original.document_id is not None
     )
+    identity = [current, failed_key] if failed_key else current
     return hashlib.sha256(
-        json.dumps(current, separators=(",", ":")).encode()
+        json.dumps(identity, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+class ISSOutageIdentity(NamedTuple):
+    """Full snapshot identity and separate attribution to failed originals."""
+
+    snapshot: str
+    failed: str
 
 
 class ISSResolution(NamedTuple):
@@ -140,13 +150,16 @@ def reconcile_iss_incident(
     revision: "FiscalRevision",
     decision: ISSDecision,
     *,
-    evidence_key: str,
+    evidence_key: str | ISSOutageIdentity,
     derive_on_recovery: bool = False,
 ) -> ISSResolution:
     """Use the entire current outage, not an unrelated latest audit event."""
     state = fiscal.fiscal_state
     if state != "incerta" and decision.cause is None:
         return ISSResolution(state, decision)
+    failed_evidence_key = ""
+    if isinstance(evidence_key, ISSOutageIdentity):
+        evidence_key, failed_evidence_key = evidence_key
     ref = ObjectRef("FiscalDocument", str(fiscal.pk))
     revision_id = str(revision.pk)
     episode = incident_episode(ref, revision_id)
@@ -162,12 +175,18 @@ def reconcile_iss_incident(
         and not episode.exclude(pk__in=outage.values("pk")).exists()
     )
     if decision.cause:
-        if (
-            state != "incerta"
-            or not episode.filter(
-                metadata__cause=decision.cause, metadata__evidence_key=evidence_key
-            ).exists()
-        ):
+        peers = episode.filter(metadata__cause=decision.cause)
+        if decision.cause == EVIDENCE_UNAVAILABLE:
+            last_key = (
+                peers.filter(fiscal_order__isnull=False)
+                .order_by("-fiscal_order")
+                .values_list("metadata__evidence_key", flat=True)
+                .first()
+            )
+            duplicate = last_key == evidence_key
+        else:
+            duplicate = peers.filter(metadata__evidence_key=evidence_key).exists()
+        if state != "incerta" or not duplicate:
             raise_problem(
                 fiscal.client,
                 Problem(
@@ -182,6 +201,11 @@ def reconcile_iss_incident(
                     "revision_id": revision_id,
                     "cause": decision.cause,
                     "evidence_key": evidence_key,
+                    **(
+                        {"failed_evidence_key": failed_evidence_key}
+                        if failed_evidence_key
+                        else {}
+                    ),
                     "retryable": decision.cause == EVIDENCE_UNAVAILABLE
                     and (state != "incerta" or can_recover),
                     "derive_fields": derive_on_recovery

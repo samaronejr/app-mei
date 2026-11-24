@@ -57,6 +57,7 @@ from apps.obligations.iss_retention_evidence_v1 import (
     verify_iss_original,
 )
 from apps.obligations.iss_retention_incidents import (
+    ISSOutageIdentity,
     ISSResolution,
     iss_evidence_key,
     reconcile_iss_incident,
@@ -202,18 +203,23 @@ def _current_iss_resolution(
         message = "Os originais do ISS mudaram durante a preparação."
         raise StaleISSOriginalsError(message)
     decision = agreed_iss_code(originals, prepared.__getitem__)
-    incident_originals = originals
+    evidence_key: str | ISSOutageIdentity = (
+        iss_evidence_key(originals) if decision.cause else ""
+    )
     if decision.cause == EVIDENCE_UNAVAILABLE:
-        incident_originals = [
+        failed_key = iss_evidence_key(
             witness
             for witness, result in prepared.items()
             if result.cause == EVIDENCE_UNAVAILABLE
-        ]
+        )
+        evidence_key = ISSOutageIdentity(
+            iss_evidence_key(originals, failed_key=failed_key), failed_key
+        )
     return reconcile_iss_incident(
         fiscal,
         revision,
         decision,
-        evidence_key=iss_evidence_key(incident_originals) if decision.cause else "",
+        evidence_key=evidence_key,
         derive_on_recovery=derive_on_recovery,
     )
 

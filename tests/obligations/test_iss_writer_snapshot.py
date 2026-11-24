@@ -8,12 +8,14 @@ from unittest.mock import patch
 
 import pytest
 from django.core.files.storage import default_storage
-from django.db import connection, transaction
+from django.db import DatabaseError, connection, transaction
 from django.utils import timezone
+from psycopg.pq import TransactionStatus
 
 from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
 from apps.core.tenancy import tenant_context
+from apps.cycles.archive_storage import open_archive_source
 from apps.obligations import fiscal_ingest as writer
 from apps.obligations.iss_retention_evidence_v1 import EVIDENCE_UNAVAILABLE
 from apps.obligations.iss_retention_incidents import iss_evidence_key
@@ -38,7 +40,9 @@ def _incident_keys(fiscal: FiscalDocument) -> list[str]:
             action="fiscal.consistency_incident",
             object_id=str(fiscal.pk),
             metadata__cause=EVIDENCE_UNAVAILABLE,
-        ).values_list("metadata__evidence_key", flat=True)
+        )
+        .order_by("fiscal_order")
+        .values_list("metadata__evidence_key", flat=True)
     )
 
 
@@ -153,7 +157,16 @@ def test_stale_scan_cannot_record_an_outage_in_either_order(
         assert stale, "An added original must invalidate preparation before audit."
         assert _incident_keys(fiscal) == []
         writer._current_iss_resolution(fiscal, revision, complete)
-        assert _incident_keys(fiscal) == [iss_evidence_key([failed])]
+        failure_key = iss_evidence_key([failed])
+        assert _incident_keys(fiscal) == [
+            iss_evidence_key(order, failed_key=failure_key)
+        ]
+        assert (
+            Event.objects.get(
+                action="fiscal.consistency_incident", object_id=str(fiscal.pk)
+            ).metadata["failed_evidence_key"]
+            == failure_key
+        )
 
 
 def test_purge_after_preparation_invalidates_the_snapshot(setup: PortalSetup) -> None:
@@ -173,6 +186,43 @@ def test_purge_after_preparation_invalidates_the_snapshot(setup: PortalSetup) ->
             stale = True
         assert stale, "A removed original must invalidate preparation before audit."
         assert _incident_keys(fiscal) == []
+
+
+def test_outage_identity_tracks_membership_and_failures(setup: PortalSetup) -> None:
+    fiscal = _seed(setup)
+    revision = fiscal_tests.revision_of(fiscal)
+    with tenant_context(fiscal.tenant_id):
+        inputs = _prepare_inputs(fiscal)
+    original = inputs[1]
+
+    def resolve() -> list[str]:
+        prepared = writer._prepare_iss_originals(*inputs)
+        with tenant_context(fiscal.tenant_id):
+            resolution = writer._current_iss_resolution(fiscal, revision, prepared)
+            assert resolution.decision.cause == EVIDENCE_UNAVAILABLE
+            fiscal.fiscal_state = resolution.state
+            return _incident_keys(fiscal)
+
+    payload = nfse().replace(b"<tpRetISSQN>", b"\n<tpRetISSQN>")
+    with fault_iss_original("503", original.storage_key, nfse()):
+        first = resolve()
+        assert len(first) == 1
+        assert resolve() == first
+        retained = _attach_distinct(fiscal, setup, original, payload)
+        expanded = resolve()
+        assert len(expanded) == 2, "A healthy attachment must change the outage key."
+        assert expanded[:1] == first
+        assert expanded[1] != first[0]
+        assert resolve() == expanded
+    with fault_iss_original("503", retained.storage_key, payload):
+        changed = resolve()
+        assert changed[:2] == expanded
+        assert len(set(changed)) == 3
+        assert resolve() == changed
+    with fault_iss_original("503", original.storage_key, nfse()):
+        returned = resolve()
+        assert returned == [*changed, expanded[1]]
+        assert resolve() == returned
 
 
 @contextmanager
@@ -214,3 +264,41 @@ def test_manual_transaction_is_refused_before_selecting_or_reading(
     assert select.call_count == 0
     assert read.call_count == 0
     assert refused
+
+
+@pytest.mark.parametrize("entry", ["vault", "archive"])
+@pytest.mark.parametrize("aborted", [False, True], ids=["intrans", "inerror"])
+def test_raw_transaction_refuses_external_storage(
+    setup: PortalSetup, entry: str, aborted: bool
+) -> None:
+    fiscal = _seed(setup)
+    with tenant_context(fiscal.tenant_id):
+        inputs = _prepare_inputs(fiscal)
+    witness = next(iter(writer._prepare_iss_originals(*inputs)))
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("BEGIN")
+            cursor.execute("SELECT 1")
+            if aborted:
+                with pytest.raises(DatabaseError):
+                    cursor.execute("SELECT 1 / 0")
+        assert not connection.in_atomic_block
+        assert connection.autocommit
+        assert connection.connection.info.transaction_status == (
+            TransactionStatus.INERROR if aborted else TransactionStatus.INTRANS
+        )
+        refused = False
+        with patch.object(default_storage, "open", wraps=default_storage.open) as read:
+            try:
+                if entry == "vault":
+                    writer.verify_iss_original(witness)
+                else:
+                    with open_archive_source(default_storage, inputs[1].storage_key):
+                        pass
+            except RuntimeError as error:
+                refused = "database transaction" in str(error)
+        assert read.call_count == 0
+        assert refused
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("ROLLBACK")
