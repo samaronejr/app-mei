@@ -14,8 +14,7 @@ from tests.obligations.test_federal_records_migration import _firm
 
 pytestmark = pytest.mark.django_db(transaction=True)
 PREVIOUS = ("obligations", "0027_sitfis_reply_record")
-# AXRM-020 is the current leaf; this test still exercises the 0028 ledger upgrade.
-CURRENT = ("obligations", "0029_fiscal_register")
+LEDGER_UPGRADE = ("obligations", "0028_sitfis_call_replies")
 
 
 def test_the_call_ledger_round_trip_and_populated_reverse_guard() -> None:
@@ -23,7 +22,12 @@ def test_the_call_ledger_round_trip_and_populated_reverse_guard() -> None:
     with _as_migrator():
         executor = MigrationExecutor(connection)
         leaves = executor.loader.graph.leaf_nodes()
-        assert CURRENT in leaves
+        # Ensure the upgrade remains in the path without pinning the latest leaf.
+        assert any(
+            LEDGER_UPGRADE in executor.loader.graph.forwards_plan(leaf)
+            for leaf in leaves
+            if leaf[0] == "obligations"
+        )
         executor.migrate([PREVIOUS])
         historical = executor.loader.project_state([PREVIOUS]).apps
         receipt = historical.get_model(

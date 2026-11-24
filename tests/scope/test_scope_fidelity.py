@@ -344,10 +344,17 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         "Selects existing cycles for a received document review." + FISCAL_RECEIPT_ONLY,
     ),
     (
-        "apps/cycles/services/fiscal_review.py",
-        'period = fiscal.issue_date if fiscal.family == "nfe" else fiscal.competence',
+        "apps/cycles/fiscal_material.py",
+        'When(family="nfe", then=F("issue_date")),',
         1,
-        "Refuses reviewing received documents outside their fiscal period."
+        "Uses the recorded issue date to scope and fingerprint received NF-e reviews."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/fiscal_material.py",
+        '"""Use issue date for NF-e and competence for NFS-e."""',
+        1,
+        "Documents which recorded date scopes and fingerprints received reviews."
         + FISCAL_RECEIPT_ONLY,
     ),
     (
@@ -490,6 +497,34 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         '(value, value) for value in ("nfe", "nfse_nacional", "nfse_municipal")',
         1,
         "Stores family labels for received/imported register identities."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    # AXRM-046 records the reported ISS retention party as a municipal fact.
+    (
+        "apps/obligations/models/fiscal.py",
+        '"""Party reported by the NFS-e; unknown is not a negative assertion."""',
+        1,
+        "Documents the ISS retention party in the fiscal register."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/iss_retention_v1.py",
+        '_NFSE: Final = "{http://www.sped.fazenda.gov.br/nfse}"',
+        1,
+        "Identifies the namespace of the retained ISS source." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/iss_retention_v1.py",
+        '_NFSE + element for element in f"infNFSe/{ISS_SOURCE_SPAN}".split("/")',
+        1,
+        "Locates the reported retention party in the retained original."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/iss_retention_v1.py",
+        'if root.tag != f"{_NFSE}NFSe" or root.get("versao") not in ("1.00", "1.01"):',
+        1,
+        "Rejects unsupported retained layouts as evidence of the ISS fact."
         + FISCAL_RECEIPT_ONLY,
     ),
     (

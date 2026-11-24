@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import date, timedelta
 from threading import Event
 from typing import TYPE_CHECKING, cast
 
@@ -46,7 +46,7 @@ from tests.cycles.fiscal_review_fixtures import (
     row_image,
 )
 from tests.cycles.fiscal_review_race_fixtures import review_race
-from tests.cycles.test_fiscal_document_review import world
+from tests.cycles.test_fiscal_document_review import record, world
 from tests.cycles.test_fiscal_review_storage import signal_statement
 from tests.cycles.test_playbook_http_conflicts import HiddenInputs
 from tests.delivery.smtp import FakeSMTP
@@ -59,6 +59,8 @@ from tests.integrations.capture_fixtures import (
     review_api,
 )
 from tests.isolation.axorim_seed import make_seed_context, seed_model
+from tests.obligations.fiscal_fixtures import nfse
+from tests.obligations.test_fiscal_documents import ingest
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -178,6 +180,23 @@ def test_a_legacy_form_without_a_head_cannot_correct_an_existing_review(
         assert list(FiscalDocumentReview.objects.values_list("pk", flat=True)) == [
             root.pk
         ]
+
+
+def test_service_invoice_review_uses_competence_not_issue_month(
+    world: CaptureWorld,
+) -> None:
+    fiscal = cast(
+        "FiscalDocument",
+        ingest(
+            world.setup,
+            source="importacao_equipe",
+            client_role="tomador",
+            payload=nfse().replace(b"2026-09-15", b"2026-10-15"),
+        ),
+    )
+    assert fiscal.issue_date == date(2026, 10, 15)
+    assert fiscal.competence == MONTH
+    assert record(world, fiscal, "aceito").cycle_id == world.setup.cycle.pk
 
 
 @pytest.mark.parametrize("change", ["blank", "closed", "material"])

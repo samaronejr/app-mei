@@ -1,8 +1,9 @@
 """The fiscal workspace behind the existing firm document review route."""
 
+from __future__ import annotations
+
 from http import HTTPStatus
 from typing import TYPE_CHECKING, TypedDict
-from uuid import UUID
 
 from django import forms
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -11,7 +12,6 @@ from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from apps.accounts.views import AuthenticatedRequest
 from apps.authz.objects import load_visible_client
 from apps.authz.support import in_support_mode
 from apps.core.flags import tenant_has
@@ -29,12 +29,16 @@ from apps.cycles.services.fiscal_review import (
 from apps.obligations.models import FiscalDocument, FiscalRevision, RevisionArtifact
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from django.db.models import QuerySet
     from django_stubs_ext import WithAnnotations
 
+    from apps.accounts.views import AuthenticatedRequest
+
 
 class ReviewPreview(TypedDict):
-    """The exact material selected with the workspace facts."""
+    """Material selected with the fiscal document."""
 
     review_material: str
 
@@ -55,14 +59,13 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
     """Reuse the document route's authorization, then recheck the fiscal scope."""
     if not tenant_has(tenant_id(), "document_capture"):
         raise Http404
+    # Keep the displayed revision and its material token in the same SELECT.
     fiscals: QuerySet[WithAnnotations[FiscalDocument, ReviewPreview]] = (
         FiscalDocument.objects.select_related("client", "current_revision").annotate(
             review_material=material_digest()
         )
     )
-    fiscal: WithAnnotations[FiscalDocument, ReviewPreview] = get_object_or_404(
-        fiscals, pk=pk
-    )
+    fiscal = get_object_or_404(fiscals, pk=pk)
     load_visible_client(request.user, fiscal.client_id)
     if request.method == "POST" and in_support_mode():
         raise PermissionDenied
