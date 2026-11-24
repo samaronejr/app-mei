@@ -58,9 +58,9 @@ from apps.cycles.evidence import (
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
 from apps.cycles.retention import (
+    canonical_key,
     foreign_storage_keys,
     local_layout_refusal,
-    physical_key,
     single_copy_storage,
     storage_key_aliased,
     storage_keys_locked,
@@ -297,13 +297,15 @@ def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
         with storage.open(ticket.object_key, "rb") as handle:
             stream = _Digesting(handle)
             verdict = scanner.scan(stream)
+            # One more read, never hashed: the scanner must have reached EOF.
+            exhausted = handle.read(1) == b""
     except OSError as error:
         msg = "quarantined object unreadable"
         raise ScannerUnavailable(msg) from error
-    if stream.hexdigest() != ticket.sha256:
-        # A verdict, clean or infected, belongs only to the original's bytes, all
-        # of them read by the scanner itself (AXRM-051): the digest is of what it
-        # read, so a short read never matches. Otherwise there is no verdict.
+    if not exhausted or stream.hexdigest() != ticket.sha256:
+        # A verdict, clean or infected, belongs only to the original's bytes, every
+        # one of them read by the scanner itself up to EOF (AXRM-051): a short read,
+        # or one that stops where the original would end, has no verdict.
         raise ContentMismatch
     return verdict
 
@@ -356,12 +358,15 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
     scanner may have verified.
     """
     assert_no_transaction()
-    if not ticket.quarantined:
-        return
     with storage_keys_locked([ticket.storage_key], wait=False) as locked:
         if not locked:
             raise ScanDeferred  # another scanner or a disposal holds the final key
         try:
+            if not ticket.quarantined:
+                # Scanned in place: the serving file is checked again under its
+                # lock, since a restore may have replaced it after the scan read.
+                _read_verified(storage, ticket.storage_key, ticket.sha256)
+                return
             if storage.exists(ticket.storage_key):
                 _read_verified(storage, ticket.storage_key, ticket.sha256)
                 return
@@ -440,7 +445,8 @@ def _copy_is_spare(
         or storage_key_aliased([ticket.object_key], document_id=intake.document_id)
         or _disposal_started(intake.document_id)
         # The copy may be the final itself under another name: never "spare".
-        or physical_key(ticket.object_key) == physical_key(ticket.storage_key)
+        or canonical_key(ticket.object_key, storage)
+        == canonical_key(ticket.storage_key, storage)
         or local_layout_refusal([ticket.object_key, ticket.storage_key], storage)
     ):
         return False
