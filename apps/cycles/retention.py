@@ -2,12 +2,14 @@
 
 import calendar
 import hashlib
+import os
 import posixpath
 import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -77,6 +79,36 @@ def single_copy_storage(storage: Storage | None = None) -> bool:
     """
     chosen = default_storage if storage is None else storage
     return chosen.__class__ in SINGLE_COPY_STORAGES
+
+
+def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) -> str:
+    """On local storage, why these keys are not proved to name files of their own.
+
+    A key string cannot capture the physical file: a symlink anywhere under the
+    root, or a hard link, gives one file names no lookup or lock sees. So the root
+    must hold no symlink, each key must resolve, inside it, to itself, and each
+    existing file must have one link (AXRM-051); then two keys name one object
+    exactly when their `physical_key` is the same. Empty when proved, and on any
+    backend that is not a local filesystem.
+    """
+    chosen = default_storage if storage is None else storage
+    if not isinstance(chosen, FileSystemStorage):
+        return ""
+    root = Path(chosen.location).resolve()
+    for parent, directories, files in os.walk(root):
+        if any((Path(parent) / name).is_symlink() for name in (*directories, *files)):
+            return "armazenamento_com_atalho"
+    for key in keys:
+        path = Path(os.path.normpath(root / key))
+        if not path.is_relative_to(root) or path.resolve() != path:
+            return "chave_fora_do_armazenamento"
+        try:
+            links = path.lstat().st_nlink
+        except FileNotFoundError:
+            continue
+        if links > 1:
+            return "arquivo_com_vinculos"
+    return ""
 
 
 def federal_content(document: Document) -> bool:
@@ -159,6 +191,8 @@ def storage_key_aliased(
     any spelling that resolves to the same object.
     """
     named = [key for key in keys if key]
+    if not named:
+        return False
     finals = _naming(Document, "storage_key", named)
     copies = _naming(DocumentIntake, "quarantine_key", named)
     archives = _naming(EvidenceExport, "storage_key", named)

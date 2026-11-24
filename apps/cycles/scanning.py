@@ -59,6 +59,8 @@ from apps.cycles.evidence import (
 from apps.cycles.records import CycleEvent, ServiceCycle
 from apps.cycles.retention import (
     foreign_storage_keys,
+    local_layout_refusal,
+    physical_key,
     single_copy_storage,
     storage_key_aliased,
     storage_keys_locked,
@@ -74,6 +76,8 @@ REPLY_MAX_BYTES: Final = 4096
 CHUNK_BYTES: Final = 64 * 1024
 DISABLED_REASON: Final = "clamav_desativado"
 DEADLINE_REASON: Final = "scanner_indisponivel_24h"
+# The scanned or stored bytes were not the original's for 24 h: not an outage.
+MISMATCH_REASON: Final = "conteudo_divergente_24h"
 SCAN_REQUIRED_FLAG: Final = "scan_required"
 
 
@@ -293,19 +297,19 @@ def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
         with storage.open(ticket.object_key, "rb") as handle:
             stream = _Digesting(handle)
             verdict = scanner.scan(stream)
-            digest = stream.finish()
     except OSError as error:
         msg = "quarantined object unreadable"
         raise ScannerUnavailable(msg) from error
-    if not verdict.infected and digest != ticket.sha256:
-        # A clean verdict certifies only the bytes scanned (AXRM-051): these are
-        # not the original's, so nothing is certified.
+    if stream.hexdigest() != ticket.sha256:
+        # A verdict, clean or infected, belongs only to the original's bytes, all
+        # of them read by the scanner itself (AXRM-051): the digest is of what it
+        # read, so a short read never matches. Otherwise there is no verdict.
         raise ContentMismatch
     return verdict
 
 
 class _Digesting:
-    """Hash what the scanner reads, then whatever it left unread."""
+    """Hash exactly what the scanner reads."""
 
     def __init__(self, handle: ByteStream) -> None:
         self._handle = handle
@@ -316,9 +320,7 @@ class _Digesting:
         self._digest.update(chunk)
         return chunk
 
-    def finish(self) -> str:
-        while chunk := self._handle.read(CHUNK_BYTES):
-            self._digest.update(chunk)
+    def hexdigest(self) -> str:
         return self._digest.hexdigest()
 
 
@@ -437,6 +439,9 @@ def _copy_is_spare(
         LegalHold.objects.filter(client_id=intake.client_id, released_at=None).exists()
         or storage_key_aliased([ticket.object_key], document_id=intake.document_id)
         or _disposal_started(intake.document_id)
+        # The copy may be the final itself under another name: never "spare".
+        or physical_key(ticket.object_key) == physical_key(ticket.storage_key)
+        or local_layout_refusal([ticket.object_key, ticket.storage_key], storage)
     ):
         return False
     try:
@@ -570,8 +575,14 @@ def _disposal_started(document_id: UUID) -> bool:
     ).exists()
 
 
-def record_failure(ticket: ScanTicket, *, now: datetime) -> ScanOutcome:
-    """Phase C, scanner down: schedule a retry, or give up 24 h after the upload."""
+def record_failure(
+    ticket: ScanTicket, *, now: datetime, reason: str = DEADLINE_REASON
+) -> ScanOutcome:
+    """Phase C, no verdict: schedule a retry, or give up 24 h after the upload.
+
+    `reason` says why at the deadline: the scanner was down, or the bytes were
+    never the original's (`MISMATCH_REASON`).
+    """
     with tenant_context(ticket.tenant_id):
         intake = _locked(ticket)
         if intake is None:
@@ -586,7 +597,7 @@ def record_failure(ticket: ScanTicket, *, now: datetime) -> ScanOutcome:
             return ScanOutcome.RETRY
         intake.state = IntakeState.SCAN_UNAVAILABLE
         intake.verdict = ScanVerdict.UNAVAILABLE
-        intake.reason = DEADLINE_REASON
+        intake.reason = reason
         intake.next_scan_at = None
         for cycle, author_id in _save(intake, now):
             open_exception(
@@ -621,6 +632,9 @@ def _promote_and_record(
             return ScanOutcome.SKIPPED
         except ScannerUnavailable:
             return record_failure(ticket, now=now)
+        except IntegrityMismatch:
+            # The final already there is not the original: nothing is certified.
+            return record_failure(ticket, now=now, reason=MISMATCH_REASON)
         return record_verdict(ticket, verdict, now=now)
 
 
@@ -641,8 +655,10 @@ def scan_intake(
         return record_verdict(ticket, None, now=now)
     try:
         verdict = run_scan(ticket, scanner, storage)
-    except (ScannerUnavailable, ContentMismatch):
+    except ScannerUnavailable:
         return record_failure(ticket, now=now)
+    except ContentMismatch:
+        return record_failure(ticket, now=now, reason=MISMATCH_REASON)
     outcome = _promote_and_record(ticket, verdict, storage, now)
     if outcome is ScanOutcome.VERIFIED and ticket.quarantined:
         _discard_quarantine(ticket, storage)
