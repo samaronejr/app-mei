@@ -290,7 +290,7 @@ def test_a_firm_termo_403_leaves_every_client_authority_and_opens_the_firm_issue
     # The refusal names the block: the firm issue's 020, with its own code.
     assert (refused.state, refused.failure_code) == (
         "falha",
-        f"bloqueio-{TERMO_020}",
+        first_issue(world),
     )
     detail = query_detail(refused)
     assert "procuração do cliente não foi alterada" in detail
@@ -445,7 +445,7 @@ def test_a_firm_block_raised_after_the_reservation_is_named_at_claim(
     # Then the refusal names the firm, sends nothing and opens no client work.
     assert (query.state, query.failure_code) == (
         "falha",
-        "autorizacao_procurador_ausente",
+        first_issue(world),
     )
     with tenant_context(world.termo.tenant.pk):
         assert not IntegrationIssue.objects.exists()
@@ -477,7 +477,7 @@ def test_a_firm_block_cleared_before_the_refusal_settles_is_never_the_clients(
     # Cleared since: the recorded block (the firm issue) reads as cleared.
     assert (query.state, query.failure_code) == (
         "falha",
-        "encerrado-autorizacao_procurador_ausente",
+        f"encerrado-{first_issue(world)}",
     )
     assert effects(world)[1:3] == ("ativa", [])
     with tenant_context(tenant):
@@ -516,7 +516,7 @@ def test_a_firm_refusal_recorded_at_dispatch_settles_by_that_cause_on_redelivery
     [call] = world.calls()
     assert (call.state, call.provider_code) == (
         "bloqueada_autoridade",
-        "autorizacao_procurador_ausente",
+        first_issue(world),
     )
     # When it is redelivered once the dead runner's lease ends.
     with tenant_context(tenant):
@@ -526,7 +526,7 @@ def test_a_firm_refusal_recorded_at_dispatch_settles_by_that_cause_on_redelivery
     # Then it settles as the firm's, from that record, with no client work.
     assert (settled.state, settled.failure_code) == (
         "falha",
-        "autorizacao_procurador_ausente",
+        first_issue(world),
     )
     with tenant_context(tenant):
         assert not IntegrationIssue.objects.exists()
@@ -573,7 +573,7 @@ def test_a_platform_403_names_the_platform_on_the_firms_next_refusal(
     refused = world.consult(nonce="consulta-2")
     assert len(world.sent()) == 1
     # Then it names the platform's 016, never a refused or missing termo.
-    assert (refused.state, refused.failure_code) == ("falha", f"bloqueio-{platform}")
+    assert (refused.state, refused.failure_code) == ("falha", first_issue(world))
     detail = query_detail(refused)
     assert "credenciais da plataforma" in detail
     assert platform in detail
@@ -712,11 +712,38 @@ def test_a_cleared_termo_refusal_reads_cleared_though_another_block_opened(
     monkeypatch.setattr(work, "termo_in_force", termo_in_force)
     query = _stopped_at_settlement(world, monkeypatch, lambda: lapsed.update(now=True))
     [call] = world.calls()
-    assert call.provider_code == "termo_nao_vigente"
+    assert call.provider_code.startswith("termo_nao_vigente-v")
     # When the termo is in force again, and another client's 016 then opens a
     # different block (the platform's) on the same connection.
     lapsed["now"] = False
-    termo, platform = world.termo, "AcessoNegado-ICGERENCIADOR-016"
+    platform = "AcessoNegado-ICGERENCIADOR-016"
+    other = _second_client(world)
+    world.script(denied(code=platform))
+    payments.consult_payments(other, support.WINDOW, actor=None, nonce="consulta-b")
+    assert effects(world)[3] != []
+    # Then this client's redelivered refusal reads as its own cleared block.
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    assert (settled.state, settled.failure_code) == (
+        "falha",
+        f"encerrado-{call.provider_code}",
+    )
+    detail = query_detail(settled)
+    assert "já está em vigor" in detail
+    assert platform not in detail
+
+
+def first_issue(world: World) -> str:
+    """The identity a refusal records for the firm's first issue."""
+    with tenant_context(world.termo.tenant.pk):
+        issue = FirmIntegrationIssue.objects.order_by("created_at", "pk").first()
+    assert issue is not None
+    return f"pendencia-{issue.pk}"
+
+
+def _second_client(world: World) -> ClientCompany:
+    """Another client of the same firm connection, with a verified 00004."""
+    termo = world.termo
     with tenant_context(termo.tenant.pk):
         other = ClientCompany.objects.create(
             tenant=termo.tenant, legal_name="Outro", cnpj="11444777000161", is_mei=True
@@ -729,16 +756,71 @@ def test_a_cleared_termo_refusal_reads_cleared_though_another_block_opened(
             status="ativa",
         )
     support.declare_and_verify(replace(termo, client=other))
-    world.script(denied(code=platform))
-    payments.consult_payments(other, support.WINDOW, actor=None, nonce="consulta-b")
-    assert effects(world)[3] != []
-    # Then this client's redelivered refusal reads as its own cleared block.
+    return other
+
+
+def _block_without_a_403(world: World) -> None:
+    work = import_module("apps.integrations.serpro.work")
+    with tenant_context(world.termo.tenant.pk):
+        work.own_firm_condition(world.termo.connection, work.PROC_MISSING, ["sem-403"])
+
+
+@DB
+def test_the_panel_reads_a_client_refusal_verified_again_as_history(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given a client refusal saved at dispatch, then 00004 verified again.
+    query = _stopped_at_settlement(world, monkeypatch, lambda: _revoke(world))
+    support.declare_and_verify(world.termo)
     lease_runs_out(world, query.pk)
     settled = payments.run_payment_query(query.tenant_id, query.pk)
-    assert (settled.state, settled.failure_code) == (
-        "falha",
-        "encerrado-termo_nao_vigente",
-    )
+    # Then the panel tells what happened, and no longer asks to register it.
     detail = query_detail(settled)
-    assert "já está em vigor" in detail
-    assert platform not in detail
+    assert "já foi verificada de novo" in detail
+    assert "registre e verifique" not in detail
+
+
+@DB
+def test_a_resolved_issue_stays_cleared_though_a_replacement_opened(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given an issue citing no 403 refuses this page at dispatch, the worker
+    # dies, and that issue is then resolved.
+    query = _stopped_at_settlement(
+        world, monkeypatch, lambda: _block_without_a_403(world)
+    )
+    first = first_issue(world)
+    [call] = world.calls()
+    assert call.provider_code == first
+    with tenant_context(world.termo.tenant.pk):
+        FirmIntegrationIssue.objects.update(state="resolvida")
+    # When another client's 016 opens a replacement issue before this settles.
+    other = _second_client(world)
+    world.script(denied(code="AcessoNegado-ICGERENCIADOR-016"))
+    payments.consult_payments(other, support.WINDOW, actor=None, nonce="consulta-b")
+    with tenant_context(world.termo.tenant.pk):
+        assert FirmIntegrationIssue.objects.filter(
+            state__in=("aberta", "em_tratamento")
+        ).exists()
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then this refusal's own issue reads as resolved, not revived by the other.
+    assert settled.failure_code == f"encerrado-{first}"
+    detail = query_detail(settled)
+    assert "já foi encerrada" in detail
+    assert "aberta" not in detail
+
+
+@DB
+def test_the_panel_reads_a_recorded_block_by_its_state_now(world: World) -> None:
+    # Given a consultation refused while its firm issue is open.
+    _block_without_a_403(world)
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("falha", first_issue(world))
+    assert "pendência aberta" in query_detail(query)
+    # When that issue is resolved, then the same consultation reads as history.
+    with tenant_context(world.termo.tenant.pk):
+        FirmIntegrationIssue.objects.update(state="resolvida")
+    detail = query_detail(query)
+    assert "já foi encerrada" in detail
+    assert "aberta" not in detail

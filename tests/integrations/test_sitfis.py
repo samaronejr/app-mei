@@ -775,7 +775,7 @@ def test_a_firm_refusal_stays_the_firms_after_its_block_clears_and_authority_end
     report = world.advance(world.advance(world.request()))
     # Then the refusal is settled by the cause recorded with it: the firm's.
     [call] = world.calls("SP-SIT-P")
-    assert call.provider_code == "autorizacao_procurador_ausente"
+    assert call.provider_code.startswith("pendencia-")
     with tenant_context(world.tenant_id):
         outcome = FederalConsultation.objects.get(pk=report.consultation_id).outcome
     assert (report.state, outcome) == ("falha", "falha")
