@@ -286,11 +286,14 @@ def test_a_firm_termo_403_leaves_every_client_authority_and_opens_the_firm_issue
         other, support.WINDOW, actor=None, nonce="consulta-b"
     )
     assert len(world.sent()) == 1
+    # The refusal names the block: the firm issue's 020, with its own code.
     assert (refused.state, refused.failure_code) == (
         "falha",
-        "autorizacao_procurador_ausente",
+        f"bloqueio-{TERMO_020}",
     )
-    assert "procuração do cliente não foi alterada" in query_detail(refused)
+    detail = query_detail(refused)
+    assert "procuração do cliente não foi alterada" in detail
+    assert TERMO_020 in detail
     assert effects(world, other)[1:3] == ("ativa", [])
     # Neither client gets client work for the firm's denial or the firm's block.
     with tenant_context(termo.tenant.pk):
@@ -522,4 +525,124 @@ def test_a_firm_refusal_recorded_at_dispatch_settles_by_that_cause_on_redelivery
     )
     with tenant_context(tenant):
         assert not IntegrationIssue.objects.exists()
+    assert world.sent() == []
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        lambda: import_module("apps.integrations.budget_pricing").BudgetDeniedError(
+            "tarifa_ausente"
+        ),
+        lambda: AdmissionDeniedError("bloqueada_autoridade", reason="tarifa_ausente"),
+    ],
+    ids=["budget", "admission"],
+)
+def test_every_refusal_keeps_its_reason_through_the_base(refusal: Any) -> None:  # noqa: ANN401
+    assert refusal().reason == "tarifa_ausente"
+    # And a refusal without one keeps its state code, never a blank.
+    assert AdmissionDeniedError("pausado").reason == "pausado"
+
+
+@DB
+def test_a_missing_tariff_refuses_with_its_own_code(
+    world: World,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    settings.USAGE_UNIT_PRICES_BRL = {"serpro_emissao": "0.32"}
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", "tarifa_ausente")
+    assert world.sent() == []
+
+
+@DB
+def test_a_platform_403_names_the_platform_on_the_firms_next_refusal(
+    world: World,
+) -> None:
+    # Given an accepted termo in force, and SERPRO refusing the platform's
+    # contratante certificate (016) on this firm's consultation.
+    platform = "AcessoNegado-ICGERENCIADOR-016"
+    world.script(denied(code=platform))
+    world.consult()
+    # When the firm's next consultation is refused before any byte.
+    refused = world.consult(nonce="consulta-2")
+    assert len(world.sent()) == 1
+    # Then it names the platform's 016, never a refused or missing termo.
+    assert (refused.state, refused.failure_code) == ("falha", f"bloqueio-{platform}")
+    detail = query_detail(refused)
+    assert "credenciais da plataforma" in detail
+    assert platform in detail
+    assert "termo" not in detail
+
+
+def _revoke(world: World) -> None:
+    authority = import_module("apps.integrations.authority")
+    with tenant_context(world.termo.tenant.pk):
+        head = head_record(world.termo.client.pk, "pagtoweb")
+        assert head is not None
+        authority.revoke_authority(
+            world.termo.actor,
+            world.termo.client.pk,
+            service="pagtoweb",
+            expected_version=head.version,
+        )
+
+
+@DB
+def test_a_saved_client_refusal_settles_first_even_once_the_termo_expired(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the client's 00004 is revoked after claim, so dispatch saves the
+    # client's refusal, and the worker dies before settling it.
+    real = import_module("apps.integrations.call_protocol").claim
+
+    def claim_then_revoke(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real(*args, **kwargs)
+        _revoke(world)
+        return ticket
+
+    def die(*_args: object, **_kwargs: object) -> None:
+        raise SystemExit
+
+    with monkeypatch.context() as patch:
+        patch.setattr(payments, "claim", claim_then_revoke)
+        patch.setattr(payments, "_refused", die)
+        with pytest.raises((SystemExit, AdmissionDeniedError)) as stopped:
+            world.consult()
+    assert stopped.type is SystemExit
+    # When it is redelivered after the firm's termo has expired.
+    monkeypatch.setattr(payments, "termo_parties", lambda *_args: None)
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get()
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then the saved refusal decides it, and its receipt and the client's work
+    # are written from that record.
+    assert (settled.state, settled.failure_code) == (
+        "sem_procuracao",
+        "autorizacao_ausente",
+    )
+    assert effects(world)[:3] == (["sem_procuracao"], "revogada", ["pagtoweb"])
+    assert world.sent() == []
+
+
+@DB
+def test_a_client_refusal_at_claim_opens_the_clients_absence_issue(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given verified 00004 with no authority issue, revoked after reservation.
+    real = import_module("apps.integrations.call_protocol").claim
+
+    def revoke_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        _revoke(world)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(payments, "claim", revoke_then_claim)
+    query = world.consult()
+    # Then nothing is sent, and the client's absence is owned as its own work.
+    assert (query.state, query.failure_code) == (
+        "sem_procuracao",
+        "autorizacao_ausente",
+    )
+    assert effects(world)[2] == ["pagtoweb"]
     assert world.sent() == []
