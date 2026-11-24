@@ -20,6 +20,7 @@ import pytest
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.integrations.authority import head_record
+from apps.integrations.call_contracts import AdmissionDeniedError
 from apps.integrations.models import (
     ClientProviderLink,
     IntegrationIssue,
@@ -499,8 +500,10 @@ def test_a_firm_refusal_recorded_at_dispatch_settles_by_that_cause_on_redelivery
     with monkeypatch.context() as patch:
         patch.setattr(payments, "claim", claim_then_block)
         patch.setattr(payments, "_refused", die)
-        with pytest.raises(SystemExit):
+        # The worker dies at settlement; a refusal escaping before it is the defect.
+        with pytest.raises((SystemExit, AdmissionDeniedError)) as stopped:
             world.consult()
+    assert stopped.type is SystemExit
     # Then the refusal's cause was recorded with it, in its own transaction.
     [call] = world.calls()
     assert (call.state, call.provider_code) == (
