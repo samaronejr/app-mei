@@ -17,11 +17,10 @@ from apps.authz.support import in_support_mode
 from apps.core.flags import tenant_has
 from apps.cycles.errors import VersionConflict
 from apps.cycles.fiscal_material import material_digest
-from apps.cycles.fiscal_records import FiscalDocumentReview
+from apps.cycles.fiscal_records import DECISIONS, FiscalDocumentReview
 from apps.cycles.records import ServiceCycle
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.services.fiscal_review import (
-    DECISIONS,
     NOTE_MAX_LENGTH,
     record_fiscal_document_review,
 )
@@ -63,7 +62,9 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
             review_material=material_digest()
         )
     )
-    fiscal = get_object_or_404(fiscals, pk=pk)
+    fiscal: WithAnnotations[FiscalDocument, ReviewPreview] = get_object_or_404(
+        fiscals, pk=pk
+    )
     load_visible_client(request.user, fiscal.client_id)
     error, status = "", HTTPStatus.OK
     if request.method == "POST":
