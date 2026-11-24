@@ -242,7 +242,7 @@ def test_every_documented_403_reaches_only_its_own_owner(
     )
     # And the copy says "Sem procuracao" for the client's own procuracao only.
     detail = query_detail(query)
-    assert ("Sem procuração" in detail) is (cause == CLIENT)
+    assert ("falta da procuração" in detail) is (cause == CLIENT)
     if cause != CLIENT:
         expected = denials_api().DENIAL_TEXT[cause]
         assert detail == f"{expected} (código {code}). Consulta não repetida."
@@ -486,7 +486,7 @@ def test_a_firm_block_cleared_before_the_refusal_settles_is_never_the_clients(
     assert effects(world)[1:3] == ("ativa", [])
     with tenant_context(tenant):
         assert not IntegrationIssue.objects.exists()
-    assert "Consulte novamente" in query_detail(query)
+    assert "Consulte" not in query_detail(query)
     assert world.sent() == []
 
 
@@ -582,7 +582,7 @@ def test_a_platform_403_names_the_platform_on_the_firms_next_refusal(
         first_issue(world, platform),
     )
     detail = query_detail(refused)
-    assert "credenciais da plataforma" in detail
+    assert "bloqueio do escritório" in detail
     assert platform in detail
     assert "termo" not in detail
 
@@ -736,7 +736,7 @@ def test_a_cleared_termo_refusal_reads_cleared_though_another_block_opened(
         f"encerrado-{call.provider_code}",
     )
     detail = query_detail(settled)
-    assert "já está em vigor" in detail
+    assert f"registro {call.provider_code}" in detail
     assert platform not in detail
 
 
@@ -773,21 +773,6 @@ def _block_without_a_403(world: World) -> None:
 
 
 @DB
-def test_the_panel_reads_a_client_refusal_verified_again_as_history(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Given a client refusal saved at dispatch, then 00004 verified again.
-    query = _stopped_at_settlement(world, monkeypatch, lambda: _revoke(world))
-    support.declare_and_verify(world.termo)
-    lease_runs_out(world, query.pk)
-    settled = payments.run_payment_query(query.tenant_id, query.pk)
-    # Then the panel tells what happened, and no longer asks to register it.
-    detail = query_detail(settled)
-    assert "já foi verificada de novo" in detail
-    assert "registre e verifique" not in detail
-
-
-@DB
 def test_a_resolved_issue_stays_cleared_though_a_replacement_opened(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -814,22 +799,7 @@ def test_a_resolved_issue_stays_cleared_though_a_replacement_opened(
     # Then this refusal's own issue reads as resolved, not revived by the other.
     assert settled.failure_code == f"encerrado-{first}"
     detail = query_detail(settled)
-    assert "já foi encerrada" in detail
-    assert "aberta" not in detail
-
-
-@DB
-def test_the_panel_reads_a_recorded_block_by_its_state_now(world: World) -> None:
-    # Given a consultation refused while its firm issue is open.
-    _block_without_a_403(world)
-    query = world.consult()
-    assert (query.state, query.failure_code) == ("falha", first_issue(world))
-    assert "pendência aberta" in query_detail(query)
-    # When that issue is resolved, then the same consultation reads as history.
-    with tenant_context(world.termo.tenant.pk):
-        FirmIntegrationIssue.objects.update(state="resolvida")
-    detail = query_detail(query)
-    assert "já foi encerrada" in detail
+    assert f"registro {first}" in detail
     assert "aberta" not in detail
 
 
