@@ -30,6 +30,7 @@ from apps.integrations.models import (
     ProviderConnection,
 )
 from apps.integrations.serpro.denials import (
+    FIRM_DENIAL_CODES,
     PLATFORM_CAUSES,
     DenialCause,
     denial_cause,
@@ -45,6 +46,9 @@ FIRM_BLOCK_CLEARED: Final = "bloqueio_da_firma_encerrado"
 # Admission refusals: the client's own absence, or one with no recorded cause.
 CLIENT_ABSENT: Final = "autorizacao_ausente"
 ADMISSION_REFUSED: Final = "admissao_recusada"
+# Firm blocks, named when admission refuses: the termo, or the 403 behind the issue.
+TERMO_NOT_IN_FORCE: Final = "termo_nao_vigente"
+BLOCK_PREFIX: Final = "bloqueio-"
 UNCERTAIN: Final = "chamada_provedor_incerta"
 IN_FLIGHT: Final = frozenset(
     {
@@ -94,25 +98,57 @@ def own_denial(call: ProviderCall) -> DenialCause:
     return cause
 
 
-def firm_blocked(connection: ProviderConnection) -> bool:
-    """Whether the firm's open issue or its termo not in force blocks its calls."""
-    return FirmIntegrationIssue.objects.filter(
-        connection_id=connection.pk, reason=PROC_MISSING, state__in=ACTIVE_STATES
-    ).exists() or not termo_in_force(connection.pk, timezone.localdate())
+def _cited(refs: list[str]) -> list[UUID]:
+    cited = []
+    for ref in refs:
+        try:
+            cited.append(UUID(ref))
+        except ValueError:
+            continue
+    return cited
+
+
+def firm_block(connection: ProviderConnection) -> str:
+    """Name the firm's block as a bounded code, or '' when there is none.
+
+    The open firm issue names the 403 that opened it (`bloqueio-<code>`), or the
+    issue itself when no call it cites names one; else the termo not in force.
+    """
+    issue = (
+        FirmIntegrationIssue.objects.filter(
+            connection_id=connection.pk, reason=PROC_MISSING, state__in=ACTIVE_STATES
+        )
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if issue is not None:
+        code = (
+            ProviderCall.objects.filter(
+                pk__in=_cited(issue.evidence_refs),
+                provider_code__in=FIRM_DENIAL_CODES,
+            )
+            .order_by("pk")
+            .values_list("provider_code", flat=True)
+            .first()
+        )
+        return f"{BLOCK_PREFIX}{code}" if code else PROC_MISSING
+    if not termo_in_force(connection.pk, timezone.localdate()):
+        return TERMO_NOT_IN_FORCE
+    return ""
 
 
 def refusal_cause(reason: str, connection: ProviderConnection) -> str:
     """Classify an admission refusal by the cause recorded when it happened.
 
-    '' only for the client's own absent authority; a firm refusal stays the
-    firm's even if its block has cleared since (then retryable), and a refusal
-    with no recorded cause is never the client's. A later change to the firm's
-    block or the client's authority never re-blames it (AXRM-045).
+    '' only for the client's own absent authority; a firm refusal keeps the block
+    it named (`bloqueio_da_firma_encerrado` once that block has cleared), and a
+    refusal with no firm or client cause is never the client's. A later change to
+    the block or to the client's authority never re-blames it (AXRM-045).
     """
     if reason == CLIENT_ABSENT:
         return ""
-    if reason == PROC_MISSING:
-        return PROC_MISSING if firm_blocked(connection) else FIRM_BLOCK_CLEARED
+    if reason in {PROC_MISSING, TERMO_NOT_IN_FORCE} or reason.startswith(BLOCK_PREFIX):
+        return reason if firm_block(connection) else FIRM_BLOCK_CLEARED
     return ADMISSION_REFUSED
 
 

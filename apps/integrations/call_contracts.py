@@ -37,10 +37,16 @@ class AdmissionDeniedError(Exception):
     on the call in the refusal's own transaction, so settlement reads that record.
     """
 
+    reason: str = ""
+
     def __init__(self, *args: object, reason: str = "") -> None:
-        """Carry the bounded refusal code next to the refused state."""
+        """Carry the bounded refusal code next to the refused state.
+
+        A subclass that set its own reason first keeps it, and a refusal without
+        one keeps its state code: no refusal is ever recorded blank (AXRM-045).
+        """
         super().__init__(*args)
-        self.reason = reason
+        self.reason = reason or self.reason or (str(args[0]) if args else "")
 
 
 @dataclass(frozen=True, slots=True)

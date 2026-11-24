@@ -56,6 +56,10 @@ PLATFORM_CAUSES: Final = frozenset(
 )
 # Causes the firm or the platform owns: never a client's work (AXRM-045).
 FIRM_CAUSES: Final = frozenset({DenialCause.TERMO_ESCRITORIO, *PLATFORM_CAUSES})
+# The 403 codes whose cause is the firm's or the platform's.
+FIRM_DENIAL_CODES: Final = frozenset(
+    code for code, cause in CAUSES.items() if cause in FIRM_CAUSES
+)
 DENIAL_TEXT: Final[dict[str, str]] = {
     DenialCause.PROCURACAO_CLIENTE: (
         "Sem procuração eletrônica do cliente para este serviço na Receita"

@@ -37,7 +37,13 @@ from apps.integrations.serpro.payments import (
     FLAG,
     receipt_request_key,
 )
-from apps.integrations.serpro.work import ADMISSION_REFUSED, FIRM_BLOCK_CLEARED
+from apps.integrations.serpro.work import (
+    ADMISSION_REFUSED,
+    BLOCK_PREFIX,
+    FIRM_BLOCK_CLEARED,
+    PROC_MISSING,
+    TERMO_NOT_IN_FORCE,
+)
 from apps.obligations.models import (
     Document,
     FederalEnvironment,
@@ -61,6 +67,14 @@ FIRM_COPY: Final = {
     ADMISSION_REFUSED: (
         "A admissão recusou a consulta antes do envio; a procuração do cliente não "
         "foi alterada. Consulte novamente."
+    ),
+    TERMO_NOT_IN_FORCE: (
+        "O termo de autorização do escritório não está em vigor; a procuração do "
+        "cliente não foi alterada. Consulta não realizada."
+    ),
+    PROC_MISSING: (
+        "Há uma pendência aberta na autorização do procurador do escritório; a "
+        "procuração do cliente não foi alterada. Consulta não realizada."
     ),
     FIRM_BLOCK_CLEARED: (
         "Um bloqueio do escritório recusou a consulta e já foi encerrado; a "
@@ -112,6 +126,19 @@ def _plural(count: int, singular: str, plural: str) -> str:
     return f"{count} {singular if count == 1 else plural}"
 
 
+def firm_refusal(code: str) -> bool:
+    """Whether a failure code names a firm-side admission refusal."""
+    return code in FIRM_REFUSALS or code.startswith(BLOCK_PREFIX)
+
+
+def firm_refusal_text(code: str) -> str:
+    """Word a firm-side refusal by the block it recorded, with its 403 code."""
+    if code.startswith(BLOCK_PREFIX):
+        denial = code.removeprefix(BLOCK_PREFIX)
+        return f"{denial_text(denial)} Consulta não realizada."
+    return FIRM_COPY[code]
+
+
 def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
     """Explain one consultation without inferring anything about non-payment."""
     pages = _plural(query.pages_fetched, "página obtida", "páginas obtidas")
@@ -141,8 +168,8 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
                 "Limite mensal de consultas atingido. Nenhuma consulta foi feita "
                 "depois disso."
             )
-        case PaymentQueryState.FALHA if query.failure_code in FIRM_REFUSALS:
-            return FIRM_COPY.get(query.failure_code, FIRM_COPY["termo_ausente"])
+        case PaymentQueryState.FALHA if firm_refusal(query.failure_code):
+            return firm_refusal_text(query.failure_code)
         case PaymentQueryState.FALHA | PaymentQueryState.INCERTO if is_denial_code(
             query.failure_code
         ):

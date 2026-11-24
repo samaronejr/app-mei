@@ -18,7 +18,7 @@ from apps.integrations.call_models import CallState, FirmProviderCall, ProviderC
 from apps.integrations.firm_calls import FirmOperation, register_firm_operation
 from apps.integrations.models import FirmAuthorizationStatus
 from apps.integrations.serpro.firm_budget import FirmBudgetPolicy
-from apps.integrations.serpro.work import CLIENT_ABSENT, PROC_MISSING, firm_blocked
+from apps.integrations.serpro.work import CLIENT_ABSENT, firm_block
 from apps.obligations.models import AcquisitionOrigin, Document
 
 if TYPE_CHECKING:
@@ -91,8 +91,9 @@ def client_authority(call: ProviderCall) -> bool:
     A refusal names its cause (AXRM-045): the firm's block, or the client's own
     absent authority; dispatch records it with the refusal.
     """
-    if firm_blocked(call.link.connection):
-        raise AdmissionDeniedError(CallState.AUTHORITY, reason=PROC_MISSING)
+    block = firm_block(call.link.connection)
+    if block:
+        raise AdmissionDeniedError(CallState.AUTHORITY, reason=block)
     if not authority_for(call.client, call.operation, link=call.link).usable:
         raise AdmissionDeniedError(CallState.AUTHORITY, reason=CLIENT_ABSENT)
     authorized = True

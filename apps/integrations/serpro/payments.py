@@ -113,8 +113,10 @@ from apps.integrations.serpro.pagtoweb import (
 from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.serpro.work import (
     ADMISSION_REFUSED,
+    BLOCK_PREFIX,
     CLIENT_ABSENT,
     FIRM_BLOCK_CLEARED,
+    TERMO_NOT_IN_FORCE,
     own_denial,
     refusal_cause,
 )
@@ -414,11 +416,9 @@ def _finish(
             query.client,
             Problem(FAILED_REASON, query.pk, review_on=today, service=PAGE_OPERATION),
         )
-    elif (
-        state == PaymentQueryState.SEM_PROCURACAO
-        and receipt is not None
-        and not receipt.provider_ref
-    ):
+    # The client's absence is opened by its own identity (`raise_problem` keeps
+    # one per subject), whether or not a call row exists for this refusal.
+    elif state == PaymentQueryState.SEM_PROCURACAO:
         raise_problem(
             query.client,
             Problem(
@@ -635,6 +635,7 @@ FIRM_REFUSALS: Final = frozenset(
     {
         "termo_ausente",
         "autorizacao_procurador_ausente",
+        TERMO_NOT_IN_FORCE,
         FIRM_BLOCK_CLEARED,
         ADMISSION_REFUSED,
     }
@@ -660,8 +661,10 @@ def _authority_refusal(
 
 def firm_owned(code: str) -> bool:
     """Whether a stored failure code names the firm's termo or the platform."""
-    return code in FIRM_REFUSALS or (
-        is_denial_code(code) and denial_cause(code) in FIRM_CAUSES
+    return (
+        code in FIRM_REFUSALS
+        or code.startswith(BLOCK_PREFIX)
+        or (is_denial_code(code) and denial_cause(code) in FIRM_CAUSES)
     )
 
 
@@ -903,6 +906,25 @@ def run_payment_query(tenant_id: UUID, query_id: UUID) -> PaymentQuery:
         return _run(tenant_id, query_id, runner)
 
 
+def _ends_before_pages(query: PaymentQuery) -> PaymentQuery | None:
+    """End a consultation that must not reach its next page, else None.
+
+    A refusal saved at dispatch is authoritative: it is settled from that record
+    first, before any re-check of the firm's or the client's state (AXRM-045).
+    """
+    saved = ProviderCall.objects.filter(
+        client_id=query.client_id,
+        request_key=_page_key(query, query.pages_fetched),
+        state=CallState.AUTHORITY,
+    ).first()
+    if saved is not None:
+        receipt = _receipt(query, saved.request_digest, str(saved.pk))
+        return _authority_refusal(query, saved.provider_code, receipt)
+    if not _initiator_allowed(query):
+        return _finish(query, PaymentQueryState.FALHA, "solicitante_sem_permissao")
+    return None
+
+
 def _run(tenant_id: UUID, query_id: UUID, runner: UUID) -> PaymentQuery:
     adopted = _adopt(tenant_id, query_id, runner)
     if adopted is not None:
@@ -911,8 +933,9 @@ def _run(tenant_id: UUID, query_id: UUID, runner: UUID) -> PaymentQuery:
         query = _unowned(query_id, runner)
         if query is None:
             return _stored(query_id)
-        if not _initiator_allowed(query):
-            return _finish(query, PaymentQueryState.FALHA, "solicitante_sem_permissao")
+        ended = _ends_before_pages(query)
+        if ended is not None:
+            return ended
         parties = termo_parties(query.link.connection_id, query.client.cnpj)
         if parties is None:
             # The firm's termo, never the client's procuracao (AXRM-045).
