@@ -19,7 +19,6 @@ from django.conf import settings
 
 from apps.authz.services import can
 from apps.core.flags import tenant_has
-from apps.core.tenancy import tenant_context
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.serpro.denials import (
     DenialCause,
@@ -36,17 +35,12 @@ from apps.integrations.serpro.payments import (
     CHECKS,
     FIRM_REFUSALS,
     FLAG,
-    client_authority_absent,
     receipt_request_key,
 )
 from apps.integrations.serpro.work import (
     ADMISSION_REFUSED,
     BLOCK_PREFIX,
     CLEARED_PREFIX,
-    ISSUE_PREFIX,
-    TERMO_NOT_IN_FORCE,
-    TERMO_PREFIX,
-    block_holds,
     firm_reason,
     frozen_code,
 )
@@ -121,80 +115,24 @@ def _plural(count: int, singular: str, plural: str) -> str:
     return f"{count} {singular if count == 1 else plural}"
 
 
-UNCHANGED: Final = "a procuração do cliente não foi alterada"
-
-
-def _block_text(cause: str, *, holds: bool) -> str:
-    """Word one recorded firm block: open now, or historical once it cleared.
-
-    `holds` is `work.block_holds` for that same blocker, read now (AXRM-045).
-    """
-    termo = cause.startswith(TERMO_PREFIX) or cause == TERMO_NOT_IN_FORCE
-    if termo and holds:
-        return (
-            "O termo de autorização do escritório não está em vigor; "
-            f"{UNCHANGED}. Consulta não realizada."
-        )
-    if termo:
-        return (
-            "O termo de autorização do escritório não estava em vigor quando a "
-            f"consulta foi recusada; ele já está em vigor e {UNCHANGED}. Consulte "
-            "novamente."
-        )
-    if cause.startswith(ISSUE_PREFIX):
-        code = frozen_code(cause)
-    else:
-        code = (
-            cause.removeprefix(BLOCK_PREFIX) if cause.startswith(BLOCK_PREFIX) else ""
-        )
-    if holds and code:
-        return f"{denial_text(code)} Consulta não realizada."
-    if holds:
-        return (
-            "Há uma pendência aberta na autorização do procurador do escritório; "
-            f"{UNCHANGED}. Consulta não realizada."
-        )
-    if code:
-        label = DenialCause(denial_cause(code)).label
-        return (
-            f"Um bloqueio do escritório ({label}, código {code}) recusou a "
-            f"consulta e já foi encerrado; {UNCHANGED}. Consulte novamente."
-        )
-    return (
-        "Uma pendência na autorização do procurador do escritório recusou a "
-        f"consulta e já foi encerrada; {UNCHANGED}. Consulte novamente."
-    )
-
-
 def firm_refusal(code: str) -> bool:
     """Whether a failure code names a firm-side admission refusal."""
     return code in FIRM_REFUSALS or firm_reason(code) or code.startswith(CLEARED_PREFIX)
 
 
 def firm_refusal_text(query: PaymentQuery) -> str:
-    """Word a firm-side refusal from its recorded blocker's state right now."""
+    """State a firm-side refusal as history, with the code it recorded then."""
     code = query.failure_code
     if code in FIRM_COPY:
         return FIRM_COPY[code]
     cause = code.removeprefix(CLEARED_PREFIX)
-    # Read in the consultation's own tenant: its firm issue and calls are scoped.
-    with tenant_context(query.tenant_id):
-        holds = cause == code and block_holds(cause, query.link.connection)
-        return _block_text(cause, holds=holds)
-
-
-def _client_refusal_text(query: PaymentQuery) -> str:
-    """Word the client's own refusal: an instruction while it is still absent."""
-    with tenant_context(query.tenant_id):
-        absent = client_authority_absent(query)
-    if absent:
-        return (
-            "Sem procuração eletrônica (código 00004) para este cliente. "
-            "Consulta não realizada; registre e verifique a procuração."
-        )
+    denial = frozen_code(cause) or (
+        cause.removeprefix(BLOCK_PREFIX) if cause.startswith(BLOCK_PREFIX) else ""
+    )
+    kind = f"código {denial}" if denial else f"registro {cause}"
     return (
-        "A consulta foi recusada porque faltava a procuração eletrônica (código "
-        "00004); ela já foi verificada de novo. Consulte novamente."
+        f"A consulta foi recusada antes do envio por um bloqueio do escritório "
+        f"({kind}); a procuração do cliente não foi alterada."
     )
 
 
@@ -218,7 +156,10 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
                 "Isso não indica falta de pagamento."
             )
         case PaymentQueryState.SEM_PROCURACAO:
-            return _client_refusal_text(query)
+            return (
+                "A consulta foi recusada por falta da procuração eletrônica do "
+                "cliente (código 00004) quando foi pedida."
+            )
         case PaymentQueryState.COTA_ESGOTADA:
             return (
                 "Limite mensal de consultas atingido. Nenhuma consulta foi feita "
