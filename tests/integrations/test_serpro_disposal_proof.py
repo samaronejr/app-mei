@@ -1323,13 +1323,20 @@ def test_two_spellings_of_one_file_are_one_key(
     assert _claim(world, document.pk) is None
 
 
-def test_one_lock_per_object_whatever_its_spelling(world: World) -> None:
+@pytest.mark.parametrize("spelling", ["dotted", "absolute", "reentry"])
+def test_one_lock_per_object_whatever_its_spelling(world: World, spelling: str) -> None:
+    root = Path(default_storage.path("")).resolve()
+    other_name = {
+        "dotted": "originals//./r6.pdf",
+        "absolute": str(root / "originals" / "r6.pdf"),
+        "reentry": f"../{root.name}/originals/r6.pdf",
+    }[spelling]
     other = connection.get_new_connection(connection.get_connection_params())
     try:
         other.autocommit = True
         lock_id = retention._key_lock_id("originals/r6.pdf")
         other.execute("SELECT pg_advisory_lock(%s)", [lock_id])
-        with retention.storage_keys_locked(["originals//./r6.pdf"], wait=False) as got:
+        with retention.storage_keys_locked([other_name], wait=False) as got:
             taken = got
         other.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
     finally:
@@ -1577,7 +1584,15 @@ def test_a_reconciliation_before_the_locks_never_deletes_the_old_key(
 
 
 @pytest.mark.parametrize(
-    "layout", ["symlink-here", "symlink-elsewhere", "hard-link", "outside-root"]
+    "layout",
+    [
+        "symlink-here",
+        "symlink-elsewhere",
+        "hard-link",
+        "outside-root",
+        "sealed-directory",
+        "not-a-directory",
+    ],
 )
 def test_a_file_with_names_no_lookup_sees_is_never_deleted(
     world: World, layout: str
@@ -1602,11 +1617,22 @@ def test_a_file_with_names_no_lookup_sees_is_never_deleted(
         (root / here).hardlink_to(root / held)
         _foreign_original(world, held)
         expected = "arquivo_com_vinculos"
-    else:
+    elif layout == "outside-root":
         outside = root.parent / f"outside-{name}"
         outside.write_bytes(b"held")
         here, held = f"../{outside.name}", str(outside)
         expected = "chave_fora_do_armazenamento"
+    elif layout == "sealed-directory":
+        # Searchable but not listable: the walk cannot see what is inside.
+        (root / "sealed").mkdir()
+        (root / "sealed" / "inner").write_bytes(b"unseen")
+        (root / "sealed").chmod(0o300)
+        here = intake.quarantine_key
+        _foreign_original(world, held)
+        expected = "armazenamento_nao_inspecionavel"
+    else:
+        here = f"{held}/child"  # a restored descriptor under a regular file
+        expected = "armazenamento_nao_inspecionavel"
     with tenant_context(world.tenant_id):
         DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=here)
     try:
@@ -1614,8 +1640,11 @@ def test_a_file_with_names_no_lookup_sees_is_never_deleted(
             world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
         )
         crashed = False
-    except SuspiciousFileOperation:
-        crashed = True  # storage's own refusal stops the sweep: not a recorded one
+    except (SuspiciousFileOperation, OSError):
+        crashed = True  # an uncaught refusal stops the sweep: not a recorded one
+    finally:
+        if layout == "sealed-directory":
+            (root / "sealed").chmod(0o700)
     assert crashed is False
     assert (Path(held) if layout == "outside-root" else root / held).exists()
     claim = _claim(world, document.pk)
@@ -1623,7 +1652,7 @@ def test_a_file_with_names_no_lookup_sees_is_never_deleted(
     assert (claim.completed_at, claim.error_code) == (None, expected)
 
 
-@pytest.mark.parametrize("spelling", ["doubled", "symlink"])
+@pytest.mark.parametrize("spelling", ["doubled", "symlink", "absolute"])
 def test_cleanup_never_removes_a_copy_that_is_the_final(
     world: World, spelling: str
 ) -> None:
@@ -1632,6 +1661,8 @@ def test_cleanup_never_removes_a_copy_that_is_the_final(
     final = document.storage_key
     if spelling == "doubled":
         copy = final.replace("/", "//", 1)
+    elif spelling == "absolute":
+        copy = str(root / final)  # the same file, spelled from the root
     else:
         (root / "legacy").symlink_to(root / "originals", target_is_directory=True)
         copy = final.replace("originals/", "legacy/", 1)
@@ -1688,3 +1719,149 @@ def test_an_infected_replacement_is_never_the_originals_verdict(world: World) ->
     with tenant_context(world.tenant_id):
         assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
     assert default_storage.exists(intake.quarantine_key)  # suspect copy kept
+
+
+def _foreign_copy(world: World, key: str) -> None:
+    """Another tenant's intake whose copy names `key` (an absolute key fits here)."""
+    foreign = make_firm(f"axrm051-r8-{uuid4().hex[:8]}", client_count=1)
+    with tenant_context(foreign.tenant.pk):
+        document = Document.objects.create(
+            tenant=foreign.tenant,
+            client=foreign.clients[0],
+            storage_key=f"originals/{uuid4().hex}.pdf",
+            sha256=hashlib.sha256(b"held elsewhere").hexdigest(),
+            original_filename="alheio.pdf",
+            content_type="application/pdf",
+            byte_size=14,
+            uploaded_by=foreign.owner,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        DocumentIntake.objects.create(
+            tenant=foreign.tenant,
+            client=foreign.clients[0],
+            document=document,
+            state=IntakeState.VERIFIED,
+            verdict=ScanVerdict.CLEAN,
+            quarantine_key=key,
+            scanned_at=timezone.now(),
+            created_at=timezone.now(),
+        )
+
+
+@pytest.mark.parametrize(
+    "spelled", ["absolute-here", "reentry-here", "absolute-elsewhere"]
+)
+def test_an_absolute_or_reentering_spelling_is_the_same_key(
+    world: World, spelled: str
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    root = Path(default_storage.path("")).resolve()
+    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    absolute, reentry = str(root / key), f"../{root.name}/{key}"
+    if spelled == "absolute-elsewhere":
+        _foreign_copy(world, absolute)  # the held row is the one spelled oddly
+        here = key
+    else:
+        _foreign_original(world, key)
+        here = absolute if spelled == "absolute-here" else reentry
+    with tenant_context(world.tenant_id):
+        DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=here)
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert (root / key).exists()
+    claim = _claim(world, document.pk)
+    assert claim is None or claim.completed_at is None
+
+
+def _scanned_in_place(world: World, stored: bytes, original: bytes) -> DocumentIntake:
+    """A pending intake read from its final key (no quarantine copy)."""
+    termo = world.termo
+    with tenant_context(world.tenant_id):
+        document = Document.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            storage_key=default_storage.save(
+                f"originals/{uuid4().hex}.pdf", ContentFile(stored)
+            ),
+            sha256=hashlib.sha256(original).hexdigest(),
+            original_filename="direto.pdf",
+            content_type="application/pdf",
+            byte_size=len(original),
+            uploaded_by=termo.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        return DocumentIntake.objects.create(
+            tenant=termo.tenant,
+            client=termo.client,
+            document=document,
+            state=IntakeState.RECEIVED,
+            created_at=timezone.now(),
+        )
+
+
+def test_a_scan_that_stops_where_the_original_ends_is_not_certified(
+    world: World,
+) -> None:
+    original = b"%PDF-1.7\n% the expected original\n%%EOF\n"
+    intake = _scanned_in_place(world, original + b"% one more line\n", original)
+
+    class StopsAtTheOriginal:
+        def scan(self, stream: scanning.ByteStream) -> scanning.Verdict:
+            stream.read(len(original))  # exactly the expected bytes, no further
+            return FakeScanner().scan(BytesIO(b""))
+
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=StopsAtTheOriginal(), now=timezone.now()
+    )
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
+
+
+def test_a_file_scanned_in_place_is_checked_again_under_its_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = b"%PDF-1.7\n% scanned in place\n%%EOF\n"
+    intake = _scanned_in_place(world, original, original)
+    with tenant_context(world.tenant_id):
+        key = DocumentIntake.objects.get(pk=intake.pk).document.storage_key
+    run = scanning.run_scan
+
+    def replaced_after_the_read(*args: object, **kwargs: object) -> object:
+        verdict = run(*args, **kwargs)  # type: ignore[arg-type]
+        # A restore replaces the serving file after the scan read it.
+        default_storage.delete(key)
+        default_storage.save(key, ContentFile(b"%PDF-1.7\n% restored other\n"))
+        return verdict
+
+    monkeypatch.setattr(scanning, "run_scan", replaced_after_the_read)
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
+
+
+def test_a_verdict_on_a_read_that_stops_early_is_never_the_originals(
+    world: World,
+) -> None:
+    original = b"%PDF-1.7\n% the expected original\n%%EOF\n"
+    intake = _scanned_in_place(world, original + b"% unread suffix\n", original)
+
+    class FlagsWhatItRead:
+        def scan(self, stream: scanning.ByteStream) -> scanning.Verdict:
+            stream.read(len(original))  # stops where the original would end
+            return FakeScanner().scan(BytesIO(scanning.EICAR))  # an infected verdict
+
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FlagsWhatItRead(), now=timezone.now()
+    )
+    # No promotion re-reads the file on this path: only the EOF check keeps the
+    # verdict of an incomplete read off the original.
+    assert outcome != scanning.ScanOutcome.INFECTED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES

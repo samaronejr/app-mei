@@ -88,27 +88,34 @@ def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) ->
     root, or a hard link, gives one file names no lookup or lock sees. So the root
     must hold no symlink, each key must resolve, inside it, to itself, and each
     existing file must have one link (AXRM-051); then two keys name one object
-    exactly when their `physical_key` is the same. Empty when proved, and on any
+    exactly when their `canonical_key` is the same. Empty when proved, and on any
     backend that is not a local filesystem.
     """
     chosen = default_storage if storage is None else storage
     if not isinstance(chosen, FileSystemStorage):
         return ""
     root = Path(chosen.location).resolve()
-    for parent, directories, files in os.walk(root):
+    unreadable: list[OSError] = []
+    for parent, directories, files in os.walk(root, onerror=unreadable.append):
         if any((Path(parent) / name).is_symlink() for name in (*directories, *files)):
             return "armazenamento_com_atalho"
-    for key in keys:
-        path = Path(os.path.normpath(root / key))
+    if unreadable:
+        return "armazenamento_nao_inspecionavel"  # an unlisted directory proves nothing
+    return next((refusal for key in keys if (refusal := _key_refusal(root, key))), "")
+
+
+def _key_refusal(root: Path, key: str) -> str:
+    """Why one key is not proved to name a file of its own inside `root`, or ``."""
+    path = Path(os.path.normpath(root / key))
+    try:
         if not path.is_relative_to(root) or path.resolve() != path:
             return "chave_fora_do_armazenamento"
-        try:
-            links = path.lstat().st_nlink
-        except FileNotFoundError:
-            continue
-        if links > 1:
-            return "arquivo_com_vinculos"
-    return ""
+        links = path.lstat().st_nlink
+    except FileNotFoundError:
+        return ""
+    except (OSError, RuntimeError):
+        return "armazenamento_nao_inspecionavel"  # never an uncaught stop
+    return "arquivo_com_vinculos" if links > 1 else ""
 
 
 def federal_content(document: Document) -> bool:
@@ -140,9 +147,24 @@ def client_federal_involvement(client_id: UUID) -> bool:
     )
 
 
-def physical_key(key: str) -> str:
-    """Return the one name storage resolves a key to: `a//b` and `a/./b` are `a/b`."""
-    return posixpath.normpath(key.replace("\\", "/")).lstrip("/") if key else ""
+def canonical_key(key: str, storage: Storage | None = None) -> str:
+    """Return the one name of the object a key resolves to, for every comparison.
+
+    On local storage the key is joined with the root and normalised: an absolute
+    key inside the root, `a//b`, `a/./b` and `x/../a/b` all become the same
+    root-relative name, and a key that leaves the root keeps its absolute path,
+    which no key inside it can equal. Elsewhere the name is normalised lexically.
+    Locks, alias and ownership lookups, cleanup's same-object test and the layout
+    judge all compare this form (AXRM-051).
+    """
+    if not key:
+        return ""
+    chosen = default_storage if storage is None else storage
+    if not isinstance(chosen, FileSystemStorage):
+        return posixpath.normpath(key.replace("\\", "/")).lstrip("/")
+    root = Path(chosen.location).resolve()
+    path = Path(os.path.normpath(root / key))
+    return path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
 
 
 # Names that resolve to one object differ only in separators and `.` segments, so
@@ -160,16 +182,16 @@ def _naming(
     keys: Iterable[str],
 ) -> QuerySet[Any]:
     named = [key for key in keys if key]
-    loose = {_loose(key) for key in named} | {_loose(physical_key(k)) for k in named}
-    # A `..` segment resolves elsewhere, which stripping cannot see: such rows
-    # (restored descriptors, rare) are resolved here, one by one.
-    physical = {physical_key(key) for key in named}
+    loose = {_loose(key) for key in named} | {_loose(canonical_key(k)) for k in named}
+    # A `..` segment or an absolute spelling resolves elsewhere than stripping can
+    # see: such rows (restored descriptors, rare) are resolved here, one by one.
+    canonical = {canonical_key(key) for key in named}
     dotted = [
         pk
-        for pk, raw in model.objects.filter(**{f"{field}__contains": ".."}).values_list(
-            "pk", field
-        )
-        if physical_key(raw) in physical
+        for pk, raw in model.objects.filter(
+            Q(**{f"{field}__contains": ".."}) | Q(**{f"{field}__startswith": "/"})
+        ).values_list("pk", field)
+        if canonical_key(raw) in canonical
     ]
     return model.objects.annotate(
         loose_key=Func(
@@ -229,13 +251,13 @@ def foreign_storage_keys(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
         key
         for key in named
         for raw in found
-        if _loose(key) == _loose(raw) or physical_key(key) == physical_key(raw)
+        if _loose(key) == _loose(raw) or canonical_key(key) == canonical_key(raw)
     }
 
 
 def _key_lock_id(key: str) -> int:
     # One lock per object, whatever spelling of its key a caller holds.
-    name = physical_key(key)
+    name = canonical_key(key)
     digest = hashlib.sha256(f"axorim-storage-key:{name}".encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
