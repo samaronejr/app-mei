@@ -42,6 +42,7 @@ from apps.cycles.retention import (
     federal_content,
     fiscal_expiry,
     foreign_storage_keys,
+    local_layout_refusal,
     ordered_anchors,
     retention_decision,
     single_copy_storage,
@@ -396,6 +397,9 @@ PROOF_REFUSALS: Final = frozenset(
         "chave_em_uso",
         "chaves_divergentes",
         "chave_compartilhada",
+        "armazenamento_com_atalho",
+        "chave_fora_do_armazenamento",
+        "arquivo_com_vinculos",
     }
 )
 COMPLETED: Final = "concluida"
@@ -433,6 +437,15 @@ def _locked_stop(tid: UUID, claim_id: UUID, keys: tuple[str, ...]) -> str:
         claim = ContentPurgeClaim.objects.get(pk=claim_id)
         if claim.completed_at is not None:
             return COMPLETED
+        # The target's own keys are read again here: a row that moved to other
+        # keys since its claim was compared never has the old ones deleted.
+        current = _candidates(
+            Candidate(claim.client_id, claim.content_kind, claim.content_id, None)
+        )
+        if not current or set(current[0].keys) != set(keys):
+            return "chaves_divergentes"
+        if not keys:
+            return ""  # nothing stored: no ownership to decide
         own = (
             {"document_id": claim.content_id}
             if claim.content_kind == "document"
@@ -441,7 +454,7 @@ def _locked_stop(tid: UUID, claim_id: UUID, keys: tuple[str, ...]) -> str:
         shared = storage_key_aliased(keys, **own)
     if shared or foreign_storage_keys(tid, keys):
         return "chave_compartilhada"
-    return ""
+    return local_layout_refusal(keys)
 
 
 def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
@@ -568,20 +581,15 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
                 continue
             claim_id, keys = claim.pk, tuple(claim.storage_keys)
             identity = _identity(fresh)
-            agreed = set(keys) == set(fresh.keys)
         # A recovered claim deletes only the keys it was taken for and that the
-        # row still names; any difference leaves it open with the reason.
-        outcome = (
-            _dispose(
-                tid,
-                client_id=candidate.client_id,
-                claim_id=claim_id,
-                keys=keys,
-                identity=identity,
-                now=now,
-            )
-            if agreed
-            else "chaves_divergentes"
+        # row still names, checked under their locks (`_locked_stop`).
+        outcome = _dispose(
+            tid,
+            client_id=candidate.client_id,
+            claim_id=claim_id,
+            keys=keys,
+            identity=identity,
+            now=now,
         )
         _count(tid, claim_id, outcome, counts)
     return counts

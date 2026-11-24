@@ -13,13 +13,14 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import SuspiciousFileOperation, ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -919,6 +920,8 @@ def test_a_scan_never_verifies_an_original_whose_disposal_started(
             client=termo.client,
             document=document,
             state=IntakeState.QUARANTINED,
+            # The model default reads the wall clock; ages follow the injected one.
+            created_at=timezone.now(),
             quarantine_key=quarantined,
         )
 
@@ -1023,6 +1026,8 @@ def _ordinary_pending(
             client=termo.client,
             document=document,
             state=IntakeState.QUARANTINED,
+            # The model default reads the wall clock; ages follow the injected one.
+            created_at=timezone.now(),
             quarantine_key=default_storage.save(
                 f"quarantine/{termo.tenant.pk}/{termo.client.pk}/{uuid4().hex}",
                 ContentFile(payload),
@@ -1345,6 +1350,7 @@ def test_cleanup_never_removes_a_copy_the_original_may_still_need(
     copy, final = intake.quarantine_key, original.storage_key
     discard = scanning._discard_quarantine
     real_delete = default_storage.delete
+    disposed: list[str] = []  # what the purge itself deleted, in its key order
 
     def paused(ticket: scanning.ScanTicket, storage: object) -> None:
         # The scanner committed VERIFIED and pauses here, before its cleanup.
@@ -1358,6 +1364,7 @@ def test_cleanup_never_removes_a_copy_the_original_may_still_need(
                 if name == failing:
                     message = "synthetic storage refusal"
                     raise OSError(message)
+                disposed.append(name)
                 real_delete(name)
 
             with monkeypatch.context() as patch:
@@ -1367,7 +1374,12 @@ def test_cleanup_never_removes_a_copy_the_original_may_still_need(
 
     monkeypatch.setattr(scanning, "_discard_quarantine", paused)
     world.scan()
-    assert default_storage.exists(copy)
+    # The claim's key order follows the database collation over random names, so
+    # the purge may reach either copy first. Whatever it did not delete itself is
+    # still there after cleanup, and the original always keeps one copy.
+    assert default_storage.exists(copy) is (copy not in disposed)
+    assert default_storage.exists(final) is (final not in disposed)
+    assert default_storage.exists(copy) or default_storage.exists(final)
     if pause != "final-replaced":
         claim = _claim(world, original.pk)
         assert claim is not None
@@ -1472,28 +1484,31 @@ def test_a_clean_verdict_certifies_only_the_bytes_it_scanned(
     else:
         assert (current.state, current.reason) == (
             IntakeState.SCAN_UNAVAILABLE,
-            "scanner_indisponivel_24h",
+            "conteudo_divergente_24h",
         )
         assert problems == [("verificacao_indisponivel", world.cycle.pk, "aberta")]
 
 
-def test_the_digest_covers_what_the_scanner_left_unread(world: World) -> None:
+@pytest.mark.parametrize("reads", [8, -1])
+def test_only_bytes_the_scanner_itself_read_are_certified(
+    world: World, reads: int
+) -> None:
     _document, intake = _ordinary_pending(world, with_final=False)
     ticket = scanning.claim_scan(world.tenant_id, intake.pk)
     assert ticket is not None
 
-    class Partial:
+    class Reading:
         def scan(self, stream: scanning.ByteStream) -> scanning.Verdict:
-            stream.read(8)
+            stream.read(reads)  # eight bytes, or everything
             return FakeScanner().scan(BytesIO(b""))
 
     try:
-        verdict = scanning.run_scan(ticket, Partial(), default_storage)
+        verdict = scanning.run_scan(ticket, Reading(), default_storage)
         certified = not verdict.infected
     except scanning.ContentMismatch:
         certified = False
-    # The bytes it never read are still the original's: the verdict stands.
-    assert certified is True
+    # A short read is not certified: the unread suffix was never scanned.
+    assert certified is (reads == -1)
 
 
 def test_a_disposal_claimed_after_the_ticket_stops_the_copy(
@@ -1527,3 +1542,149 @@ def test_a_disposal_claimed_after_the_ticket_stops_the_copy(
 def _refuse_delete(key: str) -> None:
     message = "synthetic storage refusal"
     raise OSError(message)
+
+
+def test_a_reconciliation_before_the_locks_never_deletes_the_old_key(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    when = datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    with monkeypatch.context() as patch:
+        patch.setattr(default_storage, "delete", _refuse_delete)
+        purge_tenant(world.tenant_id, dry_run=False, now=when)
+    assert _claim(world, document.pk) is not None  # open for {final, Q1}
+    old = intake.quarantine_key
+    dispose = retention_tasks._dispose
+
+    def reconciled_first(*args: object, **kwargs: object) -> str:
+        # After the retry compared the keys, before it takes their locks: the
+        # intake moves to Q2 and a replacement is left at Q1.
+        moved = default_storage.save(f"quarantine/{uuid4().hex}", ContentFile(b"Q2"))
+        with tenant_context(world.tenant_id):
+            DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=moved)
+        default_storage.delete(old)
+        default_storage.save(old, ContentFile(b"replacement"))
+        return dispose(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(retention_tasks, "_dispose", reconciled_first)
+    purge_tenant(world.tenant_id, dry_run=False, now=when)
+    assert default_storage.exists(old)
+    with default_storage.open(old, "rb") as handle:
+        assert handle.read() == b"replacement"
+    claim = _claim(world, document.pk)
+    assert claim is not None
+    assert (claim.completed_at, claim.error_code) == (None, "chaves_divergentes")
+
+
+@pytest.mark.parametrize(
+    "layout", ["symlink-here", "symlink-elsewhere", "hard-link", "outside-root"]
+)
+def test_a_file_with_names_no_lookup_sees_is_never_deleted(
+    world: World, layout: str
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    root = Path(default_storage.path("")).resolve()
+    name = f"{uuid4().hex}.pdf"
+    held = default_storage.save(f"originals/{name}", ContentFile(b"held"))
+    expected = "armazenamento_com_atalho"
+    if layout.startswith("symlink"):
+        (root / "legacy").symlink_to(root / "originals", target_is_directory=True)
+        # One side names the held file through the in-root directory link.
+        here, elsewhere = (
+            (f"legacy/{name}", held)
+            if layout == "symlink-here"
+            else (held, f"legacy/{name}")
+        )
+        _foreign_original(world, elsewhere)
+    elif layout == "hard-link":
+        here = f"quarantine/{uuid4().hex}"
+        (root / here).parent.mkdir(parents=True, exist_ok=True)
+        (root / here).hardlink_to(root / held)
+        _foreign_original(world, held)
+        expected = "arquivo_com_vinculos"
+    else:
+        outside = root.parent / f"outside-{name}"
+        outside.write_bytes(b"held")
+        here, held = f"../{outside.name}", str(outside)
+        expected = "chave_fora_do_armazenamento"
+    with tenant_context(world.tenant_id):
+        DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=here)
+    try:
+        purge_tenant(
+            world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+        )
+        crashed = False
+    except SuspiciousFileOperation:
+        crashed = True  # storage's own refusal stops the sweep: not a recorded one
+    assert crashed is False
+    assert (Path(held) if layout == "outside-root" else root / held).exists()
+    claim = _claim(world, document.pk)
+    assert claim is not None
+    assert (claim.completed_at, claim.error_code) == (None, expected)
+
+
+@pytest.mark.parametrize("spelling", ["doubled", "symlink"])
+def test_cleanup_never_removes_a_copy_that_is_the_final(
+    world: World, spelling: str
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    root = Path(default_storage.path("")).resolve()
+    final = document.storage_key
+    if spelling == "doubled":
+        copy = final.replace("/", "//", 1)
+    else:
+        (root / "legacy").symlink_to(root / "originals", target_is_directory=True)
+        copy = final.replace("originals/", "legacy/", 1)
+    default_storage.delete(intake.quarantine_key)
+    with tenant_context(world.tenant_id):
+        DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=copy)
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert outcome == scanning.ScanOutcome.VERIFIED
+    assert (root / final).exists()
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        (timedelta(hours=1), scanning.ScanOutcome.RETRY),
+        (timedelta(hours=25), scanning.ScanOutcome.UNAVAILABLE),
+    ],
+)
+def test_a_final_that_is_not_the_original_is_never_certified(
+    world: World, age: timedelta, expected: scanning.ScanOutcome
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    now = timezone.now()
+    with tenant_context(world.tenant_id):
+        DocumentIntake.objects.filter(pk=intake.pk).update(created_at=now - age)
+    # The copy is the original; the final already stored is another PDF.
+    default_storage.delete(document.storage_key)
+    default_storage.save(document.storage_key, ContentFile(b"%PDF-1.7\n% other\n"))
+    try:
+        outcome: object = scanning.scan_intake(
+            world.tenant_id, intake.pk, scanner=FakeScanner(), now=now
+        )
+    except scanning.IntegrityMismatch:
+        outcome = "raised"
+    assert outcome == expected
+    with tenant_context(world.tenant_id):
+        current = DocumentIntake.objects.get(pk=intake.pk)
+    if expected is scanning.ScanOutcome.RETRY:
+        assert current.state in PENDING_SCAN_STATES
+    else:
+        assert current.reason == "conteudo_divergente_24h"
+
+
+def test_an_infected_replacement_is_never_the_originals_verdict(world: World) -> None:
+    _document, intake = _ordinary_pending(world, with_final=True)
+    default_storage.delete(intake.quarantine_key)
+    default_storage.save(intake.quarantine_key, ContentFile(scanning.EICAR))
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert outcome != scanning.ScanOutcome.INFECTED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
+    assert default_storage.exists(intake.quarantine_key)  # suspect copy kept

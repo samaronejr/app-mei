@@ -453,14 +453,27 @@ def test_tampered_bytes_are_never_promoted_and_the_sweep_does_not_report_success
     intake = _intake(setup)
     # An object already at the final key that is not the uploaded bytes.
     default_storage.save(intake.document.storage_key, BytesIO(b"%PDF-1.4 other"))
-    with pytest.raises(IntegrityMismatch):
-        _scan(setup, intake, scanner=FakeScanner())
+    # Never certified, and no crash: the mismatch takes the failure path (AXRM-051).
+    try:
+        outcome: object = _scan(setup, intake, scanner=FakeScanner())
+    except IntegrityMismatch:
+        outcome = "raised"
+    assert outcome is ScanOutcome.RETRY
     assert _intake(setup).state == IntakeState.QUARANTINED
-    # The sweep, with the scanner port pointed at the fake, fails loudly.
+    # The sweep, with the scanner port pointed at the fake, reports no success.
     monkeypatch.setattr("apps.cycles.tasks.scanner_from_settings", FakeScanner)
-    with pytest.raises(RuntimeError, match="1 intake scan"):
-        scan_tenant_quarantine(str(setup.graph.tenant.pk))
+    # The retry falls due: its backoff has passed (written in the tenant's context,
+    # where the row is visible, and checked so it can never silently miss).
+    with tenant_context(setup.graph.tenant.pk):
+        due = DocumentIntake.objects.filter(pk=intake.pk).update(
+            next_scan_at=timezone.now() - timedelta(seconds=1)
+        )
+    assert due == 1
+    counts = scan_tenant_quarantine(str(setup.graph.tenant.pk))
+    assert counts == {ScanOutcome.RETRY.value: 1}
     assert _intake(setup).state == IntakeState.QUARANTINED
+    with default_storage.open(intake.document.storage_key, "rb") as handle:
+        assert handle.read() == b"%PDF-1.4 other"  # never overwritten either
 
 
 @DB
