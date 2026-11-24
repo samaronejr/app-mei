@@ -29,17 +29,19 @@ clear (`apps.cycles.document_views`).
 
 import hashlib
 import socket
+import stat
 import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Final, Protocol
 from uuid import UUID
 
 import sentry_sdk
 from django.conf import settings
 from django.core.files.base import ContentFile
-from django.core.files.storage import Storage, default_storage
+from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -293,6 +295,8 @@ def claim_scan(tenant_id: UUID, intake_id: UUID) -> ScanTicket | None:
 def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
     """Phase B: stream the quarantined bytes to the scanner, outside any transaction."""
     assert_no_transaction()
+    if not _regular_or_remote(storage, ticket.object_key):
+        raise ContentMismatch  # a FIFO, socket or device is never opened
     try:
         with storage.open(ticket.object_key, "rb") as handle:
             stream = _Digesting(handle)
@@ -308,6 +312,18 @@ def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
         # or one that stops where the original would end, has no verdict.
         raise ContentMismatch
     return verdict
+
+
+def _regular_or_remote(storage: Storage, key: str) -> bool:
+    """Whether a local key is a regular file (or missing); true off local storage."""
+    if not isinstance(storage, FileSystemStorage):
+        return True
+    try:
+        return stat.S_ISREG(Path(storage.path(key)).lstat().st_mode)
+    except FileNotFoundError:
+        return True  # opening it reports the absence as usual
+    except OSError:
+        return False
 
 
 class _Digesting:
@@ -380,7 +396,9 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
         except OSError as error:
             msg = "promotion copy failed"
             raise ScannerUnavailable(msg) from error
-    if saved != ticket.storage_key:
+    # The backend may return the requested key spelled canonically; only a
+    # genuinely different target is refused (and that stray copy removed).
+    if canonical_key(saved, storage) != canonical_key(ticket.storage_key, storage):
         _discard(storage, saved)
         msg = "storage changed the requested document key"
         raise RuntimeError(msg)
@@ -455,7 +473,19 @@ def _copy_is_spare(
         _read_verified(storage, ticket.object_key, ticket.sha256)
     except (IntegrityMismatch, OSError):
         return False
-    return True
+    # Defence in depth: two digests prove equal content, not two files.
+    return not _same_stored_file(storage, ticket.object_key, ticket.storage_key)
+
+
+def _same_stored_file(storage: Storage, first: str, second: str) -> bool:
+    """Whether two keys open one local file (same device and inode)."""
+    if not isinstance(storage, FileSystemStorage):
+        return False
+    try:
+        one, other = Path(storage.path(first)).stat(), Path(storage.path(second)).stat()
+    except OSError:
+        return True  # unproved: treat as the same file, so nothing is deleted
+    return (one.st_dev, one.st_ino) == (other.st_dev, other.st_ino)
 
 
 def _discard(storage: Storage, key: str) -> None:
