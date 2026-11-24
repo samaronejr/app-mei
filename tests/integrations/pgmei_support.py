@@ -32,10 +32,16 @@ from apps.cycles.evidence import (
     EvidenceLink,
     EvidenceRequest,
     IntakeState,
+    LinkOrigin,
     ReviewDecision,
 )
 from apps.cycles.extraction.service import extract_intake
-from apps.cycles.models import ActionProposal, PlaybookVersion, ServiceCycle
+from apps.cycles.models import (
+    ActionProposal,
+    ClientPublication,
+    PlaybookVersion,
+    ServiceCycle,
+)
 from apps.cycles.packs import install_system_packs
 from apps.cycles.scanning import FakeScanner
 from apps.cycles.services.approvals import approve, propose
@@ -312,13 +318,20 @@ def session(world: GuideWorld, user: User, *, portal: bool) -> Client:
     return client
 
 
-def scan_and_review(world: GuideWorld, link_id: UUID) -> None:
+def scan_and_review(
+    world: GuideWorld,
+    link_id: UUID,
+    *,
+    before_review: Callable[[], None] | None = None,
+) -> None:
     with patch("apps.cycles.tasks.scanner_from_settings", return_value=FakeScanner()):
         assert scan_quarantine.apply().get() >= 1
     with tenant_context(world.tenant_id):
         link = EvidenceLink.objects.get(pk=link_id)
         intake = DocumentIntake.objects.get(document_id=link.document_id)
     extract_intake(world.tenant_id, intake.pk, now=timezone.now())
+    if before_review is not None:
+        before_review()
     with tenant_context(world.tenant_id):
         intake.refresh_from_db()
         assert intake.state != IntakeState.QUARANTINED
@@ -369,3 +382,62 @@ def publish(
             world.owner, approved.pk, expected_version=approved.version
         ).executed
         return ActionProposal.objects.get(pk=proposal.pk)
+
+
+@dataclass(frozen=True)
+class PublishedGuide:
+    world: GuideWorld
+    portal: Portal
+    publication: ClientPublication
+    link: EvidenceLink
+
+    @property
+    def url(self) -> str:
+        return f"/publicacoes/{self.publication.pk}/documentos/{self.link.pk}/"
+
+
+@pytest.fixture
+def published_guide(ready: tuple[GuideWorld, Portal]) -> PublishedGuide:
+    from apps.integrations.serpro.pgmei import obtain_das_guide  # noqa: PLC0415
+
+    world, portal = ready
+    with FakeSerpro((das_reply(),)) as peer:
+        outcome = obtain_das_guide(
+            world.owner, world.tenant_id, world.cycle.pk, origin=peer.origin
+        )
+    assert outcome.link_id is not None
+    scan_and_review(world, outcome.link_id)
+    proposal = publish(world, portal, outcome.link_id)
+    with tenant_context(world.tenant_id):
+        return PublishedGuide(
+            world,
+            portal,
+            ClientPublication.objects.get(proposal=proposal),
+            EvidenceLink.objects.get(pk=outcome.link_id),
+        )
+
+
+def another_accepted_link(guide: PublishedGuide) -> EvidenceLink:
+    """Link the same document to another request at the selected revision."""
+    world, link = guide.world, guide.link
+    with tenant_context(world.tenant_id):
+        other_request = EvidenceRequest.objects.create(
+            tenant_id=link.tenant_id,
+            client_id=link.client_id,
+            cycle=world.cycle,
+            title="Unselected request",
+            state=FIRM_ONLY,
+            created_by=world.owner,
+        )
+        other_link = EvidenceLink.objects.create(
+            tenant_id=link.tenant_id,
+            client_id=link.client_id,
+            request=other_request,
+            document_id=link.document_id,
+            origin=LinkOrigin.STAFF,
+            submitted_by=world.owner,
+            review_decision="aceito",
+        )
+        EvidenceLink.objects.filter(pk=other_link.pk).update(client_reason="Reviewed")
+        other_link.refresh_from_db()
+        return other_link

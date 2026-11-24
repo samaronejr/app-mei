@@ -370,6 +370,8 @@ BEGIN
         -- visible to app_portal, a link only while its document AND request are
         -- (USING folds, obligations 0023). WITH CHECK stays client-only, so the
         -- composite FKs still refuse a foreign parent.
+        -- For published artifacts only, cycles 0025 grants EXECUTE on the exact
+        -- cycles_portal_publication_document(uuid, uuid) lookup to app_portal.
         'cycles_evidencerequest',
         'cycles_evidencelink',
         -- AXRM-012: an intake row is READABLE only while its parent
