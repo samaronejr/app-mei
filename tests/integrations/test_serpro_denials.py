@@ -385,6 +385,9 @@ def test_a_missing_firm_termo_is_the_firms_failure_never_the_clients(
     query = world.consult()
     assert (query.state, query.failure_code) == ("falha", "termo_ausente")
     assert effects(world)[1:3] == ("ativa", [])
+    # A firm-side failure opens no client work at all.
+    with tenant_context(world.termo.tenant.pk):
+        assert not IntegrationIssue.objects.exists()
     assert world.sent() == []
 
 
