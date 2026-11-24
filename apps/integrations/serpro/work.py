@@ -41,8 +41,8 @@ from apps.tenants.models import Tenant
 
 AUTH_FAILED: Final = "autenticacao_serpro_recusada"
 PROC_MISSING: Final = "autorizacao_procurador_ausente"
-# Admission refused for a firm-side cause that cleared before the refusal settled.
-FIRM_BLOCK_CLEARED: Final = "bloqueio_da_firma_encerrado"
+# A firm block that refused a call and has cleared since it was recorded.
+CLEARED_PREFIX: Final = "encerrado-"
 # Admission refusals: the client's own absence, or one with no recorded cause.
 CLIENT_ABSENT: Final = "autorizacao_ausente"
 ADMISSION_REFUSED: Final = "admissao_recusada"
@@ -137,18 +137,38 @@ def firm_block(connection: ProviderConnection) -> str:
     return ""
 
 
+def block_holds(reason: str, connection: ProviderConnection) -> bool:
+    """Whether the firm block a refusal recorded is still in effect: that block only.
+
+    The termo not in force, the open issue that cites a call with this code, or
+    the issue itself; a different block opened since never keeps this one alive.
+    """
+    if reason == TERMO_NOT_IN_FORCE:
+        return not termo_in_force(connection.pk, timezone.localdate())
+    refs = FirmIntegrationIssue.objects.filter(
+        connection_id=connection.pk, reason=PROC_MISSING, state__in=ACTIVE_STATES
+    ).values_list("evidence_refs", flat=True)
+    if reason == PROC_MISSING:
+        return refs.exists()
+    cited = [ref for issue_refs in refs for ref in _cited(issue_refs)]
+    code = reason.removeprefix(BLOCK_PREFIX)
+    return ProviderCall.objects.filter(pk__in=cited, provider_code=code).exists()
+
+
 def refusal_cause(reason: str, connection: ProviderConnection) -> str:
     """Classify an admission refusal by the cause recorded when it happened.
 
-    '' only for the client's own absent authority; a firm refusal keeps the block
-    it named (`bloqueio_da_firma_encerrado` once that block has cleared), and a
-    refusal with no firm or client cause is never the client's. A later change to
-    the block or to the client's authority never re-blames it (AXRM-045).
+    '' only for the client's own absent authority. A firm refusal keeps the block
+    it named; once that same block has cleared it is `encerrado-<block>`, so the
+    historical cause stays readable while it reads as cleared. A refusal with no
+    firm or client cause is never the client's (AXRM-045).
     """
     if reason == CLIENT_ABSENT:
         return ""
     if reason in {PROC_MISSING, TERMO_NOT_IN_FORCE} or reason.startswith(BLOCK_PREFIX):
-        return reason if firm_block(connection) else FIRM_BLOCK_CLEARED
+        return (
+            reason if block_holds(reason, connection) else f"{CLEARED_PREFIX}{reason}"
+        )
     return ADMISSION_REFUSED
 
 

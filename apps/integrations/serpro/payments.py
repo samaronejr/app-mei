@@ -71,6 +71,7 @@ from apps.cycles.intake import UploadRejected, UploadScannerOff
 from apps.cycles.services.exceptions import ExceptionReason
 from apps.integrations.authority import (
     Problem,
+    authority_for,
     authority_subject,
     raise_problem,
 )
@@ -114,8 +115,8 @@ from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.serpro.work import (
     ADMISSION_REFUSED,
     BLOCK_PREFIX,
+    CLEARED_PREFIX,
     CLIENT_ABSENT,
-    FIRM_BLOCK_CLEARED,
     TERMO_NOT_IN_FORCE,
     own_denial,
     refusal_cause,
@@ -419,15 +420,17 @@ def _finish(
     # The client's absence is opened by its own identity (`raise_problem` keeps
     # one per subject), whether or not a call row exists for this refusal.
     elif state == PaymentQueryState.SEM_PROCURACAO:
-        raise_problem(
-            query.client,
-            Problem(
-                IssueReason.AUTORIZACAO_AUSENTE,
-                authority_subject(query.client_id, AuthorityService.PAGTOWEB),
-                review_on=today,
-                service=AuthorityService.PAGTOWEB,
-            ),
-        )
+        with transaction.atomic():
+            if _still_absent(query):
+                raise_problem(
+                    query.client,
+                    Problem(
+                        IssueReason.AUTORIZACAO_AUSENTE,
+                        authority_subject(query.client_id, AuthorityService.PAGTOWEB),
+                        review_on=today,
+                        service=AuthorityService.PAGTOWEB,
+                    ),
+                )
     logger.info(
         "PAGTOWEB consultation finished",
         extra={"state": state, "code": code, "pages": query.pages_fetched},
@@ -636,10 +639,19 @@ FIRM_REFUSALS: Final = frozenset(
         "termo_ausente",
         "autorizacao_procurador_ausente",
         TERMO_NOT_IN_FORCE,
-        FIRM_BLOCK_CLEARED,
         ADMISSION_REFUSED,
     }
 )
+
+
+def _still_absent(query: PaymentQuery) -> bool:
+    """Whether the client's authority that refused is still absent, under its lock.
+
+    The refusal stays history either way; its work is opened only while that
+    same cause holds, so a re-verification since the refusal opens nothing.
+    """
+    ClientCompany.objects.select_for_update().get(pk=query.client_id)
+    return not authority_for(query.client, PAGE_OPERATION, link=query.link).usable
 
 
 def _authority_refusal(
@@ -663,7 +675,7 @@ def firm_owned(code: str) -> bool:
     """Whether a stored failure code names the firm's termo or the platform."""
     return (
         code in FIRM_REFUSALS
-        or code.startswith(BLOCK_PREFIX)
+        or code.startswith((BLOCK_PREFIX, CLEARED_PREFIX))
         or (is_denial_code(code) and denial_cause(code) in FIRM_CAUSES)
     )
 

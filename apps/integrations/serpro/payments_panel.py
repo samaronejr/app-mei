@@ -40,7 +40,7 @@ from apps.integrations.serpro.payments import (
 from apps.integrations.serpro.work import (
     ADMISSION_REFUSED,
     BLOCK_PREFIX,
-    FIRM_BLOCK_CLEARED,
+    CLEARED_PREFIX,
     PROC_MISSING,
     TERMO_NOT_IN_FORCE,
 )
@@ -75,10 +75,6 @@ FIRM_COPY: Final = {
     PROC_MISSING: (
         "Há uma pendência aberta na autorização do procurador do escritório; a "
         "procuração do cliente não foi alterada. Consulta não realizada."
-    ),
-    FIRM_BLOCK_CLEARED: (
-        "Um bloqueio do escritório recusou a consulta e já foi encerrado; a "
-        "procuração do cliente não foi alterada. Consulte novamente."
     ),
 }
 
@@ -126,13 +122,45 @@ def _plural(count: int, singular: str, plural: str) -> str:
     return f"{count} {singular if count == 1 else plural}"
 
 
+# A firm block that refused the consultation and has cleared since.
+CLEARED_COPY: Final = {
+    TERMO_NOT_IN_FORCE: (
+        "O termo de autorização do escritório não estava em vigor quando a "
+        "consulta foi recusada; ele já está em vigor e a procuração do cliente "
+        "não foi alterada. Consulte novamente."
+    ),
+    PROC_MISSING: (
+        "Uma pendência na autorização do procurador do escritório recusou a "
+        "consulta e já foi encerrada; a procuração do cliente não foi alterada. "
+        "Consulte novamente."
+    ),
+}
+
+
+def _cleared_text(cause: str) -> str:
+    if cause.startswith(BLOCK_PREFIX):
+        denial = cause.removeprefix(BLOCK_PREFIX)
+        label = DenialCause(denial_cause(denial)).label
+        return (
+            f"Um bloqueio do escritório ({label}, código {denial}) recusou a "
+            "consulta e já foi encerrado; a procuração do cliente não foi "
+            "alterada. Consulte novamente."
+        )
+    return CLEARED_COPY[cause]
+
+
 def firm_refusal(code: str) -> bool:
     """Whether a failure code names a firm-side admission refusal."""
-    return code in FIRM_REFUSALS or code.startswith(BLOCK_PREFIX)
+    return code in FIRM_REFUSALS or code.startswith((BLOCK_PREFIX, CLEARED_PREFIX))
 
 
 def firm_refusal_text(code: str) -> str:
-    """Word a firm-side refusal by the block it recorded, with its 403 code."""
+    """Word a firm-side refusal by the block it recorded, with its 403 code.
+
+    A block that has cleared reads as cleared, by its own cause (AXRM-045).
+    """
+    if code.startswith(CLEARED_PREFIX):
+        return _cleared_text(code.removeprefix(CLEARED_PREFIX))
     if code.startswith(BLOCK_PREFIX):
         denial = code.removeprefix(BLOCK_PREFIX)
         return f"{denial_text(denial)} Consulta não realizada."
