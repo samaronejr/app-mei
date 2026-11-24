@@ -12,7 +12,8 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
 from apps.cycles.effects.manifest import ActionKind
-from apps.cycles.models import ActionProposal, CycleState, EvidenceRequest
+from apps.cycles.errors import IllegalTransition
+from apps.cycles.models import ActionProposal, CycleState, EvidenceRequest, RequestState
 from apps.cycles.services.approvals import propose
 from apps.cycles.services.cycle import check_version, load_cycle
 
@@ -27,6 +28,9 @@ def propose_waiver(
         raise Http404
     cycle = load_cycle(actor, request.cycle_id)
     check_version(request.version, expected_version)
+    if request.state == RequestState.INTERNAL:
+        msg = "Uma solicitação interna não pode ser dispensada."
+        raise IllegalTransition(msg)
     proposal = propose(
         actor,
         cycle.pk,

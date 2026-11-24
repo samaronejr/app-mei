@@ -441,3 +441,26 @@ def another_accepted_link(guide: PublishedGuide) -> EvidenceLink:
         EvidenceLink.objects.filter(pk=other_link.pk).update(client_reason="Reviewed")
         other_link.refresh_from_db()
         return other_link
+
+
+@pytest.fixture
+def approved_guide_waiver(published_guide: PublishedGuide) -> ActionProposal:
+    """Prepare an approved intent that could predate the request-form refusal."""
+    world = published_guide.world
+    with tenant_context(world.tenant_id):
+        world.cycle.refresh_from_db()
+        queued = propose(
+            world.staff,
+            world.cycle.pk,
+            ProposalDraft(
+                ProposalInput(
+                    action_kind=ActionKind.REQUEST_WAIVER,
+                    step_key=f"waive:{published_guide.link.request_id}",
+                    evidence_request_ids=(published_guide.link.request_id,),
+                    reason="Revisão do pedido.",
+                ),
+                timezone.now() + timedelta(days=1),
+            ),
+            expected_version=world.cycle.version,
+        )
+        return approve(world.owner, queued.pk, expected_version=queued.version).proposal

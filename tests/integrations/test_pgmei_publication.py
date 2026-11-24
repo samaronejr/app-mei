@@ -5,16 +5,21 @@ from __future__ import annotations
 import io
 import json
 import re
+from contextlib import suppress
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
+from django.contrib.admin import ModelAdmin, site
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
+from django.forms import modelform_factory
+from django.test import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
+from psycopg.errors import CheckViolation
 
 from apps.clients.models import ClientCompany, TaxProfile
 from apps.core.tenancy import tenant_context
@@ -22,6 +27,8 @@ from apps.cycles.bulk import BulkKind, BulkOperation
 from apps.cycles.bulk_contracts import PreviewExpectation, Selection
 from apps.cycles.bulk_runner import claim_next, execute_claim
 from apps.cycles.effects.executors import execute
+from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.errors import IllegalTransition
 from apps.cycles.evidence import (
     DocumentIntake,
     EvidenceLink,
@@ -30,7 +37,11 @@ from apps.cycles.evidence import (
     RequestState,
 )
 from apps.cycles.models import (
+    ActionExecution,
+    ActionProposal,
     ClientPublication,
+    ProposalState,
+    RequestInternal,
     ServiceCycle,
 )
 from apps.cycles.services import requests
@@ -50,6 +61,7 @@ from tests.integrations.pgmei_support import (
     Portal,
     PublishedGuide,
     another_accepted_link,
+    approved_guide_waiver,
     das_reply,
     guide_world,
     portal_member,
@@ -59,6 +71,7 @@ from tests.integrations.pgmei_support import (
     session,
 )
 from tests.portal.request_fixtures import (
+    assert_hidden_link,
     portal_setup,
     scoped_portal_cursor,
 )
@@ -67,6 +80,7 @@ from tests.ui.factories import add_member
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from uuid import UUID
 
     from pytest_django.fixtures import SettingsWrapper
 
@@ -77,7 +91,7 @@ else:
     tasks = LazyModule("apps.integrations.tasks")
 
 pytestmark = pytest.mark.django_db(transaction=True)
-__all__ = ["guide_world", "published_guide"]
+__all__ = ["approved_guide_waiver", "guide_world", "published_guide"]
 LOOKUP = "SELECT public.cycles_portal_publication_document(%s, %s)"
 
 
@@ -92,6 +106,25 @@ def ready(guide_world: GuideWorld) -> tuple[GuideWorld, Portal]:
     enrol_totp(guide_world.owner)
     enrol_totp(guide_world.staff)
     return guide_world, portal_member(guide_world)
+
+
+def _assert_private(
+    world: GuideWorld, private: UUID, public: UUID, *, link_id: UUID | None = None
+) -> None:
+    with tenant_context(world.tenant_id):
+        assert EvidenceRequest.objects.get(pk=private).state == RequestState.INTERNAL
+        if link_id is not None:
+            assert EvidenceLink.objects.filter(pk=link_id, request_id=private).exists()
+    with scoped_portal_cursor(world.tenant_id, world.cycle.client_id) as cursor:
+        cursor.execute(
+            "SELECT id FROM cycles_evidencerequest WHERE id IN (%s, %s)",
+            [public, private],
+        )
+        assert cursor.fetchall() == [(public,)]
+        cursor.execute(
+            "SELECT id FROM cycles_evidencelink WHERE request_id = %s", [private]
+        )
+        assert cursor.fetchall() == []
 
 
 def test_approval_digest_binds_the_guide_hash_and_the_portal_receives_it(
@@ -124,6 +157,7 @@ def test_approval_digest_binds_the_guide_hash_and_the_portal_receives_it(
     assert client.get(f"/solicitacoes/{public.pk}/").status_code == 200
     assert client.get(path).status_code == 404  # created
     assert client.post(f"/solicitacoes/{request.pk}/enviar").status_code == 404
+    _assert_private(world, request.pk, public.pk)
     with FakeSerpro((das_reply(),)) as peer:
         outcome = obtain(world, peer.origin)
     assert outcome.link_id is not None
@@ -134,15 +168,18 @@ def test_approval_digest_binds_the_guide_hash_and_the_portal_receives_it(
             IntakeState.QUARANTINED
         )
     assert client.get(path).status_code == 404  # private PDF ingested and linked
+    _assert_private(world, request.pk, public.pk, link_id=link_id)
 
     def while_in_review() -> None:
         with tenant_context(world.tenant_id):
             assert DocumentIntake.objects.get(document_id=document_id).state == (
                 IntakeState.CLASSIFIED
             )
+        _assert_private(world, request.pk, public.pk, link_id=link_id)
 
     scan_and_review(world, link_id, before_review=while_in_review)
     assert client.get(path).status_code == 404  # review accepted
+    _assert_private(world, request.pk, public.pk, link_id=link_id)
     proposal = publish(world, portal, link_id)
     with tenant_context(world.tenant_id):
         document = Document.objects.get(pk=outcome.document_id)
@@ -154,6 +191,7 @@ def test_approval_digest_binds_the_guide_hash_and_the_portal_receives_it(
         assert document.portal_visible is True
         assert document.acquisition_origin == "provedor_federal"
     assert client.get(path).status_code == 404  # publication does not release request
+    _assert_private(world, request.pk, public.pk, link_id=link_id)
     page = client.get(f"/publicacoes/{publication.pk}/")
     assert page.status_code == 200
     assert document.original_filename in page.content.decode()
@@ -189,6 +227,87 @@ def test_withdrawn_publication_refuses_the_unchanged_guide(
         cursor.execute(LOOKUP, [publication.pk, link.pk])
         assert cursor.fetchall() == [(None,)]
     assert client.get(published_guide.url).status_code == 404
+
+
+def test_approved_legacy_guide_waiver_does_not_unhide_the_request(
+    published_guide: PublishedGuide, approved_guide_waiver: ActionProposal
+) -> None:
+    guide = published_guide
+    world = guide.world
+    with tenant_context(world.tenant_id):
+        assert RequestInternal.objects.filter(request_id=guide.link.request_id).exists()
+    waiver = approved_guide_waiver
+    assert waiver.state == ProposalState.APPROVED
+    assert_hidden_link(guide.link)
+    with tenant_context(world.tenant_id), suppress(IllegalTransition):
+        execute(world.owner, waiver.pk, expected_version=waiver.version)
+    assert_hidden_link(guide.link)
+    with tenant_context(world.tenant_id):
+        assert not ActionExecution.objects.filter(proposal=waiver).exists()
+        request = EvidenceRequest.objects.get(pk=guide.link.request_id)
+    staff = session(world, world.staff, portal=False)
+    response = staff.post(
+        reverse("cycle-request-action", args=[world.cycle.pk]),
+        {
+            "action": "waive",
+            "request_id": request.pk,
+            "reason": "Revisão.",
+            "expected_version": request.version,
+        },
+    )
+    assert response.status_code == 422
+    assert f'id="waive-{request.pk}"'.encode() not in response.content
+    with tenant_context(world.tenant_id):
+        assert list(
+            ActionProposal.objects.filter(
+                action_kind=ActionKind.REQUEST_WAIVER
+            ).values_list("pk", flat=True)
+        ) == [waiver.pk]
+    assert_hidden_link(guide.link)
+    client = session(world, guide.portal.user, portal=True)
+    assert client.get(guide.url).content == GUIDE_PDF
+
+
+def test_firm_admin_and_sql_cannot_reclassify_internal_request(
+    published_guide: PublishedGuide,
+) -> None:
+    guide = published_guide
+    world = guide.world
+    # A new state added in a later release must be refused without growing a
+    # database denylist. Each attempted transition is followed by a portal read.
+    states = {*RequestState.values, "future_state"} - {RequestState.INTERNAL}
+    for state in sorted(states):
+        with (
+            tenant_context(world.tenant_id),
+            connection.cursor() as cursor,
+            pytest.raises(IntegrityError) as refused,
+            transaction.atomic(),
+        ):
+            cursor.execute(
+                "UPDATE cycles_evidencerequest SET state = %s WHERE id = %s",
+                [state, guide.link.request_id],
+            )
+        cause = refused.value.__cause__
+        assert isinstance(cause, CheckViolation)
+        assert cause.diag.constraint_name == "evidencerequest_internal_lifetime"
+        assert_hidden_link(guide.link)
+    with tenant_context(world.tenant_id):
+        request = EvidenceRequest.objects.get(pk=guide.link.request_id)
+        # No admin is registered for this model. Exercise the standard admin
+        # save hook without registering one or giving the portal write access.
+        model_admin = ModelAdmin(EvidenceRequest, site)
+        form = modelform_factory(EvidenceRequest, fields=("state",))(
+            {"state": RequestState.WAIVED}, instance=request
+        )
+        assert form.is_valid(), form.errors
+        with pytest.raises(IntegrityError), transaction.atomic():
+            model_admin.save_model(
+                RequestFactory().post("/admin/"),
+                form.save(commit=False),
+                form,
+                change=True,
+            )
+    assert_hidden_link(guide.link)
 
 
 def test_publication_lookup_uses_catalog_types_with_temp_schema_present(

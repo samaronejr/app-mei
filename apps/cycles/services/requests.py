@@ -306,6 +306,9 @@ def waive_request(
         cycle, request = _locked_request(actor, request_id)
         check_version(request.version, expected_version)
         require_actor(actor, CYCLES_OPERATE)
+        if request.state == RequestState.INTERNAL:
+            msg = "Uma solicitação interna não pode ser dispensada."
+            raise IllegalTransition(msg)
         if request.state in {
             RequestState.WAIVED,
             RequestState.ACCEPTED,

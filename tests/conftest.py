@@ -188,8 +188,8 @@ PORTAL_TABLES = (
     "clients_taxprofile",
     "cycles_servicecycle",
     "cycles_clientpublication",
-    # AXRM-012: SELECT also requires a visible obligation (request) or a visible
-    # document AND request (link); INSERT keeps the client-only check.
+    # AXRM-012/049: SELECT excludes interno requests and hidden obligations; link
+    # SELECT needs a visible document AND request, INSERT needs a visible request.
     # Real-role probes: test_portal_reference_visibility.py.
     "cycles_evidencerequest",
     "cycles_evidencelink",

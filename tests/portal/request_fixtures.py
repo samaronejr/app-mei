@@ -20,7 +20,9 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, ClientContact, Engagement
 from apps.core.tenancy import client_context, tenant_context
+from apps.cycles.evidence import LinkOrigin
 from apps.cycles.models import (
+    EvidenceLink,
     EvidenceRequest,
     RequestInternal,
     RequestState,
@@ -28,6 +30,7 @@ from apps.cycles.models import (
 )
 from apps.cycles.services.cycle import open_cycle
 from apps.cycles.services.requests import RequestFields, create_request, send_requests
+from apps.obligations.models import Document
 from apps.tenants.models import TenantRole
 from tests.browser.harness import mfa_session_cookie
 from tests.cycles.cycle_fixtures import PERIOD, CycleSetup, cycle_setup
@@ -189,3 +192,52 @@ def scoped_portal_cursor(tenant_id: UUID, client_id: UUID) -> Iterator[CursorWra
         )
         assert cursor.fetchone() == ("app_portal", False, False)
         yield cursor
+
+
+def internal_request_link(graph: CycleSetup, cycle: ServiceCycle) -> EvidenceLink:
+    """Make a retained internal link whose document is readable by the portal."""
+    with tenant_context(graph.tenant.pk):
+        request = EvidenceRequest.objects.create(
+            tenant=graph.tenant,
+            client=graph.client,
+            cycle=cycle,
+            title="Firm-only",
+            state=RequestState.INTERNAL,
+            required=False,
+            created_by=graph.actor,
+        )
+        document = Document.objects.create(
+            tenant=graph.tenant,
+            client=graph.client,
+            original_filename="evidence.pdf",
+            content_type="application/pdf",
+            byte_size=50,
+            sha256="a" * 64,
+            uploaded_by=graph.actor,
+            portal_visible=True,
+        )
+        return EvidenceLink.objects.create(
+            tenant=graph.tenant,
+            client=graph.client,
+            request=request,
+            document=document,
+            submitted_by=graph.actor,
+            origin=LinkOrigin.STAFF,
+        )
+
+
+def assert_hidden_link(
+    link: EvidenceLink, ordinary_request: UUID | None = None
+) -> None:
+    """Check both retained IDs with a live document visibility control."""
+    with scoped_portal_cursor(link.tenant_id, link.client_id) as cursor:
+        cursor.execute(
+            """
+            SELECT EXISTS (SELECT 1 FROM cycles_evidencerequest WHERE id = %s),
+                   EXISTS (SELECT 1 FROM cycles_evidencelink WHERE id = %s),
+                   EXISTS (SELECT 1 FROM obligations_document WHERE id = %s),
+                   EXISTS (SELECT 1 FROM cycles_evidencerequest WHERE id = %s)
+            """,
+            [link.request_id, link.pk, link.document_id, ordinary_request],
+        )
+        assert cursor.fetchone() == (False, False, True, ordinary_request is not None)
