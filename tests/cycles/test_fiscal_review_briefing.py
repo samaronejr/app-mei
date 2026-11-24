@@ -54,7 +54,6 @@ def test_hoje_feedback_expires_only_for_a_different_pending_fact(
     initial = browser.get(dashboard)
     item = fiscal_item(world, fiscal)
     assert item is not None
-    assert hrefs(initial.content, fiscal) == [review_path(fiscal, before)] == [item.url]
     form = dismissal_form(initial.content, fiscal)
     assert form["fact_version"] == item.fact_version
     if dismissed:
@@ -79,6 +78,7 @@ def test_hoje_feedback_expires_only_for_a_different_pending_fact(
     current = fiscal_item(world, fiscal)
     assert current is not None
     assert hrefs(updated.content, fiscal) == [current.url]
+    assert hrefs(initial.content, fiscal) == [review_path(fiscal, before)] == [item.url]
     assert current.url == review_path(fiscal, second)
     assert (item.id == current.id) == (change != "cycle")
     fresh = dismissal_form(updated.content, fiscal)

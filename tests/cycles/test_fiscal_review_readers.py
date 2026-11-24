@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
-from typing import TYPE_CHECKING
+from datetime import date
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -33,11 +33,13 @@ from tests.cycles.test_fiscal_document_review import world
 from tests.cycles.test_fiscal_review_writer import legacy_digest
 from tests.cycles.test_playbook_http_conflicts import HiddenInputs
 from tests.integrations.capture_fixtures import MONTH, xml
-from tests.obligations.fiscal_fixtures import COUNTERPART
+from tests.obligations.fiscal_fixtures import COUNTERPART, nfse
+from tests.obligations.test_fiscal_documents import ingest
 
 if TYPE_CHECKING:
     from pytest_django.fixtures import SettingsWrapper
 
+    from apps.obligations.models import FiscalDocument
     from tests.integrations.capture_fixtures import CaptureWorld
 
 __all__ = ["world"]
@@ -49,14 +51,21 @@ def test_all_readers_and_links_follow_only_the_acting_cycle(
     world: CaptureWorld,
     gap: str,
 ) -> None:
-    fiscal, first, second = world.ingest(), world.setup.cycle, other_cycle(world)
+    first, second = world.setup.cycle, other_cycle(world)
     if gap == "nfse":
-        with tenant_context(world.tenant_id):
-            type(fiscal).objects.filter(pk=fiscal.pk).update(
-                family="nfse_nacional",
-                competence=MONTH,
-                issue_date=MONTH + timedelta(days=30),
-            )
+        fiscal = cast(
+            "FiscalDocument",
+            ingest(
+                world.setup,
+                binding=world.link,
+                client_role="tomador",
+                source_namespace="focus:nfsen_recebidas",
+                payload=nfse().replace(b"2026-09-15", b"2026-10-15"),
+            ),
+        )
+        assert (fiscal.competence, fiscal.issue_date) == (MONTH, date(2026, 10, 15))
+    else:
+        fiscal = world.ingest()
     current, pending = (second, first) if gap == "earlier" else (first, second)
     old = record_in(world, fiscal, pending) if gap == "stale" else None
     if old:
@@ -68,11 +77,7 @@ def test_all_readers_and_links_follow_only_the_acting_cycle(
     item = fiscal_item(world, fiscal)
     assert item is not None
     pending_detail = reverse("cycle-detail", args=[pending.pk])
-    for entry in (
-        queue,
-        reverse("dashboard"),
-        pending_detail,
-    ):
+    for entry in (queue, reverse("dashboard"), pending_detail):
         assert hrefs(browser.get(entry).content, fiscal) == [path]
     assert b'data-review-decision=""' in browser.get(pending_detail).content
     assert item.url == path
@@ -96,10 +101,16 @@ def test_all_readers_and_links_follow_only_the_acting_cycle(
     with tenant_context(world.tenant_id):
         new = FiscalDocumentReview.objects.get(cycle=pending, decision="aceito")
     assert new.supersedes_id == (old.pk if old else None)
-    assert b'data-review-decision="aceito"' in browser.get(pending_detail).content
-    assert review_form(browser.get(reviewed_path).content)["expected_head_id"] == str(
-        head.pk
+    chain = browser.get(path).content
+    assert sorted(re.findall(rb'href="\?ciclo=([^"]+)"', chain)) == sorted(
+        str(cycle.pk).encode() for cycle in (pending, current)
     )
+    assert review_form(chain)["expected_head_id"] == str(new.pk)
+    for row in (old, new) if old else (new,):
+        assert f'data-fiscal-review-row="{row.pk}"'.encode() in chain
+    assert b'data-review-decision="aceito"' in browser.get(pending_detail).content
+    reviewed_form = review_form(browser.get(reviewed_path).content)
+    assert reviewed_form["expected_head_id"] == str(head.pk)
 
 
 @pytest.mark.parametrize("surface", ["document-queue", "dashboard"])
@@ -150,11 +161,10 @@ def test_workspace_refuses_ambiguous_cycle_inputs(
 ) -> None:
     fiscal, first, second = world.ingest(), world.setup.cycle, other_cycle(world)
     cycles, browser = {"A": str(first.pk), "B": str(second.pk)}, world.setup.firm()
-    bare, canonical = (
-        reverse("document-review", args=[fiscal.pk]),
-        review_path(fiscal, first),
-    )
-    fields = review_form(browser.get(canonical).content)
+    canonical = review_path(fiscal, first)
+    bare = reverse("document-review", args=[fiscal.pk])
+    fields = HiddenInputs(browser.get(canonical).content.decode()).values
+    fields["decision"] = "aceito"
     path = f"{bare}?{urlencode([('ciclo', cycles[c]) for c in query])}"
     if method == "get":
         response = browser.generic(
@@ -324,10 +334,8 @@ def test_legacy_review_is_history_until_a_fresh_successor_clears_the_gap(
     with tenant_context(world.tenant_id):
         root = seed_legacy_decision(world, fiscal, revision, legacy_digest(revision))
     browser, path = hoje_browser(world), review_path(fiscal, cycle)
-    queue, detail = (
-        reverse("document-queue") + "?fila=fiscais",
-        reverse("cycle-detail", args=[cycle.pk]),
-    )
+    queue = reverse("document-queue") + "?fila=fiscais"
+    detail = reverse("cycle-detail", args=[cycle.pk])
     preview = browser.get(path)
     fields = review_form(preview.content)
     assert fields["expected_head_id"] == str(root.pk)
@@ -337,10 +345,8 @@ def test_legacy_review_is_history_until_a_fresh_successor_clears_the_gap(
     item = fiscal_item(world, fiscal)
     assert item is not None
     assert item.url == path
-    assert (
-        browser.post(path, {**fields, "input_digest": root.input_digest}).status_code
-        == 409
-    )
+    stale = browser.post(path, {**fields, "input_digest": root.input_digest})
+    assert stale.status_code == 409
     assert browser.post(path, fields).status_code == 302
     assert browser.get(path).context["head_current"]
     assert not hrefs(browser.get(queue).content, fiscal)
