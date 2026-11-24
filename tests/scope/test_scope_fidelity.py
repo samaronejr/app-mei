@@ -256,6 +256,30 @@ PROVIDER_RECOVERY_FILES = frozenset(
     }
 )
 
+# AXRM-046 resolves availability incidents on the fiscal document's evidence
+# head. Pin the exact vocabulary for that bookkeeping, not its entire module.
+ISS_INCIDENT_FILE = "apps/obligations/iss_retention_incidents.py"
+ISS_INCIDENT_LINES = Counter(
+    {
+        (
+            ISS_INCIDENT_FILE,
+            (
+                '"""Persist and reconcile the locked fiscal head'
+                "'s evidence incidents."
+                '"""'
+            ),
+        ): 1,
+        (
+            ISS_INCIDENT_FILE,
+            (
+                '"""Result of reconciling this head, including ownership of '
+                'unfinished fields."""'
+            ),
+        ): 1,
+        (ISS_INCIDENT_FILE, "def reconcile_iss_incident("): 1,
+    }
+)
+
 # Row 10. The single `esocial` occurrence is a COMMENT above `has_employee`, saying why
 # the field is a boolean rather than a payroll model. Pinned by location so that a
 # future *field* named `esocial_*` cannot slip in under the same allowance.
@@ -767,9 +791,14 @@ def test_row_6_no_bank_import() -> None:
     # Then bank import stays excluded. The regional plan's provider recovery is
     # registered by exact file, never by app-wide or banking-vocabulary exemption.
     assert bank_hits == [], _report("bank-import reference", bank_hits)
-    strays = _outside(hits, PROVIDER_RECOVERY_FILES)
+    other_hits, iss_incident_hits = _pinned(hits, ISS_INCIDENT_FILE)
+    assert iss_incident_hits == ISS_INCIDENT_LINES, _report(
+        "ISS incident references differ from the evidence recovery pins",
+        _pin_difference(iss_incident_hits, ISS_INCIDENT_LINES),
+    )
+    strays = _outside(other_hits, PROVIDER_RECOVERY_FILES)
     assert strays == [], _report("reconciliation outside provider recovery", strays)
-    assert {hit.split(":", 1)[0] for hit in hits} == PROVIDER_RECOVERY_FILES
+    assert {hit.split(":", 1)[0] for hit in other_hits} == PROVIDER_RECOVERY_FILES
 
 
 def test_row_7_no_reports_v1_and_no_audit_ui() -> None:

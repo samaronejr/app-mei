@@ -36,6 +36,11 @@ def test_provider_recovery_registration_keeps_bank_import_excluded(
         source = tmp_path / filename
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text("# reconcil\n", encoding="utf-8")
+    # Include the actual ISS sources checked by the guard before its PGMEI checks.
+    for filename in {path for path, _ in scope_fidelity.ISS_INCIDENT_LINES}:
+        source = tmp_path / filename
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes((scope_fidelity.PROJECT_ROOT / filename).read_bytes())
     if injection == "ofx":
         source = tmp_path / "apps/integrations/serpro/pgmei.py"
         source.write_text("# reconcil\n# OFX\n", encoding="utf-8")
