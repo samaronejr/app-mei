@@ -42,8 +42,9 @@ from apps.cycles.retention import (
     federal_content,
     fiscal_expiry,
     foreign_storage_keys,
-    local_layout_refusal,
+    open_stored,
     ordered_anchors,
+    ownership_refusal,
     retention_decision,
     single_copy_storage,
     storage_key_aliased,
@@ -384,7 +385,7 @@ def _physical_refusal(keys: tuple[str, ...], final_key: str, sha256: str) -> str
     for key in keys:
         if key != final_key and not default_storage.exists(key):
             continue
-        with default_storage.open(key, "rb") as handle:
+        with open_stored(default_storage, key) as handle:
             if hashlib.sha256(handle.read()).hexdigest() != sha256:
                 return "conteudo_divergente"
     return ""
@@ -448,17 +449,12 @@ def _locked_stop(tid: UUID, claim_id: UUID, keys: tuple[str, ...]) -> str:
         )
         if not current or set(current[0].keys) != set(keys):
             return "chaves_divergentes"
-        if not keys:
-            return ""  # nothing stored: no ownership to decide
         own = (
             {"document_id": claim.content_id}
             if claim.content_kind == "document"
             else {"export_id": claim.content_id}
         )
-        shared = storage_key_aliased(keys, **own)
-    if shared or foreign_storage_keys(tid, keys):
-        return "chave_compartilhada"
-    return local_layout_refusal(keys)
+    return ownership_refusal(tid, keys, **own)
 
 
 def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock

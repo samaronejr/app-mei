@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from django.conf import settings
 from django.core.exceptions import SuspiciousFileOperation, ValidationError
+from django.core.files import File
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -1587,6 +1588,24 @@ def test_a_reconciliation_before_the_locks_never_deletes_the_old_key(
     assert (claim.completed_at, claim.error_code) == (None, "chaves_divergentes")
 
 
+def _mountinfo(*points: Path) -> bytes:
+    """A `/proc/self/mountinfo` with these mount points, escaped as the kernel does."""
+    lines = []
+    for number, point in enumerate(points, start=20):
+        raw = os.fsencode(point)
+        for plain, escaped in (
+            (b"\\", b"\\134"),
+            (b" ", b"\\040"),
+            (b"\t", b"\\011"),
+            (b"\n", b"\\012"),
+        ):
+            raw = raw.replace(plain, escaped)
+        lines.append(
+            b"%d 1 8:1 / %s rw,relatime shared:1 - ext4 /dev/sda1 rw" % (number, raw)
+        )
+    return b"\n".join(lines) + b"\n"
+
+
 @dataclass(frozen=True)
 class _Layout:
     """What one layout case needs to set itself up."""
@@ -1642,18 +1661,18 @@ def _mounted(case: _Layout) -> tuple[str, str, str]:
     # Stand-in for a bind mount (which needs privileges): the kernel's mount
     # table, which the proof reads, lists a mount point under the root.
     (case.root / "mirror").mkdir()
-    points = [Path("/"), case.root / "mirror"]
-    case.monkeypatch.setattr(retention, "_mount_points", lambda: points)
+    table = _mountinfo(Path("/"), case.root / "mirror")
+    case.monkeypatch.setattr(retention, "_mount_table", lambda: table)
     _foreign_original(case.world, case.held)
     return case.copy, case.held, "armazenamento_com_montagem"
 
 
 def _no_mount_table(case: _Layout) -> tuple[str, str, str]:
-    def unreadable() -> list[Path]:
+    def unreadable() -> bytes:
         message = "no /proc in this container"
         raise OSError(message)
 
-    case.monkeypatch.setattr(retention, "_mount_points", unreadable)
+    case.monkeypatch.setattr(retention, "_mount_table", unreadable)
     _foreign_original(case.world, case.held)
     return case.copy, case.held, "armazenamento_nao_inspecionavel"
 
@@ -1759,15 +1778,15 @@ def test_cleanup_never_removes_a_copy_that_is_the_final(
         (root / "mirror").mkdir()
         copy = f"mirror/{Path(final).name}"
         (root / copy).write_bytes((root / final).read_bytes())
-        monkeypatch.setattr(
-            retention, "_mount_points", lambda: [Path("/"), root / "mirror"]
-        )
+        table = _mountinfo(Path("/"), root / "mirror")
+        monkeypatch.setattr(retention, "_mount_table", lambda: table)
     elif spelling == "same-inode":
-        # An alias the layout proof misses: the inode comparison alone decides.
+        # An alias the shared ownership check misses: the inode comparison alone
+        # decides.
         (root / "spare").mkdir()
         copy = f"spare/{Path(final).name}"
         (root / copy).hardlink_to(root / final)
-        monkeypatch.setattr(scanning, "local_layout_refusal", lambda *a, **k: "")
+        monkeypatch.setattr(scanning, "ownership_refusal", lambda *a, **k: "")
     else:
         (root / "legacy").symlink_to(root / "originals", target_is_directory=True)
         copy = final.replace("originals/", "legacy/", 1)
@@ -1973,8 +1992,9 @@ def test_a_verdict_on_a_read_that_stops_early_is_never_the_originals(
         assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
 
 
+@pytest.mark.parametrize("spelled", ["configured-root", "real-root"])
 def test_a_symlinked_root_and_its_target_are_one_root(
-    world: World, settings: SettingsWrapper
+    world: World, settings: SettingsWrapper, spelled: str
 ) -> None:
     document, intake = _ordinary_pending(world, with_final=True)
     real = Path(default_storage.path("")).resolve()
@@ -1983,8 +2003,10 @@ def test_a_symlinked_root_and_its_target_are_one_root(
     configured.symlink_to(real, target_is_directory=True)
     try:
         settings.MEDIA_ROOT = str(configured)  # `/srv/media` -> `/data/pilot`
-        # A held tenant's restored copy names the file through the configured root.
-        _foreign_copy(world, str(configured / key))
+        # A held tenant's restored copy names the file from the configured root,
+        # or from the real root, which the backend will not address.
+        held = configured / key if spelled == "configured-root" else real / key
+        _foreign_copy(world, str(held))
         with tenant_context(world.tenant_id):
             DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=key)
         purge_tenant(
@@ -1993,7 +2015,7 @@ def test_a_symlinked_root_and_its_target_are_one_root(
         assert (real / key).exists()
         claim = _claim(world, document.pk)
         assert claim is None or claim.completed_at is None
-        assert canonical_key(str(configured / key)) == canonical_key(key)
+        assert canonical_key(str(held)) == canonical_key(key)
     finally:
         configured.unlink()
 
@@ -2043,8 +2065,225 @@ def test_a_quarantine_key_that_is_not_a_regular_file_is_never_opened(
         return real_open(name, mode)
 
     monkeypatch.setattr(default_storage, "open", recording)
+    real_os_open = os.open
+
+    def recording_os(path: str, flags: int, *rest: int) -> int:
+        opened.append(os.fspath(path))
+        return real_os_open(path, flags, *rest)
+
+    # The one safe open's descriptor call: a FIFO must not even reach it.
+    monkeypatch.setattr(retention, "_open", recording_os, raising=False)
     outcome = scanning.scan_intake(
         world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
     )
     assert fifo not in opened
+    assert default_storage.path(fifo) not in opened
+    assert outcome != scanning.ScanOutcome.VERIFIED
+
+
+@pytest.mark.parametrize(
+    "root_name",
+    [b"caf\xc3\xa9", b"with space", b"r\xffoot"],
+    ids=["accented", "space", "not-utf8"],
+)
+def test_a_mount_under_any_root_name_is_seen(
+    world: World,
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    root_name: bytes,
+) -> None:
+    root = Path(os.fsdecode(os.fsencode(tmp_path) + b"/" + root_name))
+    root.mkdir()
+    settings.MEDIA_ROOT = str(root)
+    document, _intake = _ordinary_pending(world, with_final=True)
+    (root / "mirror").mkdir()
+    table = _mountinfo(
+        Path("/"), root / "mirror"
+    )  # the name exactly as the kernel lists it
+    monkeypatch.setattr(retention, "_mount_table", lambda: table)
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    claim = _claim(world, document.pk)
+    assert claim is not None
+    assert (claim.completed_at, claim.error_code) == (
+        None,
+        "armazenamento_com_montagem",
+    )
+    assert default_storage.exists(document.storage_key)
+
+
+def test_a_case_probe_that_cannot_answer_proves_nothing(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, _intake = _ordinary_pending(world, with_final=True)
+
+    def unanswerable(self: Path, other: Path) -> bool:
+        message = "I/O error"
+        raise OSError(5, message)
+
+    monkeypatch.setattr(Path, "samefile", unanswerable)
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    claim = _claim(world, document.pk)
+    assert claim is not None
+    assert (claim.completed_at, claim.error_code) == (
+        None,
+        "armazenamento_nao_inspecionavel",
+    )
+
+
+def test_a_root_reentered_through_its_link_is_the_same_root(
+    world: World, settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=True)
+    real = Path(default_storage.path("")).resolve()
+    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    # The link and its target live in different parents (`/srv/media` ->
+    # `/data/pilot`): `../media/...` re-enters only through the configured root.
+    links = tmp_path.parent / f"links-{uuid4().hex[:8]}"
+    links.mkdir()
+    (links / "media").symlink_to(real, target_is_directory=True)
+    try:
+        settings.MEDIA_ROOT = str(links / "media")
+        _foreign_copy(world, f"../media/{key}")
+        with tenant_context(world.tenant_id):
+            DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=key)
+        purge_tenant(
+            world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+        )
+        assert (real / key).exists()
+        assert canonical_key(f"../media/{key}") == canonical_key(key)
+    finally:
+        (links / "media").unlink()
+        links.rmdir()
+
+
+def _guarded(
+    call: Callable[[], object], unblock: Path | None = None
+) -> tuple[bool, object]:
+    """Run `call` on a thread; report whether it blocked (then unblock a FIFO)."""
+    result: list[object] = []
+
+    def run() -> None:
+        try:
+            result.append(call())
+        except Exception as error:  # noqa: BLE001 - the outcome is asserted
+            result.append(error)
+        finally:
+            connection.close()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(timeout=10)
+    blocked = worker.is_alive()
+    if blocked and unblock is not None:
+        writer = os.open(
+            unblock, os.O_WRONLY | os.O_NONBLOCK
+        )  # lets the reader see EOF
+        os.close(writer)
+    worker.join(timeout=30)
+    return blocked, (result[0] if result else None)
+
+
+def test_a_fifo_at_the_final_key_never_blocks_promotion(world: World) -> None:
+    document, intake = _ordinary_pending(world, with_final=False)
+    root = Path(default_storage.path("")).resolve()
+    (root / document.storage_key).parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(root / document.storage_key)  # an existing "final" with no writer
+    blocked, outcome = _guarded(
+        lambda: scanning.scan_intake(
+            world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+        ),
+        unblock=root / document.storage_key,
+    )
+    assert blocked is False
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
+
+
+@pytest.mark.parametrize("swap", ["fifo", "fifo-after-lstat", "symlink-after-lstat"])
+def test_a_stored_object_is_read_only_as_the_regular_file_it_was(
+    world: World, monkeypatch: pytest.MonkeyPatch, swap: str
+) -> None:
+    root = Path(default_storage.path("")).resolve()
+    key = f"spare/{uuid4().hex}"
+    (root / "spare").mkdir(exist_ok=True)
+    regular = root / "spare" / f"{uuid4().hex}.pdf"
+    regular.write_bytes(b"regular")
+    if swap == "symlink-after-lstat":
+        (root / key).symlink_to(regular)
+        target = regular
+    else:
+        os.mkfifo(root / key)
+        target = regular
+    if swap != "fifo":
+        # The name is checked first, then swapped before it is opened.
+        seen = target.stat()
+        monkeypatch.setattr(retention, "_lstat", lambda path: seen)
+    blocked, opened = _guarded(
+        lambda: retention.open_stored(default_storage, key), unblock=root / key
+    )
+    if not isinstance(opened, BaseException) and opened is not None:
+        opened.close()  # type: ignore[attr-defined]
+    assert blocked is False
+    assert isinstance(opened, OSError)
+
+
+class _NameLiteral(Storage):
+    """A remote object store whose names mean only themselves."""
+
+    def __init__(self, objects: dict[str, bytes], behaviour: str) -> None:
+        self.objects = dict(objects)
+        self.behaviour = behaviour
+
+    def _open(self, name: str, mode: str = "rb") -> File[bytes]:
+        if name not in self.objects:
+            raise FileNotFoundError(name)
+        return ContentFile(self.objects[name], name=name)
+
+    def _save(self, name: str, content: File[bytes]) -> str:
+        payload = content.read()
+        other = posixpath.normpath(name)
+        self.objects[other] = payload
+        if self.behaviour == "stores-both":
+            self.objects[name] = payload  # also under the requested name
+        # It answers the other name, or the requested one it never stored.
+        return name if self.behaviour == "answers-requested" else other
+
+    def exists(self, name: str) -> bool:
+        return name in self.objects
+
+    def delete(self, name: str) -> None:
+        self.objects.pop(name, None)
+
+    def size(self, name: str) -> int:
+        return len(self.objects[name])
+
+
+@pytest.mark.parametrize(
+    "behaviour", ["stores-elsewhere", "answers-requested", "stores-both"]
+)
+def test_a_remote_save_under_another_name_is_not_the_original(
+    world: World, behaviour: str
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    requested = f"originals//{uuid4().hex}.pdf"
+    with tenant_context(world.tenant_id):
+        Document.objects.filter(pk=intake.document_id).update(storage_key=requested)
+    with default_storage.open(intake.quarantine_key, "rb") as handle:
+        bucket = _NameLiteral({intake.quarantine_key: handle.read()}, behaviour)
+    try:
+        outcome: object = scanning.scan_intake(
+            world.tenant_id,
+            intake.pk,
+            scanner=FakeScanner(),
+            now=timezone.now(),
+            storage=bucket,
+        )
+    except RuntimeError:
+        outcome = "raised"
     assert outcome != scanning.ScanOutcome.VERIFIED

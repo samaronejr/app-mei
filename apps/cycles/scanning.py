@@ -29,7 +29,6 @@ clear (`apps.cycles.document_views`).
 
 import hashlib
 import socket
-import stat
 import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -60,11 +59,11 @@ from apps.cycles.evidence import (
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
 from apps.cycles.retention import (
+    NotRegularFileError,
     canonical_key,
-    foreign_storage_keys,
-    local_layout_refusal,
+    open_stored,
+    ownership_refusal,
     single_copy_storage,
-    storage_key_aliased,
     storage_keys_locked,
 )
 from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
@@ -295,14 +294,14 @@ def claim_scan(tenant_id: UUID, intake_id: UUID) -> ScanTicket | None:
 def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
     """Phase B: stream the quarantined bytes to the scanner, outside any transaction."""
     assert_no_transaction()
-    if not _regular_or_remote(storage, ticket.object_key):
-        raise ContentMismatch  # a FIFO, socket or device is never opened
     try:
-        with storage.open(ticket.object_key, "rb") as handle:
+        with open_stored(storage, ticket.object_key) as handle:
             stream = _Digesting(handle)
             verdict = scanner.scan(stream)
             # One more read, never hashed: the scanner must have reached EOF.
             exhausted = handle.read(1) == b""
+    except NotRegularFileError as error:
+        raise ContentMismatch from error  # a FIFO, socket or device is never read
     except OSError as error:
         msg = "quarantined object unreadable"
         raise ScannerUnavailable(msg) from error
@@ -312,18 +311,6 @@ def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
         # or one that stops where the original would end, has no verdict.
         raise ContentMismatch
     return verdict
-
-
-def _regular_or_remote(storage: Storage, key: str) -> bool:
-    """Whether a local key is a regular file (or missing); true off local storage."""
-    if not isinstance(storage, FileSystemStorage):
-        return True
-    try:
-        return stat.S_ISREG(Path(storage.path(key)).lstat().st_mode)
-    except FileNotFoundError:
-        return True  # opening it reports the absence as usual
-    except OSError:
-        return False
 
 
 class _Digesting:
@@ -355,7 +342,7 @@ class IntegrityMismatch(Exception):  # noqa: N818 - domain vocabulary
 
 
 def _read_verified(storage: Storage, key: str, sha256: str) -> bytes:
-    with storage.open(key, "rb") as handle:
+    with open_stored(storage, key) as handle:
         payload: bytes = handle.read()
     if hashlib.sha256(payload).hexdigest() != sha256:
         msg = f"sha256 mismatch at {key}"
@@ -396,12 +383,32 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
         except OSError as error:
             msg = "promotion copy failed"
             raise ScannerUnavailable(msg) from error
-    # The backend may return the requested key spelled canonically; only a
-    # genuinely different target is refused (and that stray copy removed).
-    if canonical_key(saved, storage) != canonical_key(ticket.storage_key, storage):
-        _discard(storage, saved)
-        msg = "storage changed the requested document key"
-        raise RuntimeError(msg)
+    if not _saved_as_requested(storage, saved, ticket):
+        if saved != ticket.storage_key:
+            _discard(storage, saved)  # a stray object under another name
+        msg = "storage did not store the requested document key"
+        raise IntegrityMismatch(msg)
+
+
+def _saved_as_requested(storage: Storage, saved: str, ticket: ScanTicket) -> bool:
+    """Whether the save stored the original under the key the document names.
+
+    Locally, the backend's returned spelling is the same object exactly when the
+    canonical keys agree. Elsewhere a name means only itself: the returned name
+    must equal the requested one, and the object read back under the requested
+    name must have the original's size and digest (AXRM-051).
+    """
+    if isinstance(storage, FileSystemStorage):
+        return canonical_key(saved, storage) == canonical_key(
+            ticket.storage_key, storage
+        )
+    if saved != ticket.storage_key:
+        return False
+    try:
+        payload = _read_verified(storage, ticket.storage_key, ticket.sha256)
+    except (IntegrityMismatch, OSError):
+        return False
+    return len(payload) == storage.size(ticket.storage_key)
 
 
 def _write_state(ticket: ScanTicket) -> str:
@@ -437,7 +444,21 @@ def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
     if not single_copy_storage(storage):
         return
     with storage_keys_locked([ticket.object_key], wait=False) as locked:
-        if not locked or foreign_storage_keys(ticket.tenant_id, [ticket.object_key]):
+        if not locked:
+            return
+        with tenant_context(ticket.tenant_id):
+            document_id = (
+                DocumentIntake.objects.filter(pk=ticket.intake_id)
+                .values_list("document_id", flat=True)
+                .get()
+            )
+        # The purge's own ownership decision, under the copy's lock: cleanup never
+        # decides on its own who else may own this key (AXRM-051).
+        if ownership_refusal(
+            ticket.tenant_id,
+            [ticket.object_key, ticket.storage_key],
+            document_id=document_id,
+        ):
             return
         with tenant_context(ticket.tenant_id), transaction.atomic():
             intake = DocumentIntake.objects.get(pk=ticket.intake_id)
@@ -460,12 +481,10 @@ def _copy_is_spare(
     """
     if (
         LegalHold.objects.filter(client_id=intake.client_id, released_at=None).exists()
-        or storage_key_aliased([ticket.object_key], document_id=intake.document_id)
         or _disposal_started(intake.document_id)
         # The copy may be the final itself under another name: never "spare".
         or canonical_key(ticket.object_key, storage)
         == canonical_key(ticket.storage_key, storage)
-        or local_layout_refusal([ticket.object_key, ticket.storage_key], storage)
     ):
         return False
     try:

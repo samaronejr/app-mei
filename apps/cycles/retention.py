@@ -11,11 +11,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import IO, Any, Final
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import SuspiciousFileOperation, ValidationError
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.db import connection, transaction
 from django.db.models import F, Func, Q, QuerySet, Value
@@ -88,10 +88,11 @@ def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) ->
     A key string cannot capture the physical file. The root, taken at its real
     path, must hold no mount point (a bind mount shows one file at two names), no
     symlink, no directory that cannot be listed and no directory that ignores
-    case; each key must resolve inside it and, if it exists, be a regular file
-    with one link (AXRM-051). Then two keys name one object exactly when their
-    `canonical_key` is the same. Nothing is opened. Empty when proved, and on any
-    backend that is not a local filesystem.
+    case; each key, at the path the backend addresses, must resolve inside it and,
+    if it exists, be a regular file with one link (AXRM-051). Paths are compared
+    as bytes, so no name's encoding can break a match. Then two keys name one
+    object exactly when their `canonical_key` is the same. Nothing is opened.
+    Empty when proved, and on any backend that is not a local filesystem.
     """
     chosen = default_storage if storage is None else storage
     if not isinstance(chosen, FileSystemStorage):
@@ -100,7 +101,9 @@ def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) ->
     refusal = _mount_refusal(root) or _walk_refusal(root)
     if refusal:
         return refusal
-    return next((refusal for key in keys if (refusal := _key_refusal(root, key))), "")
+    return next(
+        (refusal for key in keys if (refusal := _key_refusal(chosen, root, key))), ""
+    )
 
 
 def real_root(storage: FileSystemStorage) -> Path:
@@ -108,23 +111,38 @@ def real_root(storage: FileSystemStorage) -> Path:
     return Path(os.path.realpath(storage.location))
 
 
-def _mount_points() -> list[Path]:
-    """Every mount point the kernel lists for this process (`/proc/self/mountinfo`)."""
-    with Path("/proc/self/mountinfo").open(encoding="utf-8") as table:
-        return [
-            Path(line.split()[4].encode().decode("unicode_escape"))
-            for line in table
-            if line.strip()
-        ]
+def _inside(path: Path | bytes, root: Path) -> bool:
+    """Whether `path` is `root` or under it, compared as bytes."""
+    raw = path if isinstance(path, bytes) else os.fsencode(path)
+    base = os.fsencode(root).rstrip(b"/")
+    return raw == base or raw.startswith(base + b"/")
+
+
+_MOUNT_ESCAPE: Final = re.compile(rb"\\([0-7]{3})")
+
+
+def _mount_table() -> bytes:
+    """Return the kernel's mount table for this process, as bytes."""
+    return Path("/proc/self/mountinfo").read_bytes()
+
+
+def _mount_points(table: bytes) -> list[bytes]:
+    """Each mount point (fifth field), its octal escapes decoded on the bytes."""
+    return [
+        _MOUNT_ESCAPE.sub(lambda match: bytes([int(match[1], 8)]), line.split()[4])
+        for line in table.splitlines()
+        if line.strip()
+    ]
 
 
 def _mount_refusal(root: Path) -> str:
     """Refuse a root with any mount point strictly under it, or an unreadable table."""
     try:
-        points = _mount_points()
-    except (OSError, IndexError, UnicodeError):
+        points = _mount_points(_mount_table())
+    except (OSError, IndexError, ValueError):
         return "armazenamento_nao_inspecionavel"
-    if any(point != root and point.is_relative_to(root) for point in points):
+    base = os.fsencode(root).rstrip(b"/")
+    if any(point != base and _inside(point, root) for point in points):
         return "armazenamento_com_montagem"
     return ""
 
@@ -136,31 +154,51 @@ def _walk_refusal(root: Path) -> str:
         names = (*directories, *files)
         if any((Path(parent) / name).is_symlink() for name in names):
             return "armazenamento_com_atalho"
-        if _ignores_case(Path(parent), names):
-            return "armazenamento_sem_distincao_de_caixa"
+        refusal = _case_refusal(Path(parent), names)
+        if refusal:
+            return refusal
     if unreadable:
         return "armazenamento_nao_inspecionavel"  # an unlisted directory proves nothing
     return ""
 
 
-def _ignores_case(directory: Path, names: tuple[str, ...]) -> bool:
-    """Whether another case of an entry's name opens the same entry (one probe)."""
+def _case_refusal(directory: Path, names: tuple[str, ...]) -> str:
+    """Probe one entry for a directory that ignores case.
+
+    Another case of the entry's name opening it means the directory ignores case;
+    a probe that cannot be answered proves nothing.
+    """
     name = next((n for n in names if n.lower() != n.upper()), None)
     if name is None:
-        return False
+        return ""
     other = directory / (name.lower() if name != name.lower() else name.upper())
     try:
-        return (directory / name).samefile(other)
+        same = (directory / name).samefile(other)
+    except FileNotFoundError:
+        return ""  # no such entry: names differing in case are distinct here
     except OSError:
-        return False  # no such entry: names differing in case are distinct here
+        return "armazenamento_nao_inspecionavel"
+    return "armazenamento_sem_distincao_de_caixa" if same else ""
 
 
-def _key_refusal(root: Path, key: str) -> str:
-    """Why one key is not proved to name a file of its own inside `root`, or ``."""
-    path = Path(os.path.realpath(root / key))
+def _addressed(storage: FileSystemStorage, key: str) -> Path | None:
+    """Return the real path the backend addresses for a key (None outside it)."""
     try:
-        if not path.is_relative_to(root):
-            return "chave_fora_do_armazenamento"
+        return Path(os.path.realpath(storage.path(key)))
+    except SuspiciousFileOperation:
+        if Path(key).is_absolute():
+            # A direct spelling the backend will not address (the real root of a
+            # symlinked location, say) still names whatever file it reaches.
+            return Path(os.path.realpath(key))
+        return None
+
+
+def _key_refusal(storage: FileSystemStorage, root: Path, key: str) -> str:
+    """Why one key is not proved to name a file of its own inside `root`, or ``."""
+    path = _addressed(storage, key)
+    if path is None or not _inside(path, root):
+        return "chave_fora_do_armazenamento"
+    try:
         status = path.lstat()
     except FileNotFoundError:
         return ""
@@ -169,6 +207,40 @@ def _key_refusal(root: Path, key: str) -> str:
     if not stat.S_ISREG(status.st_mode):
         return "arquivo_nao_regular"  # a FIFO, socket or device is never opened
     return "arquivo_com_vinculos" if status.st_nlink > 1 else ""
+
+
+class NotRegularFileError(OSError):
+    """A stored object that is not a regular file: never read."""
+
+
+# One indirection each, so a test can record an open or stand in for a swap.
+_lstat = os.lstat
+_open = os.open
+
+
+def open_stored(storage: Storage, key: str) -> IO[bytes]:
+    """Open a stored object for reading; on local storage only a regular file.
+
+    Every read of a stored object goes through here. Locally the name is checked
+    with `lstat`, opened without following a link and without blocking, and the
+    descriptor is checked again with `fstat` (same file, still regular), so a
+    FIFO, socket, device or a swap between the checks is never read.
+    """
+    if not isinstance(storage, FileSystemStorage):
+        return storage.open(key, "rb")
+    path = storage.path(key)
+    before = _lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        raise NotRegularFileError(path)
+    descriptor = _open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    after = os.fstat(descriptor)
+    if not stat.S_ISREG(after.st_mode) or (after.st_dev, after.st_ino) != (
+        before.st_dev,
+        before.st_ino,
+    ):
+        os.close(descriptor)
+        raise NotRegularFileError(path)
+    return os.fdopen(descriptor, "rb")
 
 
 def federal_content(document: Document) -> bool:
@@ -208,18 +280,22 @@ def canonical_key(key: str, storage: Storage | None = None) -> str:
     root-relative name, and a key that leaves the root keeps its absolute path,
     which no key inside it can equal. Elsewhere the name is normalised lexically.
     Locks, alias and ownership lookups, cleanup's same-object test and the layout
-    judge all compare this form (AXRM-051).
+    judge all compare this form (AXRM-051). The lexical form is used off local
+    storage only for locks and lookups, where folding names only keeps more.
     """
     if not key:
         return ""
     chosen = default_storage if storage is None else storage
     if not isinstance(chosen, FileSystemStorage):
         return posixpath.normpath(key.replace("\\", "/")).lstrip("/")
-    # Both the root and the key at their real paths: the configured spelling of a
-    # symlinked root and its target name the same object.
+    # The path the backend addresses for the key, at its real path, against the
+    # real root: configured and real spellings, and `..` re-entering through a
+    # symlinked root, name the same object (AXRM-051).
     root = real_root(chosen)
-    path = Path(os.path.realpath(root / key))
-    return path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
+    path = _addressed(chosen, key)
+    if path is None:
+        return os.path.normpath(Path(chosen.location) / key)  # outside: never inside
+    return path.relative_to(root).as_posix() if _inside(path, root) else str(path)
 
 
 # Names that resolve to one object differ only in separators and `.` segments, so
@@ -308,6 +384,31 @@ def foreign_storage_keys(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
         for raw in found
         if _loose(key) == _loose(raw) or canonical_key(key) == canonical_key(raw)
     }
+
+
+def ownership_refusal(
+    tenant_id: UUID,
+    keys: Iterable[str],
+    *,
+    document_id: UUID | None = None,
+    export_id: UUID | None = None,
+) -> str:
+    """Why these keys may not be deleted for this row, or ``: the one ownership check.
+
+    Another row of the tenant, a row of any other tenant (both matched on the
+    canonical key) or an unproved local layout keeps the bytes. The purge and the
+    scanner's cleanup both decide through here, outside any tenant context.
+    """
+    named = [key for key in keys if key]
+    if not named:
+        return ""
+    with tenant_context(tenant_id):
+        shared = storage_key_aliased(
+            named, document_id=document_id, export_id=export_id
+        )
+    if shared or foreign_storage_keys(tenant_id, named):
+        return "chave_compartilhada"
+    return local_layout_refusal(named)
 
 
 def _key_lock_id(key: str) -> int:
