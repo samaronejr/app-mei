@@ -347,7 +347,7 @@ def test_a_firm_termo_403_on_a_receipt_is_firm_work_with_its_own_label(
         ("falha", "limite_de_paginas", "A consulta atingiu o limite de 10 páginas"),
         ("falha", "resposta_pagtoweb_invalida", "A consulta não foi concluída"),
         ("incerto", "pagina_nao_registrada", "O resultado é incerto. Confira"),
-        ("falha", "termo_ausente", "O termo de autorização do escritório"),
+        ("falha", "termo_ausente", "Não havia termo de autorização do escritório"),
     ],
     ids=["page-limit", "failure", "uncertain", "firm-termo"],
 )
