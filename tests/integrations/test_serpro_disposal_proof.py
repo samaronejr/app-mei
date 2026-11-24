@@ -9,7 +9,10 @@ use refuse once a disposal claim exists, also across tenants.
 
 import hashlib
 import threading
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from io import BytesIO
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -38,7 +41,8 @@ from apps.cycles.evidence import (
     ScanVerdict,
 )
 from apps.cycles.export_records import EvidenceExport
-from apps.cycles.models import ServiceCycle
+from apps.cycles.models import EvidenceLink, ServiceCycle
+from apps.cycles.models import Exception as CycleException
 from apps.cycles.retention import place_hold, release_hold
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.retention_tasks import Candidate, disposal_refusal, purge_tenant
@@ -47,6 +51,7 @@ from apps.cycles.services.federal_review import (
     record_federal_report_review,
     report_input_digest,
 )
+from apps.cycles.services.requests import RequestFields, create_request
 from apps.integrations.call_models import ProviderCall
 from apps.integrations.serpro import retention as serpro_retention
 from apps.integrations.serpro.pgmei import OPERATION as GUIDE_OPERATION
@@ -1217,3 +1222,308 @@ def test_a_purge_between_the_copy_and_the_verdict_finds_the_key_locked(
         assert DocumentIntake.objects.get(pk=intake.pk).state not in CLEAN_STATES
     assert default_storage.exists(document.storage_key)
     assert default_storage.exists(intake.quarantine_key)
+
+
+def test_the_fiscal_year_is_sao_paulos_whatever_the_active_zone(world: World) -> None:
+    report = _emit(world)
+    world.scan()
+    current = world.reload(report)
+    # January 1 in São Paulo, December 31 in a UTC-04:00 zone.
+    current.emitted_at = datetime(2026, 1, 1, 3, 30, tzinfo=UTC)
+    with tenant_context(world.tenant_id), timezone.override("America/Manaus"):
+        anchors, gaps = serpro_retention._report_anchors(current)
+    assert gaps == []
+    assert [anchor.on for anchor in anchors] == [date(2026, 1, 1)]
+    assert retention.fiscal_expiry(anchors) == datetime(2032, 1, 1, tzinfo=SAO_PAULO)
+
+
+def _foreign_original(world: World, key: str) -> None:
+    """Another tenant's held original naming `key`."""
+    foreign = make_firm(f"axrm051-r6-{uuid4().hex[:8]}", client_count=1)
+    with tenant_context(foreign.tenant.pk):
+        Document.objects.create(
+            tenant=foreign.tenant,
+            client=foreign.clients[0],
+            storage_key=key,
+            sha256=hashlib.sha256(b"held elsewhere").hexdigest(),
+            original_filename="alheio.pdf",
+            content_type="application/pdf",
+            byte_size=14,
+            uploaded_by=foreign.owner,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+
+
+def test_a_key_attached_after_the_ownership_lookup_is_checked_under_the_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    held = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    _foreign_original(world, held)
+    lookup = retention.foreign_storage_keys
+    calls: list[int] = []
+
+    def then_reconciled(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
+        found = lookup(tenant_id, keys)
+        if not calls:
+            # After the sweep's lookup, a reconciliation points the intake at K.
+            with tenant_context(world.tenant_id):
+                DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=held)
+        calls.append(1)
+        return found
+
+    monkeypatch.setattr(
+        "apps.cycles.retention_tasks.foreign_storage_keys", then_reconciled
+    )
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert default_storage.exists(held)
+    claim = _claim(world, document.pk)
+    assert claim is not None
+    assert (claim.completed_at, claim.error_code) == (None, "chave_compartilhada")
+
+
+@pytest.mark.parametrize(
+    ("restored", "spelling"),
+    [
+        ("here", "doubled"),
+        ("elsewhere", "doubled"),
+        ("here", "parent"),
+        ("elsewhere", "parent"),
+    ],
+)
+def test_two_spellings_of_one_file_are_one_key(
+    world: World, restored: str, spelling: str
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    # One side names the file another way (`a//b` or `a/x/../b`); storage reads
+    # one file.
+    spelled = (
+        key.replace("/", "//", 1)
+        if spelling == "doubled"
+        else key.replace("/", "/restored/../", 1)
+    )
+    _foreign_original(world, spelled if restored == "elsewhere" else key)
+    with tenant_context(world.tenant_id):
+        DocumentIntake.objects.filter(pk=intake.pk).update(
+            quarantine_key=key if restored == "elsewhere" else spelled
+        )
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert default_storage.exists(key)
+    assert _claim(world, document.pk) is None
+
+
+def test_one_lock_per_object_whatever_its_spelling(world: World) -> None:
+    other = connection.get_new_connection(connection.get_connection_params())
+    try:
+        other.autocommit = True
+        lock_id = retention._key_lock_id("originals/r6.pdf")
+        other.execute("SELECT pg_advisory_lock(%s)", [lock_id])
+        with retention.storage_keys_locked(["originals//./r6.pdf"], wait=False) as got:
+            taken = got
+        other.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
+    finally:
+        other.close()
+    assert taken is False
+
+
+@pytest.mark.parametrize(
+    "pause", ["copy-delete-fails", "final-delete-fails", "final-replaced"]
+)
+def test_cleanup_never_removes_a_copy_the_original_may_still_need(
+    world: World, monkeypatch: pytest.MonkeyPatch, pause: str
+) -> None:
+    report = _emit(world)
+    original = _original(world, report)
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=original)
+    copy, final = intake.quarantine_key, original.storage_key
+    discard = scanning._discard_quarantine
+    real_delete = default_storage.delete
+
+    def paused(ticket: scanning.ScanTicket, storage: object) -> None:
+        # The scanner committed VERIFIED and pauses here, before its cleanup.
+        if pause == "final-replaced":
+            real_delete(final)
+            default_storage.save(final, ContentFile(b"not the original"))
+        else:
+            failing = copy if pause == "copy-delete-fails" else final
+
+            def delete(name: str) -> None:
+                if name == failing:
+                    message = "synthetic storage refusal"
+                    raise OSError(message)
+                real_delete(name)
+
+            with monkeypatch.context() as patch:
+                patch.setattr(default_storage, "delete", delete)
+                purge_tenant(world.tenant_id, dry_run=False, now=_expiry(report))
+        discard(ticket, storage)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(scanning, "_discard_quarantine", paused)
+    world.scan()
+    assert default_storage.exists(copy)
+    if pause != "final-replaced":
+        claim = _claim(world, original.pk)
+        assert claim is not None
+        assert claim.completed_at is None
+
+
+def test_cleanup_checks_other_tenants_under_the_copys_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _emit(world)
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=_original(world, report))
+    locked = retention.storage_keys_locked
+
+    @contextmanager
+    def then_aliased(keys: Iterable[str], *, wait: bool) -> Iterator[bool]:
+        if intake.quarantine_key in keys:
+            _foreign_original(world, intake.quarantine_key)  # just before the lock
+        with locked(keys, wait=wait) as got:
+            yield got
+
+    monkeypatch.setattr("apps.cycles.scanning.storage_keys_locked", then_aliased)
+    world.scan()
+    assert default_storage.exists(intake.quarantine_key)
+
+
+@pytest.mark.parametrize("disposed", ["before-the-ticket", "after-the-ticket"])
+def test_a_source_disposed_of_is_not_a_scanner_outage(
+    world: World, monkeypatch: pytest.MonkeyPatch, disposed: str
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    late = intake.created_at + timedelta(hours=25)
+    when = datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    if disposed == "before-the-ticket":
+        assert purge_tenant(world.tenant_id, dry_run=False, now=when)["purged"] == 1
+        assert intake.pk not in scanning.due_intakes(world.tenant_id, late)
+        assert scanning.claim_scan(world.tenant_id, intake.pk) is None
+    else:
+        run = scanning.run_scan
+
+        def purged_first(*args: object, **kwargs: object) -> object:
+            assert purge_tenant(world.tenant_id, dry_run=False, now=when)["purged"] == 1
+            return run(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(scanning, "run_scan", purged_first)
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=late
+    )
+    assert outcome == scanning.ScanOutcome.SKIPPED
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [
+        (timedelta(hours=1), scanning.ScanOutcome.RETRY),
+        (timedelta(hours=25), scanning.ScanOutcome.UNAVAILABLE),
+    ],
+)
+def test_a_clean_verdict_certifies_only_the_bytes_it_scanned(
+    world: World, age: timedelta, expected: scanning.ScanOutcome
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    now = timezone.now()
+    with tenant_context(world.tenant_id):
+        # The model default reads the wall clock; the age is set from this one.
+        DocumentIntake.objects.filter(pk=intake.pk).update(created_at=now - age)
+        cycle = ServiceCycle.objects.get(pk=world.cycle.pk)
+        request = create_request(
+            world.termo.actor,
+            cycle.pk,
+            RequestFields("Original em verificação"),
+            expected_version=cycle.version,
+        )
+        EvidenceLink.objects.create(
+            tenant=world.termo.tenant,
+            client=world.termo.client,
+            request=request,
+            document=document,
+            origin="staff",
+            submitted_by=world.termo.actor,
+        )
+    # Crash recovery: the final is the original; the copy is another benign PDF.
+    default_storage.delete(intake.quarantine_key)
+    default_storage.save(intake.quarantine_key, ContentFile(b"%PDF-1.7\n% other\n"))
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=now
+    )
+    # Never certified; the mismatch takes the failure path and its 24-hour line.
+    assert outcome == expected
+    with tenant_context(world.tenant_id):
+        current = DocumentIntake.objects.get(pk=intake.pk)
+        problems = list(
+            CycleException.objects.filter(subject_ref=intake.pk).values_list(
+                "reason_code", "cycle_id", "state"
+            )
+        )
+    if expected is scanning.ScanOutcome.RETRY:
+        assert current.state in PENDING_SCAN_STATES
+        assert problems == []
+    else:
+        assert (current.state, current.reason) == (
+            IntakeState.SCAN_UNAVAILABLE,
+            "scanner_indisponivel_24h",
+        )
+        assert problems == [("verificacao_indisponivel", world.cycle.pk, "aberta")]
+
+
+def test_the_digest_covers_what_the_scanner_left_unread(world: World) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    ticket = scanning.claim_scan(world.tenant_id, intake.pk)
+    assert ticket is not None
+
+    class Partial:
+        def scan(self, stream: scanning.ByteStream) -> scanning.Verdict:
+            stream.read(8)
+            return FakeScanner().scan(BytesIO(b""))
+
+    try:
+        verdict = scanning.run_scan(ticket, Partial(), default_storage)
+        certified = not verdict.infected
+    except scanning.ContentMismatch:
+        certified = False
+    # The bytes it never read are still the original's: the verdict stands.
+    assert certified is True
+
+
+def test_a_disposal_claimed_after_the_ticket_stops_the_copy(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=False)
+    run = scanning.run_scan
+
+    def claimed_meanwhile(*args: object, **kwargs: object) -> scanning.Verdict:
+        # The ticket is out; a purge claims the original and fails to delete it.
+        with monkeypatch.context() as patch:
+            patch.setattr(default_storage, "delete", _refuse_delete)
+            purge_tenant(
+                world.tenant_id,
+                dry_run=False,
+                now=datetime(2030, 1, 1, tzinfo=SAO_PAULO),
+            )
+        return run(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(scanning, "run_scan", claimed_meanwhile)
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert _claim(world, document.pk) is not None
+    assert outcome == scanning.ScanOutcome.SKIPPED
+    assert not default_storage.exists(document.storage_key)  # never copied
+    with tenant_context(world.tenant_id):
+        assert DocumentIntake.objects.get(pk=intake.pk).state == IntakeState.QUARANTINED
+
+
+def _refuse_delete(key: str) -> None:
+    message = "synthetic storage refusal"
+    raise OSError(message)

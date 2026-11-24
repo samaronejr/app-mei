@@ -390,7 +390,13 @@ def _physical_refusal(keys: tuple[str, ...], final_key: str, sha256: str) -> str
 
 
 PROOF_REFUSALS: Final = frozenset(
-    {"arquivo_ausente", "conteudo_divergente", "chave_em_uso", "chaves_divergentes"}
+    {
+        "arquivo_ausente",
+        "conteudo_divergente",
+        "chave_em_uso",
+        "chaves_divergentes",
+        "chave_compartilhada",
+    }
 )
 COMPLETED: Final = "concluida"
 PURGED: Final = "removida"
@@ -417,6 +423,27 @@ def _identity(candidate: Candidate) -> tuple[str, str] | None:
     return document.storage_key, document.sha256
 
 
+def _locked_stop(tid: UUID, claim_id: UUID, keys: tuple[str, ...]) -> str:
+    """Under the key locks: why this claim must not delete these keys, or ``.
+
+    A claim another worker completed is done. Ownership is decided here, for the
+    keys about to be deleted, never from a lookup made before the locks (AXRM-051).
+    """
+    with tenant_context(tid):
+        claim = ContentPurgeClaim.objects.get(pk=claim_id)
+        if claim.completed_at is not None:
+            return COMPLETED
+        own = (
+            {"document_id": claim.content_id}
+            if claim.content_kind == "document"
+            else {"export_id": claim.content_id}
+        )
+        shared = storage_key_aliased(keys, **own)
+    if shared or foreign_storage_keys(tid, keys):
+        return "chave_compartilhada"
+    return ""
+
+
 def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
     tid: UUID,
     *,
@@ -439,11 +466,9 @@ def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
     with storage_keys_locked(keys, wait=False) as locked:
         if not locked:
             return "chave_em_uso"
-        with tenant_context(tid):
-            if ContentPurgeClaim.objects.filter(
-                pk=claim_id, completed_at__isnull=False
-            ).exists():
-                return COMPLETED
+        stop = _locked_stop(tid, claim_id, keys)
+        if stop:
+            return stop
         try:
             if identity is not None:
                 refused = _physical_refusal(keys, *identity)
