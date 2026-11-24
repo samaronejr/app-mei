@@ -290,7 +290,7 @@ def test_a_firm_termo_403_leaves_every_client_authority_and_opens_the_firm_issue
     # The refusal names the block: the firm issue's 020, with its own code.
     assert (refused.state, refused.failure_code) == (
         "falha",
-        first_issue(world),
+        first_issue(world, TERMO_020),
     )
     detail = query_detail(refused)
     assert "procuração do cliente não foi alterada" in detail
@@ -576,7 +576,10 @@ def test_a_platform_403_names_the_platform_on_the_firms_next_refusal(
     refused = world.consult(nonce="consulta-2")
     assert len(world.sent()) == 1
     # Then it names the platform's 016, never a refused or missing termo.
-    assert (refused.state, refused.failure_code) == ("falha", first_issue(world))
+    assert (refused.state, refused.failure_code) == (
+        "falha",
+        first_issue(world, platform),
+    )
     detail = query_detail(refused)
     assert "credenciais da plataforma" in detail
     assert platform in detail
@@ -736,12 +739,12 @@ def test_a_cleared_termo_refusal_reads_cleared_though_another_block_opened(
     assert platform not in detail
 
 
-def first_issue(world: World) -> str:
-    """The identity a refusal records for the firm's first issue."""
+def first_issue(world: World, code: str = "") -> str:
+    """The identity a refusal records for the firm's first issue, and its 403."""
     with tenant_context(world.termo.tenant.pk):
         issue = FirmIntegrationIssue.objects.order_by("created_at", "pk").first()
     assert issue is not None
-    return f"pendencia-{issue.pk}"
+    return f"pendencia-{issue.pk}" + (f"-{code[-3:]}" if code else "")
 
 
 def _second_client(world: World) -> ClientCompany:
@@ -827,3 +830,24 @@ def test_the_panel_reads_a_recorded_block_by_its_state_now(world: World) -> None
     detail = query_detail(query)
     assert "já foi encerrada" in detail
     assert "aberta" not in detail
+
+
+@DB
+def test_a_refusals_history_keeps_the_403_frozen_when_it_was_refused(
+    world: World,
+) -> None:
+    # Given A's 020 opens the firm issue, and the firm's next consultation is
+    # refused for it: the refusal freezes that 020.
+    world.script(denied(code=TERMO_020))
+    world.consult()
+    refused = world.consult(nonce="consulta-2")
+    assert refused.failure_code == first_issue(world, TERMO_020)
+    # When the issue's cited call later reads as another firm 403 (016).
+    with tenant_context(world.termo.tenant.pk):
+        ProviderCall.objects.filter(provider_code=TERMO_020).update(
+            provider_code="AcessoNegado-ICGERENCIADOR-016"
+        )
+    # Then the history still names the 020 that caused it.
+    detail = query_detail(refused)
+    assert TERMO_020 in detail
+    assert "016" not in detail
