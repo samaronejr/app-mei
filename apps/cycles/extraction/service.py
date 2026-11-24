@@ -30,6 +30,7 @@ from uuid import UUID
 from celery.exceptions import SoftTimeLimitExceeded
 from django.core.files.storage import Storage, default_storage
 from django.db.models import Exists, OuterRef
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -128,7 +129,9 @@ def _linked_cycles(intake: DocumentIntake) -> list[tuple[ServiceCycle, UUID]]:
     for cycle_id, author_id in (
         EvidenceLink.objects.filter(document_id=intake.document_id)
         .order_by("created_at", "pk")
-        .values_list("request__cycle_id", "request__created_by_id")
+        .values_list(
+            "request__cycle_id", Coalesce("request__created_by_id", "submitted_by_id")
+        )
     ):
         authors.setdefault(cycle_id, author_id)
     cycles = ServiceCycle.objects.select_for_update().filter(pk__in=list(authors))
@@ -282,7 +285,7 @@ def propagate_divergent_link(tenant_id: UUID, link_id: UUID, *, now: datetime) -
             actor=None,
             cycle_id=cycle.pk,
             expected_version=cycle.version,
-            owner=cycle.owner or link.request.created_by,
+            owner=cycle.owner or link.request.created_by or link.submitted_by,
             review_on=timezone.localdate(now),
             evidence_refs=(intake.document_id,),
         )

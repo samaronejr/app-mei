@@ -3,6 +3,7 @@
 import hashlib
 import json
 from datetime import date
+from typing import Final
 from uuid import UUID
 
 from django.core.serializers.json import DjangoJSONEncoder
@@ -34,6 +35,16 @@ from apps.cycles.models import Exception as CycleException
 from apps.delivery.models import DeliveryAttempt, DeliveryEffect, OutboundMessage
 from apps.obligations.models import Document
 
+# The published V1 contract requires a UUID. Nil denotes system attribution
+# only in this projection, not an account or a database foreign key.
+V1_SYSTEM_REQUEST_CREATOR: Final = "00000000-0000-0000-0000-000000000000"
+
+
+def encode_v1_request_attribution(row: dict[str, JSONValue]) -> None:
+    """Encode a missing request author without changing the published schema."""
+    if row["created_by_id"] is None:
+        row["created_by_id"] = V1_SYSTEM_REQUEST_CREATOR
+
 
 def digest_data(data: JSONValue) -> str:
     """Hash a stable UTF-8 projection, not today's presentation markup."""
@@ -64,6 +75,8 @@ def _rows(
     for row in queryset.order_by("pk").values(*fields, *hashes):
         projected = {key: _value(row[key]) for key in fields}
         projected.update({f"{key}_digest": digest_data(row[key]) for key in hashes})
+        if queryset.model is EvidenceRequest:
+            encode_v1_request_attribution(projected)
         result.append(projected)
     return result
 

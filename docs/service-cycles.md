@@ -56,3 +56,16 @@ must retain their protection on a populated database.
 The flagged workspace replaces the legacy client detail without changing the
 flag-off route. Not-yet-integrated request, coverage and communication sections
 state their limitations rather than presenting empty data as verified absence.
+
+## V1 evidence export attribution
+
+In `axorim.evidence.v1` archives, `requests[].created_by_id` is always a UUID.
+`00000000-0000-0000-0000-000000000000` means that the system created the request;
+it is not an account ID. A human-authored request keeps its actual creator UUID.
+The underlying system request and its creation event have no human author.
+This encoding keeps the published V1 schema and archived V1 generations intact.
+
+The request-purpose migration can be reversed only while no request carries a
+purpose. This includes guide requests adopted during the upgrade and municipal
+proof created by staff. After that point use a forward repair: dropping the
+purpose would let a municipal filing be mistaken for a payment receipt.

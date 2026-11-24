@@ -37,6 +37,7 @@ from apps.cycles.evidence import (
     EvidenceRequest,
     IntakeState,
     RequestKind,
+    RequestPurpose,
     Review,
     ReviewDecision,
     ScanVerdict,
@@ -60,7 +61,8 @@ SUBMISSION_OUTCOME: Final = "submitted"
 
 def _pending_links(queryset: QuerySet[EvidenceLink]) -> QuerySet[EvidenceLink]:
     """Advisory inventory; the subject-fenced unit repeats submission dedupe."""
-    return queryset.filter(
+    receipts = queryset.exclude(request__purpose=RequestPurpose.MUNICIPAL_PROOF)
+    return receipts.filter(
         request__kind=RequestKind.COMPROVANTE,
         request__obligation__isnull=False,
     ).exclude(
@@ -132,13 +134,21 @@ def _submission(request: EvidenceRequest, link: EvidenceLink) -> SourceObservati
     return existing or _write_submission(request=request, link=link)
 
 
+def _is_payment_request(request: EvidenceRequest) -> bool:
+    # A municipal filing is also a bound comprovante, but never payment evidence.
+    return (
+        request.kind == RequestKind.COMPROVANTE
+        and request.obligation_id is not None
+        and request.purpose != RequestPurpose.MUNICIPAL_PROOF
+    )
+
+
 def payment_evidence_eligible(
     request: EvidenceRequest, link: EvidenceLink, intake: DocumentIntake | None
 ) -> bool:
     """Document acceptance alone never qualifies a receipt as payment evidence."""
     return bool(
-        request.kind == RequestKind.COMPROVANTE
-        and request.obligation_id is not None
+        _is_payment_request(request)
         and link.request_id == request.pk
         and link.client_id == request.client_id
         and intake is not None
@@ -182,7 +192,7 @@ def apply_review(
     receipt. Acceptance without `payment_relevant` produces nothing: a file the
     firm accepted as the wrong document must not turn into a payment claim.
     """
-    if request.kind != RequestKind.COMPROVANTE or request.obligation_id is None:
+    if not _is_payment_request(request):
         return None
     if review.link_id != link.pk or review.document_sha256 != link.document.sha256:
         msg = "A revisão não corresponde ao comprovante selecionado."
@@ -211,7 +221,7 @@ def apply_review(
     return assert_fact(
         tenant_id=request.tenant_id,
         client_id=request.client_id,
-        subject_id=request.obligation_id,
+        subject_id=submission.subject_ref_id,
         kind=ObservationKind.PAYMENT,
         period=_submission_period(request),
         source_kind=ObservationSourceKind.STAFF_RECORDED,
@@ -256,7 +266,7 @@ def settle_link(link_id: UUID) -> SourceObservation | None:
             no_key=True, of=("self",)
         ).get(pk=link.request_id, client_id=link.client_id, cycle=cycle)
         request.cycle = cycle
-        if request.kind != RequestKind.COMPROVANTE or request.obligation_id is None:
+        if not _is_payment_request(request):
             return None
         link = (
             EvidenceLink.objects.select_for_update(no_key=True, of=("self",))

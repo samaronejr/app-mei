@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from importlib import import_module
 from itertools import pairwise
+from unittest.mock import patch
 from uuid import UUID
 
 from django.db import connection, transaction
@@ -16,7 +17,7 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.effects import executors
 from apps.cycles.evidence import EvidenceLink, EvidenceRequest, RequestInternal
 from apps.cycles.evidence_index import capture_index
-from apps.cycles.models import CycleEvent, CycleState, TaskState
+from apps.cycles.models import CycleEvent, CycleState, ServiceCycle, TaskState
 from apps.cycles.services.approvals import approve
 from apps.cycles.services.cycle import transition_cycle, transition_task
 from apps.cycles.services.proposed_transitions import propose_completion
@@ -86,7 +87,9 @@ def pre_portal_database(
         for state, migration in reversed(steps):
             executor.unapply_migration(state, migration)
     try:
-        yield
+        # Pre-cutover business writes predate 049b's stable-purpose helper as well.
+        with patch("apps.integrations.serpro.pgmei._guide_request", _pre_cutover_guide):
+            yield
     finally:
         for i, (state, migration) in enumerate(steps):
             forward = (
@@ -98,6 +101,50 @@ def pre_portal_database(
                 executor.apply_migration(state.clone(), forward)
             if inspect_boundary:
                 inspect_boundary(migration.name)
+
+
+def _pre_cutover_guide(cycle: ServiceCycle, actor: User) -> EvidenceRequest:
+    """Record the pre-purpose PGMEI request, companion and event on the old schema."""
+    request = (
+        EvidenceRequest.objects.select_for_update()
+        .filter(cycle=cycle, title="Guia DAS oficial", state="interno")
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if request is not None:
+        return request
+    request = EvidenceRequest.objects.create(
+        tenant_id=cycle.tenant_id,
+        client_id=cycle.client_id,
+        cycle=cycle,
+        title="Guia DAS oficial",
+        required=False,
+        state="interno",
+        created_by=actor,
+    )
+    RequestInternal.objects.create(
+        tenant_id=cycle.tenant_id,
+        client_id=cycle.client_id,
+        request=request,
+        instructions=(
+            "Guia emitida pelo PGMEI (SERPRO). Revise o arquivo e publique pela "
+            "etapa Guia DAS do mês, com aprovação."
+        ),
+    )
+    cycle.version += 1
+    cycle.save(update_fields=["version"])
+    CycleEvent.objects.create(
+        tenant_id=cycle.tenant_id,
+        client_id=cycle.client_id,
+        cycle=cycle,
+        actor=actor,
+        type="request.created",
+        aggregate_type="EvidenceRequest",
+        aggregate_id=request.pk,
+        aggregate_version=request.version,
+        payload={"origin": "pgmei"},
+    )
+    return request
 
 
 @transaction.atomic

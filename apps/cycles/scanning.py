@@ -41,6 +41,7 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import Storage, default_storage
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -345,12 +346,14 @@ def _locked(ticket: ScanTicket) -> DocumentIntake | None:
 
 
 def _linked_cycles(intake: DocumentIntake) -> list[tuple[ServiceCycle, UUID]]:
-    """Each cycle a link puts this document in, locked, with the request's author."""
+    """Each linked cycle, locked, with the request author or actual submitter."""
     authors: dict[UUID, UUID] = {}
     for cycle_id, author_id in (
         EvidenceLink.objects.filter(document_id=intake.document_id)
         .order_by("created_at", "pk")
-        .values_list("request__cycle_id", "request__created_by_id")
+        .values_list(
+            "request__cycle_id", Coalesce("request__created_by_id", "submitted_by_id")
+        )
     ):
         authors.setdefault(cycle_id, author_id)
     cycles = ServiceCycle.objects.select_for_update().filter(pk__in=list(authors))

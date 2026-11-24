@@ -131,17 +131,10 @@ def test_approval_digest_binds_the_guide_hash_and_the_portal_receives_it(
     ready: tuple[GuideWorld, Portal],
 ) -> None:
     world, portal = ready
-    # Start with a legacy guide request before the provider has sent anything.
+    # A pack may request the same guide before the provider returns the PDF.
     with tenant_context(world.tenant_id):
-        request = EvidenceRequest.objects.create(
-            tenant_id=world.tenant_id,
-            client_id=world.cycle.client_id,
-            cycle=world.cycle,
-            title=pgmei.GUIDE_TITLE,
-            state=RequestState.INTERNAL,
-            required=False,
-            created_by=world.owner,
-        )
+        request = requests.ensure_internal_request(world.cycle, "guia_das_oficial")
+        world.cycle.refresh_from_db()
         public = requests.create_request(
             world.owner,
             world.cycle.pk,
@@ -498,6 +491,37 @@ def test_unpublished_guide_stays_invisible_to_the_portal(
         assert cursor.fetchall() == [(None,)]
     path = f"/publicacoes/{unpublished}/documentos/{outcome.link_id}/"
     assert client.get(path).status_code == 404
+
+
+def test_guide_identity_survives_a_title_change(
+    ready: tuple[GuideWorld, Portal], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world, _portal = ready
+    browser = session(world, world.owner, portal=False)
+    url = reverse("cycle-detail", args=[world.cycle.pk])
+    status = b'data-das-guide-status="guia_obtida"'
+    with FakeSerpro((das_reply(), das_reply(pdf=GUIDE_PDF + b"% reissued\n"))) as peer:
+        first = obtain(world, peer.origin)
+        assert first.link_id is not None
+        with tenant_context(world.tenant_id):
+            request_id = EvidenceLink.objects.get(pk=first.link_id).request_id
+        before = browser.get(url)
+        assert before.status_code == 200
+        assert status in before.content
+        with tenant_context(world.tenant_id):
+            EvidenceRequest.objects.filter(pk=request_id).update(
+                title="Guia de outubro"
+            )
+        after = browser.get(url)
+        assert after.status_code == 200
+        assert status in after.content
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        monkeypatch.setattr(pgmei, "consolidation_day", lambda: tomorrow)
+        second = obtain(world, peer.origin)
+    assert second.link_id is not None
+    assert second.link_id != first.link_id
+    with tenant_context(world.tenant_id):
+        assert EvidenceLink.objects.get(pk=second.link_id).request_id == request_id
 
 
 def test_regenerated_guide_is_published_as_a_second_occurrence(
