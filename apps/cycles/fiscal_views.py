@@ -1,7 +1,9 @@
 """The fiscal workspace behind the existing firm document review route."""
 
+from __future__ import annotations
+
 from http import HTTPStatus
-from uuid import UUID
+from typing import TYPE_CHECKING, TypedDict
 
 from django import forms
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -10,21 +12,33 @@ from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from apps.accounts.views import AuthenticatedRequest
 from apps.authz.objects import load_visible_client
 from apps.authz.support import in_support_mode
 from apps.core.flags import tenant_has
 from apps.cycles.errors import VersionConflict
-from apps.cycles.fiscal_records import FiscalDocumentReview
+from apps.cycles.fiscal_material import material_digest
+from apps.cycles.fiscal_records import DECISIONS, FiscalDocumentReview
 from apps.cycles.records import ServiceCycle
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.services.fiscal_review import (
-    DECISIONS,
     NOTE_MAX_LENGTH,
-    input_digest,
     record_fiscal_document_review,
 )
 from apps.obligations.models import FiscalDocument, FiscalRevision, RevisionArtifact
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from django.db.models import QuerySet
+    from django_stubs_ext import WithAnnotations
+
+    from apps.accounts.views import AuthenticatedRequest
+
+
+class ReviewPreview(TypedDict):
+    """Material selected with the fiscal document."""
+
+    review_material: str
 
 
 class FiscalReviewForm(forms.Form):
@@ -42,8 +56,14 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
     """Reuse the document route's authorization, then recheck the fiscal scope."""
     if not tenant_has(tenant_id(), "document_capture"):
         raise Http404
-    fiscal = get_object_or_404(
-        FiscalDocument.objects.select_related("client", "current_revision"), pk=pk
+    # Keep the displayed revision and its material token in the same SELECT.
+    fiscals: QuerySet[WithAnnotations[FiscalDocument, ReviewPreview]] = (
+        FiscalDocument.objects.select_related("client", "current_revision").annotate(
+            review_material=material_digest()
+        )
+    )
+    fiscal: WithAnnotations[FiscalDocument, ReviewPreview] = get_object_or_404(
+        fiscals, pk=pk
     )
     load_visible_client(request.user, fiscal.client_id)
     error, status = "", HTTPStatus.OK
@@ -78,7 +98,7 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
                 )
             else:
                 return redirect(f"{reverse('document-queue')}?fila=fiscais")
-        fiscal.refresh_from_db()
+        fiscal = get_object_or_404(fiscals, pk=pk)
     period = fiscal.issue_date if fiscal.family == "nfe" else fiscal.competence
     cycles = (
         list(
@@ -128,7 +148,7 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
             "revisions": revisions,
             "reviews": reviews,
             "decided": decided,
-            "input_digest": input_digest(fiscal),
+            "input_digest": fiscal.review_material,
             "decisions": DECISIONS,
             "error": error,
         },
