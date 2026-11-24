@@ -22,6 +22,7 @@ from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.integrations.authority import head_record
 from apps.integrations.call_contracts import AdmissionDeniedError
+from apps.integrations.call_models import ProviderCall
 from apps.integrations.models import (
     ClientProviderLink,
     IntegrationIssue,
