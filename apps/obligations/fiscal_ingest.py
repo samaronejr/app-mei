@@ -43,7 +43,7 @@ from apps.cycles.extraction.v2 import (
     FiscalExtraction,
     extract,
 )
-from apps.cycles.intake import staff_upload, vault_upload
+from apps.cycles.intake import staff_upload, tenant_quarantine, vault_upload
 from apps.cycles.parsing import UnsafeDocument
 from apps.cycles.scanning import scan_intake, scanner_from_settings
 from apps.integrations.authority import Problem, raise_problem
@@ -457,16 +457,20 @@ def _original(context: FiscalSource, payload: bytes) -> Document:
             content_type="application/xml",
             retention_class=RetentionClass.FISCAL_EVIDENCE,
         )
-    if context.actor is None:
-        raise PermissionDenied
-    with tenant_context(tenant.pk):
+
+    def register_original() -> Document:
+        if context.actor is None:
+            raise PermissionDenied
+        _authorize(context)
         upload = SimpleUploadedFile("documento-fiscal.xml", payload)
         document, _ = (
             staff_upload(context.actor, upload, tenant=tenant, client=client)
             if context.source == "importacao_equipe"
             else vault_upload(context.actor, upload, tenant=tenant, client=client)
         )
-    return document
+        return document
+
+    return tenant_quarantine(tenant.pk, register_original)
 
 
 def _classify(

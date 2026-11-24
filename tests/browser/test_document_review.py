@@ -44,6 +44,7 @@ from tests.browser.harness import (
     mfa_session_cookie,
 )
 from tests.cycles.document_fixtures import fixture
+from tests.obligations.ingest_fixtures import scoped_upload
 from tests.ui.factories import add_client, add_member
 
 pytestmark = pytest.mark.browser
@@ -104,14 +105,17 @@ def _desk(live: LiveFirm) -> Desk:
             expected_version=ref.version,
         )
         send_requests(firm.owner, ref.id, expected_version=ref.version + 1)
-        for name in ("nfe_outra_empresa.xml", "nfe_emitente_cliente.xml"):
-            intake_upload(
-                portal_user,
-                request.pk,
-                SimpleUploadedFile(name, fixture(name), "application/xml"),
-                tenant=firm.tenant,
-                client=company,
-            )
+    for name in ("nfe_outra_empresa.xml", "nfe_emitente_cliente.xml"):
+        scoped_upload(
+            firm.tenant,
+            intake_upload,
+            portal_user,
+            request.pk,
+            SimpleUploadedFile(name, fixture(name), "application/xml"),
+            tenant=firm.tenant,
+            client=company,
+        )
+    with tenant_context(firm.tenant.pk):
         intakes = list(DocumentIntake.objects.order_by("created_at", "pk"))
     for intake in intakes:
         scan_intake(

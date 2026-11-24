@@ -14,7 +14,12 @@ from apps.cycles.intake import staff_upload
 from apps.obligations.models import Document
 from apps.obligations.system_ingest import ingest_system_document
 from tests.isolation.test_portal_visibility_predicate import _document
-from tests.obligations.ingest_fixtures import PDF, ingest_setup, portal_cursor
+from tests.obligations.ingest_fixtures import (
+    PDF,
+    ingest_setup,
+    portal_cursor,
+    scoped_upload,
+)
 from tests.portal.request_fixtures import PortalSetup, upload
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -137,14 +142,15 @@ def test_actorless_ingest_exposes_neither_intake_metadata_nor_aggregates(
 
 def test_other_clients_visible_intake_exposes_no_metadata(setup: PortalSetup) -> None:
     # Given a visible original for a sibling client of the same firm.
-    with tenant_context(setup.graph.tenant.pk):
-        document, _ = staff_upload(
-            setup.graph.actor,
-            upload("other-client.pdf", PDF),
-            tenant=setup.graph.tenant,
-            client=setup.other_client,
-            portal_visible=True,
-        )
+    document, _ = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("other-client.pdf", PDF),
+        tenant=setup.graph.tenant,
+        client=setup.other_client,
+        portal_visible=True,
+    )
     # When this client's actual portal role probes that known document ID.
     # Then row reads and aggregate probes both retain the client boundary.
     _assert_no_metadata(setup, document)

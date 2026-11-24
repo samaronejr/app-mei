@@ -385,8 +385,14 @@ def ingest_system_document(
     payload: bytes,
 ) -> Document:
     """Commit the private original and report association behind the wire mutex."""
-    with report_writer(tenant_id, report_id), tenant_context(tenant_id):
-        document = _ingest_document(
+
+    def associate(document: Document) -> None:
+        _store_reply(
+            _locked(report_id), call_id, replace(reply, document_id=document.pk)
+        )
+
+    with report_writer(tenant_id, report_id):
+        return _ingest_document(
             tenant_id=tenant_id,
             client_id=_client_of(tenant_id, report_id),
             origin=AcquisitionOrigin.FEDERAL_PROVIDER,
@@ -395,10 +401,8 @@ def ingest_system_document(
             filename=f"situacao-fiscal-{report_id}.pdf",
             content_type="application/pdf",
             retention_class=RetentionClass.FISCAL_EVIDENCE,
+            on_registered=associate,
         )
-        kept = replace(reply, document_id=document.pk)
-        _store_reply(_locked(report_id), call_id, kept)
-        return document
 
 
 def _receive(

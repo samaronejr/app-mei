@@ -63,6 +63,7 @@ from apps.cycles.intake import (
     vault_upload,
 )
 from apps.cycles.models import ServiceCycle
+from apps.cycles.quarantine_request import phased_upload
 from apps.cycles.scanning import scan_required
 from apps.cycles.serving import document_response
 from apps.cycles.workspace import portal_projection
@@ -747,6 +748,7 @@ def _capture_storage_error(error: Exception) -> None:
 @require_http_methods(["POST"])
 @login_required
 @require_can(VAULT_CAPABILITY)
+@phased_upload
 def document_upload(request: PortalVaultRequest) -> HttpResponse:
     """Store one uploaded file against the signed-in client.
 

@@ -23,6 +23,7 @@ from django.views.decorators.http import require_http_methods
 from apps.accounts.views import AuthenticatedRequest
 from apps.authz.objects import load_visible_client
 from apps.authz.services import require_can
+from apps.clients.models import ClientCompany
 from apps.clients.views import require_tenant
 from apps.core.flags import tenant_has
 from apps.core.refusal import WayBack, refusal_page
@@ -34,6 +35,7 @@ from apps.cycles.intake import (
     read_capped,
     staff_upload,
 )
+from apps.cycles.quarantine_request import phased_upload
 from apps.cycles.services.cycle import tenant_id
 from apps.cycles.sniffing import JPEG, PDF, PNG, sniff
 from apps.integrations.authority import (
@@ -48,6 +50,7 @@ from apps.integrations.authority import (
 from apps.integrations.models import AUTHORITY_CATALOG, AuthorityService
 from apps.integrations.services import IntegrationConflictError, InvalidTransitionError
 from apps.integrations.workspace import CAPTURE_ROWS, FEDERAL_ROWS
+from apps.obligations.models import Document
 from apps.tenants.models import Tenant
 
 EVIDENCE_TYPES: Final = frozenset({PDF, PNG, JPEG})
@@ -165,16 +168,15 @@ def _declare(
     service: str,
     form: forms.Form,
 ) -> None:
-    refusal = _evidence_refusal(request)
-    if refusal:
-        raise ValidationError(refusal)
-    client = load_visible_client(request.user, client_id)
-    upload = request.FILES.get("evidence")
-    document = None
-    if upload is not None:
-        document, _relinked = staff_upload(
-            request.user, upload, tenant=tenant, client=client
-        )
+    def acquire_evidence(client: ClientCompany) -> Document | None:
+        refusal = _evidence_refusal(request)
+        if refusal:
+            raise ValidationError(refusal)
+        upload = request.FILES.get("evidence")
+        if upload is None:
+            return None
+        return staff_upload(request.user, upload, tenant=tenant, client=client)[0]
+
     data = form.cleaned_data
     declare_authority(
         request.user,
@@ -184,7 +186,7 @@ def _declare(
         valid_from=data["valid_from"],
         valid_to=data["valid_to"],
         expected_version=data["expected_version"],
-        evidence_document=document,
+        acquire_evidence=acquire_evidence,
     )
 
 
@@ -192,6 +194,7 @@ def _declare(
 @login_required
 @require_tenant
 @require_can(MANAGE_CAPABILITY)
+@phased_upload
 def authority_action(
     request: AuthenticatedRequest, pk: UUID, service: str, action: str
 ) -> HttpResponse:

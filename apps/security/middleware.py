@@ -33,6 +33,7 @@ from django.http.response import HttpResponseBase
 from django.urls import reverse
 from django.utils.translation import gettext as _
 
+from apps.cycles.quarantine_request import registration_pass
 from apps.security.ratelimit import (
     authenticated_limit,
     credential_limits,
@@ -69,7 +70,7 @@ class RateLimitMiddleware:
 
     def __call__(self, request: HttpRequest) -> HttpResponseBase:
         """Count the request, refuse an overflowed bucket, rewrite on the way out."""
-        if self._is_limited(request):
+        if not registration_pass(request) and self._is_limited(request):
             return self._too_many()
         return self._as_hx_redirect(request, self.get_response(request))
 

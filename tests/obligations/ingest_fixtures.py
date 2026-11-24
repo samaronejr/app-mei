@@ -1,7 +1,8 @@
 """Shared real-role controls for AXRM-012, not mocked visibility checks."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 
 from django.db import connection
@@ -9,9 +10,18 @@ from django.db.backends.utils import CursorWrapper
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import client_context, tenant_context
+from apps.cycles.intake import tenant_quarantine
+from apps.tenants.models import Tenant
 from tests.portal.request_fixtures import PortalSetup, portal_setup
 
 PDF = b"%PDF-1.4\n% synthetic SITFIS report\n%%EOF\n"
+
+
+def scoped_upload[R, **P](
+    scope: Tenant, service: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs
+) -> R:
+    """Use the real preflight, out-of-transaction PUT, then scoped INSERT."""
+    return tenant_quarantine(scope.pk, partial(service, *args, **kwargs))
 
 
 def ingest_setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:

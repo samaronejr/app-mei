@@ -9,7 +9,12 @@ from pytest_django.fixtures import SettingsWrapper
 from apps.core.tenancy import tenant_context
 from apps.cycles.intake import UploadRejected
 from apps.obligations.models import Document
-from tests.obligations.ingest_fixtures import PDF, ingest_setup, portal_cursor
+from tests.obligations.ingest_fixtures import (
+    PDF,
+    ingest_setup,
+    portal_cursor,
+    scoped_upload,
+)
 from tests.portal.request_fixtures import PortalSetup, upload
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -26,14 +31,15 @@ def test_staff_intake_defaults_hidden_with_real_human_provenance(
     from apps.cycles.intake import staff_upload  # noqa: PLC0415
 
     # Given firm-side evidence with a real actor.
-    with tenant_context(setup.graph.tenant.pk):
-        # When staff use the ordinary intake without a visibility override.
-        document, reused = staff_upload(
-            setup.graph.actor,
-            upload("authority.pdf", PDF),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-        )
+    # When staff use the ordinary intake without a visibility override.
+    document, reused = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("authority.pdf", PDF),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+    )
     # Then no fabricated client submission or portal exposure is created.
     assert reused is False
     assert document.portal_visible is False
@@ -54,28 +60,34 @@ def test_staff_dedup_is_scoped_to_the_explicit_client_and_visibility(
     from apps.cycles.intake import staff_upload  # noqa: PLC0415
 
     # Given identical staff bytes for a sibling client and a hidden original.
+    sibling, _ = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("sibling.pdf", PDF),
+        tenant=setup.graph.tenant,
+        client=setup.other_client,
+    )
+    hidden, _ = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("hidden.pdf", PDF),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+    )
+    # When an explicitly visible staff upload is requested for this client.
+    visible, reused = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("visible.pdf", PDF),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+        portal_visible=True,
+        acquisition_origin="upload_equipe",
+    )
     with tenant_context(setup.graph.tenant.pk):
-        sibling, _ = staff_upload(
-            setup.graph.actor,
-            upload("sibling.pdf", PDF),
-            tenant=setup.graph.tenant,
-            client=setup.other_client,
-        )
-        hidden, _ = staff_upload(
-            setup.graph.actor,
-            upload("hidden.pdf", PDF),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-        )
-        # When an explicitly visible staff upload is requested for this client.
-        visible, reused = staff_upload(
-            setup.graph.actor,
-            upload("visible.pdf", PDF),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-            portal_visible=True,
-            acquisition_origin="upload_equipe",
-        )
         # Then all three identities remain distinct and correctly attributed.
         assert len({sibling.pk, hidden.pk, visible.pk}) == 3
         assert reused is False
