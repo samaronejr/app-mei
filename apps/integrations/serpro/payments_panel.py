@@ -19,6 +19,7 @@ from django.conf import settings
 
 from apps.authz.services import can
 from apps.core.flags import tenant_has
+from apps.core.tenancy import tenant_context
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.serpro.denials import (
     DenialCause,
@@ -176,13 +177,17 @@ def firm_refusal_text(query: PaymentQuery) -> str:
     if code in FIRM_COPY:
         return FIRM_COPY[code]
     cause = code.removeprefix(CLEARED_PREFIX)
-    holds = cause == code and block_holds(cause, query.link.connection)
-    return _block_text(cause, holds=holds)
+    # Read in the consultation's own tenant: its firm issue and calls are scoped.
+    with tenant_context(query.tenant_id):
+        holds = cause == code and block_holds(cause, query.link.connection)
+        return _block_text(cause, holds=holds)
 
 
 def _client_refusal_text(query: PaymentQuery) -> str:
     """Word the client's own refusal: an instruction while it is still absent."""
-    if client_authority_absent(query):
+    with tenant_context(query.tenant_id):
+        absent = client_authority_absent(query)
+    if absent:
         return (
             "Sem procuração eletrônica (código 00004) para este cliente. "
             "Consulta não realizada; registre e verifique a procuração."
