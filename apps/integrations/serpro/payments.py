@@ -114,10 +114,10 @@ from apps.integrations.serpro.pagtoweb import (
 from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.serpro.work import (
     ADMISSION_REFUSED,
-    BLOCK_PREFIX,
     CLEARED_PREFIX,
     CLIENT_ABSENT,
     TERMO_NOT_IN_FORCE,
+    firm_reason,
     own_denial,
     refusal_cause,
 )
@@ -651,6 +651,11 @@ def _still_absent(query: PaymentQuery) -> bool:
     same cause holds, so a re-verification since the refusal opens nothing.
     """
     ClientCompany.objects.select_for_update().get(pk=query.client_id)
+    return client_authority_absent(query)
+
+
+def client_authority_absent(query: PaymentQuery) -> bool:
+    """Whether the client's PAGTOWEB authority is unusable right now."""
     return not authority_for(query.client, PAGE_OPERATION, link=query.link).usable
 
 
@@ -675,7 +680,8 @@ def firm_owned(code: str) -> bool:
     """Whether a stored failure code names the firm's termo or the platform."""
     return (
         code in FIRM_REFUSALS
-        or code.startswith((BLOCK_PREFIX, CLEARED_PREFIX))
+        or firm_reason(code)
+        or code.startswith(CLEARED_PREFIX)
         or (is_denial_code(code) and denial_cause(code) in FIRM_CAUSES)
     )
 

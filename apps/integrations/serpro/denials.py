@@ -69,12 +69,12 @@ DENIAL_TEXT: Final[dict[str, str]] = {
         "do cliente não foi alterada"
     ),
     DenialCause.CREDENCIAL_PLATAFORMA: (
-        "A Receita recusou as credenciais da plataforma; as chamadas ao SERPRO "
-        "estão suspensas até a operação corrigir"
+        "A Receita recusou as credenciais da plataforma; a correção cabe à "
+        "operação da plataforma, não ao escritório nem ao cliente"
     ),
     DenialCause.SERVICO_NAO_ELEGIVEL: (
-        "A Receita informou que o serviço não aceita procuração eletrônica; as "
-        "chamadas ao SERPRO estão suspensas até a operação revisar o catálogo"
+        "A Receita informou que o serviço não aceita procuração eletrônica; a "
+        "correção cabe à operação da plataforma, não ao escritório nem ao cliente"
     ),
     DenialCause.FALHA_DO_PROVEDOR: (
         "O sistema de procurações da Receita falhou; nada foi alterado e a "

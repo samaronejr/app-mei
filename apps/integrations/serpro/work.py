@@ -49,6 +49,9 @@ ADMISSION_REFUSED: Final = "admissao_recusada"
 # Firm blocks, named when admission refuses: the termo, or the 403 behind the issue.
 TERMO_NOT_IN_FORCE: Final = "termo_nao_vigente"
 BLOCK_PREFIX: Final = "bloqueio-"
+# Identities of a recorded firm block: the issue, or the termo at a version.
+ISSUE_PREFIX: Final = "pendencia-"
+TERMO_PREFIX: Final = f"{TERMO_NOT_IN_FORCE}-v"
 UNCERTAIN: Final = "chamada_provedor_incerta"
 IN_FLIGHT: Final = frozenset(
     {
@@ -109,10 +112,11 @@ def _cited(refs: list[str]) -> list[UUID]:
 
 
 def firm_block(connection: ProviderConnection) -> str:
-    """Name the firm's block as a bounded code, or '' when there is none.
+    """Name the firm's block by its identity, or '' when there is none.
 
-    The open firm issue names the 403 that opened it (`bloqueio-<code>`), or the
-    issue itself when no call it cites names one; else the termo not in force.
+    The open firm issue by its id (`pendencia-<id>`), else the termo not in force
+    at this connection version (`termo_nao_vigente-v<version>`): a later block of
+    the same kind is a different blocker, never this one (AXRM-045).
     """
     issue = (
         FirmIntegrationIssue.objects.filter(
@@ -122,50 +126,67 @@ def firm_block(connection: ProviderConnection) -> str:
         .first()
     )
     if issue is not None:
-        code = (
-            ProviderCall.objects.filter(
-                pk__in=_cited(issue.evidence_refs),
-                provider_code__in=FIRM_DENIAL_CODES,
-            )
-            .order_by("pk")
-            .values_list("provider_code", flat=True)
-            .first()
-        )
-        return f"{BLOCK_PREFIX}{code}" if code else PROC_MISSING
+        return f"{ISSUE_PREFIX}{issue.pk}"
     if not termo_in_force(connection.pk, timezone.localdate()):
-        return TERMO_NOT_IN_FORCE
+        return f"{TERMO_PREFIX}{connection.version}"
     return ""
 
 
-def block_holds(reason: str, connection: ProviderConnection) -> bool:
-    """Whether the firm block a refusal recorded is still in effect: that block only.
+def issue_denial_code(issue_id: str) -> str:
+    """Return the firm-side 403 code a firm issue cites, or '' if none."""
+    issue = FirmIntegrationIssue.objects.filter(pk__in=_cited([issue_id])).first()
+    if issue is None:
+        return ""
+    return (
+        ProviderCall.objects.filter(
+            pk__in=_cited(issue.evidence_refs), provider_code__in=FIRM_DENIAL_CODES
+        )
+        .order_by("pk")
+        .values_list("provider_code", flat=True)
+        .first()
+        or ""
+    )
 
-    The termo not in force, the open issue that cites a call with this code, or
-    the issue itself; a different block opened since never keeps this one alive.
+
+def block_holds(reason: str, connection: ProviderConnection) -> bool:
+    """Whether the specific blocker a refusal recorded still holds.
+
+    That issue still open, or the termo still not in force at that same version.
+    A code recorded without an identity (an older one) never holds unless proven.
     """
-    if reason == TERMO_NOT_IN_FORCE:
-        return not termo_in_force(connection.pk, timezone.localdate())
-    refs = FirmIntegrationIssue.objects.filter(
-        connection_id=connection.pk, reason=PROC_MISSING, state__in=ACTIVE_STATES
-    ).values_list("evidence_refs", flat=True)
-    if reason == PROC_MISSING:
-        return refs.exists()
-    cited = [ref for issue_refs in refs for ref in _cited(issue_refs)]
-    code = reason.removeprefix(BLOCK_PREFIX)
-    return ProviderCall.objects.filter(pk__in=cited, provider_code=code).exists()
+    if reason.startswith(ISSUE_PREFIX):
+        cited = _cited([reason.removeprefix(ISSUE_PREFIX)])
+        return FirmIntegrationIssue.objects.filter(
+            pk__in=cited, state__in=ACTIVE_STATES
+        ).exists()
+    if reason.startswith(TERMO_PREFIX):
+        version = reason.removeprefix(TERMO_PREFIX)
+        return (
+            version.isdigit()
+            and connection.version == int(version)
+            and not termo_in_force(connection.pk, timezone.localdate())
+        )
+    return False
+
+
+def firm_reason(reason: str) -> bool:
+    """Whether a recorded refusal reason names a firm block (with or without id)."""
+    return reason in {PROC_MISSING, TERMO_NOT_IN_FORCE} or reason.startswith(
+        (ISSUE_PREFIX, TERMO_PREFIX, BLOCK_PREFIX)
+    )
 
 
 def refusal_cause(reason: str, connection: ProviderConnection) -> str:
     """Classify an admission refusal by the cause recorded when it happened.
 
-    '' only for the client's own absent authority. A firm refusal keeps the block
-    it named; once that same block has cleared it is `encerrado-<block>`, so the
-    historical cause stays readable while it reads as cleared. A refusal with no
-    firm or client cause is never the client's (AXRM-045).
+    '' only for the client's own absent authority. A firm refusal keeps the
+    blocker it named while that one holds; once it has cleared it is
+    `encerrado-<blocker>`. A refusal with no firm or client cause is never the
+    client's (AXRM-045).
     """
     if reason == CLIENT_ABSENT:
         return ""
-    if reason in {PROC_MISSING, TERMO_NOT_IN_FORCE} or reason.startswith(BLOCK_PREFIX):
+    if firm_reason(reason):
         return (
             reason if block_holds(reason, connection) else f"{CLEARED_PREFIX}{reason}"
         )
