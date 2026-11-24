@@ -401,6 +401,9 @@ PROOF_REFUSALS: Final = frozenset(
         "chave_fora_do_armazenamento",
         "arquivo_com_vinculos",
         "armazenamento_nao_inspecionavel",
+        "armazenamento_com_montagem",
+        "armazenamento_sem_distincao_de_caixa",
+        "arquivo_nao_regular",
     }
 )
 COMPLETED: Final = "concluida"

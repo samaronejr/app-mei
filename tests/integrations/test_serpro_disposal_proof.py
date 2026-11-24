@@ -8,9 +8,12 @@ use refuse once a disposal claim exists, also across tenants.
 """
 
 import hashlib
+import os
+import posixpath
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -28,6 +31,7 @@ from django.db import connection
 from django.db.transaction import TransactionManagementError
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from pytest_django.fixtures import SettingsWrapper
 from storages.backends.s3 import S3Storage
 
 from apps.audit.models import Event
@@ -44,7 +48,7 @@ from apps.cycles.evidence import (
 from apps.cycles.export_records import EvidenceExport
 from apps.cycles.models import EvidenceLink, ServiceCycle
 from apps.cycles.models import Exception as CycleException
-from apps.cycles.retention import place_hold, release_hold
+from apps.cycles.retention import canonical_key, place_hold, release_hold
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.retention_tasks import Candidate, disposal_refusal, purge_tenant
 from apps.cycles.scanning import FakeScanner
@@ -1583,6 +1587,108 @@ def test_a_reconciliation_before_the_locks_never_deletes_the_old_key(
     assert (claim.completed_at, claim.error_code) == (None, "chaves_divergentes")
 
 
+@dataclass(frozen=True)
+class _Layout:
+    """What one layout case needs to set itself up."""
+
+    world: World
+    monkeypatch: pytest.MonkeyPatch
+    root: Path
+    name: str
+    held: str
+    copy: str
+
+
+def _symlink(case: _Layout, *, here_side: bool) -> tuple[str, str, str]:
+    root, name, held = case.root, case.name, case.held
+    (root / "legacy").symlink_to(root / "originals", target_is_directory=True)
+    # One side names the held file through the in-root directory link.
+    here, elsewhere = (
+        (f"legacy/{name}", held) if here_side else (held, f"legacy/{name}")
+    )
+    _foreign_original(case.world, elsewhere)
+    return here, held, "armazenamento_com_atalho"
+
+
+def _hard_link(case: _Layout) -> tuple[str, str, str]:
+    here = f"quarantine/{uuid4().hex}"
+    (case.root / here).parent.mkdir(parents=True, exist_ok=True)
+    (case.root / here).hardlink_to(case.root / case.held)
+    _foreign_original(case.world, case.held)
+    return here, case.held, "arquivo_com_vinculos"
+
+
+def _outside_root(case: _Layout) -> tuple[str, str, str]:
+    outside = case.root.parent / f"outside-{case.name}"
+    outside.write_bytes(b"held")
+    return f"../{outside.name}", str(outside), "chave_fora_do_armazenamento"
+
+
+def _sealed(case: _Layout) -> tuple[str, str, str]:
+    # Searchable but not listable: the walk cannot see what is inside.
+    (case.root / "sealed").mkdir()
+    (case.root / "sealed" / "inner").write_bytes(b"unseen")
+    (case.root / "sealed").chmod(0o300)
+    _foreign_original(case.world, case.held)
+    return case.copy, case.held, "armazenamento_nao_inspecionavel"
+
+
+def _under_a_file(case: _Layout) -> tuple[str, str, str]:
+    # A restored descriptor under a regular file.
+    return f"{case.held}/child", case.held, "armazenamento_nao_inspecionavel"
+
+
+def _mounted(case: _Layout) -> tuple[str, str, str]:
+    # Stand-in for a bind mount (which needs privileges): the kernel's mount
+    # table, which the proof reads, lists a mount point under the root.
+    (case.root / "mirror").mkdir()
+    points = [Path("/"), case.root / "mirror"]
+    case.monkeypatch.setattr(retention, "_mount_points", lambda: points)
+    _foreign_original(case.world, case.held)
+    return case.copy, case.held, "armazenamento_com_montagem"
+
+
+def _no_mount_table(case: _Layout) -> tuple[str, str, str]:
+    def unreadable() -> list[Path]:
+        message = "no /proc in this container"
+        raise OSError(message)
+
+    case.monkeypatch.setattr(retention, "_mount_points", unreadable)
+    _foreign_original(case.world, case.held)
+    return case.copy, case.held, "armazenamento_nao_inspecionavel"
+
+
+def _case_blind(case: _Layout) -> tuple[str, str, str]:
+    # Stand-in for a case-folding directory: two names differing only in case
+    # open one entry.
+    (case.root / "cased").mkdir()
+    (case.root / "cased" / "Case.pdf").write_bytes(b"one entry")
+    (case.root / "cased" / "case.pdf").hardlink_to(case.root / "cased" / "Case.pdf")
+    _foreign_original(case.world, case.held)
+    return case.copy, case.held, "armazenamento_sem_distincao_de_caixa"
+
+
+def _fifo(case: _Layout) -> tuple[str, str, str]:
+    here = f"quarantine/{uuid4().hex}"
+    (case.root / here).parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(case.root / here)  # one link, no writer: opening it would block
+    return here, case.held, "arquivo_nao_regular"
+
+
+_LAYOUTS: dict[str, Callable[[_Layout], tuple[str, str, str]]] = {
+    "symlink-here": lambda case: _symlink(case, here_side=True),
+    "symlink-elsewhere": lambda case: _symlink(case, here_side=False),
+    "hard-link": _hard_link,
+    "outside-root": _outside_root,
+    "sealed-directory": _sealed,
+    "not-a-directory": _under_a_file,
+    "mount-under-root": _mounted,
+    "mount-table-unreadable": _no_mount_table,
+    "case-blind-directory": _case_blind,
+    "fifo": _fifo,
+}
+
+
 @pytest.mark.parametrize(
     "layout",
     [
@@ -1592,47 +1698,22 @@ def test_a_reconciliation_before_the_locks_never_deletes_the_old_key(
         "outside-root",
         "sealed-directory",
         "not-a-directory",
+        "mount-under-root",
+        "mount-table-unreadable",
+        "case-blind-directory",
+        "fifo",
     ],
 )
 def test_a_file_with_names_no_lookup_sees_is_never_deleted(
-    world: World, layout: str
+    world: World, monkeypatch: pytest.MonkeyPatch, layout: str
 ) -> None:
     document, intake = _ordinary_pending(world, with_final=True)
     root = Path(default_storage.path("")).resolve()
     name = f"{uuid4().hex}.pdf"
     held = default_storage.save(f"originals/{name}", ContentFile(b"held"))
-    expected = "armazenamento_com_atalho"
-    if layout.startswith("symlink"):
-        (root / "legacy").symlink_to(root / "originals", target_is_directory=True)
-        # One side names the held file through the in-root directory link.
-        here, elsewhere = (
-            (f"legacy/{name}", held)
-            if layout == "symlink-here"
-            else (held, f"legacy/{name}")
-        )
-        _foreign_original(world, elsewhere)
-    elif layout == "hard-link":
-        here = f"quarantine/{uuid4().hex}"
-        (root / here).parent.mkdir(parents=True, exist_ok=True)
-        (root / here).hardlink_to(root / held)
-        _foreign_original(world, held)
-        expected = "arquivo_com_vinculos"
-    elif layout == "outside-root":
-        outside = root.parent / f"outside-{name}"
-        outside.write_bytes(b"held")
-        here, held = f"../{outside.name}", str(outside)
-        expected = "chave_fora_do_armazenamento"
-    elif layout == "sealed-directory":
-        # Searchable but not listable: the walk cannot see what is inside.
-        (root / "sealed").mkdir()
-        (root / "sealed" / "inner").write_bytes(b"unseen")
-        (root / "sealed").chmod(0o300)
-        here = intake.quarantine_key
-        _foreign_original(world, held)
-        expected = "armazenamento_nao_inspecionavel"
-    else:
-        here = f"{held}/child"  # a restored descriptor under a regular file
-        expected = "armazenamento_nao_inspecionavel"
+    here, held, expected = _LAYOUTS[layout](
+        _Layout(world, monkeypatch, root, name, held, intake.quarantine_key)
+    )
     with tenant_context(world.tenant_id):
         DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=here)
     try:
@@ -1647,14 +1728,23 @@ def test_a_file_with_names_no_lookup_sees_is_never_deleted(
             (root / "sealed").chmod(0o700)
     assert crashed is False
     assert (Path(held) if layout == "outside-root" else root / held).exists()
+    if layout == "fifo":
+        assert (root / here).exists()
     claim = _claim(world, document.pk)
+    if layout == "symlink-here":
+        # Its key resolves to the held file, so the sweep refuses it as shared
+        # before any claim; the walk's refusal is witnessed by symlink-elsewhere.
+        assert claim is None
+        return
     assert claim is not None
     assert (claim.completed_at, claim.error_code) == (None, expected)
 
 
-@pytest.mark.parametrize("spelling", ["doubled", "symlink", "absolute"])
+@pytest.mark.parametrize(
+    "spelling", ["doubled", "symlink", "absolute", "mount", "same-inode"]
+)
 def test_cleanup_never_removes_a_copy_that_is_the_final(
-    world: World, spelling: str
+    world: World, monkeypatch: pytest.MonkeyPatch, spelling: str
 ) -> None:
     document, intake = _ordinary_pending(world, with_final=True)
     root = Path(default_storage.path("")).resolve()
@@ -1663,6 +1753,21 @@ def test_cleanup_never_removes_a_copy_that_is_the_final(
         copy = final.replace("/", "//", 1)
     elif spelling == "absolute":
         copy = str(root / final)  # the same file, spelled from the root
+    elif spelling == "mount":
+        # Stand-in for `mirror/` bind-mounted onto `originals/`: the mount table
+        # lists it; the copy here is a separate file the proof must still keep.
+        (root / "mirror").mkdir()
+        copy = f"mirror/{Path(final).name}"
+        (root / copy).write_bytes((root / final).read_bytes())
+        monkeypatch.setattr(
+            retention, "_mount_points", lambda: [Path("/"), root / "mirror"]
+        )
+    elif spelling == "same-inode":
+        # An alias the layout proof misses: the inode comparison alone decides.
+        (root / "spare").mkdir()
+        copy = f"spare/{Path(final).name}"
+        (root / copy).hardlink_to(root / final)
+        monkeypatch.setattr(scanning, "local_layout_refusal", lambda *a, **k: "")
     else:
         (root / "legacy").symlink_to(root / "originals", target_is_directory=True)
         copy = final.replace("originals/", "legacy/", 1)
@@ -1674,6 +1779,7 @@ def test_cleanup_never_removes_a_copy_that_is_the_final(
     )
     assert outcome == scanning.ScanOutcome.VERIFIED
     assert (root / final).exists()
+    assert canonical_key(copy) == canonical_key(final) or (root / copy).exists()
 
 
 @pytest.mark.parametrize(
@@ -1865,3 +1971,80 @@ def test_a_verdict_on_a_read_that_stops_early_is_never_the_originals(
     assert outcome != scanning.ScanOutcome.INFECTED
     with tenant_context(world.tenant_id):
         assert DocumentIntake.objects.get(pk=intake.pk).state in PENDING_SCAN_STATES
+
+
+def test_a_symlinked_root_and_its_target_are_one_root(
+    world: World, settings: SettingsWrapper
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    real = Path(default_storage.path("")).resolve()
+    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    configured = real.parent / f"media-link-{uuid4().hex[:8]}"
+    configured.symlink_to(real, target_is_directory=True)
+    try:
+        settings.MEDIA_ROOT = str(configured)  # `/srv/media` -> `/data/pilot`
+        # A held tenant's restored copy names the file through the configured root.
+        _foreign_copy(world, str(configured / key))
+        with tenant_context(world.tenant_id):
+            DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=key)
+        purge_tenant(
+            world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+        )
+        assert (real / key).exists()
+        claim = _claim(world, document.pk)
+        assert claim is None or claim.completed_at is None
+        assert canonical_key(str(configured / key)) == canonical_key(key)
+    finally:
+        configured.unlink()
+
+
+def test_a_saved_key_spelled_canonically_is_the_key_requested(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    name = f"{uuid4().hex}.pdf"
+    with tenant_context(world.tenant_id):
+        Document.objects.filter(pk=intake.document_id).update(
+            storage_key=f"originals//{name}"
+        )
+    save = default_storage.save
+
+    def normalising(key: str, content: object, **kwargs: object) -> str:
+        return save(posixpath.normpath(key), content, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(default_storage, "save", normalising)
+    try:
+        outcome: object = scanning.scan_intake(
+            world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+        )
+    except RuntimeError:
+        outcome = "raised"
+    assert outcome == scanning.ScanOutcome.VERIFIED
+    assert default_storage.exists(f"originals/{name}")
+
+
+def test_a_quarantine_key_that_is_not_a_regular_file_is_never_opened(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    root = Path(default_storage.path("")).resolve()
+    fifo = f"quarantine/{uuid4().hex}"
+    (root / fifo).parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(root / fifo)
+    with tenant_context(world.tenant_id):
+        DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=fifo)
+    opened: list[str] = []
+    real_open = default_storage.open
+
+    def recording(name: str, mode: str = "rb") -> object:
+        opened.append(name)
+        if name == fifo:
+            return BytesIO(b"")  # never block the test, even on the old code
+        return real_open(name, mode)
+
+    monkeypatch.setattr(default_storage, "open", recording)
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert fifo not in opened
+    assert outcome != scanning.ScanOutcome.VERIFIED

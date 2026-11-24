@@ -5,6 +5,7 @@ import hashlib
 import os
 import posixpath
 import re
+import stat
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -84,38 +85,90 @@ def single_copy_storage(storage: Storage | None = None) -> bool:
 def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) -> str:
     """On local storage, why these keys are not proved to name files of their own.
 
-    A key string cannot capture the physical file: a symlink anywhere under the
-    root, or a hard link, gives one file names no lookup or lock sees. So the root
-    must hold no symlink, each key must resolve, inside it, to itself, and each
-    existing file must have one link (AXRM-051); then two keys name one object
-    exactly when their `canonical_key` is the same. Empty when proved, and on any
+    A key string cannot capture the physical file. The root, taken at its real
+    path, must hold no mount point (a bind mount shows one file at two names), no
+    symlink, no directory that cannot be listed and no directory that ignores
+    case; each key must resolve inside it and, if it exists, be a regular file
+    with one link (AXRM-051). Then two keys name one object exactly when their
+    `canonical_key` is the same. Nothing is opened. Empty when proved, and on any
     backend that is not a local filesystem.
     """
     chosen = default_storage if storage is None else storage
     if not isinstance(chosen, FileSystemStorage):
         return ""
-    root = Path(chosen.location).resolve()
+    root = real_root(chosen)
+    refusal = _mount_refusal(root) or _walk_refusal(root)
+    if refusal:
+        return refusal
+    return next((refusal for key in keys if (refusal := _key_refusal(root, key))), "")
+
+
+def real_root(storage: FileSystemStorage) -> Path:
+    """Return the storage root at its real path (a symlinked root resolved)."""
+    return Path(os.path.realpath(storage.location))
+
+
+def _mount_points() -> list[Path]:
+    """Every mount point the kernel lists for this process (`/proc/self/mountinfo`)."""
+    with Path("/proc/self/mountinfo").open(encoding="utf-8") as table:
+        return [
+            Path(line.split()[4].encode().decode("unicode_escape"))
+            for line in table
+            if line.strip()
+        ]
+
+
+def _mount_refusal(root: Path) -> str:
+    """Refuse a root with any mount point strictly under it, or an unreadable table."""
+    try:
+        points = _mount_points()
+    except (OSError, IndexError, UnicodeError):
+        return "armazenamento_nao_inspecionavel"
+    if any(point != root and point.is_relative_to(root) for point in points):
+        return "armazenamento_com_montagem"
+    return ""
+
+
+def _walk_refusal(root: Path) -> str:
+    """Walk the root once: symlinks, unlisted directories, case-blind directories."""
     unreadable: list[OSError] = []
     for parent, directories, files in os.walk(root, onerror=unreadable.append):
-        if any((Path(parent) / name).is_symlink() for name in (*directories, *files)):
+        names = (*directories, *files)
+        if any((Path(parent) / name).is_symlink() for name in names):
             return "armazenamento_com_atalho"
+        if _ignores_case(Path(parent), names):
+            return "armazenamento_sem_distincao_de_caixa"
     if unreadable:
         return "armazenamento_nao_inspecionavel"  # an unlisted directory proves nothing
-    return next((refusal for key in keys if (refusal := _key_refusal(root, key))), "")
+    return ""
+
+
+def _ignores_case(directory: Path, names: tuple[str, ...]) -> bool:
+    """Whether another case of an entry's name opens the same entry (one probe)."""
+    name = next((n for n in names if n.lower() != n.upper()), None)
+    if name is None:
+        return False
+    other = directory / (name.lower() if name != name.lower() else name.upper())
+    try:
+        return (directory / name).samefile(other)
+    except OSError:
+        return False  # no such entry: names differing in case are distinct here
 
 
 def _key_refusal(root: Path, key: str) -> str:
     """Why one key is not proved to name a file of its own inside `root`, or ``."""
-    path = Path(os.path.normpath(root / key))
+    path = Path(os.path.realpath(root / key))
     try:
-        if not path.is_relative_to(root) or path.resolve() != path:
+        if not path.is_relative_to(root):
             return "chave_fora_do_armazenamento"
-        links = path.lstat().st_nlink
+        status = path.lstat()
     except FileNotFoundError:
         return ""
     except (OSError, RuntimeError):
         return "armazenamento_nao_inspecionavel"  # never an uncaught stop
-    return "arquivo_com_vinculos" if links > 1 else ""
+    if not stat.S_ISREG(status.st_mode):
+        return "arquivo_nao_regular"  # a FIFO, socket or device is never opened
+    return "arquivo_com_vinculos" if status.st_nlink > 1 else ""
 
 
 def federal_content(document: Document) -> bool:
@@ -162,8 +215,10 @@ def canonical_key(key: str, storage: Storage | None = None) -> str:
     chosen = default_storage if storage is None else storage
     if not isinstance(chosen, FileSystemStorage):
         return posixpath.normpath(key.replace("\\", "/")).lstrip("/")
-    root = Path(chosen.location).resolve()
-    path = Path(os.path.normpath(root / key))
+    # Both the root and the key at their real paths: the configured spelling of a
+    # symlinked root and its target name the same object.
+    root = real_root(chosen)
+    path = Path(os.path.realpath(root / key))
     return path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
 
 
