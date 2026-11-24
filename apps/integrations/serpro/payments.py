@@ -10,9 +10,11 @@ becomes todo 14's per-call `FederalConsultation` receipt. Rules:
   complete answer.
 * A budget refusal on the first page is `cota_esgotada`; on a later page the
   consultation is `falha` with the pages already fetched kept (their payments stay).
-* A complete 403 records `ausente_detectada` (todo 8) and opens owned work; the
-  protocol never retries it, and admission refuses the client's next call until the
-  authority is declared and verified again.
+* A complete 403 is billed and never retried; its reason code names its owner
+  (AXRM-045). Only a client-procuracao code records `ausente_detectada` (todo 8)
+  and ends `sem_procuracao`, so admission refuses the client's next call until the
+  authority is declared and verified again; a firm-termo, platform or provider
+  failure code ends `falha` and an unknown code `incerto`, demoting nothing.
 * Nothing here infers non-payment: an empty answer is a `nada_localizado` receipt.
 * The runner about to pay for a page takes the consultation's settlement lease
   first and renews it on every later page; while it is live (database time) any
@@ -71,7 +73,6 @@ from apps.integrations.authority import (
     Problem,
     authority_subject,
     raise_problem,
-    record_authority_denial,
 )
 from apps.integrations.budget_pricing import BudgetDeniedError
 from apps.integrations.budget_settlement import release
@@ -85,6 +86,12 @@ from apps.integrations.models import (
     LinkStatus,
 )
 from apps.integrations.serpro.adapter import Parties, SerproAdapter, build_request
+from apps.integrations.serpro.denials import (
+    FIRM_CAUSES,
+    DenialCause,
+    denial_cause,
+    is_denial_code,
+)
 from apps.integrations.serpro.models import (
     ACTIVE_QUERY_STATES,
     PaymentPage,
@@ -104,6 +111,13 @@ from apps.integrations.serpro.pagtoweb import (
     page_rows,
 )
 from apps.integrations.serpro.parties import termo_parties
+from apps.integrations.serpro.work import (
+    ADMISSION_REFUSED,
+    CLIENT_ABSENT,
+    FIRM_BLOCK_CLEARED,
+    own_denial,
+    refusal_cause,
+)
 from apps.integrations.services import IntegrationConflictError
 from apps.integrations.transport import ProviderTransport
 from apps.obligations.federal import (
@@ -160,6 +174,12 @@ _RECEIPT_OUTCOME: Final[dict[str, str]] = {
     PaymentQueryState.FALHA: FederalConsultationOutcome.FALHA,
     PaymentQueryState.COTA_ESGOTADA: FederalConsultationOutcome.COTA_ESGOTADA,
     PaymentQueryState.INCERTO: FederalConsultationOutcome.INCERTO,
+}
+# A 403 ends `sem_procuracao` only for the client's own procuracao (A6), `incerto`
+# for an unknown code, and `falha` for every other cause.
+DENIAL_ENDINGS: Final[dict[str, str]] = {
+    DenialCause.PROCURACAO_CLIENTE: PaymentQueryState.SEM_PROCURACAO,
+    DenialCause.DESCONHECIDA: PaymentQueryState.INCERTO,
 }
 
 
@@ -386,7 +406,10 @@ def _finish(
         },
     )
     today = timezone.localdate()
-    if state in {PaymentQueryState.FALHA, PaymentQueryState.INCERTO}:
+    # The firm owns a firm or platform refusal: no client work is opened for it.
+    if state in {PaymentQueryState.FALHA, PaymentQueryState.INCERTO} and not firm_owned(
+        code
+    ):
         raise_problem(
             query.client,
             Problem(FAILED_REASON, query.pk, review_on=today, service=PAGE_OPERATION),
@@ -595,19 +618,51 @@ def _refused(  # noqa: PLR0913 - the page's identity plus the refusing runner
                 failure=FederalConsultationOutcome.COTA_ESGOTADA,
             )
             return _finish(query, PaymentQueryState.FALHA, "cota_esgotada_parcial")
-        if error.args and error.args[0] == CallState.AUTHORITY:
-            return _finish(
-                query,
-                PaymentQueryState.SEM_PROCURACAO,
-                "autorizacao_ausente",
-                receipt=_receipt(query, digest, ref),
-            )
+        if (
+            isinstance(error, AdmissionDeniedError)
+            and str(error) == CallState.AUTHORITY
+        ):
+            return _authority_refusal(query, error.reason, _receipt(query, digest, ref))
         return _finish(
             query,
             PaymentQueryState.FALHA,
             "integracao_bloqueada",
             receipt=_receipt(query, digest, ref),
         )
+
+
+FIRM_REFUSALS: Final = frozenset(
+    {
+        "termo_ausente",
+        "autorizacao_procurador_ausente",
+        FIRM_BLOCK_CLEARED,
+        ADMISSION_REFUSED,
+    }
+)
+
+
+def _authority_refusal(
+    query: PaymentQuery, reason: str, receipt: ConsultationCall
+) -> PaymentQuery:
+    """End a refused page by the cause recorded with the refusal (AXRM-045).
+
+    Only the client's own absent authority is "sem procuracao"; a firm or an
+    unrecorded cause ends falha without client work.
+    """
+    cause = refusal_cause(reason, query.link.connection)
+    return _finish(
+        query,
+        PaymentQueryState.FALHA if cause else PaymentQueryState.SEM_PROCURACAO,
+        cause or CLIENT_ABSENT,
+        receipt=receipt,
+    )
+
+
+def firm_owned(code: str) -> bool:
+    """Whether a stored failure code names the firm's termo or the platform."""
+    return code in FIRM_REFUSALS or (
+        is_denial_code(code) and denial_cause(code) in FIRM_CAUSES
+    )
 
 
 def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call state
@@ -661,19 +716,8 @@ def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call sta
             # finalizes a call without its runner's page). It is never fetched
             # again automatically: repeating it is a staff decision.
             return _finish(query, PaymentQueryState.INCERTO, "pagina_nao_registrada")
-        if call.state == CallState.DENIED:
-            record_authority_denial(
-                query.client,
-                PAGE_OPERATION,
-                source_call_ref=str(call.pk),
-                http_status=403,
-            )
-            return _finish(
-                query,
-                PaymentQueryState.SEM_PROCURACAO,
-                call.provider_code,
-                receipt=receipt,
-            )
+        if call.state in {CallState.DENIED, CallState.AUTHORITY}:
+            return _refused_call(query, call, receipt)
         if call.state == CallState.UNCERTAIN:
             return _finish(
                 query, PaymentQueryState.INCERTO, call.provider_code, receipt=receipt
@@ -683,6 +727,21 @@ def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call sta
         return _finish(
             query, PaymentQueryState.FALHA, call.provider_code, receipt=receipt
         )
+
+
+def _refused_call(
+    query: PaymentQuery, call: ProviderCall, receipt: ConsultationCall
+) -> PaymentQuery:
+    """End by a billed 403's cause, or by the cause recorded with a refusal."""
+    if call.state == CallState.AUTHORITY:
+        # Refused at dispatch and settled on redelivery: the saved cause decides.
+        return _authority_refusal(query, call.provider_code, receipt)
+    return _finish(
+        query,
+        DENIAL_ENDINGS.get(own_denial(call), PaymentQueryState.FALHA),
+        call.provider_code,
+        receipt=receipt,
+    )
 
 
 def _refused_quota(
@@ -729,22 +788,31 @@ def _page(  # noqa: PLR0911 - each step may end the consultation or yield it
             if stored.state not in ACTIVE_QUERY_STATES:
                 _release_unused(stored)
             return stored
-    ticket = claim(query.tenant_id, row.pk)
-    if ticket is None:
-        with tenant_context(query.tenant_id):
-            state = ProviderCall.objects.values_list("state", flat=True).get(pk=row.pk)
-        if state in {CallState.CLAIMED, CallState.STARTED}:
-            return query  # Another worker holds this page's live lease.
+    try:
+        # Admission is checked again at claim and at dispatch: a firm issue opened
+        # after the reservation refuses here, settled with the cause it names.
+        ticket = claim(query.tenant_id, row.pk)
+        if ticket is None:
+            with tenant_context(query.tenant_id):
+                state = ProviderCall.objects.values_list("state", flat=True).get(
+                    pk=row.pk
+                )
+            if state in {CallState.CLAIMED, CallState.STARTED}:
+                return query  # Another worker holds this page's live lease.
+            adapter = PageAdapter(
+                SerproAdapter(
+                    _transport(cast("Environment", query.environment)), parties, data
+                )
+            )
+            return _settle_page(query, index, digest, row.pk, adapter, runner=runner)
         adapter = PageAdapter(
             SerproAdapter(
                 _transport(cast("Environment", query.environment)), parties, data
             )
         )
-        return _settle_page(query, index, digest, row.pk, adapter, runner=runner)
-    adapter = PageAdapter(
-        SerproAdapter(_transport(cast("Environment", query.environment)), parties, data)
-    )
-    perform(ticket, adapter, keep=_keeper(query, index, adapter))
+        perform(ticket, adapter, keep=_keeper(query, index, adapter))
+    except AdmissionDeniedError as refusal:
+        return _refused(query, index, digest, key, refusal, runner=runner)
     return _settle_page(query, index, digest, row.pk, adapter, runner=runner)
 
 
@@ -847,7 +915,8 @@ def _run(tenant_id: UUID, query_id: UUID, runner: UUID) -> PaymentQuery:
             return _finish(query, PaymentQueryState.FALHA, "solicitante_sem_permissao")
         parties = termo_parties(query.link.connection_id, query.client.cnpj)
         if parties is None:
-            return _finish(query, PaymentQueryState.SEM_PROCURACAO, "termo_ausente")
+            # The firm's termo, never the client's procuracao (AXRM-045).
+            return _finish(query, PaymentQueryState.FALHA, "termo_ausente")
         if query.state == PaymentQueryState.NA_FILA:
             query.state = PaymentQueryState.EM_ANDAMENTO
             query.started_at = timezone.now()
@@ -923,16 +992,10 @@ def emit_payment_receipt(
     adapter = ReceiptAdapter(
         SerproAdapter(_transport(cast("Environment", environment)), parties, data)
     )
+    # A 403 is owned by the protocol's post-call hook (`work.own_denial`).
     perform(ticket, adapter)
     with tenant_context(tenant_id):
         call = ProviderCall.objects.get(pk=row.pk)
-        if call.state == CallState.DENIED:
-            record_authority_denial(
-                client,
-                RECEIPT_OPERATION,
-                source_call_ref=str(call.pk),
-                http_status=403,
-            )
     if call.state == CallState.SUCCESS and adapter.pdf is not None:
         try:
             ingest_system_document(

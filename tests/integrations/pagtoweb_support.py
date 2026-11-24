@@ -94,12 +94,14 @@ def receipt_body(dados: str) -> bytes:
     return json.dumps({"status": 200, "mensagens": [], "dados": dados}).encode()
 
 
-def denied(body: bytes | None = None) -> Reply:
-    """A complete 403 (billed on /Consultar and /Emitir)."""
+def denied(
+    body: bytes | None = None, code: str = "AcessoNegado-ICGERENCIADOR-022"
+) -> Reply:
+    """A complete 403 (billed on /Consultar and /Emitir); 022 is no procuracao."""
     default = json.dumps(
         {
             "status": 403,
-            "mensagens": [{"codigo": "Erro-Procuracao-00004", "texto": "synthetic"}],
+            "mensagens": [{"codigo": f"[{code}]", "texto": "synthetic"}],
             "dados": "",
         }
     ).encode()

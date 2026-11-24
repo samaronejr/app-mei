@@ -27,6 +27,7 @@ from apps.integrations.serpro.codec import (
     build_request,
     parse_response,
 )
+from apps.integrations.serpro.denials import denial_code, result_cause
 from apps.integrations.serpro.termo import (
     TermoInvalidoError,
     read_signed_termo,
@@ -63,7 +64,6 @@ __all__ = [
 ]
 
 FREE: Final = frozenset({"SP-TERMO", "SP-SIT-P"})
-PROC_DENIED: Final = "AcessoNegado-ICGERENCIADOR-016"
 COMPLETE_401: Final = "serpro_401"
 TERMO_EXPIRED: Final = "termo_expirado"
 # Every way the nested termo re-submission can refuse before or during its send.
@@ -80,13 +80,22 @@ RECOVERY_REFUSALS: Final = (
 
 
 def _codes(response: ProviderResponse) -> tuple[str, ...]:
-    """Return denial codes; a malformed body cannot change a complete 403."""
-    if not response.body:
-        return ()
+    """Return denial codes; a malformed body cannot change a complete 403.
+
+    Only `mensagens` is read: a denial's `dados` (often empty) is never decoded.
+    """
     try:
-        return parse_response(response).codes
+        value = response.json()
     except TransportFailure:
         return ()
+    messages = value.get("mensagens") if isinstance(value, dict) else None
+    if not isinstance(messages, list):
+        return ()
+    return tuple(
+        code
+        for message in messages
+        if isinstance(message, dict) and isinstance(code := message.get("codigo"), str)
+    )
 
 
 def classify(operation: str, response: ProviderResponse) -> CallResult:
@@ -103,9 +112,8 @@ def classify(operation: str, response: ProviderResponse) -> CallResult:
     elif status >= 500:  # noqa: PLR2004 - effects may have reached the upstream
         state = CallState.UNCERTAIN
     elif status == 403:  # noqa: PLR2004 - denied calls remain billable
-        state = CallState.DENIED
-        if PROC_DENIED in _codes(response):
-            code = PROC_DENIED
+        # The bounded reason code and the closed cause it names, never the text.
+        state, code = CallState.DENIED, denial_code(_codes(response))
     elif status == 202:  # noqa: PLR2004 - pending provider result
         state = CallState.WAITING
     elif status in {200, 204, 304}:
@@ -118,6 +126,7 @@ def classify(operation: str, response: ProviderResponse) -> CallResult:
         code,
         billed,
         response_digest=hashlib.sha256(response.body).hexdigest(),
+        denial_cause=result_cause(state, code),
     )
 
 

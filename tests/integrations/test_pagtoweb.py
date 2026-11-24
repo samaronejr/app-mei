@@ -211,11 +211,7 @@ def test_budget_refusal_on_the_first_page_is_cota_esgotada(world: World) -> None
     assert receipts(world) == [("cota_esgotada", 0)]
 
 
-@pytest.mark.parametrize(
-    "body",
-    [None, b"<html>acesso negado</html>"],
-    ids=["documented-403", "non-json-403"],
-)
+@pytest.mark.parametrize("body", [None], ids=["documented-403"])
 def test_a_403_is_billed_once_flags_authority_and_blocks_the_rerun(
     world: World, body: bytes | None
 ) -> None:
@@ -251,6 +247,28 @@ def test_a_403_is_billed_once_flags_authority_and_blocks_the_rerun(
     world.script(page([]))
     assert world.consult(nonce="consulta-3").state == "nada_localizado"
     assert len(world.sent()) == 2
+
+
+def test_a_non_json_403_is_a_billed_incerto_that_keeps_the_authority(
+    world: World,
+) -> None:
+    # AXRM-045: a 403 without a documented reason code is `desconhecida`, never
+    # a client fault (formerly the `non-json-403` case of the test above).
+    world.script(denied(b"<html>acesso negado</html>"))
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("incerto", "serpro_http_403")
+    [call] = world.calls()
+    assert (call.state, call.billed, call.http_status) == ("negada", "sim", 403)
+    assert world.budget().known_liability == CONSULTA_MICROBRL
+    with tenant_context(world.termo.tenant.pk):
+        head = head_record(world.termo.client.pk, "pagtoweb")
+        assert head is not None
+        assert head.status == "ativa"
+        assert not IntegrationIssue.objects.filter(
+            reason="autorizacao_ausente"
+        ).exists()
+    assert receipts(world) == [("incerto", 0)]
+    assert len(world.sent()) == 1
 
 
 def test_a_malformed_success_is_a_billed_falha_with_its_receipt(world: World) -> None:
@@ -1030,8 +1048,9 @@ def test_wire_bearer_and_provider_text_never_reach_console_or_sentry(
 
     console: list[str] = []
     events = captured_events(emit)
-    # Then the run happened (a billed falha, then a billed 403) ...
-    assert states == ["falha", "sem_procuracao"]
+    # Then the run happened (a billed falha, then a billed 403 with no documented
+    # reason code, which AXRM-045 classifies as uncertain) ...
+    assert states == ["falha", "incerto"]
     assert "PAGTOWEB consultation finished" in console[0]
     # ... and neither the wire bearer nor provider text reached either sink.
     rendered = console[0] + json.dumps(events, default=str)

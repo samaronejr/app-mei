@@ -4,12 +4,13 @@ import json
 import re
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID
 
 from apps.cycles.effects.manifest import JSONValue, canonicalize_json
 from apps.integrations.call_contracts import CallRequest, CallResult, Claim
 from apps.integrations.call_models import FirmProviderCall, ProviderCall
+from apps.integrations.serpro.denials import result_cause
 
 
 class JournalError(Exception):
@@ -82,7 +83,7 @@ class JournalRecord:
 
     def encode(self) -> bytes:
         """Serialize only this closed dataclass, never an adapter's response mapping."""
-        return json.dumps(asdict(self), default=str, sort_keys=True).encode()
+        return _encode(self)
 
 
 FIRM_PREFIX = "provider-journal-firm"
@@ -149,15 +150,26 @@ class FirmJournalRecord:
 
     def encode(self) -> bytes:
         """Serialize only this closed dataclass."""
-        return json.dumps(asdict(self), default=str, sort_keys=True).encode()
+        return _encode(self)
+
+
+# Version-1 result keys. The denial cause is never journaled: it is derived from
+# the bounded provider code, so receipts written before and after AXRM-045 are
+# the same bytes and each version reads the other's.
+RESULT_KEYS: Final = frozenset(f.name for f in fields(CallResult)) - {"denial_cause"}
+
+
+def _encode(record: "JournalRecord | FirmJournalRecord") -> bytes:
+    data = asdict(record)
+    if data["result"] is not None:
+        del data["result"]["denial_cause"]
+    return json.dumps(data, default=str, sort_keys=True).encode()
 
 
 def _result(result_data: JSONValue) -> CallResult | None:
     result = None
     if result_data is not None:
-        if not isinstance(result_data, dict) or set(result_data) != {
-            f.name for f in fields(CallResult)
-        }:
+        if not isinstance(result_data, dict) or set(result_data) != RESULT_KEYS:
             raise JournalError
         state, code, billed = (
             result_data[k] for k in ("state", "provider_code", "billed")
@@ -178,7 +190,8 @@ def _result(result_data: JSONValue) -> CallResult | None:
         # Narrow the parsed enum without casting untrusted JSON into a trusted type.
         match billed:
             case "sim" | "nao" | "desconhecido":
-                result = CallResult(state, status, code, billed, digest, amount)
+                cause = result_cause(state, code)
+                result = CallResult(state, status, code, billed, digest, amount, cause)
             case _:
                 raise JournalError
     return result

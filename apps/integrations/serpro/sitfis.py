@@ -61,12 +61,7 @@ from apps.cycles.models import Exception as CycleException
 from apps.cycles.openers import CLOSED_STATES
 from apps.cycles.scanning import scan_required
 from apps.cycles.services.exceptions import ACTIVE_STATES, ExceptionReason
-from apps.integrations.authority import (
-    Problem,
-    authority_for,
-    raise_problem,
-    record_authority_denial,
-)
+from apps.integrations.authority import Problem, authority_for, raise_problem
 from apps.integrations.budget_pricing import BudgetDeniedError
 from apps.integrations.budget_settlement import release
 from apps.integrations.call_contracts import (
@@ -91,12 +86,14 @@ from apps.integrations.models import (
 )
 from apps.integrations.serpro.adapter import SerproAdapter
 from apps.integrations.serpro.codec import build_request, parse_response
+from apps.integrations.serpro.denials import DenialCause
 from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.serpro.sitfis_wire import (
     ReportWireBusyError,
     report_mutex,
     report_writer,
 )
+from apps.integrations.serpro.work import ADMISSION_REFUSED, own_denial, refusal_cause
 from apps.integrations.transport import ProviderTransport
 from apps.integrations.transport_types import TransportFailure
 from apps.integrations.transport_wire import XML_LIMIT
@@ -166,6 +163,12 @@ _OUTCOME: Final[dict[str, str]] = {
     FiscalReportState.INCERTO: FederalConsultationOutcome.INCERTO,
     FiscalReportState.PROTOCOLO_EXPIRADO: FederalConsultationOutcome.FALHA,
     FiscalReportState.LIMITE_DE_TENTATIVAS: FederalConsultationOutcome.FALHA,
+}
+# A 403 ends `negado` (receipt `sem_procuracao`) only for the client's own
+# procuracao (A6), `incerto` for an unknown code, and `falha` for every other cause.
+DENIAL_ENDINGS: Final[dict[str, str]] = {
+    DenialCause.PROCURACAO_CLIENTE: FiscalReportState.NEGADO,
+    DenialCause.DESCONHECIDA: FiscalReportState.INCERTO,
 }
 REASONS: Final = {
     REPORT_FAILED: ExceptionReason(
@@ -981,8 +984,8 @@ def _step(
     link = serpro_link(report.client)
     parties = termo_parties(link.connection_id, report.client.cnpj) if link else None
     if link is None or parties is None:
-        state = FiscalReportState.NEGADO if link else FiscalReportState.FALHA
-        _finish(report, state, operation, None)
+        # No link or no termo in force at run time is never the client's authority.
+        _finish(report, FiscalReportState.FALHA, operation, None)
         return None
     if operation == EMISSION_OPERATION and _scanner_off(report.tenant_id):
         _finish(report, FiscalReportState.FALHA, operation, None)
@@ -1086,14 +1089,20 @@ def _apply(
 ) -> None:
     """Map one final call onto the report; the call row is the only input."""
     state = call.state
+    denied: str = FiscalReportState.NEGADO
     if state == CallState.DENIED and call.http_status == 403:  # noqa: PLR2004
-        record_authority_denial(
-            report.client, operation, source_call_ref=str(call.pk), http_status=403
-        )
+        denied = DENIAL_ENDINGS.get(own_denial(call), FiscalReportState.FALHA)
+    # Refused before sending: the firm's block, or else the client's authority.
+    refused = (
+        FiscalReportState.FALHA
+        if call.state == CallState.AUTHORITY
+        and refusal_cause(call.provider_code, call.link.connection)
+        else FiscalReportState.NEGADO
+    )
     if operation == PROTOCOL_OPERATION:
         endings: dict[str, str] = {
-            CallState.DENIED: FiscalReportState.NEGADO,
-            CallState.AUTHORITY: FiscalReportState.NEGADO,
+            CallState.DENIED: denied,
+            CallState.AUTHORITY: refused,
             CallState.UNCERTAIN: FiscalReportState.INCERTO,
         }
         ending = endings.get(state, FiscalReportState.FALHA)
@@ -1131,8 +1140,10 @@ def _apply(
         report.state = FiscalReportState.AGUARDANDO
         _save(report)
         return
-    if state in {CallState.DENIED, CallState.AUTHORITY}:
-        ending = FiscalReportState.NEGADO
+    if state == CallState.DENIED:
+        ending = denied
+    elif state == CallState.AUTHORITY:
+        ending = refused
     elif state in {CallState.PAUSED, CallState.CANCELLED}:
         # A6 rollout: with the integration off, the in-flight protocol expires.
         ending = FiscalReportState.PROTOCOLO_EXPIRADO
@@ -1169,8 +1180,15 @@ def _refused(
                 unused.save()
         if report.state in FINAL_STATES or _next(report)[1] != step.key:
             return
+        link = serpro_link(report.client)
         if str(error) == CallState.AUTHORITY:
-            ending = FiscalReportState.NEGADO
+            # Classified by the cause recorded with the refusal, never re-read.
+            cause = (
+                refusal_cause(error.reason, link.connection)
+                if link
+                else ADMISSION_REFUSED
+            )
+            ending = FiscalReportState.FALHA if cause else FiscalReportState.NEGADO
         elif str(error) == CallState.PAUSED and step.operation == EMISSION_OPERATION:
             ending = FiscalReportState.PROTOCOLO_EXPIRADO
         else:

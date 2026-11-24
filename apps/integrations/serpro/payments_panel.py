@@ -20,12 +20,24 @@ from django.conf import settings
 from apps.authz.services import can
 from apps.core.flags import tenant_has
 from apps.integrations.call_models import CallState, ProviderCall
+from apps.integrations.serpro.denials import (
+    DenialCause,
+    denial_cause,
+    denial_text,
+    is_denial_code,
+)
 from apps.integrations.serpro.models import (
     ACTIVE_QUERY_STATES,
     PaymentQuery,
     PaymentQueryState,
 )
-from apps.integrations.serpro.payments import CHECKS, FLAG, receipt_request_key
+from apps.integrations.serpro.payments import (
+    CHECKS,
+    FIRM_REFUSALS,
+    FLAG,
+    receipt_request_key,
+)
+from apps.integrations.serpro.work import ADMISSION_REFUSED, FIRM_BLOCK_CLEARED
 from apps.obligations.models import (
     Document,
     FederalEnvironment,
@@ -40,6 +52,21 @@ if TYPE_CHECKING:
     from apps.clients.models import ClientCompany
 
 HISTORY: Final = 5
+# A firm-side admission refusal: never the client's procuracao (AXRM-045).
+FIRM_COPY: Final = {
+    "termo_ausente": (
+        "O termo de autorização do escritório não está em vigor ou foi recusado; a "
+        "procuração do cliente não foi alterada. Consulta não realizada."
+    ),
+    ADMISSION_REFUSED: (
+        "A admissão recusou a consulta antes do envio; a procuração do cliente não "
+        "foi alterada. Consulte novamente."
+    ),
+    FIRM_BLOCK_CLEARED: (
+        "Um bloqueio do escritório recusou a consulta e já foi encerrado; a "
+        "procuração do cliente não foi alterada. Consulte novamente."
+    ),
+}
 
 
 class PaymentBadge(StrEnum):
@@ -114,6 +141,12 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
                 "Limite mensal de consultas atingido. Nenhuma consulta foi feita "
                 "depois disso."
             )
+        case PaymentQueryState.FALHA if query.failure_code in FIRM_REFUSALS:
+            return FIRM_COPY.get(query.failure_code, FIRM_COPY["termo_ausente"])
+        case PaymentQueryState.FALHA | PaymentQueryState.INCERTO if is_denial_code(
+            query.failure_code
+        ):
+            return f"{denial_text(query.failure_code)} Consulta não repetida."
         case PaymentQueryState.INCERTO:
             return "O resultado é incerto. Confira com a equipe antes de repetir."
         case _ if query.failure_code == "limite_de_paginas":
@@ -199,6 +232,10 @@ def _receipt(call: ProviderCall | None, document: Document | None) -> str:
         if document is None:
             return "Comprovante emitido, mas não armazenado"
         return "Comprovante armazenado (somente equipe; verificação antivírus)"
+    if call.state == CallState.DENIED and (
+        denial_cause(call.provider_code) != DenialCause.PROCURACAO_CLIENTE
+    ):
+        return f"{denial_text(call.provider_code)} Comprovante não emitido."
     return RECEIPT_LABELS.get(call.state, "Situação do comprovante desconhecida")
 
 

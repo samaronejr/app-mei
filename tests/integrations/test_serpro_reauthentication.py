@@ -1,6 +1,5 @@
 """A definitive 401 is the sole bounded exception to the no-resend protocol."""
 
-import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
@@ -23,10 +22,12 @@ from apps.integrations.call_contracts import (
 from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
 from apps.integrations.call_protocol import claim, perform
 from apps.integrations.models import ClientProviderLink, IntegrationIssue
+from apps.integrations.serpro.models import FirmIntegrationIssue
 from apps.integrations.transport_types import ProviderResponse, TransportFailure
 from apps.integrations.transport_wire import WireLimits
 from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
+from tests.integrations.pagtoweb_support import denied
 from tests.integrations.serpro_retry_support import (
     AfterFirstResponse,
     TracedAdapter,
@@ -266,17 +267,9 @@ def test_concurrent_claims_of_a_scheduled_retry_admit_one_sender(
 def test_403_procurador_absence_is_billed_and_opens_owned_work(
     spend_link: ClientProviderLink,
 ) -> None:
-    # Given a complete provider denial of the firm's procurador authorization.
-    body = json.dumps(
-        {
-            "status": 403,
-            "mensagens": [
-                {"codigo": "AcessoNegado-ICGERENCIADOR-016", "texto": "synthetic"}
-            ],
-            "dados": "{}",
-        }
-    ).encode()
-    with FakeSerpro((Reply(status=403, body=body), Reply())) as peer:
+    # Given a complete provider denial of the firm's procurador authorization
+    # (A6: 020, the procurador token missing or expired; 016 is the platform's).
+    with FakeSerpro((denied(code="AcessoNegado-ICGERENCIADOR-020"), Reply())) as peer:
         row, ticket, adapter = client_dispatch(spend_link, peer.origin)
         # When the call finalizes, then denial is not silently treated as free or empty.
         result = perform(ticket, adapter)
@@ -286,8 +279,12 @@ def test_403_procurador_absence_is_billed_and_opens_owned_work(
     with tenant_context(spend_link.tenant_id):
         assert ProviderReservation.objects.get(call=row).state == "known"
         assert ProviderBudget.objects.get().known_liability == 240_000
-        assert IntegrationIssue.objects.filter(
-            client_id=spend_link.client_id,
+        # AXRM-045: the firm owns a termo denial; no client issue is opened.
+        assert FirmIntegrationIssue.objects.filter(
+            connection_id=spend_link.connection_id,
             reason="autorizacao_procurador_ausente",
             owner__isnull=False,
+        ).exists()
+        assert not IntegrationIssue.objects.filter(
+            client_id=spend_link.client_id
         ).exists()

@@ -102,11 +102,9 @@ def processing_204(wait_ms: int = 5_000) -> Reply:
     return Reply(status=204, body=b"", headers=(("ETag", f'"tempoEspera:{wait_ms}"'),))
 
 
-def denied_403() -> Reply:
-    return Reply(
-        status=403,
-        body=envelope(403, "", ("AcessoNegado-ICGERENCIADOR-016",)),
-    )
+def denied_403(code: str = "AcessoNegado-ICGERENCIADOR-022") -> Reply:
+    """A complete 403; 022 is the client's missing procuracao (A6)."""
+    return Reply(status=403, body=envelope(403, "", (f"[{code}]",)))
 
 
 def termo_reply() -> Reply:

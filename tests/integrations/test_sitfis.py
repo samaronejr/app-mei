@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 from datetime import timedelta
+from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -26,6 +27,7 @@ from apps.integrations.authority import head_record, revoke_authority
 from apps.integrations.call_contracts import Claim
 from apps.integrations.call_models import CallState
 from apps.integrations.models import IntegrationIssue
+from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.obligations.models import (
     Document,
     FederalConsultation,
@@ -440,6 +442,49 @@ def test_a_denied_emission_is_negado_with_owned_work_and_absent_authority(
     assert len(world.sent("/Emitir")) == 1
 
 
+@pytest.mark.parametrize("operation", ["SP-SIT-P", "SP-SIT-R"])
+@pytest.mark.parametrize(
+    ("code", "ending"),
+    [
+        ("Erro-ICGERENCIADOR-032", ("negado", "sem_procuracao", "ausente_detectada")),
+        ("AcessoNegado-ICGERENCIADOR-054", ("falha", "falha", "ativa")),
+        ("AcessoNegado-ICGERENCIADOR-099", ("incerto", "incerto", "ativa")),
+    ],
+    ids=["client", "termo", "unknown"],
+)
+def test_a_denied_sitfis_call_ends_by_its_reason_code(
+    world: World, operation: str, code: str, ending: tuple[str, str, str]
+) -> None:
+    # Given SERPRO refuses the free protocol or the paid emission with one code.
+    emission = operation == "SP-SIT-R"
+    if emission:
+        report = _protocol_received(world)
+        world.clock.advance(seconds=30)
+    else:
+        report = world.request()
+    world.script(denied_403(code))
+    report = world.advance(report)
+    [call] = world.calls(operation)
+    assert (call.state, call.billed, call.provider_code) == (
+        CallState.DENIED,
+        "sim" if emission else "nao",
+        code,
+    )
+    # Then the report ends by the code's owner (AXRM-045), and nothing is re-sent.
+    with tenant_context(world.tenant_id):
+        head = head_record(world.termo.client.pk, "sitfis")
+        outcome = FederalConsultation.objects.get(pk=report.consultation_id).outcome
+        firm = FirmIntegrationIssue.objects.filter(
+            reason="autorizacao_procurador_ausente", state__in=ACTIVE_STATES
+        ).exists()
+    assert head is not None
+    assert (report.state, outcome, head.status) == ending
+    assert firm is code.endswith("054")
+    world.clock.advance(hours=1)
+    world.advance(report)
+    assert len(world.sent("/Emitir")) == int(emission)
+
+
 def test_a_pause_mid_flight_expires_the_protocol_without_a_call(
     world: World, settings: SettingsWrapper
 ) -> None:
@@ -631,3 +676,106 @@ def test_scan_sweep_verifies_the_stored_report(world: World, clock: Clock) -> No
     with tenant_context(world.tenant_id):
         intake = DocumentIntake.objects.get(document_id=emitted.document_id)
     assert intake.state == IntakeState.VERIFIED
+
+
+def test_a_firm_block_refuses_sitfis_as_the_firms_failure_not_the_clients(
+    world: World,
+) -> None:
+    # Given the firm's issue is open (e.g. after another client's 016 or 020).
+    work = import_module("apps.integrations.serpro.work")
+    with tenant_context(world.tenant_id):
+        work.own_firm_condition(world.termo.connection, work.PROC_MISSING, ["x"])
+    # When a client with verified 00002 asks for its report.
+    report = world.advance(world.request())
+    # Then admission refuses it as the firm's failure, never "sem procuracao".
+    with tenant_context(world.tenant_id):
+        head = head_record(world.termo.client.pk, "sitfis")
+        outcome = FederalConsultation.objects.get(pk=report.consultation_id).outcome
+    assert head is not None
+    assert (report.state, outcome, head.status) == ("falha", "falha", "ativa")
+
+
+@pytest.mark.parametrize("operation", ["SP-SIT-P", "SP-SIT-R"])
+def test_a_firm_block_at_dispatch_ends_sitfis_as_the_firms_failure(
+    world: World, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    # Given a protocol or an emission whose dispatch the firm's new block refuses.
+    sitfis = import_module("apps.integrations.serpro.sitfis")
+    work = import_module("apps.integrations.serpro.work")
+    real = import_module("apps.integrations.call_protocol").perform
+    if operation == "SP-SIT-R":
+        report = _protocol_received(world)
+        world.clock.advance(seconds=30)
+    else:
+        report = world.request()
+
+    def blocked(ticket: Claim, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        with tenant_context(ticket.tenant_id):
+            work.own_firm_condition(world.termo.connection, work.PROC_MISSING, ["x"])
+        return real(ticket, *args, **kwargs)
+
+    monkeypatch.setattr(sitfis, "perform", blocked)
+    # When the next decisions apply the refusal recorded on the call.
+    report = world.advance(world.advance(report))
+    [call] = world.calls(operation)
+    assert call.state == CallState.AUTHORITY
+    # Then the report ends as the firm's failure, never "sem procuracao".
+    with tenant_context(world.tenant_id):
+        head = head_record(world.termo.client.pk, "sitfis")
+        outcome = FederalConsultation.objects.get(pk=report.consultation_id).outcome
+    assert head is not None
+    assert (report.state, outcome, head.status) == ("falha", "falha", "ativa")
+
+
+def test_a_termo_gone_before_the_worker_runs_is_the_firms_failure(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given a report queued for a client with verified 00002.
+    report = world.request()
+    # When the firm's termo is no longer in force by the time the worker runs.
+    sitfis = import_module("apps.integrations.serpro.sitfis")
+    monkeypatch.setattr(sitfis, "termo_parties", lambda *_args, **_kwargs: None)
+    report = world.advance(report)
+    # Then nothing is sent and the report is the firm's failure, not the client's.
+    assert world.calls("SP-SIT-P") == []
+    with tenant_context(world.tenant_id):
+        head = head_record(world.termo.client.pk, "sitfis")
+        outcome = FederalConsultation.objects.get(pk=report.consultation_id).outcome
+    assert head is not None
+    assert (report.state, outcome, head.status) == ("falha", "falha", "ativa")
+
+
+def test_a_firm_refusal_stays_the_firms_after_its_block_clears_and_authority_ends(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the firm's block refuses this report's protocol at dispatch; then,
+    # before it settles, the block is resolved and the client's 00002 revoked.
+    sitfis = import_module("apps.integrations.serpro.sitfis")
+    work = import_module("apps.integrations.serpro.work")
+    real = import_module("apps.integrations.call_protocol").perform
+
+    def refused_then_changed(ticket: Claim, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        with tenant_context(ticket.tenant_id):
+            work.own_firm_condition(world.termo.connection, work.PROC_MISSING, ["x"])
+        try:
+            return real(ticket, *args, **kwargs)
+        finally:
+            with tenant_context(world.tenant_id):
+                FirmIntegrationIssue.objects.update(state="resolvida")
+                head = head_record(world.termo.client.pk, "sitfis")
+                assert head is not None
+                revoke_authority(
+                    world.termo.actor,
+                    world.termo.client.pk,
+                    service="sitfis",
+                    expected_version=head.version,
+                )
+
+    monkeypatch.setattr(sitfis, "perform", refused_then_changed)
+    report = world.advance(world.advance(world.request()))
+    # Then the refusal is settled by the cause recorded with it: the firm's.
+    [call] = world.calls("SP-SIT-P")
+    assert call.provider_code == "autorizacao_procurador_ausente"
+    with tenant_context(world.tenant_id):
+        outcome = FederalConsultation.objects.get(pk=report.consultation_id).outcome
+    assert (report.state, outcome) == ("falha", "falha")

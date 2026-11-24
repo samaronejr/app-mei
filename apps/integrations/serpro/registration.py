@@ -9,13 +9,16 @@ from apps.authz.services import can
 from apps.cycles.evidence import CLEAN_STATES, ScanVerdict
 from apps.integrations.authority import authority_for
 from apps.integrations.budget import BudgetPolicy
-from apps.integrations.call_contracts import Operation, register_operation
-from apps.integrations.call_models import FirmProviderCall, ProviderCall
+from apps.integrations.call_contracts import (
+    AdmissionDeniedError,
+    Operation,
+    register_operation,
+)
+from apps.integrations.call_models import CallState, FirmProviderCall, ProviderCall
 from apps.integrations.firm_calls import FirmOperation, register_firm_operation
 from apps.integrations.models import FirmAuthorizationStatus
 from apps.integrations.serpro.firm_budget import FirmBudgetPolicy
-from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
-from apps.integrations.serpro.termo_state import termo_in_force
+from apps.integrations.serpro.work import CLIENT_ABSENT, PROC_MISSING, firm_blocked
 from apps.obligations.models import AcquisitionOrigin, Document
 
 if TYPE_CHECKING:
@@ -83,18 +86,16 @@ def firm_authority(call: FirmProviderCall) -> bool:
 
 
 def client_authority(call: ProviderCall) -> bool:
-    """Both the firm's accepted termo and the client's service authority must hold."""
-    connection_id = call.link.connection_id
-    if FirmIntegrationIssue.objects.filter(
-        connection_id=connection_id,
-        reason="autorizacao_procurador_ausente",
-        state__in=ACTIVE_STATES,
-    ).exists():
-        return False
-    authorized = (
-        termo_in_force(connection_id, timezone.localdate())
-        and authority_for(call.client, call.operation, link=call.link).usable
-    )
+    """Both the firm's accepted termo and the client's service authority must hold.
+
+    A refusal names its cause (AXRM-045): the firm's block, or the client's own
+    absent authority; dispatch records it with the refusal.
+    """
+    if firm_blocked(call.link.connection):
+        raise AdmissionDeniedError(CallState.AUTHORITY, reason=PROC_MISSING)
+    if not authority_for(call.client, call.operation, link=call.link).usable:
+        raise AdmissionDeniedError(CallState.AUTHORITY, reason=CLIENT_ABSENT)
+    authorized = True
     if authorized and call.operation == "SP-SIT-R":
         from apps.integrations.serpro.sitfis import admit_emission  # noqa: PLC0415
 
