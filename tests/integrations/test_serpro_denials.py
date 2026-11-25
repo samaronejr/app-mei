@@ -830,7 +830,7 @@ def test_a_refusals_history_keeps_the_403_frozen_when_it_was_refused(
 
 
 @DB
-def test_a_firm_termo_call_403_is_frozen_in_the_page_refusal_it_causes(
+def test_a_firm_termo_call_403_before_the_run_ends_it_as_the_missing_termo(
     world: World,
 ) -> None:
     # Given the firm's SP-TERMO call answers 403/016: that firm call (never a
@@ -850,15 +850,15 @@ def test_a_firm_termo_call_403_is_frozen_in_the_page_refusal_it_causes(
             world.gateway.origin,
         ),
     )
-    # When this client's page is refused by that issue before any byte.
+    # When this client's consultation runs: the refused termo is the head, so
+    # the firm has no termo in force and no page is ever reserved.
     refused = world.consult()
     assert world.sent() == []
-    # Then the refusal froze the 016 that firm call recorded, and history names it.
-    assert (refused.state, refused.failure_code) == (
-        "falha",
-        first_issue(world, platform),
-    )
-    assert platform in query_detail(refused)
+    # Then it ends as the firm's missing termo, stated as such, never the client's.
+    assert (refused.state, refused.failure_code) == ("falha", "termo_ausente")
+    detail = query_detail(refused)
+    assert "nenhuma página foi enviada" in detail
+    assert "procuração do cliente não foi alterada" in detail
 
 
 @DB
