@@ -155,7 +155,11 @@ def test_a_moved_version_is_refused_whatever_the_reread_does(
     # When dispatch rechecks: the re-read may only choose the cause (AXRM-045).
     with ProviderPeer() as peer, pytest.raises(AdmissionDeniedError) as refused:
         call_protocol.perform(ticket, peer)
-    # Then it is a recorded authority refusal with no cause, and nothing was sent.
-    assert (str(refused.value), refused.value.reason) == (CallState.AUTHORITY, "")
+    # Then it is a recorded authority refusal naming no cause (its state code,
+    # never blank), and nothing was sent.
+    assert (str(refused.value), refused.value.reason) == (
+        CallState.AUTHORITY,
+        CallState.AUTHORITY,
+    )
     assert peer.requests == []
     assert reload_call(provider_link, row.pk).state == CallState.AUTHORITY

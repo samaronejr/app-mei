@@ -441,8 +441,9 @@ def test_a_stale_claim_meeting_a_late_wait_is_refused_and_released(
 
     monkeypatch.setattr(mod, "claim", late_wait_on_a_moved_version)
     mod._run(world.tenant_id, report.pk, step)
-    # Then the stale call ends refused with its reservation released, never a
-    # deferral that keeps it held (AXRM-045).
-    assert world.calls("SP-SIT-R")[-1].state == "bloqueada_autoridade"
+    # Then the stale call ends as SITFIS records a claim-time refusal, cancelled
+    # with its reservation released, never a deferral that keeps it held.
+    stale = world.calls("SP-SIT-R")[-1]
+    assert (stale.state, stale.provider_code) == ("cancelada", "bloqueada_autoridade")
     assert world.budget().reserved == 0
     assert len(world.sent("/Emitir")) == 1
