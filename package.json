@@ -10,9 +10,9 @@
     "build": "npm run vendor:js && npm run build:css"
   },
   "devDependencies": {
-    "@alpinejs/csp": "3.15.12",
-    "@tailwindcss/cli": "4.3.3",
-    "htmx.org": "2.0.10",
-    "tailwindcss": "4.3.3"
+    "@alpinejs/csp": "3.17.5",
+    "@tailwindcss/cli": "4.3.5",
+    "htmx.org": "2.0.11",
+    "tailwindcss": "4.3.5"
   }
 }

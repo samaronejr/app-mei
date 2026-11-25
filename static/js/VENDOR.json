@@ -3,16 +3,16 @@
     {
       "file": "htmx.min.js",
       "package": "htmx.org",
-      "version": "2.0.10",
+      "version": "2.0.11",
       "source": "dist/htmx.min.js",
-      "sha256": "71ea67185bfa8c98c39d31717c6fce5d852370fcdfd129db4543774d3145c0de"
+      "sha256": "d6fdc75f204e6bdefa99b69bf1e6d4ac69b8a364f77929f45c13476b4000f717"
     },
     {
       "file": "alpine-csp.min.js",
       "package": "@alpinejs/csp",
-      "version": "3.15.12",
+      "version": "3.17.5",
       "source": "dist/cdn.min.js",
-      "sha256": "566167134bb2347110904e2ced6e816d2e8d837200c158f98b72372b3bb0b9a6"
+      "sha256": "48c170c92032e527cbae71b8ce75cf1f96ca06fa869a6120ef0fe438d8e92c36"
     }
   ]
 }
