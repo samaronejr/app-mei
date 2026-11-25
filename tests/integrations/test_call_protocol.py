@@ -17,6 +17,7 @@ from apps.core.tenancy import tenant_context
 from apps.integrations import call_contracts
 from apps.integrations.call_contracts import (
     AdmissionDeniedError,
+    AdmissionPolicy,
     CallRequest,
     CallResult,
     IntentConflictError,
@@ -34,7 +35,7 @@ from apps.tenants.models import Membership, Tenant, TenantRole
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
-class SyntheticPolicy:
+class SyntheticPolicy(AdmissionPolicy):
     """An explicit synthetic authority/tariff, not a production admission default."""
 
     allowed = True

@@ -131,3 +131,31 @@ def test_late_reply_is_recorded_without_regressing_a_terminal_call(
     assert reload_call(provider_link, row.pk).state == CallState.SUCCESS
     with tenant_context(provider_link.tenant_id):
         assert ProviderCallAttempt.objects.filter(call=row, observation="late").exists()
+
+
+@pytest.mark.parametrize("reread", ["raises", "names-nothing"])
+def test_a_moved_version_is_refused_whatever_the_reread_does(
+    provider_link: ClientProviderLink, monkeypatch: pytest.MonkeyPatch, reread: str
+) -> None:
+    # Given a committed lease, then the connection version moves before dispatch.
+    row = call_protocol.reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = call_protocol.claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+
+    def failing(_call: object) -> bool:
+        message = "the re-read failed"
+        raise RuntimeError(message)
+
+    if reread == "raises":
+        monkeypatch.setattr(SyntheticPolicy, "authority", property(lambda _: failing))
+    with tenant_context(provider_link.tenant_id):
+        ProviderConnection.objects.filter(pk=provider_link.connection_id).update(
+            version=2
+        )
+    # When dispatch rechecks: the re-read may only choose the cause (AXRM-045).
+    with ProviderPeer() as peer, pytest.raises(AdmissionDeniedError) as refused:
+        call_protocol.perform(ticket, peer)
+    # Then it is a recorded authority refusal with no cause, and nothing was sent.
+    assert (str(refused.value), refused.value.reason) == (CallState.AUTHORITY, "")
+    assert peer.requests == []
+    assert reload_call(provider_link, row.pk).state == CallState.AUTHORITY

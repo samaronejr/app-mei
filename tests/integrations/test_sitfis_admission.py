@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from django.db import connections
+from django.db.models import F
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
@@ -16,7 +17,11 @@ from apps.integrations.call_contracts import CallRequest
 from apps.integrations.call_dispatch import begin_io
 from apps.integrations.call_models import ProviderCall, ProviderEffectBarrier
 from apps.integrations.call_protocol import claim, reserve
-from apps.integrations.models import IntegrationIssue
+from apps.integrations.models import (
+    ClientProviderLink,
+    IntegrationIssue,
+    ProviderConnection,
+)
 from apps.integrations.serpro.codec import build_request
 from apps.obligations.models import FederalConsultation, FiscalSituationReport
 from tests.fakes.provider import Reply
@@ -404,3 +409,40 @@ def test_adopting_a_limit_pdf_resolves_the_issue_when_no_cycle_is_open(
             object_id=str(issue.pk),
             metadata__resolution="relatorio_pago_adotado",
         ).exists()
+
+
+def test_a_stale_claim_meeting_a_late_wait_is_refused_and_released(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = sitfis()
+    report, first = _ready(world)
+    world.script(processing_202(0))
+    mod._run(world.tenant_id, report.pk, first)
+    step = mod._decide(world.tenant_id, report.pk)
+    assert step is not None
+    [received] = world.calls("SP-SIT-R")
+    original = mod.claim
+
+    def late_wait_on_a_moved_version(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        # Given a 300-second wait arrives, and the connection version moves,
+        # before this claim's admission.
+        mod._receive(
+            world.tenant_id,
+            report.pk,
+            received.pk,
+            mod.SitfisReply(wait=timedelta(seconds=300), received_at=world.clock.now()),
+        )
+        with tenant_context(world.tenant_id):
+            link = ClientProviderLink.objects.get(pk=received.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "claim", late_wait_on_a_moved_version)
+    mod._run(world.tenant_id, report.pk, step)
+    # Then the stale call ends refused with its reservation released, never a
+    # deferral that keeps it held (AXRM-045).
+    assert world.calls("SP-SIT-R")[-1].state == "bloqueada_autoridade"
+    assert world.budget().reserved == 0
+    assert len(world.sent("/Emitir")) == 1
