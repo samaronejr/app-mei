@@ -393,11 +393,10 @@ def test_populated_review_migration_roundtrip_and_successor_refusal(
             finally:
                 executor.apply_migration(parent.clone(), migration)
             assert stored.values().get(pk=root.pk) == before
-            assert (
-                FiscalDocumentReview.all_objects.get(pk=root.pk).supersedes_id is None
-            )
         finally:
             cursor.execute("SET ROLE app_runtime")
+    with tenant_context(world.tenant_id):
+        assert FiscalDocumentReview.objects.get(pk=root.pk).supersedes_id is None
     successor = _prepared(world, fiscal, root)()
     with connection.cursor() as cursor:
         cursor.execute("RESET ROLE")
