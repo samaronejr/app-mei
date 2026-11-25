@@ -1,5 +1,8 @@
 """AXRM-049-PORTAL: hide internal requests without hiding approved artifacts."""
 
+# CROSS_TENANT_OK: Repair each tenant's firm-only request history before the
+# shared portal policies take effect; rollback checks every tenant for protected history.
+
 from django.db import migrations
 
 from apps.cycles.migrations._request_cutover import (
