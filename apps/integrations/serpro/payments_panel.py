@@ -61,13 +61,6 @@ if TYPE_CHECKING:
 
 HISTORY: Final = 5
 # A firm-side admission refusal: never the client's procuracao (AXRM-045).
-FIRM_COPY: Final = {
-    "termo_ausente": (
-        "Não havia termo de autorização do escritório em vigor quando a execução "
-        "da consulta começou; nenhuma página foi enviada e a procuração do "
-        "cliente não foi alterada."
-    ),
-}
 
 
 class PaymentBadge(StrEnum):
@@ -121,8 +114,12 @@ def firm_refusal(code: str) -> bool:
 def firm_refusal_text(query: PaymentQuery) -> str:
     """State a firm-side refusal as history, with the code it recorded then."""
     code = query.failure_code
-    if code in FIRM_COPY:
-        return FIRM_COPY[code]
+    if code == "termo_ausente":
+        return (
+            "Não havia termo de autorização do escritório em vigor quando a consulta "
+            f"seguiria para a página {query.pages_fetched + 1}; {_before(query)}; a "
+            "procuração do cliente não foi alterada."
+        )
     if code == ADMISSION_REFUSED:
         return (
             f"{_refused_page(query)} A admissão não registrou a causa; a "
@@ -197,15 +194,16 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
             return f"{found} ({pages}); {matched}."
         case PaymentQueryState.NADA_LOCALIZADO:
             return (
-                "Nenhum pagamento localizado no intervalo consultado. "
+                f"Nenhum pagamento localizado no intervalo consultado ({pages}). "
                 "Isso não indica falta de pagamento."
             )
         case PaymentQueryState.SEM_PROCURACAO:
             return _client_refusal_text(query)
         case PaymentQueryState.COTA_ESGOTADA:
             return (
-                "Limite mensal de consultas atingido. Nenhuma consulta foi feita "
-                "depois disso."
+                "Limite mensal de consultas atingido antes da página "
+                f"{query.pages_fetched + 1}; {_before(query)}. Nenhuma consulta foi "
+                "feita depois disso."
             )
         case PaymentQueryState.FALHA if firm_refusal(query.failure_code):
             return firm_refusal_text(query)
@@ -217,7 +215,10 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
                 "Consulta não repetida."
             )
         case PaymentQueryState.INCERTO:
-            return "O resultado é incerto. Confira com a equipe antes de repetir."
+            return (
+                f"O resultado da página {query.pages_fetched + 1} é incerto; "
+                f"{_before(query)}. Confira com a equipe antes de repetir."
+            )
         case _ if query.failure_code == "limite_de_paginas":
             return (
                 f"A consulta atingiu o limite de 10 páginas ({pages}); "
