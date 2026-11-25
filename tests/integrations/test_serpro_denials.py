@@ -352,7 +352,7 @@ def test_a_firm_termo_403_on_a_receipt_is_firm_work_with_its_own_label(
     [
         ("falha", "limite_de_paginas", "A consulta atingiu o limite de 10 páginas"),
         ("falha", "resposta_pagtoweb_invalida", "A consulta não foi concluída"),
-        ("incerto", "pagina_nao_registrada", "O resultado é incerto. Confira"),
+        ("incerto", "pagina_nao_registrada", "O resultado da página 1 é incerto"),
         ("falha", "termo_ausente", "Não havia termo de autorização do escritório"),
     ],
     ids=["page-limit", "failure", "uncertain", "firm-termo"],
@@ -857,7 +857,7 @@ def test_a_firm_termo_call_403_before_the_run_ends_it_as_the_missing_termo(
     # Then it ends as the firm's missing termo, stated as such, never the client's.
     assert (refused.state, refused.failure_code) == ("falha", "termo_ausente")
     detail = query_detail(refused)
-    assert "nenhuma página foi enviada" in detail
+    assert "nenhuma página tinha sido enviada antes" in detail
     assert "procuração do cliente não foi alterada" in detail
 
 
@@ -892,39 +892,64 @@ def test_a_page_2_block_after_a_billed_page_1_states_both_pages(
 
 
 @DB
-def test_a_firm_termo_call_403_after_the_claim_is_frozen_in_the_refusal(
+def test_a_termo_gone_on_redelivery_after_a_billed_page_states_that_page(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Given this page claimed, then the firm's SP-TERMO call answers 403/016
-    # before the page dispatches (the connection version moves): that firm call
-    # opens the issue, and admission names it at dispatch, never a bare refusal.
-    termo, platform = world.termo, "AcessoNegado-ICGERENCIADOR-016"
-    real = import_module("apps.integrations.call_protocol").claim
+    # Given page 1 full, sent, billed and committed; the worker stops before it
+    # reserves page 2, and the firm's termo is gone before the redelivery.
+    real = import_module("apps.integrations.call_protocol").reserve
+    reserved = []
 
-    def claim_then_termo_403(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        ticket = real(*args, **kwargs)
-        world.script(denied(code=platform))
-        with tenant_context(termo.tenant.pk):
-            version = ProviderConnection.objects.get(pk=termo.connection.pk).version
-        submit_termo(
-            termo.actor,
-            termo.tenant.pk,
-            TermoSubmission(
-                termo.connection.pk,
-                termo.document.pk,
-                version,
-                termo.parties,
-                world.gateway.origin,
-            ),
-        )
-        return ticket
+    def stop_before_page_2(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        reserved.append(1)
+        if len(reserved) == 2:
+            raise SystemExit
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(payments, "claim", claim_then_termo_403)
-    refused = world.consult()
-    assert world.sent() == []
-    # Then the refusal froze the 016 that firm call recorded, and history names it.
-    assert (refused.state, refused.failure_code) == (
+    world.script(page(support.darfs(100)))
+    with monkeypatch.context() as patch:
+        patch.setattr(payments, "reserve", stop_before_page_2)
+        with pytest.raises(SystemExit):
+            world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get(client=world.termo.client)
+    monkeypatch.setattr(payments, "termo_parties", lambda *_args: None)
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then it ends as the missing termo, and history states the billed page 1.
+    assert (settled.state, settled.failure_code, settled.pages_fetched) == (
         "falha",
-        first_issue(world, platform),
+        "termo_ausente",
+        1,
     )
-    assert platform in query_detail(refused)
+    detail = query_detail(settled)
+    assert "a página 1 já tinha sido enviada e cobrada" in detail
+    assert "seguiria para a página 2" in detail
+
+
+@DB
+def test_the_block_an_sp_termo_403_opens_freezes_that_firm_calls_code(
+    world: World,
+) -> None:
+    # Given the firm's SP-TERMO call answers 403/016: the issue it opens cites
+    # only that firm call, never a client page.
+    termo, platform = world.termo, "AcessoNegado-ICGERENCIADOR-016"
+    world.script(denied(code=platform))
+    with tenant_context(termo.tenant.pk):
+        version = ProviderConnection.objects.get(pk=termo.connection.pk).version
+    submit_termo(
+        termo.actor,
+        termo.tenant.pk,
+        TermoSubmission(
+            termo.connection.pk,
+            termo.document.pk,
+            version,
+            termo.parties,
+            world.gateway.origin,
+        ),
+    )
+    # Then the block a refusal would record now freezes that call's 016.
+    work = import_module("apps.integrations.serpro.work")
+    with tenant_context(termo.tenant.pk):
+        connection = ProviderConnection.objects.get(pk=termo.connection.pk)
+        assert work.firm_block(connection) == first_issue(world, platform)
