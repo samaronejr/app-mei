@@ -10,7 +10,11 @@ from apps.audit.services import ObjectRef, record_event
 from apps.core.flags import tenant_row_has
 from apps.integrations.authority import client_owner
 from apps.integrations.budget_settlement import quarantine
-from apps.integrations.call_contracts import AdmissionDeniedError, Operation
+from apps.integrations.call_contracts import (
+    AdmissionDeniedError,
+    AdmissionPolicy,
+    Operation,
+)
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.models import (
     ACTIVE_ISSUE_STATES,
@@ -69,9 +73,28 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
             operation.feature == "document_capture"
             and link.credential_state not in {"ativa", "vencendo"}
         )
-        or not operation.policy.authorize(call)
     ):
+        reason = _moved_cause(operation.policy, call)
+        raise AdmissionDeniedError(CallState.AUTHORITY, reason=reason)
+    if not operation.policy.authorize(call):
         raise AdmissionDeniedError(CallState.AUTHORITY)
+
+
+def _moved_cause(policy: AdmissionPolicy, call: ProviderCall) -> str:
+    """Name the blocker a call meets now, once its versions moved after reservation.
+
+    A moved version is no cause in itself, and the call is refused with its
+    reservation released whatever the re-read does: it may only choose the cause.
+    A wait, a deferral or an error names none; its writes are rolled back.
+    """
+    try:
+        with transaction.atomic():
+            policy.authority(call)
+    except AdmissionDeniedError as refused:
+        return refused.reason if str(refused) == CallState.AUTHORITY else ""
+    except Exception:  # noqa: BLE001 - the refusal stands whatever the re-read does
+        return ""
+    return ""
 
 
 def uncertain(call: ProviderCall) -> None:
