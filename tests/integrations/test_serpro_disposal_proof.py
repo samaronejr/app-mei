@@ -49,7 +49,7 @@ from apps.cycles.evidence import (
 from apps.cycles.export_records import EvidenceExport
 from apps.cycles.models import EvidenceLink, ServiceCycle
 from apps.cycles.models import Exception as CycleException
-from apps.cycles.retention import canonical_key, place_hold, release_hold
+from apps.cycles.retention import physical_identity, place_hold, release_hold
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.retention_tasks import Candidate, disposal_refusal, purge_tenant
 from apps.cycles.scanning import FakeScanner
@@ -361,20 +361,22 @@ def test_a_stale_scanner_never_removes_what_another_scanner_verified(
         intake = DocumentIntake.objects.get(document=original)
     first = scanning.claim_scan(world.tenant_id, intake.pk)
     assert first is not None
-    save = default_storage.save
+    create = scanning._create_exclusive
     interleaved: list[str] = []
 
-    def save_then_let_the_other_scanner_finish(
-        name: str, content: ContentFile[bytes]
-    ) -> str:
-        stored = save(name, content)
+    def create_then_let_the_other_scanner_finish(
+        storage: FileSystemStorage, key: str, payload: bytes
+    ) -> None:
+        # Scanner A's write of the final (its exclusive create), then scanner B.
+        create(storage, key, payload)
         if not interleaved:
-            interleaved.append(stored)
-            monkeypatch.setattr(default_storage, "save", save)
+            interleaved.append(key)
+            monkeypatch.setattr(scanning, "_create_exclusive", create)
             world.scan()  # scanner B verifies A's copy and removes the quarantine
-        return stored
 
-    monkeypatch.setattr(default_storage, "save", save_then_let_the_other_scanner_finish)
+    monkeypatch.setattr(
+        scanning, "_create_exclusive", create_then_let_the_other_scanner_finish
+    )
     scanning.promote(first, default_storage)
     assert interleaved == [original.storage_key]
     with tenant_context(world.tenant_id):
@@ -980,7 +982,7 @@ def test_an_unrepresentable_derived_date_means_no_expiry() -> None:
 
 
 def test_the_scanner_never_deletes_a_quarantine_copy_on_remote_storage(
-    world: World,
+    world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     report = _emit(world)
     with tenant_context(world.tenant_id):
@@ -988,6 +990,8 @@ def test_the_scanner_never_deletes_a_quarantine_copy_on_remote_storage(
     ticket = scanning.claim_scan(world.tenant_id, intake.pk)
     assert ticket is not None
     bucket = RecordingBucket()
+    # As in production, the remote store also holds the rows' objects.
+    monkeypatch.setattr(retention, "rows_storage", lambda: bucket, raising=False)
     scanning._discard_quarantine(ticket, bucket)
     assert bucket.calls == []
 
@@ -997,18 +1001,24 @@ def _ordinary_pending(
 ) -> tuple[Document, DocumentIntake]:
     """An expired ordinary original (2018) with a pending intake and its copy."""
     termo = world.termo
-    payload = b"%PDF-1.7\n% ordinary original AXRM-051 r5\n%%EOF\n"
+    # Distinct bytes per call: a world may hold several such originals.
+    payload = b"%%PDF-1.7\n%% ordinary original AXRM-051 r5 %s\n%%%%EOF\n" % (
+        uuid4().hex.encode()
+    )
     with tenant_context(world.tenant_id):
         kind, _ = ObligationType.objects.get_or_create(
             code="DAS", defaults={"name": "DAS", "periodicity": "monthly"}
         )
-        old = Obligation.objects.create(
+        # One expired obligation per world; a second original joins it.
+        old, _ = Obligation.objects.get_or_create(
             tenant=termo.tenant,
             client=termo.client,
             obligation_type=kind,
             competence_month=date(2018, 9, 1),
-            nominal_due_date=date(2018, 10, 20),
-            resolved_due_date=date(2018, 10, 20),
+            defaults={
+                "nominal_due_date": date(2018, 10, 20),
+                "resolved_due_date": date(2018, 10, 20),
+            },
         )
         key = f"originals/{uuid4().hex}.pdf"
         if with_final:
@@ -1811,7 +1821,11 @@ def test_cleanup_never_removes_a_copy_that_is_the_final(
     )
     assert outcome == scanning.ScanOutcome.VERIFIED
     assert (root / final).exists()
-    assert canonical_key(copy) == canonical_key(final) or (root / copy).exists()
+    assert (
+        physical_identity(copy, default_storage)
+        == physical_identity(final, default_storage)
+        or (root / copy).exists()
+    )
 
 
 @pytest.mark.parametrize(
@@ -2028,7 +2042,9 @@ def test_a_symlinked_root_and_its_target_are_one_root(
         assert (real / key).exists()
         claim = _claim(world, document.pk)
         assert claim is None or claim.completed_at is None
-        assert canonical_key(str(held)) == canonical_key(key)
+        assert physical_identity(str(held), default_storage) == physical_identity(
+            key, default_storage
+        )
     finally:
         configured.unlink()
 
@@ -2184,7 +2200,9 @@ def test_a_root_reentered_through_its_link_is_the_same_root(
             world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
         )
         assert (real / key).exists()
-        assert canonical_key(f"../media/{key}") == canonical_key(key)
+        assert physical_identity(
+            f"../media/{key}", default_storage
+        ) == physical_identity(key, default_storage)
     finally:
         (links / "media").unlink()
         links.rmdir()
@@ -2265,9 +2283,12 @@ def test_a_stored_object_is_read_only_as_the_regular_file_it_was(
 class _NameLiteral(Storage):
     """A remote object store whose names mean only themselves."""
 
-    def __init__(self, objects: dict[str, bytes], behaviour: str) -> None:
+    def __init__(
+        self, objects: dict[str, bytes], behaviour: str, answer: str = ""
+    ) -> None:
         self.objects = dict(objects)
         self.behaviour = behaviour
+        self.answer = answer
 
     def _open(self, name: str, mode: str = "rb") -> File[bytes]:
         if name not in self.objects:
@@ -2276,12 +2297,13 @@ class _NameLiteral(Storage):
 
     def _save(self, name: str, content: File[bytes]) -> str:
         payload = content.read()
-        other = posixpath.normpath(name)
-        self.objects[other] = payload
-        if self.behaviour == "stores-both":
-            self.objects[name] = payload  # also under the requested name
-        # It answers the other name, or the requested one it never stored.
-        return name if self.behaviour == "answers-requested" else other
+        if self.behaviour == "stores-other":
+            self.objects[f"{name}.alt"] = payload
+            return name  # answers the name it never stored
+        self.objects[name] = payload
+        if self.answer:
+            return self.answer  # stored as asked, but answers another key
+        return f"{name}.alt" if self.behaviour == "answers-other" else name
 
     def exists(self, name: str) -> bool:
         return name in self.objects
@@ -2291,31 +2313,6 @@ class _NameLiteral(Storage):
 
     def size(self, name: str) -> int:
         return len(self.objects[name])
-
-
-@pytest.mark.parametrize(
-    "behaviour", ["stores-elsewhere", "answers-requested", "stores-both"]
-)
-def test_a_remote_save_under_another_name_is_not_the_original(
-    world: World, behaviour: str
-) -> None:
-    _document, intake = _ordinary_pending(world, with_final=False)
-    requested = f"originals//{uuid4().hex}.pdf"
-    with tenant_context(world.tenant_id):
-        Document.objects.filter(pk=intake.document_id).update(storage_key=requested)
-    with default_storage.open(intake.quarantine_key, "rb") as handle:
-        bucket = _NameLiteral({intake.quarantine_key: handle.read()}, behaviour)
-    try:
-        outcome: object = scanning.scan_intake(
-            world.tenant_id,
-            intake.pk,
-            scanner=FakeScanner(),
-            now=timezone.now(),
-            storage=bucket,
-        )
-    except RuntimeError:
-        outcome = "raised"
-    assert outcome != scanning.ScanOutcome.VERIFIED
 
 
 def test_cleanup_decides_with_the_storage_that_deletes(
@@ -2340,11 +2337,16 @@ def test_cleanup_decides_with_the_storage_that_deletes(
     assert copy.exists()
 
 
+@pytest.mark.parametrize("spelled", ["absolute", "relative"])
 def test_one_lock_per_object_in_the_storage_that_holds_it(
-    world: World, tmp_path: Path
+    world: World, tmp_path: Path, spelled: str
 ) -> None:
     other = FileSystemStorage(location=str(tmp_path / f"locks-{uuid4().hex[:8]}"))
-    absolute = str(Path(other.location).resolve() / "originals" / "r10.pdf")
+    absolute = (
+        str(Path(other.location).resolve() / "originals" / "r10.pdf")
+        if spelled == "absolute"
+        else "originals/r10.pdf"  # only the second storage's root resolves it
+    )
     held = connection.get_new_connection(connection.get_connection_params())
     try:
         held.autocommit = True
@@ -2360,22 +2362,217 @@ def test_one_lock_per_object_in_the_storage_that_holds_it(
     assert taken is False
 
 
-def test_a_refused_save_never_deletes_the_sole_copy(world: World) -> None:
-    _document, intake = _ordinary_pending(world, with_final=False)
-    # The final names the sole copy's own key spelled `quarantine//...`.
-    requested = intake.quarantine_key.replace("/", "//", 1)
-    with tenant_context(world.tenant_id):
-        Document.objects.filter(pk=intake.document_id).update(storage_key=requested)
-    with default_storage.open(intake.quarantine_key, "rb") as handle:
-        bucket = _NameLiteral(
-            {intake.quarantine_key: handle.read()}, "stores-elsewhere"
+def _swept(world: World) -> BaseException | None:
+    """Run one sweep; return what escaped it, if anything did."""
+    try:
+        purge_tenant(
+            world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
         )
+    except Exception as error:  # noqa: BLE001 - the escape itself is asserted
+        return error
+    return None
+
+
+def test_a_spelling_the_backend_refuses_is_never_deleted_and_the_sweep_goes_on(
+    world: World, settings: SettingsWrapper
+) -> None:
+    refused, _ = _ordinary_pending(world, with_final=True)
+    other, _ = _ordinary_pending(world, with_final=True)
+    real = Path(default_storage.path("")).resolve()
+    configured = real.parent / f"media-link-{uuid4().hex[:8]}"
+    configured.symlink_to(real, target_is_directory=True)
+    # `/srv/media` -> `/data/pilot`: the row spells its final from the real root,
+    # which the backend (rooted at the link) refuses to address.
+    with tenant_context(world.tenant_id):
+        Document.objects.filter(pk=refused.pk).update(
+            storage_key=str(real / refused.storage_key)
+        )
+    try:
+        settings.MEDIA_ROOT = str(configured)
+        escaped = _swept(world)
+    finally:
+        configured.unlink()
+    assert escaped is None
+    claim = _claim(world, refused.pk)
+    assert claim is not None
+    assert (claim.completed_at, claim.error_code) == (None, "chave_nao_enderecavel")
+    assert (real / refused.storage_key).exists()
+    reached = _claim(world, other.pk)
+    assert reached is not None
+    assert reached.completed_at is not None
+
+
+def test_one_failing_backend_call_refuses_only_its_candidate(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, _ = _ordinary_pending(world, with_final=True)
+    second, _ = _ordinary_pending(world, with_final=True)
+    real_delete = default_storage.delete
+
+    def refusing(name: str) -> None:
+        if name == first.storage_key:
+            message = "the backend refused this name"
+            raise ValueError(message)
+        real_delete(name)
+
+    monkeypatch.setattr(default_storage, "delete", refusing)
+    assert _swept(world) is None
+    one = _claim(world, first.pk)
+    assert one is not None
+    assert (one.completed_at, one.error_code) == (None, "falha_inesperada")
+    assert default_storage.exists(first.storage_key)
+    two = _claim(world, second.pk)
+    assert two is not None
+    assert two.completed_at is not None
+
+
+def test_cleanup_sees_a_held_owner_through_a_nested_root(world: World) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    root = Path(default_storage.path("")).resolve()
+    sub = f"pilot-{uuid4().hex[:8]}"
+    nested = FileSystemStorage(location=str(root / sub))  # `/srv/media/pilot`
+    with default_storage.open(intake.quarantine_key, "rb") as handle:
+        nested.save(intake.quarantine_key, ContentFile(handle.read()))
+    # A held tenant's row, written through the default root, names the very file
+    # the scanner reaches as `quarantine/...` under its nested root.
+    _foreign_copy(world, f"{sub}/{intake.quarantine_key}")
     outcome = scanning.scan_intake(
+        world.tenant_id,
+        intake.pk,
+        scanner=FakeScanner(),
+        now=timezone.now(),
+        storage=nested,
+    )
+    assert outcome == scanning.ScanOutcome.VERIFIED
+    assert nested.exists(intake.quarantine_key)
+
+
+def test_one_lock_per_file_across_nested_roots() -> None:
+    root = Path(default_storage.path("")).resolve()
+    nested = FileSystemStorage(location=str(root / "pilot"))
+    assert retention._key_lock_id(
+        "pilot/quarantine/r11.pdf", default_storage
+    ) == retention._key_lock_id("quarantine/r11.pdf", nested)
+
+
+def test_rows_count_when_their_storage_cannot_be_compared(world: World) -> None:
+    _ordinary_pending(world, with_final=False)
+    bucket = _NameLiteral({}, "faithful")
+    with tenant_context(world.tenant_id):
+        assert retention.storage_key_aliased(
+            [f"originals/{uuid4().hex}.pdf"], storage=bucket
+        )
+
+
+def test_a_final_created_meanwhile_is_never_written_over(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=False)
+    final = Path(default_storage.path(document.storage_key))
+    real_mkdir = Path.mkdir
+
+    def then_created(self: Path, *args: object, **kwargs: object) -> None:
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self == final.parent and not final.exists():
+            # Another owner's file appears between the check and the create.
+            final.write_bytes(b"held by another owner")
+
+    monkeypatch.setattr(Path, "mkdir", then_created)
+    outcome = scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    assert final.read_bytes() == b"held by another owner"
+
+
+def _promote_remotely(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    intake: DocumentIntake,
+    bucket: _NameLiteral,
+) -> object:
+    """Scan with a remote store that, as in production, holds the rows' objects."""
+    monkeypatch.setattr(retention, "rows_storage", lambda: bucket, raising=False)
+    return scanning.scan_intake(
         world.tenant_id,
         intake.pk,
         scanner=FakeScanner(),
         now=timezone.now(),
         storage=bucket,
     )
+
+
+def _document_key(world: World, intake: DocumentIntake) -> str:
+    with tenant_context(world.tenant_id):
+        return Document.objects.get(pk=intake.document_id).storage_key
+
+
+def _remote_bucket(
+    intake: DocumentIntake, behaviour: str, **more: bytes
+) -> _NameLiteral:
+    with default_storage.open(intake.quarantine_key, "rb") as handle:
+        return _NameLiteral({intake.quarantine_key: handle.read(), **more}, behaviour)
+
+
+def test_a_remote_promotion_lands_on_a_new_key_and_leaves_the_held_object(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    held = f"originals/{uuid4().hex}.pdf"
+    requested = held.replace("/", "//", 1)  # a spelling of another owner's object
+    with tenant_context(world.tenant_id):
+        Document.objects.filter(pk=intake.document_id).update(storage_key=requested)
+    bucket = _remote_bucket(intake, "faithful", **{held: b"held by another owner"})
+    original = bucket.objects[intake.quarantine_key]
+    outcome = _promote_remotely(world, monkeypatch, intake, bucket)
+    assert outcome == scanning.ScanOutcome.VERIFIED
+    final = _document_key(world, intake)
+    assert final not in {requested, held}
+    assert final.startswith("originals/")
+    assert bucket.objects[final] == original
+    assert bucket.objects[held] == b"held by another owner"
+
+
+@pytest.mark.parametrize("in_use", ["object-there", "row-names-it"])
+def test_an_allocated_key_already_in_use_is_refused_with_nothing_deleted(
+    world: World, monkeypatch: pytest.MonkeyPatch, in_use: str
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    requested = _document_key(world, intake)
+    taken = f"originals/{uuid4().hex}.pdf"
+    extra = {taken: b"someone else's"} if in_use == "object-there" else {}
+    bucket = _remote_bucket(intake, "faithful", **extra)
+    if in_use == "row-names-it":
+        _foreign_original(world, taken)
+    before = dict(bucket.objects)
+    monkeypatch.setattr(
+        scanning, "_allocate_final_key", lambda requested: taken, raising=False
+    )
+    outcome = _promote_remotely(world, monkeypatch, intake, bucket)
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    assert bucket.objects == before
+    assert _document_key(world, intake) == requested
+
+
+@pytest.mark.parametrize("behaviour", ["answers-other", "stores-other"])
+def test_a_remote_save_under_another_name_is_not_the_original(
+    world: World, monkeypatch: pytest.MonkeyPatch, behaviour: str
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    requested = _document_key(world, intake)
+    outcome = _promote_remotely(
+        world, monkeypatch, intake, _remote_bucket(intake, behaviour)
+    )
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    assert _document_key(world, intake) == requested
+
+
+def test_a_refused_save_never_deletes_the_sole_copy(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    bucket = _remote_bucket(intake, "faithful")
+    bucket.answer = intake.quarantine_key  # the save answers the sole copy's key
+    outcome = _promote_remotely(world, monkeypatch, intake, bucket)
     assert outcome != scanning.ScanOutcome.VERIFIED
     assert intake.quarantine_key in bucket.objects

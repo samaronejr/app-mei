@@ -565,7 +565,9 @@ def test_an_archive_of_a_staff_first_guide_is_unsupported_on_versioned_storage(
             access_key="synthetic-access",
             secret_key="synthetic-secret",  # noqa: S106 - no request is ever sent
         )
+        # One default storage, as in production: the rows' and the purge's.
         monkeypatch.setattr(retention, "default_storage", bucket)
+        monkeypatch.setattr(retention_tasks, "default_storage", bucket)
         archive = Candidate(
             client.pk, "export", uuid4(), None, (f"exports/{uuid4().hex}.zip",)
         )

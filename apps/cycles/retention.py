@@ -91,7 +91,7 @@ def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) ->
     case; each key, at the path the backend addresses, must resolve inside it and,
     if it exists, be a regular file with one link (AXRM-051). Paths are compared
     as bytes, so no name's encoding can break a match. Then two keys name one
-    object exactly when their `canonical_key` is the same. Nothing is opened.
+    object exactly when their `physical_identity` is the same. Nothing is opened.
     Empty when proved, and on any backend that is not a local filesystem.
     """
     chosen = default_storage if storage is None else storage
@@ -204,11 +204,59 @@ def _addressed(storage: FileSystemStorage, key: str) -> Path | None:
         return None
 
 
+def physical_identity(key: str, storage: Storage) -> bytes:
+    """Return the identity of the object a key names in `storage`, as bytes.
+
+    On local storage it is the absolute real path of the file the backend addresses
+    (a spelling the backend refuses is resolved directly, for identification only),
+    so keys of nested, overlapping or sibling roots compare equal exactly when they
+    name one file. Elsewhere it is the lexical name (AXRM-051).
+    """
+    if not isinstance(storage, FileSystemStorage):
+        return b"remote:" + posixpath.normpath(key.replace("\\", "/")).encode()
+    path = _addressed(storage, key)
+    if path is None:
+        path = Path(os.path.realpath(Path(storage.location) / key))
+    return os.fsencode(path)
+
+
+def rows_storage() -> Storage:
+    """Return the storage every stored row's key belongs to: the default one."""
+    return default_storage
+
+
+def _comparable(storage: Storage) -> bool:
+    """Whether keys of `storage` can be compared with the rows' physical identities.
+
+    Two local roots always can (by real path); a remote store only with itself.
+    """
+    rows = rows_storage()
+    both_local = isinstance(storage, FileSystemStorage) and isinstance(
+        rows, FileSystemStorage
+    )
+    return both_local or storage is rows
+
+
+def _row_form(identity: bytes) -> str:
+    """Return how a row of the rows' storage spells this identity, or ``."""
+    rows = rows_storage()
+    if not isinstance(rows, FileSystemStorage):
+        return identity.removeprefix(b"remote:").decode()
+    root = os.fsencode(real_root(rows)).rstrip(b"/") + b"/"
+    return os.fsdecode(identity[len(root) :]) if identity.startswith(root) else ""
+
+
 def _key_refusal(storage: FileSystemStorage, root: Path, key: str) -> str:
     """Why one key is not proved to name a file of its own inside `root`, or ``."""
     path = _addressed(storage, key)
     if path is None or not _inside(path, root):
         return "chave_fora_do_armazenamento"
+    try:
+        storage.path(key)
+    except SuspiciousFileOperation:
+        # A spelling the deleting backend will not address is never deletable,
+        # even when it can be identified for ownership (AXRM-051).
+        return "chave_nao_enderecavel"
     try:
         status = path.lstat()
     except FileNotFoundError:
@@ -283,32 +331,6 @@ def client_federal_involvement(client_id: UUID) -> bool:
     )
 
 
-def canonical_key(key: str, storage: Storage | None = None) -> str:
-    """Return the one name of the object a key resolves to, for every comparison.
-
-    On local storage the key is joined with the root and normalised: an absolute
-    key inside the root, `a//b`, `a/./b` and `x/../a/b` all become the same
-    root-relative name, and a key that leaves the root keeps its absolute path,
-    which no key inside it can equal. Elsewhere the name is normalised lexically.
-    Locks, alias and ownership lookups, cleanup's same-object test and the layout
-    judge all compare this form (AXRM-051). The lexical form is used off local
-    storage only for locks and lookups, where folding names only keeps more.
-    """
-    if not key:
-        return ""
-    chosen = default_storage if storage is None else storage
-    if not isinstance(chosen, FileSystemStorage):
-        return posixpath.normpath(key.replace("\\", "/")).lstrip("/")
-    # The path the backend addresses for the key, at its real path, against the
-    # real root: configured and real spellings, and `..` re-entering through a
-    # symlinked root, name the same object (AXRM-051).
-    root = real_root(chosen)
-    path = _addressed(chosen, key)
-    if path is None:
-        return os.path.normpath(Path(chosen.location) / key)  # outside: never inside
-    return path.relative_to(root).as_posix() if _inside(path, root) else str(path)
-
-
 # Names that resolve to one object differ only in separators and `.` segments, so
 # rows are matched with both removed: a coarser match only keeps more.
 _LOOSE: Final = r"[/\\.]"
@@ -324,19 +346,27 @@ def _naming(
     keys: Iterable[str],
     storage: Storage | None = None,
 ) -> QuerySet[Any]:
+    """Return the rows of `model` whose key names one of these keys' objects.
+
+    The keys belong to `storage`; every row belongs to the rows' own storage and is
+    resolved through it, never through the caller's. When the two cannot be
+    compared, every row counts as naming the object (AXRM-051).
+    """
+    chosen = default_storage if storage is None else storage
     named = [key for key in keys if key]
-    loose = {_loose(key) for key in named} | {
-        _loose(canonical_key(k, storage)) for k in named
-    }
+    if not _comparable(chosen):
+        return model.objects.all()
+    identities = {physical_identity(key, chosen) for key in named}
+    forms = {_row_form(identity) for identity in identities} - {""}
+    loose = {_loose(key) for key in named} | {_loose(form) for form in forms}
     # A `..` segment or an absolute spelling resolves elsewhere than stripping can
     # see: such rows (restored descriptors, rare) are resolved here, one by one.
-    canonical = {canonical_key(key, storage) for key in named}
     dotted = [
         pk
         for pk, raw in model.objects.filter(
             Q(**{f"{field}__contains": ".."}) | Q(**{f"{field}__startswith": "/"})
         ).values_list("pk", field)
-        if canonical_key(raw, storage) in canonical
+        if physical_identity(raw, rows_storage()) in identities
     ]
     return model.objects.annotate(
         loose_key=Func(
@@ -397,12 +427,15 @@ def foreign_storage_keys(
                 found.update(
                     _naming(model, field, named, storage).values_list(field, flat=True)
                 )
+    chosen = default_storage if storage is None else storage
+    if not _comparable(chosen):
+        return set(named) if found else set()
     return {
         key
         for key in named
         for raw in found
         if _loose(key) == _loose(raw)
-        or canonical_key(key, storage) == canonical_key(raw, storage)
+        or physical_identity(key, chosen) == physical_identity(raw, rows_storage())
     }
 
 
@@ -434,9 +467,9 @@ def ownership_refusal(
 
 
 def _key_lock_id(key: str, storage: Storage | None = None) -> int:
-    # One lock per object, whatever spelling of its key a caller holds.
-    name = canonical_key(key, storage)
-    digest = hashlib.sha256(f"axorim-storage-key:{name}".encode()).digest()
+    # One lock per object, whatever spelling or storage root a caller holds.
+    name = physical_identity(key, default_storage if storage is None else storage)
+    digest = hashlib.sha256(b"axorim-storage-key:" + name).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
 
