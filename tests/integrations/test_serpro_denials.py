@@ -247,7 +247,10 @@ def test_every_documented_403_reaches_only_its_own_owner(
     assert ("falta da procuração" in detail) is (cause == CLIENT)
     if cause != CLIENT:
         expected = denials_api().DENIAL_TEXT[cause]
-        assert detail == f"{expected} (código {code}). Consulta não repetida."
+        assert detail == (
+            "A página 1 foi enviada e cobrada; nenhuma página tinha sido enviada "
+            f"antes. {expected} (código {code}). Consulta não repetida."
+        )
     # When a person asks again: nothing is re-sent automatically, and a cause
     # whose owner has not acted refuses before any byte.
     world.script(page([]))
@@ -862,3 +865,33 @@ def test_a_firm_termo_call_403_after_the_claim_is_frozen_in_the_refusal(
         first_issue(world, platform),
     )
     assert platform in query_detail(refused)
+
+
+@DB
+def test_a_page_2_block_after_a_billed_page_1_states_both_pages(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 is full (so page 2 follows), sent and billed; then a firm
+    # issue opens before page 2 is reserved.
+    real = import_module("apps.integrations.call_protocol").reserve
+    reserved = []
+
+    def reserve_then_block(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        reserved.append(1)
+        if len(reserved) == 2:
+            _block_without_a_403(world)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(payments, "reserve", reserve_then_block)
+    world.script(page(support.darfs(100)))
+    refused = world.consult()
+    # Then history states page 1 as sent and billed, and page 2 as refused.
+    assert (refused.state, refused.pages_fetched, len(world.sent())) == (
+        "falha",
+        1,
+        1,
+    )
+    detail = query_detail(refused)
+    assert "A página 2 foi recusada pela admissão" in detail
+    assert "a página 1 já tinha sido enviada e cobrada" in detail
+    assert "antes do envio" not in detail
