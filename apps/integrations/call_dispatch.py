@@ -17,9 +17,7 @@ from django.utils import timezone
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.integrations import provider_journal
-from apps.integrations.budget_alerts import refused
-from apps.integrations.budget_pricing import BudgetDeniedError
-from apps.integrations.budget_settlement import billing_result, release, release_unsent
+from apps.integrations.budget_settlement import billing_result, release_unsent
 from apps.integrations.call_contracts import (
     AdmissionDeniedError,
     CallResult,
@@ -36,7 +34,13 @@ from apps.integrations.call_models import (
     ProviderEffectBarrier,
 )
 from apps.integrations.call_observations import meter, observe
-from apps.integrations.call_state import admit, current_epoch, lock_controls, uncertain
+from apps.integrations.call_state import (
+    admit,
+    current_epoch,
+    lock_controls,
+    record_refusal,
+    uncertain,
+)
 from apps.integrations.call_unopened import (
     UNOPENED_RESULT,
     _issue_unopened_write,
@@ -209,21 +213,7 @@ def _prepare(ticket: Claim) -> Dispatch | AdmissionDeniedError | StaleClaimError
     try:
         admit(call, tenant, operation)
     except AdmissionDeniedError as error:
-        release(call)
-        if isinstance(error, BudgetDeniedError):
-            call.state = CallState.QUOTA
-            call.provider_code = error.reason
-            refused(call)
-        else:
-            call.state = (
-                CallState.PAUSED
-                if str(error) == CallState.PAUSED
-                else CallState.AUTHORITY
-            )
-            # The cause as it stood when refused, durable with the refusal.
-            call.provider_code = error.reason
-        call.version += 1
-        call.save()
+        record_refusal(call, error)
         return error
     # Policy/authority locks may have blocked past the lease deadline.
     if call.lease_until <= timezone.now():
