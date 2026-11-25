@@ -7,7 +7,7 @@ from threading import Barrier
 import pytest
 from django.db import connection, connections
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -32,7 +32,7 @@ __all__ = ["provider_link"]
 
 @pytest.fixture
 def budget_link(
-    provider_link: ClientProviderLink, settings: SettingsWrapper
+    provider_link: ClientProviderLink, settings: Settings
 ) -> ClientProviderLink:
     settings.USAGE_UNIT_PRICES_BRL = {"serpro_consulta": "0.24"}
     settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "1.00"}
@@ -129,7 +129,7 @@ def test_concurrent_reservations_cannot_exceed_tenant_cap(
 
 
 def test_platform_cap_serializes_two_different_firms(
-    budget_link: ClientProviderLink, settings: SettingsWrapper
+    budget_link: ClientProviderLink, settings: Settings
 ) -> None:
     # Given two independent tenant budgets but only one platform-wide unit.
     settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "0.24"}
@@ -219,7 +219,7 @@ def test_three_fake_billed_calls_consume_three_units(
 
 
 def test_platform_cap_counts_inactive_firms_exposure(
-    budget_link: ClientProviderLink, settings: SettingsWrapper
+    budget_link: ClientProviderLink, settings: Settings
 ) -> None:
     # Given an inactive firm that still carries this month's SERPRO liability.
     settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "0.24"}

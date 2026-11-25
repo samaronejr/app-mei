@@ -3,6 +3,7 @@
 import socket
 import ssl
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -48,7 +49,7 @@ def route_storage_host(monkeypatch: pytest.MonkeyPatch, port: int) -> None:
         service: str | bytes | int | None,
         family: int = 0,
         *options: int,
-    ) -> list[
+    ) -> Sequence[
         tuple[
             socket.AddressFamily,
             socket.SocketKind,

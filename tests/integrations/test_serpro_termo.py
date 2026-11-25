@@ -14,7 +14,7 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -117,7 +117,7 @@ def accepted(expiry: date | None = None) -> Reply:
 
 
 @pytest.fixture
-def world(settings: SettingsWrapper, tmp_path: Path) -> SyntheticTermo:
+def world(settings: Settings, tmp_path: Path) -> SyntheticTermo:
     settings.MEDIA_ROOT = tmp_path
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False
@@ -678,7 +678,7 @@ def submit_unsent_retry(
     world: SyntheticTermo,
     origin: str,
     monkeypatch: pytest.MonkeyPatch,
-    settings: SettingsWrapper,
+    settings: Settings,
     retry: str,
 ) -> None:
     """Submit a retry that is refused, or whose worker dies, before its first byte."""
@@ -723,7 +723,7 @@ def submit_unsent_retry(
 def test_daily_sweep_owns_an_unsettled_submission_behind_a_retry_never_sent(
     world: SyntheticTermo,
     monkeypatch: pytest.MonkeyPatch,
-    settings: SettingsWrapper,
+    settings: Settings,
     start: str,
     retry: str,
 ) -> None:

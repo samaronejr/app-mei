@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from django.db import DatabaseError, connection
 from django.db.migrations.executor import MigrationExecutor
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -143,7 +143,7 @@ def test_populated_two_tenant_legacy_rows_reverse_and_reapply_without_changes() 
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     return ingest_setup(settings, tmp_path)
 
 

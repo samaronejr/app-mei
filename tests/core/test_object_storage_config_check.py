@@ -10,7 +10,7 @@ today and keep passing if it stopped working.
 """
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.checks import _object_storage_config_errors
 
@@ -33,7 +33,7 @@ def _storages(backend: str, options: dict[str, str] | None = None) -> dict[str, 
     return {"default": default, "staticfiles": {"BACKEND": FILESYSTEM}}
 
 
-def test_the_check_is_silent_on_filesystem_storage(settings: SettingsWrapper) -> None:
+def test_the_check_is_silent_on_filesystem_storage(settings: Settings) -> None:
     # Given the filesystem backend development and tests run on
     settings.STORAGES = _storages(FILESYSTEM)
 
@@ -42,7 +42,7 @@ def test_the_check_is_silent_on_filesystem_storage(settings: SettingsWrapper) ->
 
 
 def test_the_check_is_silent_when_object_storage_is_fully_configured(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given S3 selected with every option populated
     settings.STORAGES = _storages(S3, COMPLETE)
@@ -53,7 +53,7 @@ def test_the_check_is_silent_when_object_storage_is_fully_configured(
 
 @pytest.mark.parametrize("missing", sorted(COMPLETE))
 def test_the_check_names_each_option_left_empty(
-    settings: SettingsWrapper,
+    settings: Settings,
     missing: str,
 ) -> None:
     # Given S3 selected with exactly one option blank
@@ -71,7 +71,7 @@ def test_the_check_names_each_option_left_empty(
 
 
 def test_the_check_names_every_missing_option_at_once(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given S3 selected with nothing configured, the shape a first deploy produces
     settings.STORAGES = _storages(S3, dict.fromkeys(COMPLETE, ""))
@@ -87,7 +87,7 @@ def test_the_check_names_every_missing_option_at_once(
 
 
 def test_the_check_fires_when_options_are_absent_entirely(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given S3 selected with no OPTIONS mapping at all
     settings.STORAGES = _storages(S3)

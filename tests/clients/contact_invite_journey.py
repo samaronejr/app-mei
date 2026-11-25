@@ -8,7 +8,7 @@ from http import HTTPStatus
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany, ClientContact, Engagement, ImportBatch
 from apps.core.tenancy import tenant_context
@@ -63,7 +63,7 @@ def _dispatch_token() -> str:
     return match.group(1).decode("ascii")
 
 
-def contact_journey(settings: SettingsWrapper) -> Journey:
+def contact_journey(settings: Settings) -> Journey:
     """Use the real UI and tasks to offer and refresh an imported client's invite."""
     settings.DELIVERY_PAUSED = False
     settings.CELERY_TASK_ALWAYS_EAGER = True

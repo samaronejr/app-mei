@@ -77,7 +77,7 @@ from typing import Final
 import pytest
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import issue_client_invite
 from apps.tenants.models import TenantRole
@@ -182,7 +182,7 @@ class Surface:
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

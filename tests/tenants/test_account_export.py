@@ -13,7 +13,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import DatabaseError, connection
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence_zip import build_metadata_archive
@@ -34,7 +34,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture(autouse=True)
-def _storage(settings: SettingsWrapper, tmp_path: Path) -> None:
+def _storage(settings: Settings, tmp_path: Path) -> None:
     settings.MEDIA_ROOT = tmp_path
 
 

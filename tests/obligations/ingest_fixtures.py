@@ -6,7 +6,7 @@ from pathlib import Path
 
 from django.db import connection
 from django.db.backends.utils import CursorWrapper
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import client_context, tenant_context
 from tests.portal.request_fixtures import PortalSetup, portal_setup
@@ -14,7 +14,7 @@ from tests.portal.request_fixtures import PortalSetup, portal_setup
 PDF = b"%PDF-1.4\n% synthetic SITFIS report\n%%EOF\n"
 
 
-def ingest_setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def ingest_setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     settings.CLAMAV_ENABLED = False
     return portal_setup("visibility")

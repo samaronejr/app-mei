@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.delivery import tasks
 from apps.delivery.jobs import registered_jobs
@@ -82,7 +82,7 @@ def test_failed_tenant_does_not_starve_another_tenants_batch(
 
 
 def test_shipped_beat_schedule_registers_the_sweep(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given the shipped, not dynamically invented, job registration.
     definition = settings.CELERY_BEAT_SCHEDULE["sweep-reminders"]

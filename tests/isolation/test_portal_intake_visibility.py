@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from django.db import ProgrammingError, connection, transaction
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.identifiers import uuid7
 from apps.core.retention import RetentionClass
@@ -21,7 +21,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     return ingest_setup(settings, tmp_path)
 
 

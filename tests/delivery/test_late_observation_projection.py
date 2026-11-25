@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import ClientPublication
@@ -171,7 +171,7 @@ def test_a_superseded_fence_reply_is_typed_ignored_stale(
 
 
 def test_an_explicit_client_receipt_survives_a_late_cancellation_untyped(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     setup, message = acknowledged_publication(settings, tmp_path, "receipt-typed")
     tenant_id = setup.graph.tenant.pk

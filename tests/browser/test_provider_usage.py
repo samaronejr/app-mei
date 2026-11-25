@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from django.utils import timezone
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -16,7 +16,7 @@ from tests.browser.harness import BrowserPage, LiveFirm, axe_check
 def test_owner_provider_usage_panel(
     live_firm: Callable[..., LiveFirm],
     open_page: Callable[[LiveFirm, User | None], BrowserPage],
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given measured SERPRO checks, estimated Focus captures, and a missing metric.
     live = live_firm(

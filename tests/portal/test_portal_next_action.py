@@ -14,7 +14,7 @@ import pytest
 from django.db import connection
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import ReviewDecision
@@ -58,7 +58,7 @@ class Markup(HTMLParser):
 
 @pytest.fixture(autouse=True)
 def _portal_surface(
-    settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    settings: Settings, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     settings.MEDIA_ROOT = tmp_path

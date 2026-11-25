@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import ClientAcknowledgement, CycleTask, RequestState, TaskState
@@ -14,7 +14,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_import_upload_review_approval_execution_receipt_and_completion(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     scenario = scenario_a(settings, tmp_path, "completion-scenario-a")

@@ -44,7 +44,7 @@ from django.http import HttpResponse
 from django.template.loader import render_to_string
 from django.test import Client, RequestFactory
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from tests.ui.factories import Firm, make_firm
 from tests.ui.templates_scan import EXTERNAL_URL
@@ -250,7 +250,7 @@ def _queue_success(client: Client, text: str) -> None:
 
 
 @pytest.fixture
-def firm(settings: SettingsWrapper) -> Firm:
+def firm(settings: Settings) -> Firm:
     """A firm on its own subdomain, which `TenantMiddleware` has to resolve."""
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
     return make_firm("alpha-feedback")

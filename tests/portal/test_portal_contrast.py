@@ -30,7 +30,7 @@ import pytest
 from django.template import Context, Engine
 from django.test import Client, override_settings
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -111,7 +111,7 @@ CONTEXT_KEYS: Final = {
 
 
 @pytest.fixture(autouse=True)
-def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     # Pinned to the shipped tree: sibling modules in this package point the middleware
     # at `tests.portal.urls`, which mounts probes instead of pages.
@@ -187,7 +187,7 @@ def test_the_r1_vault_and_account_draw_no_ink_under_aa(case: str) -> None:
 @pytest.mark.parametrize("kill_switch", [False, True])
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_flag_off_vault_and_account_keep_their_parent_bytes(
-    settings: SettingsWrapper, case: str, kill_switch: bool
+    settings: Settings, case: str, kill_switch: bool
 ) -> None:
     settings.AXORIM_DISABLED_FEATURES = [FLAG] if kill_switch else []
     response = _open(case, [FLAG] if kill_switch else [])

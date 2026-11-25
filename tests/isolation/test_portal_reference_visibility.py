@@ -18,7 +18,7 @@ from django.db import connection, transaction
 from django.http import Http404
 from django.utils import timezone
 from psycopg import sql
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import (
@@ -43,7 +43,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     return ingest_setup(settings, tmp_path)
 
 

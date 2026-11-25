@@ -21,7 +21,7 @@ from typing import Final
 import pytest
 from django.db.models import F
 from django.urls import reverse
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.clients.models import (
     ClientCompany,
@@ -60,7 +60,7 @@ QUERY_BUDGET = 90
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

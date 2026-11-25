@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 from django.db.models import F
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.completion_checks import completion_items, valid_waiver
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
 
 

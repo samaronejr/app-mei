@@ -24,7 +24,7 @@ import pytest
 from django.conf import settings
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -91,7 +91,7 @@ STYLESHEET: Final = "css/app.css"
 
 
 @pytest.fixture(autouse=True)
-def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
     # Pinned to the shipped tree. Sibling modules in this package point the middleware
     # at `tests.portal.urls`, which mounts probes instead of pages.
@@ -244,7 +244,7 @@ def test_every_portal_page_exposes_the_four_landmarks(portal_client: Client) -> 
             assert landmark in body, f"{name} draws no {landmark}"
 
 
-def test_the_focus_ring_is_defined_and_never_removed(settings: SettingsWrapper) -> None:
+def test_the_focus_ring_is_defined_and_never_removed(settings: Settings) -> None:
     """`outline: none` with no replacement is a WCAG 2.4.7 failure.
 
     The portal has no stylesheet of its own, so this reads the same compiled file the

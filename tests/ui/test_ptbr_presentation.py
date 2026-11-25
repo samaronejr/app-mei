@@ -7,7 +7,7 @@ import pytest
 from django.template import Context, Template
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts import forms as accounts_forms
 from apps.accounts.models import User
@@ -298,12 +298,12 @@ INVITE_ADD_FORM: Final = "/admin/tenants/invite/add/"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 
 @pytest.fixture
-def _admin_urls(settings: SettingsWrapper) -> None:
+def _admin_urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.admin.urls"
 
 

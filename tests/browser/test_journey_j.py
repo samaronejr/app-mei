@@ -18,7 +18,7 @@ from pathlib import Path
 
 from django.conf import settings as django_settings
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -100,7 +100,7 @@ def _owner_ends(owner: BrowserPage, live: LiveFirm, grant: SupportGrant) -> None
 def test_journey_j_company_switch_rescopes_every_surface(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -168,7 +168,7 @@ def test_journey_j_company_switch_rescopes_every_surface(
 def test_journey_j_support_banner_follows_the_owner_approved_grant(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

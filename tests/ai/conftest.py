@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.tenants.models import Tenant
 from tests.portal.request_fixtures import PortalSetup, portal_setup
@@ -10,7 +10,7 @@ from tests.portal.request_fixtures import PortalSetup, portal_setup
 
 @pytest.fixture
 def setup(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> PortalSetup:
     instant = timezone.now()
     monkeypatch.setattr(timezone, "now", lambda: instant)

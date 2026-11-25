@@ -12,7 +12,7 @@ import pytest
 from allauth.account.models import EmailAddress
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.mfa import MFA_ENROLMENT_URL_NAME, requires_mfa
 from apps.accounts.models import User
@@ -25,7 +25,7 @@ PASSWORD = "correct-horse-battery-staple"  # noqa: S105
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.accounts.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

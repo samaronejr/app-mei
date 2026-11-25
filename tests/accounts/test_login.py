@@ -15,7 +15,7 @@ import pytest
 from allauth.account import app_settings as account_settings
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 
@@ -28,7 +28,7 @@ _CSRF_VALUE = re.compile(rb'name="csrfmiddlewaretoken" value="[^"]+"')
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.accounts.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

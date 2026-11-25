@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import Exception as CycleException
@@ -100,7 +100,7 @@ def test_a_pause_requests_nothing_and_shows_as_paused(
     world: World,
     queued: list[tuple[str, str]],
     monkeypatch: pytest.MonkeyPatch,
-    settings: SettingsWrapper,
+    settings: Settings,
     flag: str,
 ) -> None:
     setattr(settings, flag, True)

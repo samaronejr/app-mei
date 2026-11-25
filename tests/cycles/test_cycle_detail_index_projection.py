@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.authz.models import Role
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_display_digest_equals_authority_with_all_retained_sources_nonempty(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     # Given real scenario A, then a real approved reopening with an amendment.
     moment = datetime(2026, 9, 20, 12, 0, 0, 120000, tzinfo=UTC)

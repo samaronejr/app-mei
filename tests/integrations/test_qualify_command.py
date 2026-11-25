@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from django.core.management import call_command, get_commands
 from django.core.management.base import CommandError
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations.call_models import FirmProviderCall
@@ -27,7 +27,7 @@ def require_command() -> None:
 
 
 def test_fake_termo_scenario_writes_complete_secret_free_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
     # Given a complete fake termo reply and an empty evidence destination.
     require_command()
@@ -99,7 +99,7 @@ def test_fake_termo_scenario_writes_complete_secret_free_evidence(
     ],
 )
 def test_qualification_refuses_unregistered_or_live_paths_before_any_request(
-    provider: str, scenario: str, environment: str, settings: SettingsWrapper
+    provider: str, scenario: str, environment: str, settings: Settings
 ) -> None:
     # Given a request outside the bounded provider/scenario/environment registry.
     require_command()

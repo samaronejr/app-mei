@@ -1,7 +1,7 @@
 """Old cycle forms must propose consequential effects instead of bypassing approval."""
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import ActionProposal, CycleEvent, RequestState, ServiceCycle
@@ -12,7 +12,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_existing_waiver_form_creates_approval_without_waiving_request(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
     setup = publication_graph()
@@ -44,7 +44,7 @@ def test_existing_waiver_form_creates_approval_without_waiving_request(
 
 @pytest.mark.parametrize("state", ["concluido", "encerrado_com_pendencias"])
 def test_existing_completion_form_freezes_target_and_stale_post_writes_nothing(
-    settings: SettingsWrapper, state: str
+    settings: Settings, state: str
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
     setup = publication_graph()
@@ -75,7 +75,7 @@ def test_existing_completion_form_freezes_target_and_stale_post_writes_nothing(
 
 @pytest.mark.parametrize("action", ["waive", "complete"])
 def test_consequential_form_refuses_closed_context_without_server_error(
-    settings: SettingsWrapper, action: str
+    settings: Settings, action: str
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
     setup = publication_graph()

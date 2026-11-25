@@ -44,7 +44,7 @@ from django.db import ProgrammingError, connection
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -187,7 +187,7 @@ SCRIPTED: Final = re.compile(r"<script\b|\bhx-|\bx-on:|\s@click\b|\bstyle=|data:
 
 
 @pytest.fixture(autouse=True)
-def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     # Pinned to the shipped tree: sibling modules in this package point the middleware
     # at `tests.portal.urls`, which mounts probes instead of pages.
@@ -820,7 +820,7 @@ def test_the_upload_form_is_a_plain_multipart_post_carrying_its_csrf_token(
 
 def test_the_size_hint_names_the_cap_the_server_actually_enforces(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     """The hint moves when the setting moves, or it is decoration.
 
@@ -849,7 +849,7 @@ def test_the_size_hint_names_the_cap_the_server_actually_enforces(
 
 def test_an_oversized_upload_renders_the_portuguese_error_page_at_400(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     """The status is pinned elsewhere; what is new is that a person can read it.
 

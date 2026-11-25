@@ -20,7 +20,7 @@ from tests.delivery.test_boundaries import _web
 
 if TYPE_CHECKING:
     from django.test import Client
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
     from tests.delivery.conftest import DeliverySetup
 
@@ -55,7 +55,7 @@ def _message(web: Client, code: str) -> str:
 
 
 def test_each_federal_health_code_renders_its_own_message(
-    delivery: DeliverySetup, settings: SettingsWrapper
+    delivery: DeliverySetup, settings: Settings
 ) -> None:
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False

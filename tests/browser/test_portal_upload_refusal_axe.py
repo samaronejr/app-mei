@@ -20,7 +20,7 @@ from typing import Final
 
 from django.urls import reverse
 from playwright.sync_api import FilePayload, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.core.tenancy import tenant_context
@@ -75,7 +75,7 @@ def _measure(failures: dict[str, str], page: BrowserPage, step: str) -> None:
 def test_axe_on_the_r1_upload_refusals_and_the_corrected_retry(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

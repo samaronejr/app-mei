@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from django.core.files.storage import default_storage
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.errors import VersionConflict
@@ -45,7 +45,7 @@ REASON = "O arquivo está ilegível. Envie a nota em PDF ou XML."
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     return portal_setup("t13-review")
 

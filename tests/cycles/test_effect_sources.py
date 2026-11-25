@@ -14,7 +14,7 @@ import pytest
 from django.db import transaction
 from django.db.models.signals import post_save
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientAssignment
 from apps.core.tenancy import tenant_context
@@ -39,7 +39,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_email_freezes_reproducible_transport_bytes_and_revalidates_sender(
-    monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
     setup = approval_graph("approval-email-transport")
     with tenant_context(setup.graph.tenant.pk):
@@ -188,7 +188,7 @@ def test_expired_official_observation_warns_for_email_without_changing_bytes(
 
 
 def test_portal_review_projection_alone_cannot_authorize_a_document(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -219,7 +219,7 @@ def test_portal_review_projection_alone_cannot_authorize_a_document(
 
 
 def test_actual_review_link_revision_and_extracted_amount_are_bound(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

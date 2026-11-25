@@ -17,7 +17,7 @@ from django.core import mail
 from django.http.response import HttpResponseBase
 from django.test import Client
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import (
     InviteEmailMismatchError,
@@ -38,7 +38,7 @@ TENANT_HOST = "alpha.localhost"
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.accounts.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
     from pytest_django.live_server_helper import LiveServer
 
     from apps.integrations import tasks
@@ -43,7 +43,7 @@ OpenPage = Callable[[LiveFirm, User | None], BrowserPage]
 def test_staff_obtain_the_guide_and_select_it_for_publication(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

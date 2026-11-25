@@ -15,7 +15,7 @@ from django.core.files.storage import default_storage
 from django.core.management import call_command
 from django.db import connection, connections
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.automation import shadow
 from apps.automation.admission import Ticket, claim
@@ -231,7 +231,7 @@ def test_a_failure_after_dispatch_is_still_metered(
 
 @pytest.mark.parametrize("gate", ["flag", "kill_switch", "provider", "refused"])
 def test_closed_gates_and_refused_admission_meter_nothing(
-    setup: PortalSetup, settings: SettingsWrapper, gate: str
+    setup: PortalSetup, settings: Settings, gate: str
 ) -> None:
     intake = single_company(setup)
     tid = setup.graph.tenant.pk
@@ -286,7 +286,7 @@ def test_records_are_private_to_their_tenant_and_counted_per_tenant(
 
 
 def test_owner_estimate_sums_this_months_calls_and_needs_a_price(
-    setup: PortalSetup, settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+    setup: PortalSetup, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     september, *october = (source(setup, number) for number in (1, 2, 3))
     tid = setup.graph.tenant.pk
@@ -318,7 +318,7 @@ def test_owner_estimate_sums_this_months_calls_and_needs_a_price(
     assert priced.total is None
 
 
-def real_adapter(settings: SettingsWrapper) -> None:
+def real_adapter(settings: Settings) -> None:
     settings.AI_PROVIDER = "openai"
     settings.AI_REAL_DATA_APPROVED = True
     settings.AI_MODEL = "synthetic-fixture"
@@ -337,7 +337,7 @@ def real_adapter(settings: SettingsWrapper) -> None:
 )
 def test_local_adapter_refusals_record_no_usage(
     setup: PortalSetup,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     refusal: str,
     code: str,
@@ -410,7 +410,7 @@ class SilentTransport:
 )
 def test_real_adapter_failures_after_dispatch_count_once(
     setup: PortalSetup,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     reply: bytes | None,
     code: str,

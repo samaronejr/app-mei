@@ -15,7 +15,7 @@ import pytest
 from django.core.exceptions import PermissionDenied
 from django.db import connections
 from django.http import Http404
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -439,7 +439,7 @@ def test_a_denied_emission_is_negado_with_owned_work_and_absent_authority(
 
 
 def test_a_pause_mid_flight_expires_the_protocol_without_a_call(
-    world: World, settings: SettingsWrapper
+    world: World, settings: Settings
 ) -> None:
     report = _protocol_received(world)
     settings.SERPRO_PAUSED = True
@@ -481,7 +481,7 @@ def test_authority_revoked_at_dispatch_releases_the_reservation(
 
 
 def test_a_request_without_the_flag_or_authority_writes_nothing(
-    world: World, settings: SettingsWrapper
+    world: World, settings: Settings
 ) -> None:
     module = sitfis()
     with tenant_context(world.tenant_id):

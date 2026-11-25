@@ -28,7 +28,7 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -102,9 +102,7 @@ class World:
 
 
 @pytest.fixture
-def world(
-    browser_server: LiveServer, settings: SettingsWrapper, tmp_path: Path
-) -> World:
+def world(browser_server: LiveServer, settings: Settings, tmp_path: Path) -> World:
     settings.MEDIA_ROOT = tmp_path
     setup = portal_setup("axe-sweep")
     live = live_graph(

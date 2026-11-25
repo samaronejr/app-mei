@@ -19,7 +19,7 @@ import pytest
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.effects.executors import execute
@@ -171,7 +171,7 @@ def _publish(setup: PortalSetup) -> ClientPublication:
     return ClientPublication.objects.get(proposal=proposal)
 
 
-def period_world(settings: SettingsWrapper, tmp_path: Path, slug: str) -> PeriodWorld:
+def period_world(settings: Settings, tmp_path: Path, slug: str) -> PeriodWorld:
     """An imported client with a sent request, a publication and its receipt.
 
     Real services throughout: the CSV import, send_requests, approval and
@@ -262,7 +262,7 @@ def history(page: list[Element], message: OutboundMessage) -> list[tuple[str, st
 
 
 def test_workspace_links_the_period_request_and_its_communication(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     """Red witness: at b9bba19 neither section renders a single typed row."""
     world = period_world(settings, tmp_path, "t43-linked")
@@ -337,7 +337,7 @@ def test_workspace_links_the_period_request_and_its_communication(
 
 
 def test_an_empty_period_is_typed_empty_and_the_selector_moves_every_row(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t43-periods")
     firm = world.setup.firm()
@@ -370,7 +370,7 @@ def test_an_empty_period_is_typed_empty_and_the_selector_moves_every_row(
 
 
 def test_failed_uncertain_and_accepted_messages_keep_their_own_outcome(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t43-outcomes")
     rejected = deliver_notice(world, "reject", occurrence=1)
@@ -399,7 +399,7 @@ def test_failed_uncertain_and_accepted_messages_keep_their_own_outcome(
 
 
 def test_portfolio_scope_hides_a_forbidden_client_and_never_mixes_rows(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t43-scope")
     setup = world.setup

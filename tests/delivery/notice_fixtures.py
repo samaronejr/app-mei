@@ -4,7 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientContact
@@ -19,7 +19,7 @@ from tests.support import enrol_totp
 
 
 @pytest.fixture
-def graph(settings: SettingsWrapper, tmp_path: Path) -> CycleSetup:
+def graph(settings: Settings, tmp_path: Path) -> CycleSetup:
     """A real issuer with no notice policy unless the test explicitly saves one."""
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path

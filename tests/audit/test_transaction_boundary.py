@@ -15,7 +15,7 @@ from http import HTTPStatus
 
 import pytest
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event, PlatformEvent
@@ -30,7 +30,7 @@ TENANT_HOST = "alpha.localhost"
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.audit.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

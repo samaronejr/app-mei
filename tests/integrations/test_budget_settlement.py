@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations import call_contracts
@@ -95,7 +95,7 @@ def test_lost_response_retains_maximum_exposure(
 )
 def test_missing_or_invalid_price_refuses_before_reservation(
     budget_link: ClientProviderLink,
-    settings: SettingsWrapper,
+    settings: Settings,
     prices: dict[str, str],
 ) -> None:
     # Given no usable tariff entry.
@@ -110,7 +110,7 @@ def test_missing_or_invalid_price_refuses_before_reservation(
 
 
 def test_missing_platform_cap_refuses_as_missing_cap(
-    budget_link: ClientProviderLink, settings: SettingsWrapper
+    budget_link: ClientProviderLink, settings: Settings
 ) -> None:
     # Given a tenant cap but no platform-wide SERPRO ceiling (the closed default).
     settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {}

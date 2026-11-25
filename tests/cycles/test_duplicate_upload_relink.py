@@ -5,7 +5,7 @@ from http import HTTPStatus
 from pathlib import Path
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import (
@@ -25,7 +25,7 @@ PAYLOAD = b"%PDF-1.4 the very same bytes\n"
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     return portal_setup("relink")
 

@@ -19,7 +19,7 @@ from uuid import UUID
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientAssignment, Engagement, TaxProfile
@@ -256,7 +256,7 @@ def _open_cycle(termo: SyntheticTermo, responsible: User) -> ServiceCycle:
 
 
 @pytest.fixture
-def world(settings: SettingsWrapper, tmp_path: Path, clock: Clock) -> Iterator[World]:
+def world(settings: Settings, tmp_path: Path, clock: Clock) -> Iterator[World]:
     settings.MEDIA_ROOT = tmp_path
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False

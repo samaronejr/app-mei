@@ -38,7 +38,7 @@ import pytest
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
     from django.test.client import _MonkeyPatchedWSGIResponse
@@ -87,7 +87,7 @@ REFUSAL_SENTINEL: Final = "Pedir novo convite"
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     """Serve the SHIPPED trees, since `invite-accept` lives on only one of them.
 
     `config.urls` is the only tree that `include()`s `apps.accounts.urls`, so a stub

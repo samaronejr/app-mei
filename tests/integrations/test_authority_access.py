@@ -6,7 +6,7 @@ import pytest
 from django.apps import apps
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, PlatformEvent
@@ -110,7 +110,7 @@ def _rows(firm: Firm) -> tuple[int, int]:
 
 
 def test_staff_accountant_is_refused_at_the_view_gate_before_any_upload(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     authority_api()
     settings.CLAMAV_ENABLED = True
@@ -132,7 +132,7 @@ def test_staff_accountant_is_refused_at_the_view_gate_before_any_upload(
     ],
 )
 def test_roles_without_the_capability_cannot_write_authority(
-    settings: SettingsWrapper,
+    settings: Settings,
     label: str,
     session: Callable[[Firm], Client],
 ) -> None:
@@ -167,7 +167,7 @@ def test_roles_without_the_capability_cannot_write_authority(
     ("label", "session"), [("owner", Firm.as_owner), ("ops", _ops)]
 )
 def test_firm_roles_whose_grant_is_withdrawn_are_refused_on_record(
-    settings: SettingsWrapper,
+    settings: Settings,
     label: str,
     session: Callable[[Firm], Client],
 ) -> None:
@@ -187,7 +187,7 @@ def test_firm_roles_whose_grant_is_withdrawn_are_refused_on_record(
     ("label", "session"), [("owner", Firm.as_owner), ("ops", _ops)]
 )
 def test_holders_of_the_capability_reach_the_service(
-    settings: SettingsWrapper,
+    settings: Settings,
     label: str,
     session: Callable[[Firm], Client],
 ) -> None:

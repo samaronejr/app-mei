@@ -17,7 +17,7 @@ import pytest
 import uuid6
 from django.db import ProgrammingError, connection, transaction
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -204,7 +204,7 @@ def test_case_3_with_check_refuses_moving_a_row_to_another_tenant(
 def test_case_4_http_request_for_another_tenants_object_is_refused(
     client: Client,
     tenants: Tenants,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a user who belongs only to Alpha, and a row that belongs to Beta
     settings.ROOT_URLCONF = "tests.isolation.urls"
@@ -237,7 +237,7 @@ def test_case_4_http_request_for_another_tenants_object_is_refused(
 def test_case_4_http_request_for_its_own_object_succeeds(
     client: Client,
     tenants: Tenants,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given the same user requesting one of ALPHA's rows
     settings.ROOT_URLCONF = "tests.isolation.urls"

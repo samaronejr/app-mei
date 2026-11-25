@@ -14,7 +14,7 @@ from django.db import OperationalError, connection
 from django.db.models import Model
 from django.urls import reverse
 from psycopg.errors import LockNotAvailable
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.authz.models import Role
@@ -58,7 +58,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def completed_supersession(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> tuple[PortalSetup, DocumentIntake, UUID]:
     """Preserve a clean unreviewed original beside its accepted replacement."""
     settings.MEDIA_ROOT = tmp_path
@@ -128,7 +128,7 @@ def reopen_and_reject(setup: PortalSetup, link_id: UUID) -> None:
 
 @pytest.mark.parametrize("boundary", ["open", "save"])
 def test_historical_rejection_during_build_refuses_publication(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     boundary: str,
@@ -217,7 +217,7 @@ def test_historical_rejection_during_build_refuses_publication(
 
 
 def test_publication_holds_every_included_original_eligibility_lock(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -4,7 +4,7 @@ from http import HTTPStatus
 
 import pytest
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import ActionExecution, CycleEvent, CycleState, ServiceCycle
@@ -17,7 +17,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_approved_completion_refusal_names_execution_and_next_action(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost", "testserver"]
     setup = completion_setup("completion-refusal")

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.importing import plan_import
 from apps.clients.models import ImportBatch, ImportStatus
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture(autouse=True)
-def _routes(settings: SettingsWrapper) -> None:
+def _routes(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.tenants.read_only_urls"
     settings.ALLOWED_HOSTS = ["localhost", ".localhost", "testserver"]
 
@@ -136,7 +136,7 @@ def test_logout_is_available_to_a_suspended_tenant() -> None:
 @pytest.mark.parametrize("status", ["active", "suspended"])
 @pytest.mark.parametrize("htmx", [False, True])
 def test_portal_upload_is_checked_before_switching_database_role(
-    status: str, htmx: bool, settings: SettingsWrapper, tmp_path: Path
+    status: str, htmx: bool, settings: Settings, tmp_path: Path
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup = portal_setup("suspension-portal")

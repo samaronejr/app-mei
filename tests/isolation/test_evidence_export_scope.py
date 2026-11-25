@@ -12,7 +12,7 @@ from django.db import connection
 from django.http import Http404, StreamingHttpResponse
 from django.test import RequestFactory
 from django.test.utils import CaptureQueriesContext
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientAssignment, ClientContact
 from apps.core.tenancy import tenant_context
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_actual_bundle_excludes_populated_other_client_and_tenant(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -138,7 +138,7 @@ def test_actual_bundle_excludes_populated_other_client_and_tenant(
 
 
 def test_unassigned_staff_cannot_read_or_request_export(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
     setup = portal_setup("export-unassigned")
@@ -190,7 +190,7 @@ def test_generic_streaming_is_rejected_even_on_the_export_route() -> None:
 
 
 def test_download_iterator_has_zero_queries_and_closes_on_disconnect(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

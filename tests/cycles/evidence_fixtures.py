@@ -6,7 +6,7 @@ from pathlib import Path
 
 from django.test import override_settings
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.importing import commit_import, plan_import
 from apps.clients.maintenance import (
@@ -175,7 +175,7 @@ def accept_tasks(setup: PortalSetup) -> None:
 
 
 def scenario_a(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     slug: str,
 ) -> EvidenceScenario:

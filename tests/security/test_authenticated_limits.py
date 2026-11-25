@@ -17,7 +17,7 @@ from http import HTTPStatus
 import pytest
 from django.conf import settings
 from django.test import Client, RequestFactory
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.security.ratelimit import authenticated_limit
@@ -38,7 +38,7 @@ def _pinned_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.audit.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

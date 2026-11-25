@@ -9,7 +9,7 @@ import pytest
 from django.db import connection
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.bulk import BulkItem, BulkKind, BulkOperation
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def desk(settings: SettingsWrapper) -> tuple[BulkSetup, Client]:
+def desk(settings: Settings) -> tuple[BulkSetup, Client]:
     settings.ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".localhost"]
     setup = bulk_setup("bulk-http")
     enrol_totp(setup.graph.actor)
@@ -157,7 +157,7 @@ def test_http_expired_preview_does_not_create_items(
 
 
 def test_notice_preview_shows_the_queue_remaining_daily_quota(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".localhost"]
     settings.DELIVERY_DAILY_CAP = 100

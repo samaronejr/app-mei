@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -96,7 +96,7 @@ class Cast:
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     settings.ROOT_URLCONF = "tests.core.urls"
     monkeypatch.setattr("apps.portal.middleware.PORTAL_URLCONF", "tests.portal.urls")

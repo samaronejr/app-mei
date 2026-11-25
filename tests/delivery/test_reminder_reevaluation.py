@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from django.test import override_settings
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.services.requests import remind_request
@@ -46,7 +46,7 @@ def _smtp(port: int) -> override_settings:
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
     return portal_setup("reminder-s15i")

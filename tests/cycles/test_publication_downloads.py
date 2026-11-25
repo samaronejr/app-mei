@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientAssignment
 from apps.core.tenancy import tenant_context
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_publication_download_is_app_mediated_scoped_and_filename_safe(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]

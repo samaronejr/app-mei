@@ -9,7 +9,7 @@ from threading import Thread
 
 import pytest
 from django.db import connection
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.automation.classification import messages_for, schema
 from apps.automation.provider import OpenAIClient
@@ -56,7 +56,7 @@ def wire(raw_body: bytes | None = None) -> Iterator[tuple[HTTPServer, list[bytes
 
 @pytest.mark.django_db(transaction=True)
 def test_wire_payload_has_schema_no_tools_and_no_transaction(
-    setup: PortalSetup, settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+    setup: PortalSetup, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.AI_PROVIDER = "openai"
     settings.AI_REAL_DATA_APPROVED = True
@@ -85,7 +85,7 @@ def test_wire_payload_has_schema_no_tools_and_no_transaction(
 
 @pytest.mark.django_db(transaction=True)
 def test_real_adapter_refuses_without_owner_gate(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     settings.AI_PROVIDER = "openai"
     settings.AI_REAL_DATA_APPROVED = False
@@ -106,7 +106,7 @@ def test_real_adapter_refuses_without_owner_gate(
 )
 def test_malformed_wire_response_becomes_a_sanitized_provider_error(
     setup: PortalSetup,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     body: bytes,
 ) -> None:

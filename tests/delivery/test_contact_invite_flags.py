@@ -13,7 +13,7 @@ from django.db import connection
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import (
     InviteScope,
@@ -54,7 +54,7 @@ ADDRESS = "contact@t48.example.test"
 
 @pytest.fixture
 def contact_origin(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> tuple[Firm, ClientContact, Client]:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
@@ -285,7 +285,7 @@ def test_platform_dispatch_visits_import_only_contact_intents(
 @pytest.mark.parametrize("pause", ["global", "tenant"])
 def test_import_only_contact_intent_obeys_pause(
     contact_origin: tuple[Firm, ClientContact, Client],
-    settings: SettingsWrapper,
+    settings: Settings,
     pause: str,
 ) -> None:
     # Given paused delivery before an import-only contact submission.
@@ -457,7 +457,7 @@ def test_import_entitlement_does_not_dispatch_other_kinds(
 
 @pytest.mark.parametrize("publication", [False, True])
 def test_import_entitlement_cannot_claim_approved_effects(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     smtp_server: Callable[[str], FakeSMTP],
     publication: bool,
@@ -497,7 +497,7 @@ def test_import_entitlement_cannot_claim_approved_effects(
 
 def test_import_claim_filter_precedes_limit_and_quota_reservation(
     contact_origin: tuple[Firm, ClientContact, Client],
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     firm, contact, web = contact_origin
     with tenant_context(firm.tenant.pk):
@@ -669,7 +669,7 @@ def test_policy_change_after_import_claim_refuses_without_data(
 def test_pause_after_import_claim_prevents_egress(
     contact_origin: tuple[Firm, ClientContact, Client],
     smtp_server: Callable[[str], FakeSMTP],
-    settings: SettingsWrapper,
+    settings: Settings,
     pause: str,
 ) -> None:
     firm, contact, web = contact_origin

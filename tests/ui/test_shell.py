@@ -20,7 +20,7 @@ import pytest
 from django.template.loader import render_to_string
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.core.flags import open_flag_cache, prime_flag_cache
 from apps.core.navigation import visible_nav_items
@@ -53,7 +53,7 @@ SCRIPTED_PREFIXES = ("x-", "hx-")
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

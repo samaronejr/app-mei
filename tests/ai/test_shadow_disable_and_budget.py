@@ -8,7 +8,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from django.contrib import admin
 from django.core.files.storage import default_storage
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.automation.admission import claim
 from apps.automation.llm import FakeLLM
@@ -28,7 +28,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 @pytest.mark.parametrize("gate", ["flag", "global", "provider", "od05"])
 def test_disabled_admission_creates_no_run(
-    setup: PortalSetup, settings: SettingsWrapper, gate: str
+    setup: PortalSetup, settings: Settings, gate: str
 ) -> None:
     intake, _ = reviewed(setup, "recibo_cliente.pdf")
     if gate == "flag":
@@ -88,7 +88,7 @@ def test_provider_failure_retains_deterministic_result(
 )
 def test_durable_caps_prevent_provider_calls(
     setup: PortalSetup,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     cap: str,
 ) -> None:
@@ -166,7 +166,7 @@ def test_provider_soft_limit_records_failure_without_refund(
 
 
 def test_calendar_caps_roll_at_sao_paulo_midnight(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     intake = single_company(setup)
     before = datetime(2026, 10, 1, 2, 59, 59, tzinfo=UTC)

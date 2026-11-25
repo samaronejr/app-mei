@@ -17,7 +17,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import connection, transaction
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core import identifiers
@@ -36,7 +36,7 @@ HTML_BYTES = b"<!doctype html><script>alert(1)</script>"
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     settings.CLAMAV_ENABLED = False
     return portal_setup("t13-vault")

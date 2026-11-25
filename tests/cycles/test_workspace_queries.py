@@ -75,7 +75,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from django.db.models import Model
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
     from tests.cycles.cycle_fixtures import CycleSetup
     from tests.cycles.test_workspace_sections_render import PeriodWorld
@@ -89,7 +89,7 @@ MOMENT = datetime(2026, 9, 15, 12, tzinfo=UTC)
     [("owning", 200), ("unassigned", 404), ("foreign", 404)],
 )
 def test_workspace_owning_positive_and_scoped_denials(
-    settings: SettingsWrapper,
+    settings: Settings,
     scope: Literal["owning", "unassigned", "foreign"],
     status: int,
 ) -> None:
@@ -401,7 +401,7 @@ def _assert_registry_equivalence(workspace: WorkspaceRead) -> None:
 
 
 def test_populated_projection_equals_the_previous_module_reads(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Dispatch and lease cutoffs read the model's unpatched field defaults:
     # freezing the clock before the fixture starves the real claim batch
@@ -438,7 +438,7 @@ def test_populated_projection_equals_the_previous_module_reads(
 
 
 def test_selected_terminal_exception_matches_the_standalone_projection(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t35-selected")
     graph = world.setup.graph
@@ -545,7 +545,7 @@ def _fill_message_page(world: PeriodWorld) -> list[OutboundMessage]:
 
 
 def test_message_and_receipt_windows_remain_distinct_and_complete(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t35-windows")
     graph = world.setup.graph

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from django.core.files.storage import default_storage
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import (
@@ -25,7 +25,7 @@ TOO_LARGE_MESSAGE = "O arquivo passa do limite de"
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     return portal_setup("upload-req")
 
@@ -93,7 +93,7 @@ def test_htmx_upload_returns_the_status_partial_with_the_recebido_chip(
 
 
 def test_over_the_cap_is_400_in_pt_br_and_writes_nothing(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     settings.PORTAL_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
     oversized = b"x" * (10 * 1024 * 1024 + 1)
@@ -117,9 +117,7 @@ def test_over_the_cap_is_400_in_pt_br_and_writes_nothing(
     assert _counts(setup) == before
 
 
-def test_exactly_at_the_cap_is_accepted(
-    setup: PortalSetup, settings: SettingsWrapper
-) -> None:
+def test_exactly_at_the_cap_is_accepted(setup: PortalSetup, settings: Settings) -> None:
     settings.PORTAL_UPLOAD_MAX_BYTES = 2048
     response = setup.portal().post(
         f"/solicitacoes/{setup.request.pk}/enviar",

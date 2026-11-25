@@ -43,7 +43,7 @@ from tests.integrations.pgmei_support import (
 )
 
 if TYPE_CHECKING:
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
     from apps.accounts.models import User
     from apps.integrations.serpro import pgmei
@@ -271,7 +271,7 @@ def test_only_the_guide_operation_of_pgmei_is_implementable() -> None:
 
 
 def test_paused_provider_refuses_before_any_io(
-    guide_world: GuideWorld, settings: SettingsWrapper
+    guide_world: GuideWorld, settings: Settings
 ) -> None:
     settings.SERPRO_PAUSED = True
     with FakeSerpro((das_reply(),)) as peer:

@@ -17,7 +17,7 @@ from django.http import Http404
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, PlatformEvent
@@ -532,7 +532,7 @@ def test_the_portal_sees_only_client_visible_rows_with_a_vacuity_control() -> No
 
 
 def test_a_provider_rejected_portal_invite_is_withdrawn_and_owned(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.DELIVERY_PAUSED = False
     setup = cycle_setup("invite-reject")

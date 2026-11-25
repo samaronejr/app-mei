@@ -13,7 +13,7 @@ from typing import Final
 
 import pytest
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations.models import ProviderConnection
@@ -82,7 +82,7 @@ def test_the_owner_sees_each_connection_with_environment_and_paused_status(
 
 def test_an_unpaused_active_connection_is_still_not_painted_as_verified(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.PROVIDERS_PAUSED = False
     _connect(firm.tenant)
@@ -96,7 +96,7 @@ def test_an_unpaused_active_connection_is_still_not_painted_as_verified(
 
 def test_a_provider_pause_wins_over_an_active_row(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.PROVIDERS_PAUSED = False
     settings.FOCUS_PAUSED = True

@@ -9,7 +9,7 @@ from http import HTTPStatus
 import pytest
 from django.test import override_settings
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import issue_client_invite
 from apps.clients.models import ClientContact
@@ -27,7 +27,7 @@ ACCEPT = re.compile(rb"/convites/aceitar/([A-Za-z0-9_\-]+)/")
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper) -> PortalSetup:
+def setup(settings: Settings) -> PortalSetup:
     settings.DELIVERY_PAUSED = False
     return portal_setup("seatless")
 

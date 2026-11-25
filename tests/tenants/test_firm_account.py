@@ -13,7 +13,7 @@ from django.core.files.storage import default_storage
 from django.db import connection
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import Event, PlatformEvent
@@ -324,7 +324,7 @@ def test_dates_render_as_native_input_values_in_billing_and_cancellation() -> No
 
 
 def test_logo_storage_occurs_after_commit_and_preserves_newer_profile(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     firm = enabled_firm("logo-phases")

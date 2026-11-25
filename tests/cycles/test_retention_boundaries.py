@@ -10,7 +10,7 @@ import pytest
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.authz.models import Role
@@ -177,7 +177,7 @@ def historical_content(
 
 
 def test_dry_run_and_hold_cover_frozen_bodies_notes_and_ai_content(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

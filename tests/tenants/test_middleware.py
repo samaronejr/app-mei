@@ -12,7 +12,7 @@ from http import HTTPStatus
 import pytest
 from django.db import connection, transaction
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import current_tenant_id
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture(autouse=True)
-def _tenant_urls(settings: SettingsWrapper) -> None:
+def _tenant_urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.tenants.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

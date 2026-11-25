@@ -8,7 +8,7 @@ import pytest
 from django.template.loader import render_to_string
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.authz.services import Actor, can
 from apps.clients.models import ClientCompany
@@ -98,7 +98,7 @@ EXPORT_CAPABILITY: Final = "clients.view_all"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 
@@ -260,7 +260,7 @@ def test_a_nav_landmark_is_omitted_rather_than_left_empty() -> None:
     assert "<nav" not in body
 
 
-def test_the_focus_ring_is_defined_and_never_removed(settings: SettingsWrapper) -> None:
+def test_the_focus_ring_is_defined_and_never_removed(settings: Settings) -> None:
     """`outline: none` with no replacement is a WCAG 2.4.7 failure."""
     stylesheet = (settings.BASE_DIR / "static" / "css" / "app.css").read_text()
     compact = stylesheet.replace(" ", "")

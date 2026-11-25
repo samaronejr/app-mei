@@ -11,7 +11,7 @@ from http import HTTPStatus
 import pytest
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.authz.services import Actor
 from apps.core.navigation import NAV, visible_nav_items
@@ -27,7 +27,7 @@ NAV_QUERY_BUDGET = 1
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

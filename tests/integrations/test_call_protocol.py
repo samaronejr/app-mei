@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from django.db import connection
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -54,7 +54,7 @@ class SyntheticPolicy:
 
 @pytest.fixture
 def provider_link(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> ClientProviderLink:
     settings.PROVIDERS_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
@@ -169,7 +169,7 @@ def test_stale_fence_cannot_start_or_finalize(
 
 
 def test_dispatch_rechecks_a_pause_after_claim(
-    provider_link: ClientProviderLink, settings: SettingsWrapper
+    provider_link: ClientProviderLink, settings: Settings
 ) -> None:
     # Given a committed claim followed by the owner's pause.
     row = reserve(provider_link.tenant_id, provider_link.pk, request())

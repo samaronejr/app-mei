@@ -18,7 +18,7 @@ from django.core import mail
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import revoke_invite
 from apps.clients.models import ClientContact
@@ -53,7 +53,7 @@ def _smtp(port: int) -> override_settings:
 
 
 @pytest.fixture
-def graph(settings: SettingsWrapper) -> CycleSetup:
+def graph(settings: Settings) -> CycleSetup:
     settings.DELIVERY_PAUSED = False
     setup = cycle_setup("invite-outbox")
     setup.tenant.features = ["cycles_r1", "import_r1"]

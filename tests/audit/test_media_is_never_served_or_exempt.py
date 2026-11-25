@@ -19,7 +19,7 @@ from http import HTTPStatus
 import pytest
 from django.conf import settings
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 pytestmark = pytest.mark.django_db
 
@@ -29,7 +29,7 @@ PROBE = "probe-does-not-exist.pdf"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

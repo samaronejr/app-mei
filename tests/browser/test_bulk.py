@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 import pytest
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -115,7 +115,7 @@ def test_count_exclusion_and_committed_results_are_visible_and_accessible(
 
 
 def test_notice_preview_shows_the_remaining_daily_quota_of_the_queue(
-    browser_server: LiveServer, open_page: OpenPage, settings: SettingsWrapper
+    browser_server: LiveServer, open_page: OpenPage, settings: Settings
 ) -> None:
     settings.DELIVERY_DAILY_CAP = 100
     setup, preview = notice_preview_with_reservations("bulk-browser-quota", reserved=97)

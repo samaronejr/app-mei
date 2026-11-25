@@ -16,7 +16,7 @@ from http import HTTPStatus
 import pytest
 from django.db.models import QuerySet
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import OnboardingItem, OnboardingStatus
@@ -55,7 +55,7 @@ PAGE_SIZE = 25
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

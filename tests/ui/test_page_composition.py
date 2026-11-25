@@ -37,7 +37,7 @@ import pytest
 from django.template.loader import render_to_string
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
     from django.test.client import _MonkeyPatchedWSGIResponse
@@ -77,7 +77,7 @@ OPERATOR: Final = "operadora@composicao.example"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     """Both hosts: the selector and the invitation live on the platform one."""
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 

@@ -8,7 +8,7 @@ into the proxy's bucket, so the first rate-limited request locks out everybody.
 import pytest
 from django.http import HttpRequest
 from django.test import RequestFactory
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.netaddr import client_ip
 
@@ -26,7 +26,7 @@ def _request(factory: RequestFactory, forwarded: str | None) -> HttpRequest:
 
 def test_the_header_is_ignored_when_no_proxy_is_declared(
     rf: RequestFactory,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a deployment that controls no proxies
     settings.TRUSTED_PROXY_COUNT = 0
@@ -40,7 +40,7 @@ def test_the_header_is_ignored_when_no_proxy_is_declared(
 
 def test_one_declared_proxy_uses_the_entry_that_proxy_appended(
     rf: RequestFactory,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given one reverse proxy in front
     settings.TRUSTED_PROXY_COUNT = 1
@@ -54,7 +54,7 @@ def test_one_declared_proxy_uses_the_entry_that_proxy_appended(
 
 def test_two_declared_proxies_count_from_the_right(
     rf: RequestFactory,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a CDN in front of a reverse proxy
     settings.TRUSTED_PROXY_COUNT = 2
@@ -68,7 +68,7 @@ def test_two_declared_proxies_count_from_the_right(
 
 def test_a_short_header_falls_back_rather_than_trusting_a_forged_entry(
     rf: RequestFactory,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given two declared proxies but a header with only one entry, which means the
     # request did not traverse the expected path
@@ -84,7 +84,7 @@ def test_a_short_header_falls_back_rather_than_trusting_a_forged_entry(
 
 def test_a_missing_header_falls_back_to_the_connection(
     rf: RequestFactory,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a declared proxy that did not set the header
     settings.TRUSTED_PROXY_COUNT = 1
@@ -96,7 +96,7 @@ def test_a_missing_header_falls_back_to_the_connection(
 
 @pytest.mark.parametrize("count", [0, 1, 2])
 def test_an_address_is_always_produced(
-    count: int, rf: RequestFactory, settings: SettingsWrapper
+    count: int, rf: RequestFactory, settings: Settings
 ) -> None:
     # Given any declared proxy count
     settings.TRUSTED_PROXY_COUNT = count

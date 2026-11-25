@@ -6,7 +6,7 @@ from hashlib import sha256
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations import call_contracts
@@ -26,7 +26,7 @@ __all__ = ["provider_link", "spend_link"]
 
 @pytest.fixture
 def spend_link(
-    provider_link: ClientProviderLink, settings: SettingsWrapper
+    provider_link: ClientProviderLink, settings: Settings
 ) -> ClientProviderLink:
     settings.USAGE_UNIT_PRICES_BRL = {
         "serpro_consulta": "0.24",

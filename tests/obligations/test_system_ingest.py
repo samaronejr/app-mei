@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from django.core.files.storage import default_storage
 from django.db import IntegrityError, transaction
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.retention import RetentionClass
@@ -29,7 +29,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     return ingest_setup(settings, tmp_path)
 
 
@@ -153,7 +153,7 @@ def test_shared_intake_limits_refuse_invalid_bytes(
 
 
 def test_system_ingest_enforces_the_shared_size_cap(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     settings.PORTAL_UPLOAD_MAX_BYTES = len(PDF) - 1
     with pytest.raises(UploadTooLarge):

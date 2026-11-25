@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations import call_contracts, provider_journal
@@ -31,7 +31,7 @@ __all__ = ["provider_link"]
 
 @pytest.fixture
 def focus_link(
-    provider_link: ClientProviderLink, settings: SettingsWrapper
+    provider_link: ClientProviderLink, settings: Settings
 ) -> ClientProviderLink:
     settings.USAGE_UNIT_PRICES_BRL = {"focus_documentos": "1"}
     Tenant.objects.filter(pk=provider_link.tenant_id).update(

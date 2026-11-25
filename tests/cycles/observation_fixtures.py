@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import EvidenceLink, EvidenceRequest
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def receipt_case(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def receipt_case(settings: Settings, tmp_path: Path) -> PortalSetup:
     """Use the real portal fixture with its default request explicitly bound."""
     settings.MEDIA_ROOT = tmp_path
     base = portal_setup("t17-repair")

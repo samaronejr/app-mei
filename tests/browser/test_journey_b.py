@@ -14,7 +14,7 @@ from pathlib import Path
 
 from django.utils import timezone
 from playwright.sync_api import FilePayload, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -36,7 +36,7 @@ NAME = "nfe_outra_empresa.xml"
 def test_journey_b_divergent_upload_is_held_and_raised_to_the_firm(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

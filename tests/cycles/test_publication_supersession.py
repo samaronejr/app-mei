@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 from django.db import DatabaseError, transaction
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.effects.build import BuildError
@@ -46,7 +46,7 @@ def revision_draft(setup: PublicationGraph, target: UUID) -> ActionProposal:
 
 
 def test_approved_revision_keeps_old_bytes_and_receipt(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
     setup = publication_graph("publication-revision")

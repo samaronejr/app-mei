@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
@@ -25,7 +25,7 @@ SURFACES: Final = (
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     Tenant.objects.create(name="Alpha", slug="alpha")
 

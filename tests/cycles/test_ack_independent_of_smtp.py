@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from django.test import override_settings
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.effects.executors import execute
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
     ],
 )
 def test_explicit_digest_receipt_is_independent_of_smtp_outcome(
-    settings: SettingsWrapper, tmp_path: Path, mode: str, outcome: str
+    settings: Settings, tmp_path: Path, mode: str, outcome: str
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]

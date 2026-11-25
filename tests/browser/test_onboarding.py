@@ -15,7 +15,7 @@ from typing import Final
 import pytest
 from django.core import mail
 from playwright.sync_api import FilePayload, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, ClientContact, TaxProfile
@@ -51,7 +51,7 @@ def _invitation_ready_firm(live_firm: Callable[..., LiveFirm]) -> LiveFirm:
     return live
 
 
-def _dispatch_queued_invitation(settings: SettingsWrapper) -> None:
+def _dispatch_queued_invitation(settings: Settings) -> None:
     """T11: under cycles_r1 the invitation is queued on the outbox inside the request
     transaction and mailed by the dispatcher afterwards, never by the request."""
     assert mail.outbox == []
@@ -62,7 +62,7 @@ def _dispatch_queued_invitation(settings: SettingsWrapper) -> None:
 def test_create_a_client_set_its_profile_and_invite_a_contact(
     live_firm: Callable[..., LiveFirm],
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     live = _invitation_ready_firm(live_firm)
     shell = open_page(live, None)

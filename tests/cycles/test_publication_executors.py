@@ -10,7 +10,7 @@ import pytest
 from django.db import connection
 from django.test import override_settings
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.effects.executors import execute
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_email_executes_frozen_mime_once_outside_transaction(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
 
     settings.DELIVERY_PAUSED = False

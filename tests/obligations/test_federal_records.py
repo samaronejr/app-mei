@@ -17,7 +17,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -62,7 +62,7 @@ NEXT_MONTH = date(2026, 10, 1)
 
 
 @pytest.fixture
-def federal_case(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def federal_case(settings: Settings, tmp_path: Path) -> PortalSetup:
     """A MEI client with its DAS calendar and an open cycle no request binds to DAS."""
     settings.MEDIA_ROOT = tmp_path
     setup = portal_setup("axrm014")
@@ -184,7 +184,7 @@ def _counts() -> tuple[int, int, int]:
 
 
 def test_production_das_writes_the_payment_and_one_verified_official_observation(
-    federal_case: PortalSetup, settings: SettingsWrapper
+    federal_case: PortalSetup, settings: Settings
 ) -> None:
     # Given a production call with the owner's real-data approval and one DAS
     settings.PROVIDER_REAL_DATA_APPROVED = True
@@ -232,7 +232,7 @@ def test_production_das_writes_the_payment_and_one_verified_official_observation
 )
 def test_non_production_or_unapproved_results_are_recorded_but_never_verify(
     federal_case: PortalSetup,
-    settings: SettingsWrapper,
+    settings: Settings,
     environment: str,
     approved: bool,
 ) -> None:
@@ -260,7 +260,7 @@ def test_non_production_or_unapproved_results_are_recorded_but_never_verify(
 
 
 def test_an_empty_result_is_a_nada_localizado_receipt_and_no_observation(
-    federal_case: PortalSetup, settings: SettingsWrapper
+    federal_case: PortalSetup, settings: Settings
 ) -> None:
     # Given a production call that found nothing
     settings.PROVIDER_REAL_DATA_APPROVED = True
@@ -303,7 +303,7 @@ def test_a_failed_call_is_a_receipt_and_cannot_carry_payments(
 
 
 def test_a_replayed_call_returns_its_receipt_without_new_rows(
-    federal_case: PortalSetup, settings: SettingsWrapper
+    federal_case: PortalSetup, settings: Settings
 ) -> None:
     settings.PROVIDER_REAL_DATA_APPROVED = True
     with tenant_context(federal_case.graph.tenant.pk):
@@ -328,7 +328,7 @@ def test_a_replayed_call_returns_its_receipt_without_new_rows(
 
 
 def test_a_later_consultation_that_disagrees_with_a_known_document_writes_nothing(
-    federal_case: PortalSetup, settings: SettingsWrapper
+    federal_case: PortalSetup, settings: Settings
 ) -> None:
     settings.PROVIDER_REAL_DATA_APPROVED = True
     with tenant_context(federal_case.graph.tenant.pk):
@@ -510,7 +510,7 @@ def test_a_provider_entry_normalizes_every_field() -> None:
 
 
 def test_source_subjects_include_obligations_with_federal_observations(
-    federal_case: PortalSetup, settings: SettingsWrapper
+    federal_case: PortalSetup, settings: Settings
 ) -> None:
     settings.PROVIDER_REAL_DATA_APPROVED = True
     graph = federal_case.graph

@@ -18,7 +18,7 @@ from django.db import (
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from redis.exceptions import RedisError
 
 from apps.clients.models import ClientContact
@@ -37,7 +37,7 @@ URLCONF_HOSTS: Final[tuple[tuple[str, str], ...]] = (
 
 
 @pytest.fixture(autouse=True)
-def _allowed_hosts(settings: SettingsWrapper) -> None:
+def _allowed_hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 
@@ -167,7 +167,7 @@ NOW = datetime(2026, 10, 7, 12, tzinfo=UTC)
 
 
 @pytest.fixture
-def queued_outbox(settings: SettingsWrapper) -> OutboundMessage:
+def queued_outbox(settings: Settings) -> OutboundMessage:
     settings.OUTBOX_MAX_QUEUED_AGE_SECONDS = 60
     settings.OUTBOX_MAX_DEAD_LETTERS = 0
     graph = cycle_setup("readyz-outbox")
@@ -226,7 +226,7 @@ def test_readyz_oldest_queued_boundary(
 def test_readyz_dead_letter_threshold(
     client: Client,
     queued_outbox: OutboundMessage,
-    settings: SettingsWrapper,
+    settings: Settings,
     state: str,
 ) -> None:
     # Given one unresolved dead letter, not an old queued envelope.
@@ -268,7 +268,7 @@ def test_readyz_temporary_backoff_still_counts_as_backlog(
 
 @pytest.mark.django_db(transaction=True)
 def test_readyz_zero_age_threshold_is_not_disabled(
-    client: Client, queued_outbox: OutboundMessage, settings: SettingsWrapper
+    client: Client, queued_outbox: OutboundMessage, settings: Settings
 ) -> None:
     # Given a nonempty queue and a deliberately strict zero threshold.
     settings.OUTBOX_MAX_QUEUED_AGE_SECONDS = 0

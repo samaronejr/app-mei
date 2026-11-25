@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from playwright.sync_api import FilePayload, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -37,7 +37,7 @@ OFFLINE_NOISE = ("htmx:sendError", "htmx:afterRequest", "ERR_INTERNET_DISCONNECT
 def test_upload_survives_a_dropped_connection_and_retries_to_recebido(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

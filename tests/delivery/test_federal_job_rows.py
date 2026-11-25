@@ -12,7 +12,7 @@ from apps.delivery.jobs import JOB_LABELS, JobStatus, registered_jobs
 from apps.obligations.models import SchedulerHeartbeat
 
 if TYPE_CHECKING:
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -42,7 +42,7 @@ def test_the_federal_sweeps_are_the_only_pause_aware_jobs() -> None:
 
 @pytest.mark.parametrize("name", sorted(SWEEPS))
 def test_a_federal_sweep_row_has_its_own_label_and_no_health_before_a_run(
-    name: str, settings: SettingsWrapper
+    name: str, settings: Settings
 ) -> None:
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False
@@ -58,7 +58,7 @@ def test_a_federal_sweep_row_has_its_own_label_and_no_health_before_a_run(
     ("providers_paused", "serpro_paused"), [(True, False), (False, True), (True, True)]
 )
 def test_a_pause_leaves_every_other_job_row_with_its_own_health(
-    settings: SettingsWrapper, providers_paused: bool, serpro_paused: bool
+    settings: Settings, providers_paused: bool, serpro_paused: bool
 ) -> None:
     SchedulerHeartbeat.objects.create(
         name="purge_payment_pages",

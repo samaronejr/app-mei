@@ -15,7 +15,7 @@ from typing import Final
 import pytest
 from django.conf import settings as project_settings
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.cycles.scanner_status import (
     DISABLED_CODE,
@@ -100,7 +100,7 @@ def test_scanning_switched_off_is_recorded_as_off_not_as_success() -> None:
     assert stamp.last_error_code == DISABLED_CODE
 
 
-def test_the_beat_task_reads_the_clamd_settings(settings: SettingsWrapper) -> None:
+def test_the_beat_task_reads_the_clamd_settings(settings: Settings) -> None:
     settings.CLAMAV_ENABLED = False
     assert ping_scanner.apply().get() == DISABLED_CODE
     with fake_clamd() as server:
@@ -119,7 +119,7 @@ def test_the_task_is_on_the_beat_schedule_with_a_label() -> None:
     assert JOB_LABELS["ping_scanner"] == "Verificador antivírus"
 
 
-def test_registered_jobs_carry_the_scanner_status(settings: SettingsWrapper) -> None:
+def test_registered_jobs_carry_the_scanner_status(settings: Settings) -> None:
     settings.CELERY_BEAT_SCHEDULE = {
         ENTRY: project_settings.CELERY_BEAT_SCHEDULE[ENTRY]
     }
@@ -137,7 +137,7 @@ def test_registered_jobs_carry_the_scanner_status(settings: SettingsWrapper) -> 
 
 
 def test_the_automations_page_shows_the_scanner_and_its_failure(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -159,7 +159,7 @@ def test_the_automations_page_shows_the_scanner_and_its_failure(
     assert "O verificador antivírus não respondeu" in article
 
 
-def test_readyz_never_asks_the_scanner(settings: SettingsWrapper) -> None:
+def test_readyz_never_asks_the_scanner(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost"]
     with fake_clamd(silent=True) as hung:
         settings.CLAMAV_ENABLED = True

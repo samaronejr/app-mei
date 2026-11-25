@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 from django.test import override_settings
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
@@ -53,7 +53,7 @@ class DeliverySetup:
 
 
 @pytest.fixture
-def delivery(settings: SettingsWrapper, tmp_path: Path) -> DeliverySetup:
+def delivery(settings: Settings, tmp_path: Path) -> DeliverySetup:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
     graph = cycle_setup("delivery")

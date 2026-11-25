@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from django.core.management import call_command
 from django.db import connection
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from tests.isolation.rolecheck import assert_isolated_role
 from tests.perf import test_read_budgets
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_old_tenant_statistics_before_growth_load(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     django_assert_max_num_queries: DjangoAssertNumQueries,
 ) -> None:

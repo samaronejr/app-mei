@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Final
 import pytest
 from django.template import Context, Engine
 from django.test import override_settings
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.obligations.models import Document
@@ -41,7 +41,7 @@ PDF_BYTES: Final = b"%PDF-1.4\n% recusa sintetica\n%%EOF\n"
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     settings.ALLOWED_HOSTS = [".localhost", "localhost", "testserver"]
     settings.PORTAL_UPLOAD_MAX_BYTES = CAP
@@ -75,7 +75,7 @@ def _documents(setup: PortalSetup) -> int:
 
 @pytest.mark.parametrize("reason", sorted(COPY))
 def test_each_refusal_carries_its_machine_reason_and_its_own_sentence(
-    setup: PortalSetup, settings: SettingsWrapper, reason: str
+    setup: PortalSetup, settings: Settings, reason: str
 ) -> None:
     _flagged(setup)
     if reason == "scanner_off":
@@ -112,7 +112,7 @@ def test_the_type_refusal_keeps_the_refused_original_and_offers_the_retry(
 
 
 def test_the_scanner_off_refusal_stores_nothing_and_offers_no_futile_retry(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flagged(setup)
     settings.CLAMAV_ENABLED = False

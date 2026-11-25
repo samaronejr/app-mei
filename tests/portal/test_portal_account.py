@@ -37,7 +37,7 @@ from django.db import connection
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.urls import NoReverseMatch, reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -92,7 +92,7 @@ CSRF_FIELD: Final = 'name="csrfmiddlewaretoken"'
 
 
 @pytest.fixture(autouse=True)
-def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     # Pinned to the shipped tree: sibling modules in this package point the middleware
     # at `tests.portal.urls`, which mounts probes instead of pages.

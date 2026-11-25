@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from django.test import override_settings
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientContact
@@ -30,7 +30,7 @@ PATH = "/gestao/automacoes/"
 def test_manager_pauses_retries_and_cancels_with_honest_uncertainty(
     live_firm: Callable[..., LiveFirm],
     open_page: Callable[[LiveFirm, User | None], BrowserPage],
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     # Given two real refusals and one ambiguous SMTP result.

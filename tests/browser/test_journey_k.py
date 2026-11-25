@@ -15,7 +15,7 @@ from pathlib import Path
 
 from django.utils.timezone import localdate
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -35,7 +35,7 @@ OpenPage = Callable[[LiveFirm, User | None], BrowserPage]
 def test_journey_k_ended_engagement_closes_the_portal_with_a_message(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
