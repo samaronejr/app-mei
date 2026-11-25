@@ -249,8 +249,8 @@ def test_every_documented_403_reaches_only_its_own_owner(
     if cause != CLIENT:
         expected = denials_api().DENIAL_TEXT[cause]
         assert detail == (
-            "A página 1 foi enviada e cobrada; antes dela, nenhuma página foi enviada"
-            f"antes. {expected} (código {code}). Consulta não repetida."
+            "A página 1 foi enviada e cobrada; antes dela, nenhuma página foi enviada. "
+            f"{expected} (código {code}). Consulta não repetida."
         )
     # When a person asks again: nothing is re-sent automatically, and a cause
     # whose owner has not acted refuses before any byte.
