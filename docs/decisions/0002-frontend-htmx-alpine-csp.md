@@ -17,9 +17,9 @@ them, or does R1 need a single-page application?
 | Piece | Version or rule | Where it is pinned or checked |
 | --- | --- | --- |
 | Rendering | Django templates | `templates/base.html` |
-| Partial updates | HTMX 2.0.10, `allowEval: false` | `package.json`, `templates/base.html:13` |
-| Local state | `@alpinejs/csp` 3.15.12 | `package.json` |
-| Styling | Tailwind 4.3.3, tokens in `assets/css/app.css` | `package.json` |
+| Partial updates | HTMX 2.0.11, `allowEval: false` | `package.json`, `templates/base.html:13` |
+| Local state | `@alpinejs/csp` 3.17.5 | `package.json` |
+| Styling | Tailwind 4.3.5, tokens in `assets/css/app.css` | `package.json` |
 | Built assets | committed under `static/`, rebuilt by `npm run build` | `tests/ui/test_asset_pipeline.py` |
 | Content Security Policy | self-only, no eval, no inline script | `apps/security/csp.py`, `tests/ui/test_csp.py` |
 
