@@ -188,10 +188,11 @@ def test_budget_refusal_mid_paging_keeps_fetched_pages_and_ends_falha(
         ProviderBudget.objects.update(cap_microbrl=CONSULTA_MICROBRL)
     world.script(page(darfs(100)), page(darfs(3, start=100)))
     query = world.consult()
-    # Then page 2 never left; page 1's 100 payments stay with their receipt.
+    # Then page 2 never left; page 1's 100 payments stay with their receipt,
+    # and the budget's own reason is recorded (AXRM-045).
     assert (query.state, query.failure_code, query.pages_fetched) == (
         "falha",
-        "cota_esgotada_parcial",
+        "cota_esgotada",
         1,
     )
     assert len(world.sent()) == 1
