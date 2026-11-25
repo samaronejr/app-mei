@@ -1274,8 +1274,10 @@ def test_a_key_attached_after_the_ownership_lookup_is_checked_under_the_lock(
     lookup = retention.foreign_storage_keys
     calls: list[int] = []
 
-    def then_reconciled(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
-        found = lookup(tenant_id, keys)
+    def then_reconciled(
+        tenant_id: UUID, keys: Iterable[str], storage: Storage | None = None
+    ) -> set[str]:
+        found = lookup(tenant_id, keys, storage)
         if not calls:
             # After the sweep's lookup, a reconciliation points the intake at K.
             with tenant_context(world.tenant_id):
@@ -1407,10 +1409,12 @@ def test_cleanup_checks_other_tenants_under_the_copys_lock(
     locked = retention.storage_keys_locked
 
     @contextmanager
-    def then_aliased(keys: Iterable[str], *, wait: bool) -> Iterator[bool]:
+    def then_aliased(
+        keys: Iterable[str], *, wait: bool, storage: Storage | None = None
+    ) -> Iterator[bool]:
         if intake.quarantine_key in keys:
             _foreign_original(world, intake.quarantine_key)  # just before the lock
-        with locked(keys, wait=wait) as got:
+        with locked(keys, wait=wait, storage=storage) as got:
             yield got
 
     monkeypatch.setattr("apps.cycles.scanning.storage_keys_locked", then_aliased)
@@ -1677,6 +1681,13 @@ def _no_mount_table(case: _Layout) -> tuple[str, str, str]:
     return case.copy, case.held, "armazenamento_nao_inspecionavel"
 
 
+def _malformed_mount_table(case: _Layout) -> tuple[str, str, str]:
+    table = b"20 1 8:1 / / rw,relatime shared:1 ext4 /dev/sda1 rw\n"  # no `-`
+    case.monkeypatch.setattr(retention, "_mount_table", lambda: table)
+    _foreign_original(case.world, case.held)
+    return case.copy, case.held, "armazenamento_nao_inspecionavel"
+
+
 def _case_blind(case: _Layout) -> tuple[str, str, str]:
     # Stand-in for a case-folding directory: two names differing only in case
     # open one entry.
@@ -1703,6 +1714,7 @@ _LAYOUTS: dict[str, Callable[[_Layout], tuple[str, str, str]]] = {
     "not-a-directory": _under_a_file,
     "mount-under-root": _mounted,
     "mount-table-unreadable": _no_mount_table,
+    "mount-table-malformed": _malformed_mount_table,
     "case-blind-directory": _case_blind,
     "fifo": _fifo,
 }
@@ -1719,6 +1731,7 @@ _LAYOUTS: dict[str, Callable[[_Layout], tuple[str, str, str]]] = {
         "not-a-directory",
         "mount-under-root",
         "mount-table-unreadable",
+        "mount-table-malformed",
         "case-blind-directory",
         "fifo",
     ],
@@ -2083,8 +2096,24 @@ def test_a_quarantine_key_that_is_not_a_regular_file_is_never_opened(
 
 @pytest.mark.parametrize(
     "root_name",
-    [b"caf\xc3\xa9", b"with space", b"r\xffoot"],
-    ids=["accented", "space", "not-utf8"],
+    [
+        b"caf\xc3\xa9",
+        b"with space",
+        b"r\xffoot",
+        b"vertical\x0btab",
+        b"form\x0cfeed",
+        b"carriage\rreturn",
+        b"no\xc2\xa0break",
+    ],
+    ids=[
+        "accented",
+        "space",
+        "not-utf8",
+        "vertical-tab",
+        "form-feed",
+        "carriage-return",
+        "no-break-space",
+    ],
 )
 def test_a_mount_under_any_root_name_is_seen(
     world: World,
@@ -2287,3 +2316,66 @@ def test_a_remote_save_under_another_name_is_not_the_original(
     except RuntimeError:
         outcome = "raised"
     assert outcome != scanning.ScanOutcome.VERIFIED
+
+
+def test_cleanup_decides_with_the_storage_that_deletes(
+    world: World, tmp_path: Path
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=False)
+    other = FileSystemStorage(location=str(tmp_path / f"second-{uuid4().hex[:8]}"))
+    with default_storage.open(intake.quarantine_key, "rb") as handle:
+        other.save(intake.quarantine_key, ContentFile(handle.read()))
+    copy = Path(other.path(intake.quarantine_key)).resolve()
+    # A held tenant names the scanner's copy in the second storage absolutely.
+    _foreign_copy(world, str(copy))
+    outcome = scanning.scan_intake(
+        world.tenant_id,
+        intake.pk,
+        scanner=FakeScanner(),
+        now=timezone.now(),
+        storage=other,
+    )
+    assert outcome == scanning.ScanOutcome.VERIFIED
+    assert other.exists(document.storage_key)
+    assert copy.exists()
+
+
+def test_one_lock_per_object_in_the_storage_that_holds_it(
+    world: World, tmp_path: Path
+) -> None:
+    other = FileSystemStorage(location=str(tmp_path / f"locks-{uuid4().hex[:8]}"))
+    absolute = str(Path(other.location).resolve() / "originals" / "r10.pdf")
+    held = connection.get_new_connection(connection.get_connection_params())
+    try:
+        held.autocommit = True
+        lock_id = retention._key_lock_id("originals/r10.pdf", other)
+        held.execute("SELECT pg_advisory_lock(%s)", [lock_id])
+        with retention.storage_keys_locked(
+            [absolute], wait=False, storage=other
+        ) as got:
+            taken = got
+        held.execute("SELECT pg_advisory_unlock(%s)", [lock_id])
+    finally:
+        held.close()
+    assert taken is False
+
+
+def test_a_refused_save_never_deletes_the_sole_copy(world: World) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    # The final names the sole copy's own key spelled `quarantine//...`.
+    requested = intake.quarantine_key.replace("/", "//", 1)
+    with tenant_context(world.tenant_id):
+        Document.objects.filter(pk=intake.document_id).update(storage_key=requested)
+    with default_storage.open(intake.quarantine_key, "rb") as handle:
+        bucket = _NameLiteral(
+            {intake.quarantine_key: handle.read()}, "stores-elsewhere"
+        )
+    outcome = scanning.scan_intake(
+        world.tenant_id,
+        intake.pk,
+        scanner=FakeScanner(),
+        now=timezone.now(),
+        storage=bucket,
+    )
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    assert intake.quarantine_key in bucket.objects

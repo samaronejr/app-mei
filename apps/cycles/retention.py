@@ -128,11 +128,22 @@ def _mount_table() -> bytes:
 
 def _mount_points(table: bytes) -> list[bytes]:
     """Each mount point (fifth field), its octal escapes decoded on the bytes."""
-    return [
-        _MOUNT_ESCAPE.sub(lambda match: bytes([int(match[1], 8)]), line.split()[4])
-        for line in table.splitlines()
-        if line.strip()
-    ]
+    return [_mount_point(line) for line in table.split(b"\n") if line]
+
+
+def _mount_point(line: bytes) -> bytes:
+    """Return one mountinfo line's mount point, split as the kernel writes it.
+
+    Fields are separated by single spaces only; the path fields escape space, tab,
+    newline and backslash, so every other byte (vertical tab, form feed, carriage
+    return, a no-break space) is part of a name. The optional fields end at a
+    lone `-`.
+    """
+    fields = line.split(b" ")
+    if b"-" not in fields[6:]:
+        msg = "mountinfo line without its optional-fields separator"
+        raise ValueError(msg)
+    return _MOUNT_ESCAPE.sub(lambda match: bytes([int(match[1], 8)]), fields[4])
 
 
 def _mount_refusal(root: Path) -> str:
@@ -311,18 +322,21 @@ def _naming(
     model: type[Document] | type[DocumentIntake] | type[EvidenceExport],
     field: str,
     keys: Iterable[str],
+    storage: Storage | None = None,
 ) -> QuerySet[Any]:
     named = [key for key in keys if key]
-    loose = {_loose(key) for key in named} | {_loose(canonical_key(k)) for k in named}
+    loose = {_loose(key) for key in named} | {
+        _loose(canonical_key(k, storage)) for k in named
+    }
     # A `..` segment or an absolute spelling resolves elsewhere than stripping can
     # see: such rows (restored descriptors, rare) are resolved here, one by one.
-    canonical = {canonical_key(key) for key in named}
+    canonical = {canonical_key(key, storage) for key in named}
     dotted = [
         pk
         for pk, raw in model.objects.filter(
             Q(**{f"{field}__contains": ".."}) | Q(**{f"{field}__startswith": "/"})
         ).values_list("pk", field)
-        if canonical_key(raw) in canonical
+        if canonical_key(raw, storage) in canonical
     ]
     return model.objects.annotate(
         loose_key=Func(
@@ -336,6 +350,7 @@ def storage_key_aliased(
     *,
     document_id: UUID | None = None,
     export_id: UUID | None = None,
+    storage: Storage | None = None,
 ) -> bool:
     """Tell whether any row other than this one names one of these storage keys.
 
@@ -346,9 +361,9 @@ def storage_key_aliased(
     named = [key for key in keys if key]
     if not named:
         return False
-    finals = _naming(Document, "storage_key", named)
-    copies = _naming(DocumentIntake, "quarantine_key", named)
-    archives = _naming(EvidenceExport, "storage_key", named)
+    finals = _naming(Document, "storage_key", named, storage)
+    copies = _naming(DocumentIntake, "quarantine_key", named, storage)
+    archives = _naming(EvidenceExport, "storage_key", named, storage)
     if document_id is not None:
         finals = finals.exclude(pk=document_id)
         copies = copies.exclude(document_id=document_id)
@@ -357,7 +372,9 @@ def storage_key_aliased(
     return finals.exists() or copies.exists() or archives.exists()
 
 
-def foreign_storage_keys(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
+def foreign_storage_keys(
+    tenant_id: UUID, keys: Iterable[str], storage: Storage | None = None
+) -> set[str]:
     """Return which of these keys a row of another tenant names, under any spelling.
 
     Storage keys are global while rows are tenant-scoped, so every other tenant is
@@ -377,12 +394,15 @@ def foreign_storage_keys(tenant_id: UUID, keys: Iterable[str]) -> set[str]:
                 (DocumentIntake, "quarantine_key"),
                 (EvidenceExport, "storage_key"),
             ):
-                found.update(_naming(model, field, named).values_list(field, flat=True))
+                found.update(
+                    _naming(model, field, named, storage).values_list(field, flat=True)
+                )
     return {
         key
         for key in named
         for raw in found
-        if _loose(key) == _loose(raw) or canonical_key(key) == canonical_key(raw)
+        if _loose(key) == _loose(raw)
+        or canonical_key(key, storage) == canonical_key(raw, storage)
     }
 
 
@@ -392,41 +412,45 @@ def ownership_refusal(
     *,
     document_id: UUID | None = None,
     export_id: UUID | None = None,
+    storage: Storage | None = None,
 ) -> str:
     """Why these keys may not be deleted for this row, or ``: the one ownership check.
 
     Another row of the tenant, a row of any other tenant (both matched on the
     canonical key) or an unproved local layout keeps the bytes. The purge and the
-    scanner's cleanup both decide through here, outside any tenant context.
+    scanner's cleanup both decide through here, outside any tenant context, with
+    the storage that will read or delete the bytes (AXRM-051).
     """
     named = [key for key in keys if key]
     if not named:
         return ""
     with tenant_context(tenant_id):
         shared = storage_key_aliased(
-            named, document_id=document_id, export_id=export_id
+            named, document_id=document_id, export_id=export_id, storage=storage
         )
-    if shared or foreign_storage_keys(tenant_id, named):
+    if shared or foreign_storage_keys(tenant_id, named, storage):
         return "chave_compartilhada"
-    return local_layout_refusal(named)
+    return local_layout_refusal(named, storage)
 
 
-def _key_lock_id(key: str) -> int:
+def _key_lock_id(key: str, storage: Storage | None = None) -> int:
     # One lock per object, whatever spelling of its key a caller holds.
-    name = canonical_key(key)
+    name = canonical_key(key, storage)
     digest = hashlib.sha256(f"axorim-storage-key:{name}".encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
 
 @contextmanager
-def storage_keys_locked(keys: Iterable[str], *, wait: bool) -> Iterator[bool]:
+def storage_keys_locked(
+    keys: Iterable[str], *, wait: bool, storage: Storage | None = None
+) -> Iterator[bool]:
     """Hold a session advisory lock per storage key; yield whether all were taken.
 
     Every writer of an original's final key and every disposal of it takes these
     locks, outside any transaction, so verifying the bytes and deleting them (or
     checking for a claim and writing them) is one step no other holder can split.
     """
-    lock_ids = sorted({_key_lock_id(key) for key in keys if key})
+    lock_ids = sorted({_key_lock_id(key, storage) for key in keys if key})
     taken: list[int] = []
     try:
         with connection.cursor() as cursor:
