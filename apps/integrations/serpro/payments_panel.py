@@ -41,6 +41,7 @@ from apps.integrations.serpro.work import (
     ADMISSION_REFUSED,
     BLOCK_PREFIX,
     CLEARED_PREFIX,
+    CLIENT_ABSENT,
     ISSUE_PREFIX,
     firm_reason,
     frozen_code,
@@ -62,13 +63,9 @@ HISTORY: Final = 5
 # A firm-side admission refusal: never the client's procuracao (AXRM-045).
 FIRM_COPY: Final = {
     "termo_ausente": (
-        "Não havia termo de autorização do escritório em vigor quando a consulta "
-        "foi pedida; a procuração do cliente não foi alterada. Consulta não "
-        "realizada."
-    ),
-    ADMISSION_REFUSED: (
-        "A admissão recusou a consulta antes do envio; a procuração do cliente não "
-        "foi alterada. Consulte novamente."
+        "Não havia termo de autorização do escritório em vigor quando a execução "
+        "da consulta começou; nenhuma página foi enviada e a procuração do "
+        "cliente não foi alterada."
     ),
 }
 
@@ -126,6 +123,11 @@ def firm_refusal_text(query: PaymentQuery) -> str:
     code = query.failure_code
     if code in FIRM_COPY:
         return FIRM_COPY[code]
+    if code == ADMISSION_REFUSED:
+        return (
+            f"{_refused_page(query)} A admissão não registrou a causa; a "
+            "procuração do cliente não foi alterada."
+        )
     cause = code.removeprefix(CLEARED_PREFIX)
     denial = frozen_code(cause) or (
         cause.removeprefix(BLOCK_PREFIX) if cause.startswith(BLOCK_PREFIX) else ""
@@ -137,8 +139,45 @@ def firm_refusal_text(query: PaymentQuery) -> str:
     else:
         kind = f"registro {cause}"
     return (
-        f"A consulta foi recusada antes do envio por um bloqueio do escritório "
+        f"{_refused_page(query)} A recusa foi por um bloqueio do escritório "
         f"({kind}); a procuração do cliente não foi alterada."
+    )
+
+
+def _before(query: PaymentQuery) -> str:
+    """State the pages the consultation had already sent and paid for."""
+    sent = query.pages_fetched
+    if sent == 0:
+        return "nenhuma página tinha sido enviada antes"
+    if sent == 1:
+        return "a página 1 já tinha sido enviada e cobrada"
+    return f"as páginas 1 a {sent} já tinham sido enviadas e cobradas"
+
+
+def _refused_page(query: PaymentQuery) -> str:
+    """State which page admission refused, after the pages recorded as sent."""
+    page = query.pages_fetched + 1
+    return f"A página {page} foi recusada pela admissão; {_before(query)}."
+
+
+def _sent_page(query: PaymentQuery) -> str:
+    """State the page whose own 403 ended the consultation: sent and billed."""
+    return (
+        f"A página {query.pages_fetched + 1} foi enviada e cobrada; {_before(query)}."
+    )
+
+
+def _client_refusal_text(query: PaymentQuery) -> str:
+    """State the client's refusal by what its record proves, never the state now."""
+    code = query.failure_code
+    if code != CLIENT_ABSENT:
+        return (
+            f"{_sent_page(query)} A Receita respondeu por falta da procuração "
+            f"eletrônica do cliente (código {code})."
+        )
+    return (
+        f"{_refused_page(query)} A procuração eletrônica do cliente (00004) não "
+        f"estava em vigor quando a admissão recusou a página {query.pages_fetched + 1}."
     )
 
 
@@ -162,10 +201,7 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
                 "Isso não indica falta de pagamento."
             )
         case PaymentQueryState.SEM_PROCURACAO:
-            return (
-                "A consulta foi recusada por falta da procuração eletrônica do "
-                "cliente (código 00004) quando foi pedida."
-            )
+            return _client_refusal_text(query)
         case PaymentQueryState.COTA_ESGOTADA:
             return (
                 "Limite mensal de consultas atingido. Nenhuma consulta foi feita "
@@ -176,7 +212,10 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
         case PaymentQueryState.FALHA | PaymentQueryState.INCERTO if is_denial_code(
             query.failure_code
         ):
-            return f"{denial_text(query.failure_code)} Consulta não repetida."
+            return (
+                f"{_sent_page(query)} {denial_text(query.failure_code)} "
+                "Consulta não repetida."
+            )
         case PaymentQueryState.INCERTO:
             return "O resultado é incerto. Confira com a equipe antes de repetir."
         case _ if query.failure_code == "limite_de_paginas":
