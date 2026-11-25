@@ -17,11 +17,12 @@ from types import ModuleType
 from typing import Any, Final
 
 import pytest
+from django.db.models import F
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.integrations.authority import head_record
-from apps.integrations.budget_models import ProviderBudget
+from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_contracts import AdmissionDeniedError
 from apps.integrations.call_models import ProviderCall
 from apps.integrations.models import (
@@ -1029,3 +1030,39 @@ def test_a_partial_quota_after_a_billed_page_states_both_pages(world: World) -> 
         "A página 2 não foi enviada: o limite mensal de consultas acabou; antes "
         "dela, a página 1 foi enviada e cobrada."
     )
+
+
+@DB
+def test_a_receipt_whose_connection_moved_before_claim_is_refused_and_released(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its SP-COMP is reserved at v1, then a termo renewal moves the
+    # connection to v2 before the claim.
+    real = import_module("apps.integrations.call_protocol").reserve
+
+    def reserve_then_renew(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real(*args, **kwargs)
+        with tenant_context(world.termo.tenant.pk):
+            ProviderConnection.objects.filter(pk=world.termo.connection.pk).update(
+                version=F("version") + 1
+            )
+        return row
+
+    monkeypatch.setattr(payments, "reserve", reserve_then_renew)
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        pytest.fail("the claim's refusal escaped the receipt worker")
+    # Then the call is a recorded refusal with its reservation released.
+    assert call is not None
+    with tenant_context(tenant):
+        call.refresh_from_db()
+        held = ProviderReservation.objects.filter(call=call, state="reserved")
+        assert (call.state, held.exists()) == ("bloqueada_autoridade", False)
+    assert world.sent("/Emitir") == []

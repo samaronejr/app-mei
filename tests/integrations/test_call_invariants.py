@@ -163,3 +163,19 @@ def test_a_moved_version_is_refused_whatever_the_reread_does(
     )
     assert peer.requests == []
     assert reload_call(provider_link, row.pk).state == CallState.AUTHORITY
+
+
+def test_a_version_moved_before_claim_is_recorded_and_released_at_claim(
+    provider_link: ClientProviderLink,
+) -> None:
+    # Given a reserved call, then its connection version moves before the claim.
+    row = call_protocol.reserve(provider_link.tenant_id, provider_link.pk, request())
+    with tenant_context(provider_link.tenant_id):
+        ProviderConnection.objects.filter(pk=provider_link.connection_id).update(
+            version=2
+        )
+    # When it is claimed, the refusal still reaches the caller...
+    with pytest.raises(AdmissionDeniedError):
+        call_protocol.claim(provider_link.tenant_id, row.pk)
+    # ...and the call is a recorded refusal, never left reserved (AXRM-045).
+    assert reload_call(provider_link, row.pk).state == CallState.AUTHORITY
