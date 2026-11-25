@@ -20,7 +20,7 @@ from django.db import DatabaseError, connection, connections, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from sentry_sdk.integrations.logging import EventHandler
 
 from apps.accounts.models import User
@@ -536,7 +536,7 @@ def test_only_the_late_candidate_the_rule_decides_is_bound(world: World) -> None
 
 
 def test_a_production_consultation_binding_late_writes_the_official_fact(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     # Given a production call with real-data approval recorded a DAS before its
     # obligation existed.
@@ -957,7 +957,7 @@ def test_a_malformed_receipt_stores_nothing_and_is_not_retried(world: World) -> 
 
 
 def test_a_receipt_the_scanner_cannot_take_is_kept_billed_and_not_reissued(
-    world: World, settings: SettingsWrapper
+    world: World, settings: Settings
 ) -> None:
     world.script(page([item("DAS000000000007")]))
     world.consult()
@@ -1041,7 +1041,7 @@ def test_wire_bearer_and_provider_text_never_reach_console_or_sentry(
 
 
 def test_no_token_or_body_reaches_logs_or_persisted_rows(
-    world: World, caplog: pytest.LogCaptureFixture, settings: SettingsWrapper
+    world: World, caplog: pytest.LogCaptureFixture, settings: Settings
 ) -> None:
     canary = "synthetic-pagtoweb-canary-7731"
     caplog.set_level(logging.DEBUG)

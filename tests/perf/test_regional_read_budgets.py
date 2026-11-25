@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from ops.perf.results import GZIP_BYTES, QUERIES
 from tests.perf.regional_world import REGIONAL_READS, regional_world
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 @pytest.mark.parametrize("read", REGIONAL_READS)
 def test_regional_read_stays_within_budget(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     django_assert_max_num_queries: DjangoAssertNumQueries,
     read: str,

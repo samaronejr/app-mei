@@ -7,7 +7,7 @@ import pytest
 from celery.schedules import crontab
 from django.apps import apps
 from django.conf import settings as project_settings
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.delivery.jobs import JOB_LABELS, registered_jobs
 from apps.obligations.models import SchedulerHeartbeat
@@ -17,7 +17,7 @@ NOW = datetime(2026, 10, 7, 5, tzinfo=UTC)
 
 
 def test_crontab_estimate_uses_brazilian_scheduler_time(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a 06:00 BRT job, while the clock is 02:00 BRT.
     settings.CELERY_BEAT_SCHEDULE = {
@@ -36,7 +36,7 @@ def test_crontab_estimate_uses_brazilian_scheduler_time(
 
 
 def test_persisted_interval_uses_dispatch_time_but_completion_stays_distinct(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a DB override with a recent dispatch and an older completion.
     settings.CELERY_BEAT_SCHEDULE = {
@@ -68,7 +68,7 @@ def test_persisted_interval_uses_dispatch_time_but_completion_stays_distinct(
     assert job.last_completed_at == NOW - timedelta(minutes=3)
 
 
-def test_disabled_database_job_has_no_next_run(settings: SettingsWrapper) -> None:
+def test_disabled_database_job_has_no_next_run(settings: Settings) -> None:
     # Given a registered job disabled in the database scheduler.
     settings.CELERY_BEAT_SCHEDULE = {
         "dispatch-outbox": {
@@ -96,7 +96,7 @@ def test_disabled_database_job_has_no_next_run(settings: SettingsWrapper) -> Non
 
 
 def test_newly_registered_job_appears_without_a_hard_coded_inventory(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a future registration, absent from this version's presentation metadata.
     settings.CELERY_BEAT_SCHEDULE = {

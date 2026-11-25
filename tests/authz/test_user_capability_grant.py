@@ -34,7 +34,7 @@ from django.db import IntegrityError, transaction
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event
@@ -92,7 +92,7 @@ def _new_action(named: tuple[str, str]) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     settings.ROOT_URLCONF = "tests.core.urls"
     monkeypatch.setattr("apps.portal.middleware.PORTAL_URLCONF", "tests.portal.urls")

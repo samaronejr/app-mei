@@ -10,7 +10,7 @@ from defusedxml import ElementTree
 from django.core.exceptions import PermissionDenied
 from django.core.management import call_command
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def world(settings: SettingsWrapper, tmp_path: Path) -> SyntheticTermo:
+def world(settings: Settings, tmp_path: Path) -> SyntheticTermo:
     settings.MEDIA_ROOT = tmp_path
     return synthetic_termo("fake")
 

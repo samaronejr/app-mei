@@ -16,7 +16,7 @@ import pytest
 from django.conf import settings
 from django.test import Client
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -35,7 +35,7 @@ STALE_NOTICE = "Seu acesso à empresa que estava selecionada foi encerrado."
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     setup = portal_setup("switch")
     # A second seat for the same account, in the other client of the same firm.

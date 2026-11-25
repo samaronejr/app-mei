@@ -19,7 +19,7 @@ from django.template.loader import render_to_string
 from django.test import RequestFactory
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.navigation import NAV_R1, PRODUCT_SHELL_FLAG, product_shell
 from tests.ui.factories import Firm, make_firm
@@ -32,7 +32,7 @@ SCRIPT_SRC = re.compile(r'<script src="[^"]*js/([\w.-]+\.js)"')
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 
@@ -75,7 +75,7 @@ def test_a_flag_off_firm_is_served_the_mei_era_shell() -> None:
 
 
 def test_a_flagged_firm_gets_the_product_shell_named_by_the_setting(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.PRODUCT_NAME = "Nome Provisório"
     body = _dashboard(_flag(make_firm("shell-on")))
@@ -117,7 +117,7 @@ def test_a_staff_accountant_under_the_flag_is_not_offered_gestao() -> None:
 
 
 def test_the_kill_switch_returns_a_flagged_firm_to_the_mei_era_shell(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.AXORIM_DISABLED_FEATURES = [PRODUCT_SHELL_FLAG]
     body = _dashboard(_flag(make_firm("shell-kill")))

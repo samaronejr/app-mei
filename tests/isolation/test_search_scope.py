@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientAssignment, ClientCompany
@@ -55,7 +55,7 @@ def _body(setup: PortalSetup, q: str, actor: User | None = None) -> str:
 
 
 @pytest.fixture
-def media(settings: SettingsWrapper, tmp_path: Path) -> None:
+def media(settings: Settings, tmp_path: Path) -> None:
     settings.MEDIA_ROOT = tmp_path
 
 

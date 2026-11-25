@@ -412,9 +412,12 @@ def fixed_pixel_widths(
                 # definition, so any value but a percentage is a fixed one.
                 if value.strip() and not value.strip().endswith("%"):
                     offenders.append(where)
-            elif name == "style" and STYLE_WIDTH.search(value):
-                if PIXEL_LENGTH.search(value):
-                    offenders.append(where)
+            elif (
+                name == "style"
+                and STYLE_WIDTH.search(value)
+                and PIXEL_LENGTH.search(value)
+            ):
+                offenders.append(where)
     assert seen_class_attributes >= minimum, (
         f"the {surface} scan read {seen_class_attributes} class attributes and "
         f"expected at least {minimum}; a width rule applied to a parse that found no "

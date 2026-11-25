@@ -41,7 +41,7 @@ from allauth.account.models import EmailAddress
 from django.conf import settings
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
     from django.test.client import _MonkeyPatchedWSGIResponse
@@ -129,7 +129,7 @@ INVITED: Final = "novo@contrato.example"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     """Serve the platform host, which is where all three posted pages live."""
     settings.ALLOWED_HOSTS = ["testserver"]
 

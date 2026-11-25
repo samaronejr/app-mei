@@ -10,7 +10,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import ProgrammingError, connection, transaction
 from psycopg import sql
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.identifiers import uuid7
 from apps.core.tenancy import tenant_context
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     return ingest_setup(settings, tmp_path)
 
 

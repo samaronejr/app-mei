@@ -17,7 +17,7 @@ from uuid import UUID
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.briefing import providers
 from apps.briefing.source_rows import SourceContext
@@ -190,7 +190,7 @@ def firms(count: int, clients: int) -> dict[UUID, list[UUID]]:
 
 
 @pytest.fixture
-def lane(settings: SettingsWrapper) -> None:
+def lane(settings: Settings) -> None:
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False
     settings.SERPRO_ENVIRONMENT = "fake"
@@ -263,7 +263,7 @@ def test_the_cursor_survives_worker_death_without_skipping_or_repeating(
 
 @pytest.mark.parametrize("flag", ["PROVIDERS_PAUSED", "SERPRO_PAUSED"])
 def test_a_pause_runs_nothing_and_shows_as_paused(
-    world: World, fire: Fire, settings: SettingsWrapper, flag: str
+    world: World, fire: Fire, settings: Settings, flag: str
 ) -> None:
     setattr(settings, flag, True)
     world.script(page([]))
@@ -319,7 +319,7 @@ def test_staff_consultation_does_not_cancel_the_scheduled_month(
 
 
 def test_an_unapproved_production_environment_runs_nothing(
-    world: World, fire: Fire, settings: SettingsWrapper
+    world: World, fire: Fire, settings: Settings
 ) -> None:
     settings.SERPRO_ENVIRONMENT = "producao"
     settings.PROVIDER_REAL_DATA_APPROVED = False

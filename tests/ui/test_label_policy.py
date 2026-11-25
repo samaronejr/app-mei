@@ -146,9 +146,12 @@ def _module_constants(tree: ast.Module) -> dict[str, ast.expr]:
             target = node.targets[0]
             if isinstance(target, ast.Name):
                 constants[target.id] = node.value
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.value is not None:
-                constants[node.target.id] = node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            constants[node.target.id] = node.value
     return constants
 
 

@@ -13,7 +13,7 @@ That is why each mutation below is named individually rather than counted.
 """
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.checks import (
     ACCESS_LOG_MIDDLEWARE,
@@ -27,12 +27,12 @@ from apps.core.checks import (
 )
 
 
-def _ids(settings: SettingsWrapper, middleware: list[str]) -> list[str | None]:
+def _ids(settings: Settings, middleware: list[str]) -> list[str | None]:
     settings.MIDDLEWARE = middleware
     return [message.id for message in check_tenant_middleware(None)]
 
 
-def test_the_shipped_order_is_clean(settings: SettingsWrapper) -> None:
+def test_the_shipped_order_is_clean(settings: Settings) -> None:
     # Given the real MIDDLEWARE
     # Then nothing is reported, so every mutation below fails for its own reason
     assert check_tenant_middleware(None) == []
@@ -41,7 +41,7 @@ def test_the_shipped_order_is_clean(settings: SettingsWrapper) -> None:
 
 @pytest.mark.parametrize("absent", [PORTAL_MIDDLEWARE, TENANT_MIDDLEWARE])
 def test_e005_fires_when_either_transaction_owner_is_absent(
-    settings: SettingsWrapper,
+    settings: Settings,
     absent: str,
 ) -> None:
     # Given a stack missing exactly one owner — the other is still present
@@ -53,7 +53,7 @@ def test_e005_fires_when_either_transaction_owner_is_absent(
 
 
 def test_e006_fires_when_an_owner_precedes_authentication(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given the portal middleware moved before AuthenticationMiddleware
     middleware = [m for m in settings.MIDDLEWARE if m != PORTAL_MIDDLEWARE]
@@ -65,7 +65,7 @@ def test_e006_fires_when_an_owner_precedes_authentication(
 
 
 def test_e006_fires_when_the_dispatcher_runs_after_the_portal(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given the dispatcher moved after PortalMiddleware
     middleware = [m for m in settings.MIDDLEWARE if m != HOST_DISPATCH_MIDDLEWARE]
@@ -80,7 +80,7 @@ def test_e006_fires_when_the_dispatcher_runs_after_the_portal(
     assert "core.E006" in _ids(settings, middleware)
 
 
-def test_e006_fires_when_the_dispatcher_is_absent(settings: SettingsWrapper) -> None:
+def test_e006_fires_when_the_dispatcher_is_absent(settings: Settings) -> None:
     # Given no dispatcher at all
     middleware = [m for m in settings.MIDDLEWARE if m != HOST_DISPATCH_MIDDLEWARE]
 
@@ -90,7 +90,7 @@ def test_e006_fires_when_the_dispatcher_is_absent(settings: SettingsWrapper) -> 
 
 @pytest.mark.parametrize("owner", [PORTAL_MIDDLEWARE, TENANT_MIDDLEWARE])
 def test_e007_fires_when_the_access_log_moves_inside_either_transaction(
-    settings: SettingsWrapper,
+    settings: Settings,
     owner: str,
 ) -> None:
     # Given the access log moved after one of the owners
@@ -104,7 +104,7 @@ def test_e007_fires_when_the_access_log_moves_inside_either_transaction(
 
 
 def test_e006_fires_when_the_portal_is_hoisted_outside_the_mfa_middleware(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given the portal group moved before MFAEnforcementMiddleware
     middleware = [
@@ -123,7 +123,7 @@ def test_e006_fires_when_the_portal_is_hoisted_outside_the_mfa_middleware(
 
 
 def test_e006_fires_when_the_rate_limiter_is_hoisted_above_the_group(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given RateLimitMiddleware moved above the whole portal group
     middleware = [m for m in settings.MIDDLEWARE if m != RATE_LIMIT_MIDDLEWARE]

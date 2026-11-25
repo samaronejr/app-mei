@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import (
@@ -26,7 +26,7 @@ SCHEMA = (
 
 
 def test_scenario_a_index_schema_and_complete_proof_identities(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     scenario = scenario_a(settings, tmp_path, "evidence-schema-a")

@@ -17,7 +17,7 @@ import pytest
 from django.conf import settings
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.tenants.models import Invite, Tenant, TenantRole
@@ -58,7 +58,7 @@ def _pinned_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.accounts.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 
@@ -97,7 +97,7 @@ def test_the_sixth_attempt_for_one_email_within_a_minute_is_refused() -> None:
 
 
 def test_the_sixth_firm_invitation_attempt_from_one_ip_is_refused(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ROOT_URLCONF = "config.urls"
     firm = Tenant.objects.get(slug="firma-a")

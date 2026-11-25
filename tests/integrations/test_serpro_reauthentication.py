@@ -9,7 +9,7 @@ from uuid import UUID
 import pytest
 from django.db import connection, connections
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from requests import Response
 
 from apps.core.tenancy import tenant_context
@@ -145,7 +145,7 @@ def test_ambiguous_response_never_opens_a_reauthentication_attempt(
 
 @pytest.mark.parametrize("control", ["pause", "budget"])
 def test_retry_rechecks_live_pause_and_budget(
-    spend_link: ClientProviderLink, settings: SettingsWrapper, control: str
+    spend_link: ClientProviderLink, settings: Settings, control: str
 ) -> None:
     # Given controls changed after the complete first response but before retry.
     def change_controls() -> None:

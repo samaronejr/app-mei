@@ -18,7 +18,7 @@ from django.db import Error as DatabaseError
 from django.db import connection, transaction
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event, PlatformEvent
@@ -35,7 +35,7 @@ PASSWORD = "correct-horse-battery-staple"  # noqa: S105
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.accounts.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

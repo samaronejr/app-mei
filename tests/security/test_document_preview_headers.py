@@ -12,7 +12,7 @@ import pytest
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import DocumentIntake
@@ -30,7 +30,7 @@ HOSTILE_NAME = 'nota"\r\nSet-Cookie: pwned=1;\t\u202e.pdf'
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     return portal_setup("t12-headers")
 

@@ -5,7 +5,7 @@ from http import HTTPStatus
 import pytest
 from allauth.account.models import EmailAddress
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import (
     InviteAccountExistsError,
@@ -81,7 +81,7 @@ def test_unverified_secondary_claim_does_not_block_registration() -> None:
 
 
 def test_address_only_web_invite_does_not_choose_a_person_by_email(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     offer = contact_offer()
     user = verified_invitee()

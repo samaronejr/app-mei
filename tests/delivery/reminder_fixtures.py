@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.services.requests import RequestFields, update_request
@@ -43,7 +43,7 @@ def overdue_setup(slug: str) -> PortalSetup:
 
 @pytest.fixture
 def reminder_setup(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> PortalSetup:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path

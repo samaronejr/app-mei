@@ -15,7 +15,7 @@ from django.core.files.storage import default_storage
 from django.http import StreamingHttpResponse
 from django.urls import reverse
 from django.utils.timezone import localdate
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
@@ -150,7 +150,7 @@ def test_cancellation_cannot_be_backdated() -> None:
 
 
 def test_export_runs_after_cancellation_and_stops_at_the_ninety_day_boundary(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     firm = enabled_firm("cancellation-export")
@@ -225,7 +225,7 @@ def test_an_ended_export_window_is_refused_as_a_readable_page(
 
 
 def test_even_the_shared_purge_cannot_erase_the_cancellation_export_window(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup, document = cancelled_evidence(
@@ -240,7 +240,7 @@ def test_even_the_shared_purge_cannot_erase_the_cancellation_export_window(
 
 
 def test_after_export_window_dry_run_still_keeps_expired_bytes(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     assert settings.RETENTION_PURGE_DRY_RUN is True
@@ -255,7 +255,7 @@ def test_after_export_window_dry_run_still_keeps_expired_bytes(
 
 
 def test_explicit_live_purge_keeps_held_content_and_metadata(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     settings.RETENTION_PURGE_DRY_RUN = False
@@ -281,7 +281,7 @@ def test_explicit_live_purge_keeps_held_content_and_metadata(
 
 
 def test_cancellation_committed_after_inventory_prevents_the_purge_claim(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup = cycle_setup("cancellation-before-claim")
@@ -320,7 +320,7 @@ def test_cancellation_committed_after_inventory_prevents_the_purge_claim(
 
 
 def test_cancellation_cannot_promise_a_window_after_physical_purge_was_claimed(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup = cycle_setup("cancellation-after-claim")

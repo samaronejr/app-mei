@@ -11,7 +11,7 @@ from typing import assert_never
 import pytest
 from django.test import Client
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
@@ -49,7 +49,7 @@ class Desk:
 
 
 @pytest.fixture
-def desk(settings: SettingsWrapper) -> Desk:
+def desk(settings: Settings) -> Desk:
     settings.ALLOWED_HOSTS = ["localhost", "127.0.0.1", ".localhost"]
     setup = completion_setup("bulk-disclosure-http")
     graph = setup.graph

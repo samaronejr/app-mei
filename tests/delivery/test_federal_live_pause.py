@@ -12,7 +12,7 @@ from apps.obligations.models import SchedulerHeartbeat
 from tests.delivery.test_boundaries import _web
 
 if TYPE_CHECKING:
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
     from tests.delivery.conftest import DeliverySetup
 
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("previous", ["", "federal_sweep_failed", "pausado"])
 def test_live_pause_overrides_prior_federal_health_before_the_next_sweep(
     delivery: DeliverySetup,
-    settings: SettingsWrapper,
+    settings: Settings,
     providers_paused: bool,
     serpro_paused: bool,
     previous: str,

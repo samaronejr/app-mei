@@ -55,7 +55,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.http.response import HttpResponseBase
 from django.test import Client, RequestFactory
 from django.urls import reverse
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.security.middleware import RateLimitMiddleware
 from tests.ui.factories import Firm, make_firm
@@ -136,7 +136,7 @@ PORTAL_MARKER: Final[str] = "/portal/templates/"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

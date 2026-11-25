@@ -7,7 +7,7 @@ their console/locmem backends, so the guard is inert there and never opens a con
 
 import pytest
 from django.core.checks import run_checks
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.checks import _email_config_errors
 
@@ -29,7 +29,7 @@ COMPLETE: dict[str, object] = {
 
 
 def _configure_email(
-    settings: SettingsWrapper,
+    settings: Settings,
     **overrides: object,
 ) -> None:
     for name, value in (COMPLETE | overrides).items():
@@ -38,7 +38,7 @@ def _configure_email(
 
 @pytest.mark.parametrize("backend", [CONSOLE, LOCMEM])
 def test_the_check_is_silent_on_non_smtp_backends(
-    settings: SettingsWrapper,
+    settings: Settings,
     backend: str,
 ) -> None:
     # Given the no-network backends used by development and the test suite
@@ -49,7 +49,7 @@ def test_the_check_is_silent_on_non_smtp_backends(
 
 
 def test_the_check_is_silent_when_smtp_is_fully_configured(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     _configure_email(settings)
 
@@ -66,7 +66,7 @@ def test_the_check_is_silent_when_smtp_is_fully_configured(
     ],
 )
 def test_the_check_names_each_required_value_left_empty(
-    settings: SettingsWrapper,
+    settings: Settings,
     missing: str,
 ) -> None:
     _configure_email(settings, **{missing: ""})
@@ -84,7 +84,7 @@ def test_the_check_names_each_required_value_left_empty(
     ids=["both-enabled", "neither-enabled"],
 )
 def test_the_check_requires_exactly_one_encrypted_transport(
-    settings: SettingsWrapper,
+    settings: Settings,
     *,
     use_tls: bool,
     use_ssl: bool,
@@ -101,7 +101,7 @@ def test_the_check_requires_exactly_one_encrypted_transport(
 
 @pytest.mark.parametrize("timeout", [None, 0, -1], ids=["unset", "zero", "negative"])
 def test_the_check_rejects_an_unset_or_non_positive_timeout(
-    settings: SettingsWrapper,
+    settings: Settings,
     timeout: int | None,
 ) -> None:
     _configure_email(settings, EMAIL_TIMEOUT=timeout)
@@ -113,7 +113,7 @@ def test_the_check_rejects_an_unset_or_non_positive_timeout(
     assert "EMAIL_TIMEOUT" in str(errors[0].msg)
 
 
-def test_the_check_rejects_a_localhost_sender(settings: SettingsWrapper) -> None:
+def test_the_check_rejects_a_localhost_sender(settings: Settings) -> None:
     _configure_email(settings, DEFAULT_FROM_EMAIL="nao-responda@localhost")
 
     errors = _email_config_errors()
@@ -124,7 +124,7 @@ def test_the_check_rejects_a_localhost_sender(settings: SettingsWrapper) -> None
 
 
 def test_the_check_names_every_failing_setting_at_once(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     _configure_email(
         settings,
@@ -155,7 +155,7 @@ def test_the_check_names_every_failing_setting_at_once(
 
 @pytest.mark.django_db
 def test_the_email_guard_is_registered_as_a_system_check(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     _configure_email(settings, EMAIL_HOST="")
 

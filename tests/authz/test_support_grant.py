@@ -26,7 +26,7 @@ from django.http import Http404
 from django.test import Client
 from django.urls import include, path, reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event, PlatformEvent
@@ -832,7 +832,7 @@ def _denied_login(
     ["revoked-live", "revoked-fresh", "expired", "membership-lost", "portal-seat"],
 )
 def test_denied_account_can_logout_and_switch_with_csrf(
-    denial: str, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+    denial: str, monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
     # Given a real MFA session, denied by a live authorization change or client seat.
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
@@ -922,7 +922,7 @@ def test_logout_recovery_requires_registered_route_and_callback(
     real_callback: bool,
     namespace: str,
     monkeypatch: pytest.MonkeyPatch,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given an authenticated account without a seat, and an impostor logout route.
     firm = enabled_firm("logout-impostor")

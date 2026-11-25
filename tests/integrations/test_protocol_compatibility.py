@@ -67,7 +67,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from django.db.models import Model
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
     from apps.integrations.journal_schema import FirmJournalRecord
 
@@ -177,7 +177,7 @@ def _writer_bytes(
 )
 def test_non_sitfis_journal_writer_and_replay_are_byte_identical(
     provider_link: ClientProviderLink,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     case: tuple[

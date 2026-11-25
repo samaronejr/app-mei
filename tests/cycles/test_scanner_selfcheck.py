@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from django.core.files.storage import default_storage
 from django.core.management import CommandError, call_command
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake, IntakeState
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     settings.CLAMAV_ENABLED = True
     settings.CLAMD_HOST = "127.0.0.1"
@@ -57,12 +57,12 @@ def _documents(setup: PortalSetup) -> int:
         return Document.objects.count()
 
 
-def _use(settings: SettingsWrapper, server: FakeClamd) -> None:
+def _use(settings: Settings, server: FakeClamd) -> None:
     settings.CLAMD_PORT = server.port
 
 
 def test_eicar_is_rejected_and_the_clean_pdf_verified_through_the_real_intake(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup)
     with fake_clamd() as server:
@@ -90,7 +90,7 @@ def test_eicar_is_rejected_and_the_clean_pdf_verified_through_the_real_intake(
 
 
 def test_a_second_run_uses_fresh_bytes_and_passes_again(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup)
     with fake_clamd() as server:
@@ -101,7 +101,7 @@ def test_a_second_run_uses_fresh_bytes_and_passes_again(
 
 
 def test_a_scanner_that_misses_eicar_fails_the_selfcheck(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup)
     out = StringIO()
@@ -115,7 +115,7 @@ def test_a_scanner_that_misses_eicar_fails_the_selfcheck(
 
 
 def test_an_unreachable_scanner_fails_before_any_upload(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup)
     with fake_clamd(silent=True) as hung:
@@ -127,7 +127,7 @@ def test_an_unreachable_scanner_fails_before_any_upload(
 
 
 def test_a_tenant_without_scan_required_is_refused_and_nothing_is_written(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     with fake_clamd() as server:
         _use(settings, server)
@@ -138,7 +138,7 @@ def test_a_tenant_without_scan_required_is_refused_and_nothing_is_written(
 
 
 def test_scanning_switched_off_is_refused(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup)
     settings.CLAMAV_ENABLED = False

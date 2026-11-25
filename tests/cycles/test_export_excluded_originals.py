@@ -9,7 +9,7 @@ import pytest
 from django.core.files import File
 from django.core.files.storage import default_storage
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientAssignment
 from apps.core.tenancy import tenant_context
@@ -97,7 +97,7 @@ def legacy_upload_without_intake(
     ],
 )
 def test_unsafe_original_is_excluded_without_blocking_clean_original(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     case: tuple[str, str, bool, bool, str],
@@ -174,7 +174,7 @@ def test_unsafe_original_is_excluded_without_blocking_clean_original(
 
 
 def test_staff_original_without_scan_is_also_excluded(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     # Given a staff original without a completed scan, never a safety exemption.
     settings.MEDIA_ROOT = tmp_path
@@ -202,7 +202,7 @@ def test_staff_original_without_scan_is_also_excluded(
 
 
 def test_concluded_cycle_exports_with_scanning_disabled(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     # Given a concluded cycle containing an original that was never scanned.
     settings.MEDIA_ROOT = tmp_path
@@ -260,7 +260,7 @@ def test_concluded_cycle_exports_with_scanning_disabled(
     ],
 )
 def test_scanned_clean_export_keeps_existing_members(
-    settings: SettingsWrapper, tmp_path: Path, state: str
+    settings: Settings, tmp_path: Path, state: str
 ) -> None:
     # Given an original in any existing scanned-clean state.
     settings.MEDIA_ROOT = tmp_path

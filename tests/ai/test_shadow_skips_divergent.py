@@ -3,7 +3,7 @@
 import pytest
 from celery.exceptions import OperationalError
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.automation.models import AgentRun
 from apps.automation.shadow import run_shadow
@@ -69,7 +69,7 @@ def test_state_is_rechecked_at_worker_admission(setup: PortalSetup) -> None:
 def test_broker_failure_does_not_change_extraction(
     setup: PortalSetup,
     monkeypatch: pytest.MonkeyPatch,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     def unavailable(*args: str) -> None:
         message = "offline"

@@ -11,7 +11,7 @@ from uuid import UUID
 
 import pytest
 from playwright.sync_api import BrowserType, ConsoleMessage, Error, ViewportSize, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core import navigation
@@ -166,7 +166,7 @@ def test_profile_preference_and_account_zip(
     live_firm: Callable[..., LiveFirm],
     open_page: Callable[[LiveFirm, User | None], BrowserPage],
     tmp_path: Path,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     live = live_firm(

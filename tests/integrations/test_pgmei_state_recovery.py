@@ -32,7 +32,7 @@ from tests.integrations.test_pgmei_recovery import (
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
     from apps.integrations.call_contracts import Claim
 
@@ -143,7 +143,7 @@ def test_previous_day_reserved_runner_blocks_a_new_paid_click(
 def test_interrupted_definitive_401_retry_ends_owned(
     guide_world: GuideWorld,
     monkeypatch: pytest.MonkeyPatch,
-    settings: SettingsWrapper,
+    settings: Settings,
     interruption: str,
 ) -> None:
     world = guide_world

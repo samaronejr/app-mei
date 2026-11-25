@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from playwright.sync_api import FilePayload, Page, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -33,7 +33,7 @@ OpenPage = Callable[[LiveFirm, User | None], BrowserPage]
 def test_hoje_filter_swap_focuses_the_queue_heading(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -64,7 +64,7 @@ def test_hoje_filter_swap_focuses_the_queue_heading(
 def test_portal_upload_swap_focuses_the_status_heading(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -122,7 +122,7 @@ def _keyboard_to(page: Page, name: str) -> None:
 def test_automations_keyboard_path_pauses_with_visible_focus(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -153,7 +153,7 @@ def test_automations_keyboard_path_pauses_with_visible_focus(
 def test_support_keyboard_path_approves_with_visible_focus(
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

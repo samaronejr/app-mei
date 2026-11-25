@@ -21,7 +21,7 @@ from django.db import transaction
 from django.test import Client, RequestFactory
 from pytest_django.fixtures import (
     DjangoCaptureOnCommitCallbacks,
-    SettingsWrapper,
+    Settings,
 )
 
 from apps.audit.admin import DataSubjectRequestAdmin
@@ -64,7 +64,7 @@ CNPJ_SHAPE = re.compile(
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.accounts.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

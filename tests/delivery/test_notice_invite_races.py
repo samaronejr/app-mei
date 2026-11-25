@@ -8,7 +8,7 @@ from threading import Event
 import pytest
 from django.core.mail import EmailMessage
 from django.db import OperationalError, connection
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts import invites
 from apps.accounts.invites import InviteTokenSupersededError
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def _queue(
-    settings: SettingsWrapper, tmp_path: Path, *, kind: str
+    settings: Settings, tmp_path: Path, *, kind: str
 ) -> tuple[ContactOffer, OutboundMessage]:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
@@ -61,7 +61,7 @@ def _queue(
 @pytest.mark.parametrize("existing_account", [True, False])
 @pytest.mark.parametrize("kind", ["portal_invite", "contact_portal_invite"])
 def test_acceptance_commits_first_dispatch_refuses_without_data(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     smtp_server: Callable[[str], FakeSMTP],
     existing_account: bool,
@@ -114,7 +114,7 @@ def test_acceptance_commits_first_dispatch_refuses_without_data(
     ids=lambda case: f"{case[1]}-{'existing' if case[0] else 'new'}",
 )
 def test_dispatch_start_first_preserves_stale_token_guard_and_one_send(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     smtp_server: Callable[[str], FakeSMTP],
     monkeypatch: pytest.MonkeyPatch,

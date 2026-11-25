@@ -5,7 +5,7 @@ from http import HTTPStatus
 
 import pytest
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientContact
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 @pytest.mark.parametrize("existing", [False, True])
 def test_import_contact_refreshed_acceptance_reaches_publication(
-    settings: SettingsWrapper,
+    settings: Settings,
     existing: bool,
     record_property: Callable[[str, bool], None],
 ) -> None:
@@ -67,7 +67,7 @@ def test_import_contact_refreshed_acceptance_reaches_publication(
 
 
 def test_changed_origin_is_refused_on_the_real_acceptance_and_publication_path(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     journey = contact_journey(settings)
     portal = portal_session(journey, existing=True)

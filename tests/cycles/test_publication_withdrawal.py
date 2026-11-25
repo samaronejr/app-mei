@@ -7,7 +7,7 @@ from typing import NoReturn
 
 import pytest
 from django.core.exceptions import ValidationError
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.maintenance import ContactData, save_contact
 from apps.core.tenancy import tenant_context
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_withdrawal_form_announces_invalid_reason_without_creating_proposal(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
     setup = publication_graph()
@@ -49,7 +49,7 @@ def test_withdrawal_form_announces_invalid_reason_without_creating_proposal(
 
 
 def test_a_refused_withdrawal_reads_in_plain_sentences(
-    settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """AXR1-054: a ValidationError from the withdrawal is a form error in sentences.
 
@@ -82,7 +82,7 @@ def test_a_refused_withdrawal_reads_in_plain_sentences(
 
 
 def test_withdrawal_needs_new_approval_and_preserves_exact_receipt_history(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -144,7 +144,7 @@ def test_withdrawal_needs_new_approval_and_preserves_exact_receipt_history(
 
 @pytest.mark.parametrize("recipient_changed", [False, True])
 def test_withdrawal_notice_revalidates_after_its_own_completed_effect(
-    settings: SettingsWrapper, tmp_path: Path, recipient_changed: bool
+    settings: Settings, tmp_path: Path, recipient_changed: bool
 ) -> None:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path

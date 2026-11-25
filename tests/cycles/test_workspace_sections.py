@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -47,7 +47,7 @@ def test_every_registered_message_kind_has_a_reader_label() -> None:
 
 
 def test_context_types_requests_messages_receipts_and_the_empty_period(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t43-typed")
     firm = world.setup.firm()
@@ -101,7 +101,7 @@ def test_context_types_requests_messages_receipts_and_the_empty_period(
 
 
 def test_a_support_rendering_masks_subjects_and_titles_but_keeps_outcomes(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t43-redact")
 
@@ -130,7 +130,7 @@ def _measure(world: PeriodWorld) -> tuple[int, int, int, int]:
 
 
 def test_each_section_costs_fixed_queries_however_many_rows(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     world = period_world(settings, tmp_path, "t43-queries")
     before = _measure(world)

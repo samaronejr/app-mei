@@ -10,7 +10,7 @@ from django.db import connection
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.authz.models import GrantLevel, RoleGrant
 from apps.clients.maintenance import ContactData, save_contact
@@ -40,7 +40,7 @@ class Desk:
 
 
 @pytest.fixture
-def desk(settings: SettingsWrapper) -> Desk:
+def desk(settings: Settings) -> Desk:
     settings.ALLOWED_HOSTS = [".localhost", "localhost", "testserver"]
     setup = approval_graph("approval-http")
     host = f"{setup.graph.tenant.slug}.localhost"

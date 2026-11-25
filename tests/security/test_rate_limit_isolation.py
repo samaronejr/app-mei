@@ -17,7 +17,7 @@ from django.http import HttpRequest, HttpResponse
 from django.test import Client, RequestFactory
 from django.urls import reverse
 from django_ratelimit import core as ratelimit_core
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.security.ratelimit import credential_limits
@@ -196,7 +196,7 @@ def _pinned_rate_limit_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = FIRM_URLCONF
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 

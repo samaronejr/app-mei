@@ -27,7 +27,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.template import Context, Engine
 from django.test import Client, override_settings
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -80,7 +80,7 @@ CONTEXT_KEYS: Final = ("reason", "max_size_label", "messages")
 
 
 @pytest.fixture(autouse=True)
-def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     settings.PORTAL_UPLOAD_MAX_BYTES = SMALL_CAP
     # Pinned to the shipped tree: sibling modules in this package point the middleware
@@ -171,7 +171,7 @@ def test_the_r1_refusal_and_its_retry_draw_no_ink_under_aa(refusal: str) -> None
 @pytest.mark.parametrize("kill_switch", [False, True])
 @pytest.mark.parametrize("refusal", REFUSALS)
 def test_a_flag_off_refusal_keeps_its_parent_bytes(
-    settings: SettingsWrapper, refusal: str, kill_switch: bool
+    settings: Settings, refusal: str, kill_switch: bool
 ) -> None:
     settings.AXORIM_DISABLED_FEATURES = [FLAG] if kill_switch else []
     _, response = _refuse(refusal, [FLAG] if kill_switch else [])

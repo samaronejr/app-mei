@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 from django.core.exceptions import MultipleObjectsReturned
 from django.db import IntegrityError
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -180,7 +180,7 @@ def test_a_turn_does_not_advance_a_replacement_control_it_did_not_claim(
     [(False, False), (True, False), (False, True), (True, True)],
 )
 def test_global_guard_truth_table(
-    settings: SettingsWrapper,
+    settings: Settings,
     approved: bool,
     environment: str,
     platform: bool,

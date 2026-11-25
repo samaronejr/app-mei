@@ -7,7 +7,7 @@ import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from tests.ui.factories import Firm, assign, make_firm
@@ -49,7 +49,7 @@ def _declare(browser: Client, firm: Firm) -> None:
 
 def test_workspace_declares_verifies_and_revokes_private_evidence(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.CLAMAV_ENABLED = True
     browser = firm.as_owner()
@@ -80,7 +80,7 @@ def test_workspace_declares_verifies_and_revokes_private_evidence(
 
 def test_stale_rendered_form_returns_conflict_without_another_revision(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.CLAMAV_ENABLED = True
     browser = firm.as_owner()
@@ -129,7 +129,7 @@ def test_authority_panel_is_flag_gated_and_staff_has_no_write_actions(
 )
 def test_certificate_upload_is_refused_before_a_document_is_stored(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
     name: str,
     payload: bytes,
 ) -> None:
@@ -165,7 +165,7 @@ def _authority_row(html: str, service: str) -> str:
 
 def test_a_lapsed_pending_authority_offers_renewal_not_an_expired_verification(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.integrations.authority import authority_for  # noqa: PLC0415

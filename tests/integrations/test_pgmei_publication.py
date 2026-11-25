@@ -47,7 +47,7 @@ from tests.support import enrol_totp
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from pytest_django.fixtures import SettingsWrapper
+    from pytest_django.fixtures import Settings
 
     from apps.integrations import tasks
     from apps.integrations.serpro import pgmei
@@ -260,7 +260,7 @@ def test_bulk_preview_marks_a_non_mei_cycle_ineligible(
 
 
 def test_fake_pgmei_qualification_writes_secret_free_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
     monkeypatch.chdir(tmp_path)
     settings.MEDIA_ROOT = tmp_path / "media"
@@ -295,7 +295,7 @@ def test_fake_pgmei_qualification_writes_secret_free_evidence(
 
 
 def test_pgmei_qualification_refuses_production_before_any_request(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     with FakeSerpro((das_reply(),)) as peer:
         settings.SERPRO_FAKE_ORIGIN = peer.origin

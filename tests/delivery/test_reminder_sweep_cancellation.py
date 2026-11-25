@@ -7,7 +7,7 @@ from http import HTTPStatus
 import pytest
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import CycleState
@@ -47,7 +47,7 @@ reminder_setup = reminder_fixtures.reminder_setup
 def test_ineligible_tenant_never_enqueues_or_sends(
     reminder_setup: PortalSetup,
     smtp_server: Callable[[str], FakeSMTP],
-    settings: SettingsWrapper,
+    settings: Settings,
     negative: str,
 ) -> None:
     # Given a real published cycle; neither publication nor a manual grant opts it in.

@@ -7,7 +7,7 @@ from unittest import mock
 from uuid import uuid4
 
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -92,7 +92,7 @@ def _seed(live: LiveFirm) -> str:
 def test_the_receita_federal_section_at_both_widths(
     live_firm: Callable[..., LiveFirm],
     open_page: Callable[[LiveFirm, User | None], BrowserPage],
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.SERPRO_ENVIRONMENT = "fake"
     live = live_firm("browser-pagtoweb", features=FLAGS)

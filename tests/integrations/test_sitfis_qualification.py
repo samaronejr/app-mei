@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.integrations.serpro.qualification import SCENARIOS
 from apps.tenants.models import Tenant
@@ -22,7 +22,7 @@ def test_the_sitfis_scenario_is_registered_for_fake_and_trial_only() -> None:
 
 
 def test_fake_sitfis_scenario_writes_minimized_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: Settings
 ) -> None:
     assert ("serpro", "sitfis") in SCENARIOS, "AXRM-016 must register `sitfis`"
     settings.MEDIA_ROOT = tmp_path / "media"

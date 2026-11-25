@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from django.core.management import CommandError, call_command
 from django.db import connection
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany, TaxProfile
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_production_database_is_refused_before_writes(
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     django_assert_num_queries: DjangoAssertNumQueries,
 ) -> None:
@@ -39,7 +39,7 @@ def test_production_database_is_refused_before_writes(
 
 
 def test_empty_production_name_uses_the_compose_default(
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     django_assert_num_queries: DjangoAssertNumQueries,
 ) -> None:
@@ -56,7 +56,7 @@ def test_empty_production_name_uses_the_compose_default(
 
 
 def test_all_three_firms_have_real_messy_history(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.DEBUG = True
     settings.MEDIA_ROOT = str(tmp_path)
@@ -103,7 +103,7 @@ def test_all_three_firms_have_real_messy_history(
 
 
 def test_rerun_preserves_data_and_credentials_and_repairs_missing_files(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.DEBUG = True
     settings.MEDIA_ROOT = str(tmp_path)
@@ -156,7 +156,7 @@ def test_rerun_preserves_data_and_credentials_and_repairs_missing_files(
 
 
 def test_a_different_seed_produces_a_different_portfolio(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.DEBUG = True
     settings.MEDIA_ROOT = str(tmp_path)
@@ -172,7 +172,7 @@ def test_a_different_seed_produces_a_different_portfolio(
 @pytest.mark.parametrize("firms", ["", "unknown", "small,small", "small,unknown"])
 def test_invalid_firms_are_refused_before_writes(
     firms: str,
-    settings: SettingsWrapper,
+    settings: Settings,
     django_assert_num_queries: DjangoAssertNumQueries,
 ) -> None:
     settings.DEBUG = True
@@ -184,7 +184,7 @@ def test_invalid_firms_are_refused_before_writes(
 @pytest.mark.parametrize("debug", [False, True])
 def test_guard_allows_debug_or_a_distinct_local_database(
     debug: bool,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -201,7 +201,7 @@ def test_guard_allows_debug_or_a_distinct_local_database(
 
 
 def test_seed_refuses_an_existing_unrelated_firm(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.DEBUG = True
     settings.MEDIA_ROOT = str(tmp_path)
@@ -213,7 +213,7 @@ def test_seed_refuses_an_existing_unrelated_firm(
 
 
 def test_file_failure_does_not_lose_committed_one_time_credentials(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.DEBUG = True
     occupied = tmp_path / "occupied"

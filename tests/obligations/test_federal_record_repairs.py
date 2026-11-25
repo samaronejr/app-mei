@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, connection, transaction
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.obligations.federal import payment_from_provider, record_payment_consultation
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.django_db
 
 @pytest.mark.parametrize("environment", ["fake", "trial", "homologacao"])
 def test_forged_production_metadata_is_refused_without_writes(
-    federal_case: PortalSetup, settings: SettingsWrapper, environment: str
+    federal_case: PortalSetup, settings: Settings, environment: str
 ) -> None:
     # Given an actual finalized non-production call and forged caller metadata.
     settings.PROVIDER_REAL_DATA_APPROVED = True
@@ -71,7 +71,7 @@ def test_forged_production_metadata_is_refused_without_writes(
 )
 def test_only_successfully_finalized_calls_can_supply_payment_results(
     federal_case: PortalSetup,
-    settings: SettingsWrapper,
+    settings: Settings,
     state: str,
     finalized: bool,
 ) -> None:

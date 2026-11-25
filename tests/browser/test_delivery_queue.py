@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientContact
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.browser
 def test_queue_decision_and_cancel(
     live_firm: Callable[..., LiveFirm],
     open_page: Callable[[LiveFirm, User | None], BrowserPage],
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     live = live_firm()

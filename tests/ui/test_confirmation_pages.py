@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
     from django.test.client import _MonkeyPatchedWSGIResponse
@@ -79,7 +79,7 @@ NOT_FOUND_REASON: Final = "No invitation matches that link."
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     """Both hosts: the invitation is issued on a firm's subdomain, redeemed off it."""
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 

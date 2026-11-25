@@ -8,7 +8,7 @@ import pytest
 from django.core.exceptions import PermissionDenied
 from django.db import DatabaseError, IntegrityError, transaction
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.tenants.models import (
@@ -136,7 +136,7 @@ def test_paired_corrections_cannot_change_the_metric_or_tenant() -> None:
 
 
 def test_owner_estimate_excludes_corrected_readings_and_never_invents_prices(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     firm = enabled_firm("usage-estimate")
     record_tenant_usage(firm.tenant.pk, on=TODAY)
@@ -188,7 +188,7 @@ def test_owner_estimate_excludes_corrected_readings_and_never_invents_prices(
     ],
 )
 def test_email_estimate_distinguishes_missing_partial_and_measured_zero(
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
     days: tuple[int, ...],
     accepted_today: bool,
@@ -283,7 +283,7 @@ def test_email_coverage_uses_corrected_readings_and_month_boundary() -> None:
     ],
 )
 def test_provider_usage_distinguishes_missing_from_measured_zero(
-    settings: SettingsWrapper, metric: str, kind: str
+    settings: Settings, metric: str, kind: str
 ) -> None:
     # Given an enabled firm without a provider measurement.
     firm = enabled_firm("provider-usage")

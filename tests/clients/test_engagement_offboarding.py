@@ -5,7 +5,7 @@ from http import HTTPStatus
 from pathlib import Path
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.maintenance import EngagementData, save_engagement
 from apps.clients.models import Engagement, ServiceKind
@@ -53,7 +53,7 @@ def ended_engagement(slug: str) -> PortalSetup:
 
 
 def test_grace_boundary_revokes_portal_and_preserves_evidence(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup = ended_engagement("offboarding-retained")

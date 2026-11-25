@@ -12,7 +12,7 @@ import pytest
 from django.core.management import call_command
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -56,7 +56,7 @@ def _populate_workspace_requests(
     }
 
 
-def _analyze_seeded_tables(settings: SettingsWrapper) -> None:
+def _analyze_seeded_tables(settings: Settings) -> None:
     """Refresh planner stats on the freshly bulk-loaded tables, then prove it.
 
     Test-data hygiene, not a fix for the 2026-10-07 stall: planner statistics
@@ -104,7 +104,7 @@ def _analyze_seeded_tables(settings: SettingsWrapper) -> None:
     [pytest.param(0, id="baseline"), pytest.param(30, id="lookup-witness")],
 )
 def test_named_reads_on_seeded_growth_portfolio(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     django_assert_max_num_queries: DjangoAssertNumQueries,
     extra_workspace_rows: int,

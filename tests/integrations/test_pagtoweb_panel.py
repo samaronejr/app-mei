@@ -11,7 +11,7 @@ from django.db.migrations.exceptions import IrreversibleError
 from django.db.migrations.executor import MigrationExecutor
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.audit.models import Event
 from apps.clients.models import ClientCompany
@@ -32,7 +32,7 @@ SECTION = "data-federal-payments-panel"
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper) -> PortalSetup:
+def setup(settings: Settings) -> PortalSetup:
     settings.SERPRO_ENVIRONMENT = "fake"
     world = portal_setup("pagtoweb-panel")
     tenant = world.graph.tenant
@@ -193,7 +193,7 @@ def test_both_lists_render_with_honest_simulated_labels(setup: PortalSetup) -> N
 
 
 def test_only_production_with_approval_reads_confirmed(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _results(setup, environment="producao")
     settings.PROVIDER_REAL_DATA_APPROVED = False

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations.authority import declare_authority, head_record, verify_authority
@@ -183,7 +183,7 @@ def declare_and_verify(termo: SyntheticTermo) -> None:
 
 
 @pytest.fixture
-def world(settings: SettingsWrapper, tmp_path: Path) -> Iterator[World]:
+def world(settings: Settings, tmp_path: Path) -> Iterator[World]:
     settings.MEDIA_ROOT = tmp_path
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False

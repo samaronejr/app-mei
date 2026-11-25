@@ -46,7 +46,7 @@ from django.contrib.auth import SESSION_KEY
 from django.test import Client
 from django.urls import reverse
 from django.utils.timezone import localdate
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import issue_client_invite, issue_invite
 from apps.accounts.models import User
@@ -92,7 +92,7 @@ NOT_A_PDF: Final = b"<!doctype html><script>alert(1)</script>"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 
@@ -224,7 +224,7 @@ REFUSALS: Final = {
 
 @pytest.mark.parametrize("case", sorted(REFUSALS))
 def test_a_refused_account_can_go_back_or_sign_out_from_the_403(
-    case: str, settings: SettingsWrapper
+    case: str, settings: Settings
 ) -> None:
     # Given a signed-in account the firm or the portal no longer admits
     settings.ENGAGEMENT_OFFBOARDING_GRACE_DAYS = 0
@@ -401,7 +401,7 @@ def test_a_write_while_the_firm_is_read_only_answers_the_refusal_page(
 
 
 def test_a_download_the_scan_refused_answers_the_refusal_page(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     # Given a client upload the type check refused: kept, and never served
     settings.MEDIA_ROOT = tmp_path

@@ -7,7 +7,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.tenants.branding import (
     INK_HEX,
@@ -89,7 +89,7 @@ def test_svg_other_formats_and_oversized_logos_are_refused(
 
 
 @pytest.fixture
-def branded(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def branded(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     setup = portal_setup("branded")
     tenant = setup.graph.tenant

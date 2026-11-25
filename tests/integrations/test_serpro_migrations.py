@@ -9,7 +9,7 @@ from django.db import connection
 from django.db.migrations.exceptions import IrreversibleError
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
@@ -38,7 +38,7 @@ def tables() -> set[str]:
 
 
 @pytest.fixture
-def world(settings: SettingsWrapper, tmp_path: Path) -> SyntheticTermo:
+def world(settings: Settings, tmp_path: Path) -> SyntheticTermo:
     settings.MEDIA_ROOT = tmp_path
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False

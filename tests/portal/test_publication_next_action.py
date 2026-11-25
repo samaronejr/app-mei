@@ -6,7 +6,7 @@ import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 @pytest.fixture(autouse=True)
-def _portal_surface(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_surface(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost", "testserver"]
     monkeypatch.setattr("apps.portal.middleware.PORTAL_URLCONF", "apps.portal.urls")
 

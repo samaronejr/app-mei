@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from django.core.files.storage import default_storage
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations.budget_models import ProviderBudget
@@ -30,7 +30,7 @@ def instant(
 
 
 @pytest.fixture
-def qualification_settings(settings: SettingsWrapper, tmp_path: Path) -> None:
+def qualification_settings(settings: Settings, tmp_path: Path) -> None:
     settings.MEDIA_ROOT = tmp_path
     settings.PROVIDERS_PAUSED = False
     settings.SERPRO_PAUSED = False

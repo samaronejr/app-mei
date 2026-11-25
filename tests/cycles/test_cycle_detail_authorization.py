@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.authz.models import GrantLevel, Role, RoleGrant
 from apps.authz.services import granted_levels
@@ -45,7 +45,7 @@ class NavigationLinks(HTMLParser):
 
 
 def test_navigation_resolves_after_the_cycle_display_capability_cut(
-    settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Given a cycle display read followed by a live matrix change before navigation.
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -86,7 +86,7 @@ def test_navigation_resolves_after_the_cycle_display_capability_cut(
 
 
 def test_display_rechecks_revoked_assignment_and_foreign_cycle(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given an assigned actor and an independently populated foreign tenant.
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -112,7 +112,7 @@ def test_display_rechecks_revoked_assignment_and_foreign_cycle(
 
 
 def test_live_command_denial_is_not_replaced_by_an_earlier_display_cut(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a successful display and a later live loss of operation authority.
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]

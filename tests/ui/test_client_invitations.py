@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 from django.test import Client
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients import views as clients_views
 from apps.clients.models import ClientCompany
@@ -75,7 +75,7 @@ PROTECTED_FORMS: Final = 2
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

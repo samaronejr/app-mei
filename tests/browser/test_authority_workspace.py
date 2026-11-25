@@ -6,7 +6,7 @@ from datetime import date
 import pytest
 from django.utils import timezone
 from playwright.sync_api import expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.core.tenancy import tenant_context
@@ -19,7 +19,7 @@ FLAGS = ("cycles_r1", "scan_required", "federal_checks", "document_capture")
 def test_declare_verify_and_revoke_authority(
     live_firm: Callable[..., LiveFirm],
     open_page: Callable[[LiveFirm, User | None], BrowserPage],
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.CLAMAV_ENABLED = True
     live = live_firm("browser-authority", features=FLAGS)
@@ -64,7 +64,7 @@ def test_declare_verify_and_revoke_authority(
 def test_a_lapsed_pending_authority_is_renewed_from_the_workspace(
     live_firm: Callable[..., LiveFirm],
     open_page: Callable[[LiveFirm, User | None], BrowserPage],
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.integrations.authority import (  # noqa: PLC0415

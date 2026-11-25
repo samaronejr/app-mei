@@ -55,7 +55,7 @@ from django.db import connection, connections
 from django.test import Client
 from django.urls import reverse
 from django.utils.html import escape
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event, PlatformEvent
@@ -134,7 +134,7 @@ class Team:
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

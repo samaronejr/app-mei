@@ -14,7 +14,7 @@ import pytest
 from django.core.exceptions import PermissionDenied
 from django.db import connection, transaction
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany, Engagement, TaxProfile
 from apps.core.tenancy import tenant_context
@@ -51,7 +51,7 @@ def _spec(key: str, *, depends_on: tuple[str, ...] = ()) -> StepSpec:
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

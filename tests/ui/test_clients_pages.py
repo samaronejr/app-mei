@@ -39,7 +39,7 @@ from django.db import connection, reset_queries
 from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.accounts.models import User
 from apps.authz import services as authz_services
@@ -262,7 +262,7 @@ UNASSESSED_DISCLAIMER: Final = (
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

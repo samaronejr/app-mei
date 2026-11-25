@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 from playwright.sync_api import FilePayload, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -39,7 +39,7 @@ OpenPage = Callable[[LiveFirm, User | None], BrowserPage]
 
 @pytest.fixture
 def journey(
-    browser_server: LiveServer, settings: SettingsWrapper, tmp_path: Path
+    browser_server: LiveServer, settings: Settings, tmp_path: Path
 ) -> tuple[PortalSetup, LiveFirm]:
     settings.MEDIA_ROOT = tmp_path
     settings.DELIVERY_PAUSED = False

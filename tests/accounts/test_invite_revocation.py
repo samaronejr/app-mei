@@ -81,7 +81,7 @@ import pytest
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, Event, PlatformEvent
@@ -138,7 +138,7 @@ class Team:
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     """Both hosts: an invite is issued on a firm's subdomain and redeemed off it."""
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 

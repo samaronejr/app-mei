@@ -11,7 +11,7 @@ import pytest
 from django.db import connections
 from django.test import override_settings
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.integrations import provider_journal
@@ -98,7 +98,7 @@ def test_restored_billed_read_retry_keeps_its_known_amount(
 
 
 def test_dispatch_refusal_releases_only_unsent_reservation(
-    budget_link: ClientProviderLink, settings: SettingsWrapper
+    budget_link: ClientProviderLink, settings: Settings
 ) -> None:
     # Given a valid claim followed by a provider pause.
     call = reserve(budget_link.tenant_id, budget_link.pk, paid_request())
@@ -230,7 +230,7 @@ def consulta_usage(link: ClientProviderLink) -> list[tuple[str, int]]:
 
 
 def test_late_billed_reply_racing_reconciles_confirms_budget_usage_once(
-    budget_link: ClientProviderLink, settings: SettingsWrapper
+    budget_link: ClientProviderLink, settings: Settings
 ) -> None:
     # Given a paid read whose start alone was journaled, quarantined by a replay.
     call = reserve(budget_link.tenant_id, budget_link.pk, paid_request())

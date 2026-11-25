@@ -26,7 +26,7 @@ from http import HTTPStatus
 
 import pytest
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.authz.matrix import MATRIX
@@ -54,7 +54,7 @@ NAV_LABEL = "Limite"
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", "localhost", ".localhost"]
 
 

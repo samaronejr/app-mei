@@ -36,7 +36,7 @@ from django.core import mail
 from django.test import Client
 from django.urls import resolve, reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AccessLog
@@ -76,7 +76,7 @@ INVITATION_ATTEMPTS_ALLOWED: Final = 5
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper) -> None:
+def _urls(settings: Settings) -> None:
     settings.ROOT_URLCONF = "tests.audit.urls"
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 
@@ -226,7 +226,7 @@ def test_the_purge_task_is_on_the_beat_schedule() -> None:
 
 
 @pytest.fixture
-def _shipped_urls(_urls: None, settings: SettingsWrapper) -> None:
+def _shipped_urls(_urls: None, settings: Settings) -> None:
     """Serve the real URL tree, because the redaction is about real routes.
 
     Declared as a plain fixture rather than autouse so it composes with `_urls` above

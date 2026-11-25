@@ -9,7 +9,7 @@ import pytest
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import DatabaseError, connection, transaction
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -67,7 +67,7 @@ def old_original(setup: CycleSetup) -> Document:
 
 
 def test_dry_run_counts_only_and_real_purge_erases_bytes_and_derived_text(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -102,7 +102,7 @@ def test_dry_run_counts_only_and_real_purge_erases_bytes_and_derived_text(
 
 
 def test_hold_blocks_purge_and_stale_release_writes_nothing(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -128,7 +128,7 @@ def test_hold_blocks_purge_and_stale_release_writes_nothing(
 
 
 def test_failed_storage_delete_keeps_claim_and_retries_without_loosening_hold(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -168,7 +168,7 @@ def test_failed_storage_delete_keeps_claim_and_retries_without_loosening_hold(
 
 @pytest.mark.parametrize("raw", [False, True])
 def test_fresh_standalone_original_cannot_be_deleted(
-    settings: SettingsWrapper, tmp_path: Path, raw: bool
+    settings: Settings, tmp_path: Path, raw: bool
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup = cycle_setup("retention-backstop")
@@ -203,7 +203,7 @@ def test_fresh_standalone_original_cannot_be_deleted(
 
 
 def test_hold_is_client_scoped_and_purge_cannot_cross_tenants(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -234,7 +234,7 @@ def test_hold_is_client_scoped_and_purge_cannot_cross_tenants(
 
 
 def test_one_client_hold_preserves_shared_original_and_every_link(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -289,7 +289,7 @@ def test_one_client_hold_preserves_shared_original_and_every_link(
 
 
 def test_claim_rejects_another_clients_content_or_storage_descriptor(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
@@ -316,7 +316,7 @@ def test_claim_rejects_another_clients_content_or_storage_descriptor(
 
 
 def test_new_link_cannot_extend_a_committed_deletion_claim(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

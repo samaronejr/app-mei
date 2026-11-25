@@ -6,7 +6,7 @@ import sys
 import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import RequestState
@@ -22,7 +22,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 @pytest.mark.parametrize("collection", ["waivers", "contacts", "obligations"])
 def test_cycle_detail_queries_do_not_grow_per_item(
-    settings: SettingsWrapper,
+    settings: Settings,
     collection: str,
 ) -> None:
     # Given nonempty collections on both sides, including real approval receipts.

@@ -23,7 +23,7 @@ import pytest
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 if TYPE_CHECKING:  # stubs-only: this type does not exist at runtime
     from django.test.client import _MonkeyPatchedWSGIResponse
@@ -56,7 +56,7 @@ class Vault:
 
 
 @pytest.fixture(autouse=True)
-def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     monkeypatch.setattr("apps.portal.middleware.PORTAL_URLCONF", "apps.portal.urls")
 
@@ -209,7 +209,7 @@ def test_c5_a_download_is_recorded_in_the_access_log(vault: Vault) -> None:
 
 def test_an_oversized_document_is_refused_by_the_cap(
     vault: Vault,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a cap below the stored document's size
     settings.PORTAL_DOCUMENT_MAX_BYTES = 1
@@ -256,7 +256,7 @@ def test_t079_an_upload_is_attributed_to_the_uploaders_own_client(
 
 def test_t079_the_ingest_cap_refuses_an_oversized_upload(
     vault: Vault,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a cap of one byte
     settings.PORTAL_UPLOAD_MAX_BYTES = 1

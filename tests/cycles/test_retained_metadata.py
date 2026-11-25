@@ -6,7 +6,7 @@ import pytest
 from django.core.files.storage import default_storage
 from django.db import DatabaseError, connection, transaction
 from psycopg import sql
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.export_records import EvidenceExport, ExportState
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_populated_provenance_hold_and_attempt_rows_refuse_raw_delete(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     scenario = scenario_a(settings, tmp_path, "retained-provenance")

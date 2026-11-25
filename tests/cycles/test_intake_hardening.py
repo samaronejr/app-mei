@@ -22,7 +22,7 @@ from django.core.management import call_command
 from django.db import transaction
 from django.utils import timezone
 from pypdf import PdfWriter
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import counted_links, quarantine_key
@@ -74,7 +74,7 @@ REJECTED_COPY = "Este arquivo não foi aceito"
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     settings.CLAMAV_ENABLED = False
     return portal_setup("t12-intake")
@@ -389,7 +389,7 @@ def test_sweep_skips_tenants_without_the_flag(setup: PortalSetup) -> None:
     assert _intake(setup).state == IntakeState.QUARANTINED
 
 
-def test_the_scan_sweep_is_on_the_beat_schedule(settings: SettingsWrapper) -> None:
+def test_the_scan_sweep_is_on_the_beat_schedule(settings: Settings) -> None:
     entry = settings.CELERY_BEAT_SCHEDULE["scan-quarantine"]
     assert entry["task"] == "apps.cycles.tasks.scan_quarantine"
     assert entry["schedule"] == 60.0

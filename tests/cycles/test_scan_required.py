@@ -16,7 +16,7 @@ import pytest
 from django.core.files.storage import default_storage
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import IntakeState, LinkOrigin
@@ -50,7 +50,7 @@ REVIEW_REFUSAL = "não pode ser revisado"
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> PortalSetup:
+def setup(settings: Settings, tmp_path: Path) -> PortalSetup:
     settings.MEDIA_ROOT = tmp_path
     settings.ALLOWED_HOSTS = [".localhost", "localhost", "testserver"]
     settings.CLAMAV_ENABLED = False
@@ -129,7 +129,7 @@ def _unscanned_events(setup: PortalSetup) -> int:
 
 
 def test_the_flag_binds_only_with_cycles_r1_and_obeys_the_kill_switch(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     tenant = setup.graph.tenant
     assert scan_required(tenant.pk) is False
@@ -177,7 +177,7 @@ def test_vault_upload_is_refused_with_the_scanner_off_and_nothing_is_stored(
 
 
 def test_with_the_scanner_on_a_flagged_upload_is_accepted_into_quarantine(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup, on=True)
     settings.CLAMAV_ENABLED = True
@@ -244,7 +244,7 @@ def test_staff_download_of_a_never_scanned_file_is_refused_under_the_flag_only(
 
 
 def test_a_scanned_clean_file_is_still_served_under_the_flag(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup, on=True)
     settings.CLAMAV_ENABLED = True
@@ -386,7 +386,7 @@ def test_the_portal_never_serves_an_unscanned_staff_original_under_the_flag(
 
 
 def test_the_portal_still_serves_a_scanned_clean_file_under_the_flag(
-    setup: PortalSetup, settings: SettingsWrapper
+    setup: PortalSetup, settings: Settings
 ) -> None:
     _flag(setup, on=True)
     settings.CLAMAV_ENABLED = True

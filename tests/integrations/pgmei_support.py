@@ -19,7 +19,7 @@ from uuid import UUID
 import pytest
 from django.test import Client
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientAssignment, ClientContact, Engagement, TaxProfile
@@ -156,7 +156,7 @@ def _member(world: SyntheticTermo, email: str, role: str) -> User:
 
 
 def build_world(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     *,
     environment: str = "fake",
@@ -249,13 +249,13 @@ def build_world(
 
 
 @pytest.fixture
-def guide_world(settings: SettingsWrapper, tmp_path: Path) -> GuideWorld:
+def guide_world(settings: Settings, tmp_path: Path) -> GuideWorld:
     return build_world(settings, tmp_path)
 
 
 @pytest.fixture
 def production_world(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[GuideWorld, Callable[[str], None]]:
     """Production mode against loopback fakes; broker tokens are per-call stubs."""
     from apps.integrations import transport  # noqa: PLC0415

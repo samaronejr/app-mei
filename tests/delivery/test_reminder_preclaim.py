@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 import pytest
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.delivery import journal, tasks
@@ -22,7 +22,7 @@ reminder_setup = reminder_fixtures.reminder_setup
 def test_pending_automatic_occurrence_cancels_without_claiming_quota(
     reminder_setup: PortalSetup,
     smtp_server: Callable[[str], FakeSMTP],
-    settings: SettingsWrapper,
+    settings: Settings,
     change: str,
 ) -> None:
     # Given a queued automatic occurrence whose control changes before any claim.

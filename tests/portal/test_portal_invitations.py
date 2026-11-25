@@ -32,7 +32,7 @@ from django.http.response import HttpResponseBase
 from django.test import Client
 from django.urls import NoReverseMatch, Resolver404, resolve, reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import (
     InviteEmailMismatchError,
@@ -81,7 +81,7 @@ LOGIN_ATTEMPTS_ALLOWED: Final = 5
 
 
 @pytest.fixture(autouse=True)
-def _hosts(settings: SettingsWrapper) -> None:
+def _hosts(settings: Settings) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
 
 

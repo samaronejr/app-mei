@@ -8,7 +8,7 @@ import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
@@ -63,7 +63,7 @@ def test_selected_exception_cannot_escape_client_cycle_or_tenant(surface: str) -
 
 @pytest.mark.parametrize("surface", ["cycle", "workspace"])
 def test_document_json_never_authorizes_another_subject_or_arbitrary_url(
-    settings: SettingsWrapper, tmp_path: Path, surface: str
+    settings: Settings, tmp_path: Path, surface: str
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     world = portal_setup("references-own")
@@ -137,7 +137,7 @@ def test_exception_query_count_does_not_grow_with_rows(surface: str) -> None:
 
 
 def test_unavailable_scan_has_a_real_review_destination(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     world = portal_setup("scanner-destination")

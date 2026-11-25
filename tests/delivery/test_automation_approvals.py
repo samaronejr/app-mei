@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from django.core.exceptions import ValidationError
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 @pytest.mark.parametrize("recipient_changed", [False, True])
 def test_approved_retry_remains_bound_to_frozen_effect_and_live_recipient(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     smtp_server: Callable[[str], FakeSMTP],
     recipient_changed: bool,

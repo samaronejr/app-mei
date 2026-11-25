@@ -2,7 +2,7 @@
 
 import pytest
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.effects.executors import execute
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
     "role", [TenantRole.CLIENT_OWNER, TenantRole.CLIENT_COLLABORATOR]
 )
 def test_approved_publication_is_viewed_then_explicitly_acknowledged(
-    settings: SettingsWrapper, role: str
+    settings: Settings, role: str
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -66,7 +66,7 @@ def test_approved_publication_is_viewed_then_explicitly_acknowledged(
 
 
 def test_receipt_duplicate_from_a_fresh_session_reports_the_conflict(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
     setup = publication_graph()
@@ -90,7 +90,7 @@ def test_receipt_duplicate_from_a_fresh_session_reports_the_conflict(
 
 @pytest.mark.parametrize("request_kind", ["head", "prefetch", "anonymous"])
 def test_noninteractive_fetch_cannot_record_view_or_receipt(
-    settings: SettingsWrapper, request_kind: str
+    settings: Settings, request_kind: str
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -118,7 +118,7 @@ def test_noninteractive_fetch_cannot_record_view_or_receipt(
 
 @pytest.mark.parametrize("digest", ["", "not-a-digest", "0" * 64])
 def test_receipt_cannot_confirm_different_publication_bytes(
-    settings: SettingsWrapper, digest: str
+    settings: Settings, digest: str
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]

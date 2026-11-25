@@ -5,7 +5,7 @@ from django.db import DatabaseError, IntegrityError, connection, transaction
 from django.http import Http404
 from psycopg import sql
 from psycopg.errors import ForeignKeyViolation
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientAssignment, ClientCompany
 from apps.core.tenancy import tenant_context
@@ -99,7 +99,7 @@ def test_receipt_scope_digest_and_append_only_are_enforced_by_postgres() -> None
 
 
 def test_foreign_tenant_publication_and_unassigned_staff_cannot_write(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -127,7 +127,7 @@ def test_foreign_tenant_publication_and_unassigned_staff_cannot_write(
 
 
 def test_same_firm_other_client_cannot_view_or_acknowledge_publication(
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
 
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]

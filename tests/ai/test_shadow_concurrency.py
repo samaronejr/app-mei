@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.automation.admission import claim
 from apps.automation.models import AgentRun
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 def test_two_firms_contending_for_last_global_reservation(
     setup: PortalSetup,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     settings.AI_SHADOW_TENANT_DAILY_BRL = "100"
     other = portal_setup("t24-other-firm")

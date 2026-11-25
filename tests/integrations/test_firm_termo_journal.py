@@ -14,7 +14,7 @@ from django.core.management import call_command
 from django.db import connection
 from django.test import override_settings
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -59,7 +59,7 @@ class TermoPolicy:
 
 @pytest.fixture
 def termo(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> FirmAuthorization:
     settings.PROVIDERS_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
@@ -245,7 +245,7 @@ def test_stale_fence_or_expired_lease_never_transmits(
 
 
 def test_pause_after_claim_refuses_termo_dispatch(
-    termo: FirmAuthorization, settings: SettingsWrapper
+    termo: FirmAuthorization, settings: Settings
 ) -> None:
     # Given a committed claim followed by the global pause.
     row = reserve(termo)

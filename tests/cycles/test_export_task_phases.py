@@ -10,7 +10,7 @@ from django.core.files import File
 from django.core.files.storage import default_storage
 from django.db import DatabaseError, connection
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles import export_tasks
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_task_claim_is_committed_before_upload(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     settings.ALLOWED_HOSTS = [".localhost", "localhost"]
@@ -90,7 +90,7 @@ def test_task_claim_is_committed_before_upload(
 
 
 def test_stale_fence_cannot_finalize_or_delete_winners_key(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup = completion_setup("export-stale-fence")
@@ -138,7 +138,7 @@ def test_stale_fence_cannot_finalize_or_delete_winners_key(
 
 
 def test_upload_failure_never_marks_an_export_ready(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     setup = completion_setup("export-upload-error")
@@ -167,7 +167,7 @@ def test_upload_failure_never_marks_an_export_ready(
 
 
 def test_live_source_drift_after_upload_refuses_publication_and_cleans_owned_key(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -213,7 +213,7 @@ def test_live_source_drift_after_upload_refuses_publication_and_cleans_owned_key
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_alternate_storage_name_is_refused_and_actual_attempt_key_is_cleaned(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cleanup_fails: bool,
@@ -267,7 +267,7 @@ def test_alternate_storage_name_is_refused_and_actual_attempt_key_is_cleaned(
 
 
 def test_database_finalize_failure_recovers_fence_and_crash_orphan(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -317,7 +317,7 @@ def test_database_finalize_failure_recovers_fence_and_crash_orphan(
 
 @pytest.mark.parametrize("phase", ["claim", "finalize"])
 def test_revoked_requester_is_denied_before_ready(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     phase: str,
@@ -361,7 +361,7 @@ def test_revoked_requester_is_denied_before_ready(
 
 
 def test_expired_lease_cannot_publish_even_without_a_newer_worker(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -399,7 +399,7 @@ def test_expired_lease_cannot_publish_even_without_a_newer_worker(
 
 
 def test_actual_original_cap_refuses_before_upload_and_preserves_source(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -22,7 +22,7 @@ from http import HTTPStatus
 import pytest
 from django.db import connection
 from django.test import Client
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -39,7 +39,7 @@ PASSWORD = "irrelevant-here"  # noqa: S105
 
 
 @pytest.fixture(autouse=True)
-def _portal_urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _portal_urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     monkeypatch.setattr(
         "apps.portal.middleware.PORTAL_URLCONF",

@@ -16,7 +16,7 @@ from unittest import mock
 import pytest
 from django.apps import apps
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
@@ -170,7 +170,7 @@ class Production:
 
 @pytest.fixture
 def production(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Production]:
     media = tmp_path / "media"
     settings.MEDIA_ROOT = media

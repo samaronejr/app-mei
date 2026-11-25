@@ -28,7 +28,7 @@ from django.db import connection, connections
 from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.audit.models import AuditAction, PlatformEvent
 from apps.clients import views_onboarding
@@ -54,7 +54,7 @@ TIMEOUT: Final = 20.0
 
 
 @pytest.fixture(autouse=True)
-def delivery_storage(settings: SettingsWrapper, tmp_path: Path) -> None:
+def delivery_storage(settings: Settings, tmp_path: Path) -> None:
     settings.DELIVERY_PAUSED = False
     settings.MEDIA_ROOT = tmp_path
 

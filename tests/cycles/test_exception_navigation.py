@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.openers import REQUEST_OVERDUE
@@ -57,7 +57,7 @@ def _surface(world: PortalSetup, surface: str) -> str:
 
 @pytest.mark.parametrize("surface", ["cycle", "workspace"])
 def test_document_evidence_reaches_the_actual_scoped_link(
-    settings: SettingsWrapper, tmp_path: Path, surface: str
+    settings: Settings, tmp_path: Path, surface: str
 ) -> None:
     """An exception must navigate to its EvidenceLink, not its Document UUID."""
     settings.MEDIA_ROOT = tmp_path

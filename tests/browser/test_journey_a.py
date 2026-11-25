@@ -30,7 +30,7 @@ from uuid import UUID
 
 from django.utils import timezone
 from playwright.sync_api import FilePayload, Page, expect
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 from pytest_django.live_server_helper import LiveServer
 
 from apps.accounts.models import User
@@ -121,7 +121,7 @@ def _approve_and_execute(owner: BrowserPage, live: LiveFirm, proposal_url: str) 
 def test_journey_a_from_hoje_to_a_completed_cycle(  # noqa: PLR0915 - one journey, end to end
     browser_server: LiveServer,
     open_page: OpenPage,
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
 ) -> None:
     settings.MEDIA_ROOT = tmp_path

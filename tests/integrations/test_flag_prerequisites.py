@@ -13,7 +13,7 @@ from typing import Final
 
 import pytest
 from django.http import Http404, HttpRequest, HttpResponse
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.flags import (
     FEATURE_PREREQUISITES,
@@ -83,7 +83,7 @@ def test_a_regional_flag_answers_true_only_with_both_prerequisites(flag: str) ->
 @pytest.mark.parametrize("flag", REGIONAL_FLAGS)
 def test_killing_a_prerequisite_platform_wide_stands_the_regional_flag_down(
     flag: str,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     tenant = _tenant(
         f"kill-{flag.replace('_', '-')}", "cycles_r1", "scan_required", flag

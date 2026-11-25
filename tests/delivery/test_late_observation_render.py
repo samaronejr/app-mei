@@ -13,7 +13,7 @@ from uuid import UUID
 
 import pytest
 from django.test import Client, override_settings
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.effects.executors import execute
@@ -83,7 +83,7 @@ def firm_web(delivery: DeliverySetup) -> Client:
 
 
 def acknowledged_publication(
-    settings: SettingsWrapper, tmp_path: Path, slug: str
+    settings: Settings, tmp_path: Path, slug: str
 ) -> tuple[PublicationGraph, OutboundMessage]:
     """Publish, accept over a real fake SMTP peer, then record the client's receipt."""
     settings.ALLOWED_HOSTS = HOSTS
@@ -121,7 +121,7 @@ def acknowledged_publication(
 def test_workspace_history_never_reads_a_late_cancellation_as_current_state(
     delivery: DeliverySetup,
     smtp_server: Callable[[str], FakeSMTP],
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     """Red witness: at 4aed5df the newest unflagged entry is the late cancellation."""
     settings.ALLOWED_HOSTS = HOSTS
@@ -157,7 +157,7 @@ def test_workspace_history_never_reads_a_late_cancellation_as_current_state(
 
 
 def test_queue_keeps_the_receipt_and_types_a_late_failure_after_acceptance(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     setup, message = acknowledged_publication(settings, tmp_path, "late-receipt")
     late = late_claim(setup.graph.tenant.pk, message)

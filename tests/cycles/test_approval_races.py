@@ -13,7 +13,7 @@ from django.core.files.storage import default_storage
 from django.db import OperationalError, connection, transaction
 from django.utils import timezone
 from psycopg.errors import LockNotAvailable
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.models import User
 from apps.authz.grants import set_review_capability
@@ -359,7 +359,7 @@ def _prepare_finalizer(
 
 @pytest.mark.parametrize("phase", ["scan", "extraction"])
 def test_builder_does_not_wait_on_intake_or_document_while_holding_cycle(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     phase: str,
 ) -> None:

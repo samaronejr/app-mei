@@ -13,7 +13,7 @@ from http import HTTPStatus
 
 import pytest
 from django.test import Client
-from pytest_django.fixtures import DjangoAssertNumQueries, SettingsWrapper
+from pytest_django.fixtures import DjangoAssertNumQueries, Settings
 
 from apps.accounts.models import User
 from apps.audit.models import AuditAction, PlatformEvent
@@ -38,7 +38,7 @@ PASSWORD = "irrelevant-here"  # noqa: S105
 
 
 @pytest.fixture(autouse=True)
-def _urls(settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch) -> None:
+def _urls(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     settings.ALLOWED_HOSTS = ["testserver", ".localhost", "localhost"]
     settings.ROOT_URLCONF = "tests.core.urls"
     monkeypatch.setattr("apps.portal.middleware.PORTAL_URLCONF", "tests.portal.urls")
@@ -233,7 +233,7 @@ def test_a_flagged_view_serves_on_both_hosts_when_the_flag_is_on(
 
 def test_the_kill_switch_overrides_a_flag_the_tenant_carries(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given a flagged tenant AND the flag killed platform-wide
     _enable(firm.tenant, "cycles_r1")
@@ -255,7 +255,7 @@ def test_the_kill_switch_overrides_a_flag_the_tenant_carries(
 
 def test_the_kill_switch_leaves_other_flags_alone(
     firm: Firm,
-    settings: SettingsWrapper,
+    settings: Settings,
 ) -> None:
     # Given two flags on the tenant and only one killed
     _enable(firm.tenant, "cycles_r1", "briefing_r1")

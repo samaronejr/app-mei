@@ -7,7 +7,7 @@ from threading import Event
 
 import pytest
 from django.db import connection
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.authz.grants import set_review_capability
 from apps.core.tenancy import tenant_context
@@ -70,7 +70,7 @@ class DispatchStartSignal:
 
 @pytest.mark.parametrize("first", ["revocation", "dispatch"])
 def test_revocation_and_dispatch_have_one_durable_order(
-    settings: SettingsWrapper, first: str
+    settings: Settings, first: str
 ) -> None:
 
     settings.DELIVERY_PAUSED = False

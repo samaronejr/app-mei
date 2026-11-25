@@ -9,7 +9,7 @@ import pytest
 from django.core.mail import EmailMessage
 from django.db import connection
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.accounts.invites import resolve_invite
 from apps.accounts.models import User
@@ -48,7 +48,7 @@ def capture_transport(
 
 @pytest.fixture(autouse=True)
 def _delivery(
-    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings.MEDIA_ROOT = tmp_path
     settings.DELIVERY_PAUSED = False
@@ -93,7 +93,7 @@ def test_summary_dispatch_commits_before_smtp_and_replay_sends_nothing(
 
 @pytest.mark.parametrize("revoked", [False, True])
 def test_owner_invite_dispatch_uses_a_live_operator_and_a_redeemable_token(
-    revoked: bool, settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+    revoked: bool, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     operator = User.objects.create_user(
         email="operator@notice-owner.example.com", is_staff=True, is_superuser=True
@@ -176,7 +176,7 @@ def test_queued_summary_rechecks_preference_recipient_and_membership(
 @pytest.mark.parametrize("global_pause", [True, False])
 def test_global_and_firm_pause_leave_notices_queued(
     global_pause: bool,
-    settings: SettingsWrapper,
+    settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     firm = enabled_firm("notice-pause")

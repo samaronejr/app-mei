@@ -13,7 +13,7 @@ from django.core.files import File
 from django.core.files.storage import default_storage
 from django.urls import reverse
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.archive_response import EvidenceArchiveResponse
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def ready_export(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     slug: str,
 ) -> tuple[PortalSetup, EvidenceExport, Document]:
@@ -54,7 +54,7 @@ def ready_export(
 
 @pytest.mark.parametrize("held", [False, True])
 def test_thirty_day_expiry_never_deletes_originals_and_honors_hold(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     held: bool,
 ) -> None:
@@ -86,7 +86,7 @@ def test_thirty_day_expiry_never_deletes_originals_and_honors_hold(
 
 
 def test_download_rechecks_revocation_and_foreign_scope_before_storage(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,7 +125,7 @@ def test_download_rechecks_revocation_and_foreign_scope_before_storage(
     ids=["prazo-encerrado", "ainda-em-preparo"],
 )
 def test_a_refused_download_is_a_readable_page_with_a_way_back(
-    settings: SettingsWrapper,
+    settings: Settings,
     tmp_path: Path,
     expired: bool,
     status: HTTPStatus,
@@ -151,7 +151,7 @@ def test_a_refused_download_is_a_readable_page_with_a_way_back(
 
 
 def test_an_index_refusal_reads_in_plain_sentences(
-    settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """AXR1-054: a ValidationError from the index command reads as sentences.
 

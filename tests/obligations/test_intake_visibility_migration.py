@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -18,7 +18,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 
 def test_populated_two_tenant_intakes_survive_reverse_and_reapply(
-    settings: SettingsWrapper, tmp_path: Path
+    settings: Settings, tmp_path: Path
 ) -> None:
     # Given visible legacy intake metadata in two independent tenants.
     setup = ingest_setup(settings, tmp_path)

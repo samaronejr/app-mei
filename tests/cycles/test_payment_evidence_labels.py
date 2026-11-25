@@ -18,7 +18,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.db import OperationalError, transaction
 from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import (
@@ -56,7 +56,7 @@ class ReceiptSetup:
 
 
 @pytest.fixture
-def setup(settings: SettingsWrapper, tmp_path: Path) -> ReceiptSetup:
+def setup(settings: Settings, tmp_path: Path) -> ReceiptSetup:
     settings.MEDIA_ROOT = tmp_path
     base = portal_setup("t17-receipt")
     with tenant_context(base.graph.tenant.pk):

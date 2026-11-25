@@ -12,7 +12,7 @@ from django.db import connection
 from django.template import Context, Engine
 from django.test import Client, override_settings
 from django.test.utils import CaptureQueriesContext
-from pytest_django.fixtures import SettingsWrapper
+from pytest_django.fixtures import Settings
 
 from tests.obligations.test_payment_observation_labels import _firm
 
@@ -23,7 +23,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 @pytest.mark.parametrize("kill_switch", [False, True])
 @override_settings(ALLOWED_HOSTS=[".localhost", "localhost", "testserver"])
 def test_unflagged_portal_home_matches_pre_cycle_parent_and_child_bytes(
-    settings: SettingsWrapper, kill_switch: bool
+    settings: Settings, kill_switch: bool
 ) -> None:
     tenant, _, owner = _firm(
         "cycle-compat", features=["cycles_r1"] if kill_switch else []
