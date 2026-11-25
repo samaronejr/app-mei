@@ -21,6 +21,7 @@ import pytest
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.integrations.authority import head_record
+from apps.integrations.budget_models import ProviderBudget
 from apps.integrations.call_contracts import AdmissionDeniedError
 from apps.integrations.call_models import ProviderCall
 from apps.integrations.models import (
@@ -248,7 +249,7 @@ def test_every_documented_403_reaches_only_its_own_owner(
     if cause != CLIENT:
         expected = denials_api().DENIAL_TEXT[cause]
         assert detail == (
-            "A página 1 foi enviada e cobrada; nenhuma página tinha sido enviada "
+            "A página 1 foi enviada e cobrada; antes dela, nenhuma página foi enviada"
             f"antes. {expected} (código {code}). Consulta não repetida."
         )
     # When a person asks again: nothing is re-sent automatically, and a cause
@@ -350,14 +351,26 @@ def test_a_firm_termo_403_on_a_receipt_is_firm_work_with_its_own_label(
 @pytest.mark.parametrize(
     ("state", "code", "detail"),
     [
-        ("falha", "limite_de_paginas", "A consulta atingiu o limite de 10 páginas"),
-        ("falha", "resposta_pagtoweb_invalida", "A consulta não foi concluída"),
+        (
+            "falha",
+            "limite_de_paginas",
+            "A consulta atingiu o limite de 10 páginas; as páginas 1 a 10 foram",
+        ),
+        (
+            "falha",
+            "resposta_pagtoweb_invalida",
+            "A página 11 falhou (resposta_pagtoweb_invalida); antes dela, as páginas",
+        ),
         (
             "incerto",
             "pagina_nao_registrada",
-            "O resultado da página 11 é incerto; as páginas 1 a 10 já tinham",
+            "A página 11 teve resultado incerto; antes dela, as páginas 1 a 10 foram",
         ),
-        ("falha", "termo_ausente", "Não havia termo de autorização do escritório"),
+        (
+            "falha",
+            "termo_ausente",
+            "A página 11 não foi enviada: não havia termo de autorização do escritório",
+        ),
     ],
     ids=["page-limit", "failure", "uncertain", "firm-termo"],
 )
@@ -861,7 +874,7 @@ def test_a_firm_termo_call_403_before_the_run_ends_it_as_the_missing_termo(
     # Then it ends as the firm's missing termo, stated as such, never the client's.
     assert (refused.state, refused.failure_code) == ("falha", "termo_ausente")
     detail = query_detail(refused)
-    assert "nenhuma página tinha sido enviada antes" in detail
+    assert "antes dela, nenhuma página foi enviada" in detail
     assert "procuração do cliente não foi alterada" in detail
 
 
@@ -891,7 +904,7 @@ def test_a_page_2_block_after_a_billed_page_1_states_both_pages(
     )
     detail = query_detail(refused)
     assert "A página 2 foi recusada pela admissão" in detail
-    assert "a página 1 já tinha sido enviada e cobrada" in detail
+    assert "antes dela, a página 1 foi enviada e cobrada" in detail
     assert "antes do envio" not in detail
 
 
@@ -927,8 +940,8 @@ def test_a_termo_gone_on_redelivery_after_a_billed_page_states_that_page(
         1,
     )
     detail = query_detail(settled)
-    assert "a página 1 já tinha sido enviada e cobrada" in detail
-    assert "seguiria para a página 2" in detail
+    assert "antes dela, a página 1 foi enviada e cobrada" in detail
+    assert "A página 2 não foi enviada: não havia termo" in detail
 
 
 @DB
@@ -957,3 +970,23 @@ def test_the_block_an_sp_termo_403_opens_freezes_that_firm_calls_code(
     with tenant_context(termo.tenant.pk):
         connection = ProviderConnection.objects.get(pk=termo.connection.pk)
         assert work.firm_block(connection) == first_issue(world, platform)
+
+
+@DB
+def test_a_partial_quota_after_a_billed_page_states_both_pages(world: World) -> None:
+    # Given the budget covers one page, and page 1 is full (so page 2 follows).
+    with tenant_context(world.termo.tenant.pk):
+        ProviderBudget.objects.update(cap_microbrl=300_000)
+    world.script(page(support.darfs(100)))
+    stopped = world.consult()
+    # Then the quota stops page 2 before sending, after page 1 was billed.
+    assert (stopped.state, stopped.failure_code, stopped.pages_fetched) == (
+        "falha",
+        "cota_esgotada_parcial",
+        1,
+    )
+    assert len(world.sent()) == 1
+    assert query_detail(stopped) == (
+        "A página 2 não foi enviada: o limite mensal de consultas acabou; antes "
+        "dela, a página 1 foi enviada e cobrada."
+    )
