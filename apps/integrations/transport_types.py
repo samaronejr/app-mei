@@ -27,10 +27,22 @@ def _reject_constant(_value: str) -> Never:
 
 
 def decode_json(data: bytes) -> JSONValue:
-    """Reject ambiguous objects and non-JSON numbers at the wire boundary."""
+    """Require complete UTF-8, Unicode scalar strings and unambiguous JSON."""
     value: JSONValue = json.loads(
-        data, object_pairs_hook=_unique_object, parse_constant=_reject_constant
+        data.decode("utf-8"),
+        object_pairs_hook=_unique_object,
+        parse_constant=_reject_constant,
     )
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            item.encode("utf-8")
+        elif isinstance(item, dict):
+            pending.extend(item)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
     return value
 
 
