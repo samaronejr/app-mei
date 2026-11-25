@@ -1,6 +1,15 @@
-"""Install the exact approved-artifact lookup; no request or link policy changes."""
+"""AXRM-049-PORTAL: hide internal requests without hiding approved artifacts."""
+
+# CROSS_TENANT_OK: Repair each tenant's firm-only request history before the
+# shared portal policies take effect; rollback checks every tenant for protected history.
 
 from django.db import migrations
+
+from apps.cycles.migrations._request_cutover import (
+    install,
+    refuse_exposure,
+    remove_lifetime,
+)
 
 # The migrator (app_test in tests) owns this function and bypasses forced RLS.
 # Its only entry key is a published receipt and its selected link, never a
@@ -75,4 +84,11 @@ class Migration(migrations.Migration):
         ("obligations", "0023_document_portal_visibility"),
     ]
 
-    operations = [migrations.RunSQL(LOOKUP, DROP_LOOKUP)]
+    operations = [
+        # First installation: no newly active portal policy can observe an
+        # unreconciled formerly-internal row. The migration transaction holds
+        # the request/link locks until both new policy clauses are in place.
+        migrations.RunPython(install, remove_lifetime),
+        migrations.RunSQL(LOOKUP, DROP_LOOKUP),
+        migrations.RunPython(migrations.RunPython.noop, refuse_exposure),
+    ]

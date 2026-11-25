@@ -40,6 +40,12 @@ second database.
   occurred and observed timestamps in UTC, correlation and causation ids, and a
   minimized payload of ids and codes. Document text and message bodies never go into
   an append-only table, and R1 never purges those tables.
+- AXRM-049 cutover trusts the supported request writers: internal creation or
+  transition, a frozen internal index row, and PGMEI-only evidence override
+  current status. Incomplete or conflicting histories are hidden; their reason
+  is written per request to the private audit log. A complete ordinary history
+  is unchanged. An out-of-band admin/raw-SQL flip and reversal leaving no event
+  or artifact is indistinguishable from that history and is outside this guarantee.
 
 ### External I/O never runs inside a transaction
 

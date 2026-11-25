@@ -256,6 +256,24 @@ PROVIDER_RECOVERY_FILES = frozenset(
     }
 )
 
+# Pin request-history lines and their counts, never whole migration files.
+_REPAIR = "apps/cycles/migrations/_request_cutover.py"
+REQUEST_HISTORY_RECONCILIATION = Counter(
+    {
+        (
+            "apps/cycles/migrations/0025_portal_internal_request_boundary.py",
+            "# unreconciled formerly-internal row. The migration transaction holds",
+        ): 1,
+        (
+            _REPAIR,
+            "# 0025 may already be recorded as the lookup-only preparation. Reconcile,",
+        ): 1,
+        (_REPAIR, 'RECONCILED = "AXRM-049 supported request history reconciled v1"'): 1,
+        (_REPAIR, "if installed == (RECONCILED,):"): 1,
+        (_REPAIR, "[RECONCILED],"): 1,
+    }
+)
+
 # Row 10. The single `esocial` occurrence is a COMMENT above `has_employee`, saying why
 # the field is a boolean rather than a payroll model. Pinned by location so that a
 # future *field* named `esocial_*` cannot slip in under the same allowance.
@@ -739,9 +757,12 @@ def test_row_6_no_bank_import() -> None:
     # Then bank import stays excluded. The regional plan's provider recovery is
     # registered by exact file, never by app-wide or banking-vocabulary exemption.
     assert bank_hits == [], _report("bank-import reference", bank_hits)
-    strays = _outside(hits, PROVIDER_RECOVERY_FILES)
+    other, migration_hits = _pinned(hits, "apps/cycles/migrations/")
+    drift = _pin_difference(migration_hits, REQUEST_HISTORY_RECONCILIATION)
+    assert not drift, _report("request-history references changed", drift)
+    strays = _outside(other, PROVIDER_RECOVERY_FILES)
     assert strays == [], _report("reconciliation outside provider recovery", strays)
-    assert {hit.split(":", 1)[0] for hit in hits} == PROVIDER_RECOVERY_FILES
+    assert {hit.split(":", 1)[0] for hit in other} == PROVIDER_RECOVERY_FILES
 
 
 def test_row_7_no_reports_v1_and_no_audit_ui() -> None:

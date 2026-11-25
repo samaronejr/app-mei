@@ -446,6 +446,7 @@ def _requests_context(reads: "CycleDetailReads") -> dict[str, object]:
                     RequestState.WAIVED,
                     RequestState.ACCEPTED,
                     RequestState.REPLACED,
+                    RequestState.INTERNAL,
                 },
             }
             for row in rows
