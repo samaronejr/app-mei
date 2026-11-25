@@ -47,6 +47,7 @@ from django.core.files.storage import FileSystemStorage, Storage, default_storag
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils._os import safe_makedirs
 
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
@@ -415,13 +416,24 @@ def _create_exclusive(storage: FileSystemStorage, key: str, payload: bytes) -> N
     spelling of the key, makes the create fail; it is never written over.
     """
     path = Path(storage.path(key))
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _make_parents(storage, path.parent)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    descriptor = os.open(path, flags, storage.file_permissions_mode or 0o666)
+    descriptor = os.open(path, flags, 0o666)
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
+    # The configured modes, exactly as `FileSystemStorage.save` applies them.
+    if storage.file_permissions_mode is not None:
+        path.chmod(storage.file_permissions_mode)
+
+
+def _make_parents(storage: FileSystemStorage, directory: Path) -> None:
+    """Create the final's missing directories with the configured directory mode."""
+    if storage.directory_permissions_mode is not None:
+        safe_makedirs(directory, storage.directory_permissions_mode, exist_ok=True)
+    else:
+        directory.mkdir(parents=True, exist_ok=True)
 
 
 def _allocate_final_key(requested: str) -> str:
@@ -457,9 +469,23 @@ def _promote_to_fresh_key(storage: Storage, ticket: ScanTicket, payload: bytes) 
                 .values_list("document_id", flat=True)
                 .get()
             )
-            moved = Document.objects.filter(
-                pk=document_id, storage_key=ticket.storage_key
-            ).update(storage_key=name)
+            # The document's row lock, which the purge also takes before it reads
+            # the document and claims it: a repoint and a claim never interleave.
+            current = list(
+                Document.objects.select_for_update(no_key=True)
+                .filter(pk=document_id)
+                .values_list("storage_key", flat=True)
+            )
+            claimed = ContentPurgeClaim.objects.filter(
+                content_kind="document", content_id=document_id
+            ).exists()
+            moved = (
+                Document.objects.filter(pk=document_id).update(storage_key=name)
+                if current == [ticket.storage_key] and not claimed
+                else 0
+            )
+        if claimed:
+            raise ScanDeferred  # a disposal owns the row: the new object stays unnamed
         if not moved:
             msg = "the document changed while it was promoted"
             raise IntegrityMismatch(msg)

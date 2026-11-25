@@ -410,6 +410,7 @@ PROOF_REFUSALS: Final = frozenset(
         "armazenamento_sem_distincao_de_caixa",
         "arquivo_nao_regular",
         "chave_nao_enderecavel",
+        "identidade_indeterminada",
     }
 )
 COMPLETED: Final = "concluida"
@@ -582,6 +583,14 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             ClientCompany.objects.select_for_update(no_key=True).get(
                 pk=candidate.client_id
             )
+            if candidate.kind == "document":
+                # Promotion repoints a document only under this row lock and only
+                # while no claim exists: the row read and the claim are one step.
+                list(
+                    Document.objects.select_for_update(no_key=True)
+                    .filter(pk=candidate.id)
+                    .values_list("pk", flat=True)
+                )
             fresh_rows = _candidates(candidate)
             if not fresh_rows:
                 continue
