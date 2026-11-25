@@ -1,6 +1,8 @@
 """Private bounded wire primitive shared only by provider and broker clients."""
 
+import re
 import socket
+import ssl
 import threading
 from contextlib import closing, suppress
 from contextvars import ContextVar
@@ -9,7 +11,7 @@ from http import HTTPStatus
 from http.client import HTTPResponse
 from io import BufferedReader, BytesIO
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import urlsplit
 
 from requests import PreparedRequest, Request, Response
@@ -20,11 +22,23 @@ from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.exceptions import HTTPError, ReadTimeoutError
 
 from apps.delivery.privacy import delivery_secrets
-from apps.integrations.transport_headers import read_response_head
+from apps.integrations.transport_headers import (
+    FRAMING_LIMIT,
+    TOKEN,
+    read_fields,
+    read_response_head,
+)
 from apps.integrations.transport_types import ProviderResponse, TransportFailure
 
 if TYPE_CHECKING:
+    from typing import Protocol
+
     from urllib3.response import BaseHTTPResponse
+
+    class _TLSReadPolicy(Protocol):
+        # SSLSocket's per-socket read flag in the pinned CPython.
+        suppress_ragged_eofs: bool
+
 
 CONNECT_TIMEOUT: Final = 5.0
 READ_TIMEOUT: Final = 30.0
@@ -33,6 +47,18 @@ XML_LIMIT: Final = 5 * 1024 * 1024
 PDF_LIMIT: Final = 10 * 1024 * 1024
 SAFE_HEADERS: Final = frozenset(
     {"content-type", "x-max-version", "x-total-count", "retry-after", "etag", "expires"}
+)
+_QUOTED: Final = (
+    rb'"(?:[\t\x20\x21\x23-\x5b\x5d-\x7e\x80-\xff]|\\[\t\x20-\x7e\x80-\xff])*"'
+)
+_CHUNK_LINE: Final = re.compile(
+    rb"([0-9a-fA-F]+)(?:[ \t]*;[ \t]*"
+    + TOKEN
+    + rb"(?:[ \t]*=[ \t]*(?:"
+    + TOKEN
+    + rb"|"
+    + _QUOTED
+    + rb"))?)*\r\n"
 )
 
 
@@ -115,6 +141,32 @@ class _StrictHTTPResponse(HTTPResponse):
             finally:
                 self.fp = stream
 
+    def _get_chunk_left(self) -> int | None:
+        if self.chunk_left:
+            return self.chunk_left
+        if self.chunk_left == 0 and self.fp.read(2) != b"\r\n":
+            msg = "resposta_invalida"
+            raise TransportFailure(msg, self.status)
+        line = self.fp.readline(FRAMING_LIMIT + 1)
+        match = _CHUNK_LINE.fullmatch(line) if len(line) <= FRAMING_LIMIT else None
+        if match is None:
+            msg = "resposta_invalida"
+            raise TransportFailure(msg, self.status)
+        size = match.group(1).lstrip(b"0").lower() or b"0"
+        maximum = format(_EXCHANGE.get().limits.size, "x").encode("ascii")
+        if len(size) > len(maximum) or (len(size) == len(maximum) and size > maximum):
+            msg = "resposta_excede_limite"
+            raise TransportFailure(msg, self.status)
+        self.chunk_left = int(size, 16)
+        if self.chunk_left:
+            return self.chunk_left
+        # Apply the same field/fold rules; trailer metadata never overrides
+        # the response headers or its already established framing.
+        read_fields(self.fp, self.status)
+        self.close()
+        self.chunk_left = None
+        return None
+
 
 class _WatchedHTTPConnection(HTTPConnection):
     response_class = _StrictHTTPResponse
@@ -129,6 +181,12 @@ class _WatchedHTTPSConnection(HTTPSConnection):
 
     def connect(self) -> None:
         super().connect()
+        if not isinstance(self.sock, ssl.SSLSocket):
+            msg = "tls_invalido"
+            raise TransportFailure(msg)
+        # SSLSocket.read normally turns an unexpected EOF into empty bytes,
+        # indistinguishable from a close_notify on a close-delimited response.
+        cast("_TLSReadPolicy", self.sock).suppress_ragged_eofs = False
         _watch(self.sock)
 
 

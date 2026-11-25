@@ -1,5 +1,9 @@
 """Body boundaries, final status, and field lists on the real transport."""
 
+import http.client
+import ssl
+from pathlib import Path
+
 import pytest
 
 from apps.integrations.call_models import CallState
@@ -13,6 +17,7 @@ from tests.integrations.test_transport_representation import (
     REGISTERED,
     wire_outcome,
 )
+from tests.integrations.transport_tls import tls_context
 
 HTTP11 = b"HTTP/1.1 200 OK\r\n"
 CLOSE = b"Connection: close\r\n\r\n"
@@ -27,8 +32,12 @@ def chunk(body: bytes, trailers: bytes = b"") -> bytes:
 def framed(body: bytes, framing: str) -> bytes:
     if framing == "close":
         return CLOSE + body
+    if framing == "empty-coding-close":
+        return b"Transfer-Encoding: ,\r\n" + CLOSE + body
     if framing == "chunked":
         return CHUNKED + b"\r\n" + chunk(body)
+    if framing == "short-chunked":
+        return CHUNKED + b"\r\n" + chunk(body)[:-2]
     assert framing in {"length", "short-length"}
     length = len(body) + (framing == "short-length")
     return f"Content-Length: {length}\r\n\r\n".encode() + body
@@ -57,6 +66,48 @@ def test_body_framing_uses_the_response_version(
     reply = f"HTTP/{version} 200 OK\r\n".encode() + framed(body, framing)
     with FakeFocus((Reply(raw_response=reply),)) as peer:
         expect_body(wire_outcome(peer), body, version != "1.0" or framing != "chunked")
+        assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize("body", [REGISTERED, REFUSED], ids=["registered", "refused"])
+@pytest.mark.parametrize("notify", [False, True], ids=["bare-eof", "close-notify"])
+@pytest.mark.parametrize(
+    "framing",
+    [
+        "close",
+        "length",
+        "chunked",
+        "short-length",
+        "short-chunked",
+        "empty-coding-close",
+    ],
+)
+def test_verified_tls_completes_only_at_a_proven_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+    notify: bool,
+    framing: str,
+) -> None:
+    context, ca = tls_context(tmp_path)
+    read1 = http.client.HTTPResponse.read1
+    ragged: list[bool] = []
+
+    def observed(response: http.client.HTTPResponse, n: int = -1) -> bytes:
+        try:
+            return read1(response, n)
+        except ssl.SSLEOFError:
+            ragged.append(True)
+            raise
+
+    monkeypatch.setattr(http.client.HTTPResponse, "read1", observed)
+    reply = Reply(raw_response=HTTP11 + framed(body, framing), tls_close_notify=notify)
+    with FakeFocus((reply,), tls=context) as peer:
+        closing = framing in {"close", "empty-coding-close"}
+        valid = not framing.startswith("short-") and (not closing or notify)
+        expect_body(wire_outcome(peer, ca), body, valid)
+        if closing:
+            assert bool(ragged) is not notify
         assert len(peer.requests) == 1
 
 
@@ -428,4 +479,39 @@ def test_informational_head_must_be_valid_before_it_is_skipped(header: bytes) ->
     )
     with FakeFocus((Reply(raw_response=wire),)) as peer:
         expect_body(wire_outcome(peer), REGISTERED, valid=False)
+        assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("trailers", "valid"),
+    [
+        (b"", True),
+        (b"Server-Timing: db, app\r\n", True),
+        (b"Server-Timing: db,\r\n app\r\n", True),
+        (b"Server-Timing: db,\r\n\tapp\r\nETag: trailer\r\n ignored\r\n", True),
+        (b"\tapp\r\n", False),
+        (b"Server-Timing: db,\r\n app\x00\r\n", False),
+        (b"Server-Timing : db,\r\n app\r\n", False),
+    ],
+    ids=[
+        "empty",
+        "plain",
+        "folded",
+        "multiple-folded",
+        "orphan",
+        "control-in-fold",
+        "bad-name",
+    ],
+)
+def test_trailers_use_field_syntax_but_do_not_replace_headers(
+    trailers: bytes, valid: bool
+) -> None:
+    wire = (
+        HTTP11 + CHUNKED + b"Trailer: Server-Timing\r\n\r\n" + chunk(REFUSED, trailers)
+    )
+    with FakeFocus((Reply(raw_response=wire),)) as peer:
+        result = wire_outcome(peer)
+        expect_body(result, REFUSED, valid)
+        if isinstance(result, ProviderResponse):
+            assert not dict(result.headers).get("etag")
         assert len(peer.requests) == 1

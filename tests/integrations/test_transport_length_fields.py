@@ -282,3 +282,18 @@ def test_length_boundary_is_shared_by_declaration_and_body(over: bool) -> None:
             assert len(outcome.body) == XML_LIMIT
             assert _registration_result(outcome).state == CallState.FAILED
         assert len(peer.requests) == 1
+
+
+def test_a_fold_before_any_header_field_is_a_typed_failure() -> None:
+    # Added over 8f63bbf (P02-02 witness): an obs-fold with no field to continue
+    # must be the typed failure, never an untyped exception escaping the reader.
+    raw = b"HTTP/1.1 200 OK\r\n X-Fold: orphan\r\nContent-Length: 2\r\n\r\n{}"
+    with FakeFocus((Reply(raw_response=raw),)) as peer:
+        outcome: object
+        try:
+            outcome = wire_outcome(peer)
+        except Exception as error:  # noqa: BLE001 - any untyped escape is the defect
+            outcome = error
+        assert isinstance(outcome, TransportFailure), outcome
+        assert outcome.code == "resposta_invalida"
+        assert len(peer.requests) == 1
