@@ -26,8 +26,10 @@ from apps.integrations.call_models import ProviderCall
 from apps.integrations.models import (
     ClientProviderLink,
     IntegrationIssue,
+    ProviderConnection,
 )
 from apps.integrations.serpro import payments
+from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
 from apps.integrations.serpro.models import FirmIntegrationIssue, PaymentQuery
 from apps.integrations.serpro.payments_panel import federal_payments_panel as panel
 from apps.integrations.serpro.payments_panel import query_detail
@@ -745,7 +747,7 @@ def first_issue(world: World, code: str = "") -> str:
     with tenant_context(world.termo.tenant.pk):
         issue = FirmIntegrationIssue.objects.order_by("created_at", "pk").first()
     assert issue is not None
-    return f"pendencia-{issue.pk}" + (f"-{code[-3:]}" if code else "")
+    return f"pendencia-{issue.pk}-" + (code[-3:] if code else "000")
 
 
 def _second_client(world: World) -> ClientCompany:
@@ -799,7 +801,7 @@ def test_a_resolved_issue_stays_cleared_though_a_replacement_opened(
     # Then this refusal's own issue reads as resolved, not revived by the other.
     assert settled.failure_code == f"encerrado-{first}"
     detail = query_detail(settled)
-    assert f"registro {first}" in detail
+    assert "pendência sem código 403 registrado" in detail
     assert "aberta" not in detail
 
 
@@ -822,3 +824,41 @@ def test_a_refusals_history_keeps_the_403_frozen_when_it_was_refused(
     detail = query_detail(refused)
     assert TERMO_020 in detail
     assert "016" not in detail
+
+
+@DB
+def test_a_firm_termo_call_403_after_the_claim_is_frozen_in_the_refusal(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given this page claimed, then the firm's SP-TERMO call answers 403/016
+    # before the page dispatches: that firm call opens the issue that refuses it.
+    termo, platform = world.termo, "AcessoNegado-ICGERENCIADOR-016"
+    real = import_module("apps.integrations.call_protocol").claim
+
+    def claim_then_termo_403(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real(*args, **kwargs)
+        world.script(denied(code=platform))
+        with tenant_context(termo.tenant.pk):
+            version = ProviderConnection.objects.get(pk=termo.connection.pk).version
+        submit_termo(
+            termo.actor,
+            termo.tenant.pk,
+            TermoSubmission(
+                termo.connection.pk,
+                termo.document.pk,
+                version,
+                termo.parties,
+                world.gateway.origin,
+            ),
+        )
+        return ticket
+
+    monkeypatch.setattr(payments, "claim", claim_then_termo_403)
+    refused = world.consult()
+    assert world.sent() == []
+    # Then the refusal froze the 016 that firm call recorded, and history names it.
+    assert (refused.state, refused.failure_code) == (
+        "falha",
+        first_issue(world, platform),
+    )
+    assert platform in query_detail(refused)
