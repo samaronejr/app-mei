@@ -346,7 +346,9 @@ def disposal_refusal(candidate: Candidate) -> str:
     still the original is proved again, under the key lock, before the delete.
     """
     if candidate.kind == "export":
-        if storage_key_aliased(candidate.keys, export_id=candidate.id):
+        if storage_key_aliased(
+            candidate.keys, export_id=candidate.id, storage=default_storage
+        ):
             return "chave_compartilhada"
         unsupported = not single_copy_storage() and client_federal_involvement(
             candidate.client_id
@@ -354,7 +356,9 @@ def disposal_refusal(candidate: Candidate) -> str:
         return "armazenamento_nao_suportado" if unsupported else ""
     if candidate.kind != "document":
         return ""
-    if storage_key_aliased(candidate.keys, document_id=candidate.id):
+    if storage_key_aliased(
+        candidate.keys, document_id=candidate.id, storage=default_storage
+    ):
         return "chave_compartilhada"
     return _document_refusal(
         Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
@@ -454,7 +458,7 @@ def _locked_stop(tid: UUID, claim_id: UUID, keys: tuple[str, ...]) -> str:
             if claim.content_kind == "document"
             else {"export_id": claim.content_id}
         )
-    return ownership_refusal(tid, keys, **own)
+    return ownership_refusal(tid, keys, **own, storage=default_storage)
 
 
 def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
@@ -476,7 +480,7 @@ def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
     has locked stays open for a later run.
     """
     assert_no_transaction()
-    with storage_keys_locked(keys, wait=False) as locked:
+    with storage_keys_locked(keys, wait=False, storage=default_storage) as locked:
         if not locked:
             return "chave_em_uso"
         stop = _locked_stop(tid, claim_id, keys)
@@ -547,7 +551,9 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             return counts
         candidates = _candidates()
     # Storage keys are global: a key a row of another tenant names is never deleted.
-    foreign = foreign_storage_keys(tid, [key for c in candidates for key in c.keys])
+    foreign = foreign_storage_keys(
+        tid, [key for c in candidates for key in c.keys], default_storage
+    )
     for candidate in candidates:
         with tenant_context(tid):
             # PLATFORM_QUERY_OK: cancellation and deletion claims share this fence.

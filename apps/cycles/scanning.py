@@ -28,6 +28,7 @@ clear (`apps.cycles.document_views`).
 """
 
 import hashlib
+import posixpath
 import socket
 import struct
 from dataclasses import dataclass, field
@@ -361,7 +362,9 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
     scanner may have verified.
     """
     assert_no_transaction()
-    with storage_keys_locked([ticket.storage_key], wait=False) as locked:
+    with storage_keys_locked(
+        [ticket.storage_key], wait=False, storage=storage
+    ) as locked:
         if not locked:
             raise ScanDeferred  # another scanner or a disposal holds the final key
         try:
@@ -379,15 +382,40 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
                 return  # a stale ticket writes nothing; its verdict is ignored too
             if state == "claimed":
                 raise ScanDeferred  # never verified without the final copy
+            # What already exists under the names a save may answer, before it runs.
+            existed = {
+                name for name in _spellings(ticket.storage_key) if storage.exists(name)
+            }
             saved = storage.save(ticket.storage_key, ContentFile(payload))
         except OSError as error:
             msg = "promotion copy failed"
             raise ScannerUnavailable(msg) from error
     if not _saved_as_requested(storage, saved, ticket):
-        if saved != ticket.storage_key:
-            _discard(storage, saved)  # a stray object under another name
+        if _created_by_this_save(storage, saved, ticket, existed):
+            _discard(storage, saved)  # a stray object this save itself created
         msg = "storage did not store the requested document key"
         raise IntegrityMismatch(msg)
+
+
+def _spellings(key: str) -> set[str]:
+    """Return the names a save of `key` may answer: it and its lexical form."""
+    return {key, posixpath.normpath(key)}
+
+
+def _created_by_this_save(
+    storage: Storage, saved: str, ticket: ScanTicket, existed: set[str]
+) -> bool:
+    """Whether a refused save's object is one this save created, so it may go.
+
+    Only a name the save could answer, absent before it ran, that is neither the
+    source nor its quarantine copy and that no row of any tenant names. Anything
+    else is left in place (AXRM-051).
+    """
+    if saved not in _spellings(ticket.storage_key) or saved in existed:
+        return False
+    if canonical_key(saved, storage) == canonical_key(ticket.object_key, storage):
+        return False
+    return not ownership_refusal(ticket.tenant_id, [saved], storage=storage)
 
 
 def _saved_as_requested(storage: Storage, saved: str, ticket: ScanTicket) -> bool:
@@ -443,7 +471,9 @@ def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
     """
     if not single_copy_storage(storage):
         return
-    with storage_keys_locked([ticket.object_key], wait=False) as locked:
+    with storage_keys_locked(
+        [ticket.object_key], wait=False, storage=storage
+    ) as locked:
         if not locked:
             return
         with tenant_context(ticket.tenant_id):
@@ -458,6 +488,7 @@ def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
             ticket.tenant_id,
             [ticket.object_key, ticket.storage_key],
             document_id=document_id,
+            storage=storage,
         ):
             return
         with tenant_context(ticket.tenant_id), transaction.atomic():
@@ -677,7 +708,9 @@ def _promote_and_record(
     them (it is re-entrant for `promote`). Contention means someone else is on it:
     no verdict, and the intake stays due.
     """
-    with storage_keys_locked([ticket.storage_key], wait=False) as locked:
+    with storage_keys_locked(
+        [ticket.storage_key], wait=False, storage=storage
+    ) as locked:
         if not locked:
             return ScanOutcome.SKIPPED
         try:
