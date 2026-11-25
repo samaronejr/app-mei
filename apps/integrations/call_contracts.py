@@ -142,6 +142,11 @@ class Reservation:
 class AdmissionPolicy(Protocol):
     """Authority/approval and budget hooks run under the protocol's DB locks."""
 
+    @property
+    def authority(self) -> Callable[[ProviderCall], bool]:
+        """The domain authority predicate alone; it may raise naming its blocker."""
+        ...
+
     def authorize(self, call: ProviderCall) -> bool:
         """Recheck authority, approval and reservation against live domain state."""
         ...

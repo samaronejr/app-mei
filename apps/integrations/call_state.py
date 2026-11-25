@@ -69,8 +69,12 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
             operation.feature == "document_capture"
             and link.credential_state not in {"ativa", "vencendo"}
         )
-        or not operation.policy.authorize(call)
     ):
+        # State moved after the reservation: no cause in itself. The domain
+        # authority, re-read now, raises with the blocker it sees (AXRM-045).
+        operation.policy.authority(call)
+        raise AdmissionDeniedError(CallState.AUTHORITY)
+    if not operation.policy.authorize(call):
         raise AdmissionDeniedError(CallState.AUTHORITY)
 
 
