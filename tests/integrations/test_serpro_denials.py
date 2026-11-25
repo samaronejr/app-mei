@@ -37,6 +37,7 @@ from apps.integrations.serpro.payments_panel import federal_payments_panel as pa
 from apps.integrations.serpro.payments_panel import query_detail
 from apps.integrations.transport_types import ProviderResponse
 from apps.obligations.models import FederalConsultation, FederalPayment
+from tests.fakes.provider import Reply
 from tests.integrations import pagtoweb_support as support
 from tests.integrations.pagtoweb_support import World, denied, page, world
 from tests.integrations.serpro_support import serpro_module
@@ -1060,9 +1061,47 @@ def test_a_receipt_whose_connection_moved_before_claim_is_refused_and_released(
     except AdmissionDeniedError:
         pytest.fail("the claim's refusal escaped the receipt worker")
     # Then the call is a recorded refusal with its reservation released.
+    # The returned call is the stored one: never the row as it was reserved.
     assert call is not None
+    assert call.state == "bloqueada_autoridade"
     with tenant_context(tenant):
-        call.refresh_from_db()
         held = ProviderReservation.objects.filter(call=call, state="reserved")
-        assert (call.state, held.exists()) == ("bloqueada_autoridade", False)
+        assert not held.exists()
     assert world.sent("/Emitir") == []
+
+
+@DB
+def test_a_receipt_retry_after_a_401_refused_at_claim_is_reported_as_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its first SP-COMP attempt gets a complete 401, and the connection
+    # version moves before the retry's claim.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def renew_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        with tenant_context(world.termo.tenant.pk):
+            ProviderConnection.objects.filter(pk=world.termo.connection.pk).update(
+                version=F("version") + 1
+            )
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(protocol, "claim", renew_then_claim)
+    world.script(Reply(status=401))
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        pytest.fail("the retry claim's refusal escaped the receipt worker")
+    # Then the retry is a recorded refusal, reported as stored, released.
+    assert call is not None
+    assert call.state == "bloqueada_autoridade"
+    with tenant_context(tenant):
+        held = ProviderReservation.objects.filter(call=call, state="reserved")
+        assert not held.exists()
+    assert len(world.sent("/Emitir")) == 1
