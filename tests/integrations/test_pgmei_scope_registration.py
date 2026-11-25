@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from typing import TYPE_CHECKING
 
 import pytest
@@ -28,6 +29,8 @@ def test_provider_recovery_registration_keeps_bank_import_excluded(
     refusal: str | None,
 ) -> None:
     # Exercise the real guard, including its vacuity and exact-file assertions.
+    migrations = "apps/cycles/migrations"
+    shutil.copytree(scope_fidelity.PROJECT_ROOT / migrations, tmp_path / migrations)
     for index in range(101):
         decoy = tmp_path / "apps" / f"sample_{index}.py"
         decoy.parent.mkdir(parents=True, exist_ok=True)

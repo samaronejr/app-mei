@@ -256,12 +256,10 @@ PROVIDER_RECOVERY_FILES = frozenset(
     }
 )
 
-# AXRM-049 repairs request privacy, not bank transactions. Pin individual lines,
-# never the migration files: a second occurrence must still fail this scan.
+# Pin request-history lines and their counts, never whole migration files.
 _REPAIR = "apps/cycles/migrations/_request_cutover.py"
 REQUEST_HISTORY_RECONCILIATION = Counter(
     {
-        # These rollout comments explain when the repair holds the write lock.
         (
             "apps/cycles/migrations/0025_portal_internal_request_boundary.py",
             "# unreconciled formerly-internal row. The migration transaction holds",
@@ -270,7 +268,6 @@ REQUEST_HISTORY_RECONCILIATION = Counter(
             _REPAIR,
             "# 0025 may already be recorded as the lookup-only preparation. Reconcile,",
         ): 1,
-        # The trigger comment records a completed repair: define, read and write it.
         (_REPAIR, 'RECONCILED = "AXRM-049 supported request history reconciled v1"'): 1,
         (_REPAIR, "if installed == (RECONCILED,):"): 1,
         (_REPAIR, "[RECONCILED],"): 1,
