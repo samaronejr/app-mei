@@ -830,33 +830,27 @@ def test_a_refusals_history_keeps_the_403_frozen_when_it_was_refused(
 
 
 @DB
-def test_a_firm_termo_call_403_after_the_claim_is_frozen_in_the_refusal(
-    world: World, monkeypatch: pytest.MonkeyPatch
+def test_a_firm_termo_call_403_is_frozen_in_the_page_refusal_it_causes(
+    world: World,
 ) -> None:
-    # Given this page claimed, then the firm's SP-TERMO call answers 403/016
-    # before the page dispatches: that firm call opens the issue that refuses it.
+    # Given the firm's SP-TERMO call answers 403/016: that firm call (never a
+    # client page) opens the issue, and the issue cites only it.
     termo, platform = world.termo, "AcessoNegado-ICGERENCIADOR-016"
-    real = import_module("apps.integrations.call_protocol").claim
-
-    def claim_then_termo_403(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        ticket = real(*args, **kwargs)
-        world.script(denied(code=platform))
-        with tenant_context(termo.tenant.pk):
-            version = ProviderConnection.objects.get(pk=termo.connection.pk).version
-        submit_termo(
-            termo.actor,
-            termo.tenant.pk,
-            TermoSubmission(
-                termo.connection.pk,
-                termo.document.pk,
-                version,
-                termo.parties,
-                world.gateway.origin,
-            ),
-        )
-        return ticket
-
-    monkeypatch.setattr(payments, "claim", claim_then_termo_403)
+    world.script(denied(code=platform))
+    with tenant_context(termo.tenant.pk):
+        version = ProviderConnection.objects.get(pk=termo.connection.pk).version
+    submit_termo(
+        termo.actor,
+        termo.tenant.pk,
+        TermoSubmission(
+            termo.connection.pk,
+            termo.document.pk,
+            version,
+            termo.parties,
+            world.gateway.origin,
+        ),
+    )
+    # When this client's page is refused by that issue before any byte.
     refused = world.consult()
     assert world.sent() == []
     # Then the refusal froze the 016 that firm call recorded, and history names it.
