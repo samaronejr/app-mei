@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from django.core.exceptions import SuspiciousFileOperation, ValidationError
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.db import connection, transaction
-from django.db.models import F, Func, Q, QuerySet, Value
+from django.db.models import QuerySet
 from django.http import Http404
 
 from apps.accounts.models import User
@@ -98,9 +98,16 @@ def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) ->
     if not isinstance(chosen, FileSystemStorage):
         return ""
     root = real_root(chosen)
-    refusal = _mount_refusal(root) or _walk_refusal(root)
-    if refusal:
-        return refusal
+    roots = [root]
+    rows = rows_storage()
+    if isinstance(rows, FileSystemStorage) and real_root(rows) != root:
+        # The rows consulted are resolved under their own root: a symlink, mount
+        # or case-blind directory there may alias these files too (AXRM-051).
+        roots.append(real_root(rows))
+    for each in roots:
+        refusal = _mount_refusal(each) or _walk_refusal(each)
+        if refusal:
+            return refusal
     return next(
         (refusal for key in keys if (refusal := _key_refusal(chosen, root, key))), ""
     )
@@ -237,26 +244,12 @@ def _comparable(storage: Storage) -> bool:
     return both_local or storage is rows
 
 
-def _row_form(identity: bytes) -> str:
-    """Return how a row of the rows' storage spells this identity, or ``."""
-    rows = rows_storage()
-    if not isinstance(rows, FileSystemStorage):
-        return identity.removeprefix(b"remote:").decode()
-    root = os.fsencode(real_root(rows)).rstrip(b"/") + b"/"
-    return os.fsdecode(identity[len(root) :]) if identity.startswith(root) else ""
-
-
 def _key_refusal(storage: FileSystemStorage, root: Path, key: str) -> str:
     """Why one key is not proved to name a file of its own inside `root`, or ``."""
-    path = _addressed(storage, key)
-    if path is None or not _inside(path, root):
-        return "chave_fora_do_armazenamento"
-    try:
-        storage.path(key)
-    except SuspiciousFileOperation:
-        # A spelling the deleting backend will not address is never deletable,
-        # even when it can be identified for ownership (AXRM-051).
-        return "chave_nao_enderecavel"
+    refusal = _naming_refusal(storage, root, key)
+    if refusal:
+        return refusal
+    path = Path(os.path.realpath(storage.path(key)))
     try:
         status = path.lstat()
     except FileNotFoundError:
@@ -266,6 +259,22 @@ def _key_refusal(storage: FileSystemStorage, root: Path, key: str) -> str:
     if not stat.S_ISREG(status.st_mode):
         return "arquivo_nao_regular"  # a FIFO, socket or device is never opened
     return "arquivo_com_vinculos" if status.st_nlink > 1 else ""
+
+
+def _naming_refusal(storage: FileSystemStorage, root: Path, key: str) -> str:
+    """Why a key does not name, inside `root`, a file this backend addresses."""
+    if _identity_or_none(key, storage) is None:
+        return "identidade_indeterminada"  # refused with its reason, never raised
+    path = _addressed(storage, key)
+    if path is None or not _inside(path, root):
+        return "chave_fora_do_armazenamento"
+    try:
+        storage.path(key)
+    except SuspiciousFileOperation:
+        # A spelling the deleting backend will not address is never deletable,
+        # even when it can be identified for ownership (AXRM-051).
+        return "chave_nao_enderecavel"
+    return ""
 
 
 class NotRegularFileError(OSError):
@@ -333,11 +342,23 @@ def client_federal_involvement(client_id: UUID) -> bool:
 
 # Names that resolve to one object differ only in separators and `.` segments, so
 # rows are matched with both removed: a coarser match only keeps more.
-_LOOSE: Final = r"[/\\.]"
+def _identity_or_none(key: str, storage: Storage) -> bytes | None:
+    """Return `physical_identity`, or None when it cannot be computed; never raises."""
+    try:
+        return physical_identity(key, storage)
+    except (ValueError, OSError, RuntimeError, SuspiciousFileOperation):
+        return None
 
 
-def _loose(key: str) -> str:
-    return re.sub(_LOOSE, "", key)
+def _identities(keys: Iterable[str], storage: Storage) -> set[bytes]:
+    """Return the physical identities of these keys that can be computed."""
+    return {i for key in keys if (i := _identity_or_none(key, storage)) is not None}
+
+
+def _row_names(raw: str, identities: set[bytes]) -> bool:
+    """Whether a stored row's key names one of these objects (or cannot be told)."""
+    identity = _identity_or_none(raw, rows_storage())
+    return identity is None or identity in identities
 
 
 def _naming(
@@ -349,30 +370,21 @@ def _naming(
     """Return the rows of `model` whose key names one of these keys' objects.
 
     The keys belong to `storage`; every row belongs to the rows' own storage and is
-    resolved through it, never through the caller's. When the two cannot be
-    compared, every row counts as naming the object (AXRM-051).
+    resolved through it, never through the caller's. Every row is compared by
+    physical identity, never pre-filtered by its spelling, and a row whose
+    identity cannot be computed counts as naming every key. When the two storages
+    cannot be compared, every row counts (AXRM-051).
     """
     chosen = default_storage if storage is None else storage
     named = [key for key in keys if key]
     if not _comparable(chosen):
         return model.objects.all()
-    identities = {physical_identity(key, chosen) for key in named}
-    forms = {_row_form(identity) for identity in identities} - {""}
-    loose = {_loose(key) for key in named} | {_loose(form) for form in forms}
-    # A `..` segment or an absolute spelling resolves elsewhere than stripping can
-    # see: such rows (restored descriptors, rare) are resolved here, one by one.
-    dotted = [
-        pk
-        for pk, raw in model.objects.filter(
-            Q(**{f"{field}__contains": ".."}) | Q(**{f"{field}__startswith": "/"})
-        ).values_list("pk", field)
-        if physical_identity(raw, rows_storage()) in identities
+    identities = _identities(named, chosen)
+    stored = model.objects.exclude(**{f"{field}__isnull": True}).exclude(**{field: ""})
+    matching = [
+        pk for pk, raw in stored.values_list("pk", field) if _row_names(raw, identities)
     ]
-    return model.objects.annotate(
-        loose_key=Func(
-            F(field), Value(_LOOSE), Value(""), Value("g"), function="regexp_replace"
-        )
-    ).filter(Q(loose_key__in=loose) | Q(pk__in=dotted))
+    return model.objects.filter(pk__in=matching)
 
 
 def storage_key_aliased(
@@ -434,8 +446,7 @@ def foreign_storage_keys(
         key
         for key in named
         for raw in found
-        if _loose(key) == _loose(raw)
-        or physical_identity(key, chosen) == physical_identity(raw, rows_storage())
+        if _row_names(raw, _identities([key], chosen))
     }
 
 
@@ -468,7 +479,12 @@ def ownership_refusal(
 
 def _key_lock_id(key: str, storage: Storage | None = None) -> int:
     # One lock per object, whatever spelling or storage root a caller holds.
-    name = physical_identity(key, default_storage if storage is None else storage)
+    chosen = default_storage if storage is None else storage
+    # A key whose identity cannot be computed still gets a lock (its disposal is
+    # refused under it); the lock never raises outside the candidate's guard.
+    name = _identity_or_none(key, chosen) or b"unidentified:" + key.encode(
+        "utf-8", "surrogateescape"
+    )
     digest = hashlib.sha256(b"axorim-storage-key:" + name).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
