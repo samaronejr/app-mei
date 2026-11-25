@@ -112,19 +112,15 @@ def firm_refusal(code: str) -> bool:
 
 
 def firm_refusal_text(query: PaymentQuery) -> str:
-    """State a firm-side refusal as history, with the code it recorded then."""
+    """Name a firm-side refusal by the code recorded with it, without page facts."""
     code = query.failure_code
     if code == "termo_ausente":
-        return _stopped(
-            query,
-            "não foi enviada: não havia termo de autorização do escritório em vigor",
-            " A procuração do cliente não foi alterada.",
+        return (
+            "A consulta parou: não havia termo de autorização do escritório em "
+            f"vigor; {UNCHANGED}."
         )
     if code == ADMISSION_REFUSED:
-        return (
-            f"{_refused_page(query)} A admissão não registrou a causa; a "
-            "procuração do cliente não foi alterada."
-        )
+        return f"A admissão recusou a consulta sem registrar a causa; {UNCHANGED}."
     cause = code.removeprefix(CLEARED_PREFIX)
     denial = frozen_code(cause) or (
         cause.removeprefix(BLOCK_PREFIX) if cause.startswith(BLOCK_PREFIX) else ""
@@ -136,59 +132,35 @@ def firm_refusal_text(query: PaymentQuery) -> str:
     else:
         kind = f"registro {cause}"
     return (
-        f"{_refused_page(query)} A recusa foi por um bloqueio do escritório "
-        f"({kind}); a procuração do cliente não foi alterada."
+        f"A admissão recusou a consulta por um bloqueio do escritório ({kind}); "
+        f"{UNCHANGED}."
     )
 
 
-def _billed(query: PaymentQuery) -> str:
-    """State the pages recorded as sent and billed: one phrasing for every ending."""
-    sent = query.pages_fetched
-    if sent == 0:
-        return "nenhuma página foi enviada"
-    if sent == 1:
-        return "a página 1 foi enviada e cobrada"
-    return f"as páginas 1 a {sent} foram enviadas e cobradas"
-
-
-def _stopped(query: PaymentQuery, what: str, then: str = "") -> str:
-    """State which page stopped the consultation, how, and what was billed before."""
-    page = query.pages_fetched + 1
-    return f"A página {page} {what}; antes dela, {_billed(query)}.{then}"
-
-
-def _refused_page(query: PaymentQuery) -> str:
-    return _stopped(query, "foi recusada pela admissão")
-
-
-def _sent_page(query: PaymentQuery) -> str:
-    return _stopped(query, "foi enviada e cobrada")
-
-
-# Endings that stop before a page is sent, by the reason recorded with them.
-NOT_SENT: Final = {
-    "cota_esgotada_parcial": "não foi enviada: o limite mensal de consultas acabou",
-    "solicitante_sem_permissao": "não foi enviada: quem pediu perdeu a permissão",
-    "integracao_bloqueada": "não foi enviada: a integração estava pausada",
-}
+UNCHANGED: Final = "a procuração do cliente não foi alterada"
 
 
 def _client_refusal_text(query: PaymentQuery) -> str:
-    """State the client's refusal by what its record proves, never the state now."""
+    """Name the client's refusal by the code recorded with it, without page facts."""
     code = query.failure_code
     if code != CLIENT_ABSENT:
         return (
-            f"{_sent_page(query)} A Receita respondeu por falta da procuração "
-            f"eletrônica do cliente (código {code})."
+            "A Receita respondeu por falta da procuração eletrônica do cliente "
+            f"(código {code})."
         )
     return (
-        f"{_refused_page(query)} A procuração eletrônica do cliente (00004) não "
-        f"estava em vigor quando a admissão recusou a página {query.pages_fetched + 1}."
+        "A admissão recusou a consulta: a procuração eletrônica do cliente (00004) "
+        "não estava em vigor."
     )
 
 
 def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
-    """Explain one consultation without inferring anything about non-payment."""
+    """Explain one consultation without inferring anything about non-payment.
+
+    It names the recorded code only; which pages were sent and billed is stated
+    from the recorded page calls in the history wording (AXRM-045).
+    """
+    code = query.failure_code
     match query.state:
         case PaymentQueryState.NA_FILA | PaymentQueryState.EM_ANDAMENTO:
             return "Consulta em andamento. A página é atualizada ao recarregar."
@@ -199,46 +171,32 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
             matched = _plural(
                 query.matched_count, "associado a DAS", "associados a DAS"
             )
-            return f"{found}; {_billed(query)}; {matched}."
+            return f"{found}; {matched}."
         case PaymentQueryState.NADA_LOCALIZADO:
             return (
-                "Nenhum pagamento localizado no intervalo consultado; "
-                f"{_billed(query)}. Isso não indica falta de pagamento."
+                "Nenhum pagamento localizado no intervalo consultado. "
+                "Isso não indica falta de pagamento."
             )
         case PaymentQueryState.SEM_PROCURACAO:
             return _client_refusal_text(query)
-        case PaymentQueryState.COTA_ESGOTADA:
-            return _stopped(query, NOT_SENT["cota_esgotada_parcial"])
-        case PaymentQueryState.FALHA if firm_refusal(query.failure_code):
+        case PaymentQueryState.FALHA if firm_refusal(code):
             return firm_refusal_text(query)
         case PaymentQueryState.FALHA | PaymentQueryState.INCERTO if is_denial_code(
-            query.failure_code
+            code
         ):
-            return (
-                f"{_sent_page(query)} {denial_text(query.failure_code)} "
-                "Consulta não repetida."
-            )
+            return f"{denial_text(code)} Consulta não repetida."
         case PaymentQueryState.INCERTO:
-            return _stopped(
-                query,
-                "teve resultado incerto",
-                " Confira com a equipe antes de repetir.",
+            return (
+                f"O resultado é incerto (registro {code}). Confira com a equipe "
+                "antes de repetir."
+            )
+        case _ if code == "limite_de_paginas":
+            return (
+                "A consulta atingiu o limite de 10 páginas; o resultado pode estar "
+                "incompleto."
             )
         case _:
-            return _ending(query)
-
-
-def _ending(query: PaymentQuery) -> str:
-    """State an ending that is neither a refusal nor a provider answer."""
-    code = query.failure_code
-    if code == "limite_de_paginas":
-        return (
-            f"A consulta atingiu o limite de 10 páginas; {_billed(query)}; o "
-            "resultado pode estar incompleto."
-        )
-    if code in NOT_SENT:
-        return _stopped(query, NOT_SENT[code])
-    return _stopped(query, f"falhou ({code})")
+            return f"A consulta não foi concluída (registro {code})."
 
 
 @dataclass(frozen=True, slots=True)

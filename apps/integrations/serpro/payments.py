@@ -620,7 +620,8 @@ def _refused(  # noqa: PLR0913 - the page's identity plus the refusing runner
                 _receipt(query, digest, ref),
                 failure=FederalConsultationOutcome.COTA_ESGOTADA,
             )
-            return _finish(query, PaymentQueryState.FALHA, "cota_esgotada_parcial")
+            # The budget's own reason stays recorded, never a generic one.
+            return _finish(query, PaymentQueryState.FALHA, error.reason)
         if (
             isinstance(error, AdmissionDeniedError)
             and str(error) == CallState.AUTHORITY
@@ -744,7 +745,7 @@ def _settle_page(  # noqa: PLR0911, PLR0913 - one outcome per finalized call sta
                 query, PaymentQueryState.INCERTO, call.provider_code, receipt=receipt
             )
         if call.state == CallState.QUOTA:
-            return _refused_quota(query, index, receipt)
+            return _refused_quota(query, index, receipt, call.provider_code)
         return _finish(
             query, PaymentQueryState.FALHA, call.provider_code, receipt=receipt
         )
@@ -766,16 +767,15 @@ def _refused_call(
 
 
 def _refused_quota(
-    query: PaymentQuery, index: int, receipt: ConsultationCall
+    query: PaymentQuery, index: int, receipt: ConsultationCall, reason: str
 ) -> PaymentQuery:
+    """End by the budget's own recorded reason, the call's (AXRM-045)."""
     if index == 0:
-        return _finish(
-            query, PaymentQueryState.COTA_ESGOTADA, "cota_esgotada", receipt=receipt
-        )
+        return _finish(query, PaymentQueryState.COTA_ESGOTADA, reason, receipt=receipt)
     record_payment_consultation(
         query.client, receipt, failure=FederalConsultationOutcome.COTA_ESGOTADA
     )
-    return _finish(query, PaymentQueryState.FALHA, "cota_esgotada_parcial")
+    return _finish(query, PaymentQueryState.FALHA, reason)
 
 
 def _page(  # noqa: PLR0911 - each step may end the consultation or yield it
