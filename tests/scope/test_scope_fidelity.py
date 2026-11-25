@@ -217,6 +217,13 @@ FOCUS_RECEIVED_NFE_LINES = Counter(
             _CAPTURE_QUALIFICATION,
             '"""Read the received NF-e stream; never register any manifestation."""',
         ): 1,
+        (
+            "apps/integrations/focus/ciencia_wire.py",
+            (
+                '"""Ciencia-only wire results and attributable,'
+                ' private NF-e state read-backs."""'
+            ),
+        ): 1,
     }
 )
 ISSUANCE_SWITCH = re.compile(r'"(habilita_(?:nfe|nfse|nfsen_producao|nfce|cte|mdfe))"')
