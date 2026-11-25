@@ -1030,9 +1030,11 @@ def emit_payment_receipt(
     try:
         ticket = claim(tenant_id, row.pk)
     except AdmissionDeniedError:
-        return row  # The claim recorded the refusal and released the reservation.
+        ticket = None  # The claim recorded the refusal and released the reservation.
     if ticket is None:
-        return row
+        # Report the call as stored now, never the row as it was reserved.
+        with tenant_context(tenant_id):
+            return ProviderCall.objects.get(pk=row.pk)
     adapter = ReceiptAdapter(
         SerproAdapter(_transport(cast("Environment", environment)), parties, data)
     )

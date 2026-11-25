@@ -4,7 +4,12 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from apps.integrations.budget_settlement import billing_result
-from apps.integrations.call_contracts import MAX_ATTEMPTS, CallResult, Claim
+from apps.integrations.call_contracts import (
+    MAX_ATTEMPTS,
+    AdmissionDeniedError,
+    CallResult,
+    Claim,
+)
 from apps.integrations.call_dispatch import (
     Adapter,
     Dispatch,
@@ -55,7 +60,10 @@ def perform(ticket: Claim, adapter: Adapter, *, keep: Keep | None = None) -> Cal
     """
     result = _perform_once(ticket, adapter, keep)
     if schedule_client_retry(ticket, result):
-        retry = claim(ticket.tenant_id, ticket.call_id)
+        try:
+            retry = claim(ticket.tenant_id, ticket.call_id)
+        except AdmissionDeniedError:
+            retry = None  # The claim recorded the refusal and released it (AXRM-045).
         if retry is not None:
             result = _perform_once(retry, adapter, keep)
     from apps.integrations.serpro.work import own_client_result  # noqa: PLC0415
