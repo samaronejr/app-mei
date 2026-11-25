@@ -279,6 +279,15 @@ class FocusAdapter:
             return CallResult(state, None, RATE_LIMITED, "nao")
         return None
 
+    def _wire_result(
+        self, dispatch: Dispatch, response: ProviderResponse | TransportFailure
+    ) -> CallResult:
+        """Classify a received response or transport failure after admission."""
+        if isinstance(response, TransportFailure):
+            return response.result()
+        route = ROUTES[(dispatch.receipt.operation, self.request.variant)]
+        return classify(route.method, dispatch.receipt.operation_class, response)
+
     def send(self, dispatch: Dispatch) -> CallResult:
         """Send at most once; parse a company read before it can be final."""
         self.response = None
@@ -298,12 +307,11 @@ class FocusAdapter:
         try:
             self.response = self.transport.send(receipt.operation, request)
         except TransportFailure as error:
-            return error.result()
+            return self._wire_result(dispatch, error)
         except OperacaoNaoPermitida as error:
             # Raised by the allowlist or the wire permit before the first byte.
             return CallResult(CallState.FAILED, None, error.code, "nao")
-        route = ROUTES[(receipt.operation, self.request.variant)]
-        result = classify(route.method, receipt.operation_class, self.response)
+        result = self._wire_result(dispatch, self.response)
         if result.state == CallState.SUCCESS and self.request.variant == "read":
             try:
                 self.report = parse_company(self.response, self.request.subject)
