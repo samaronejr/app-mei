@@ -409,6 +409,7 @@ PROOF_REFUSALS: Final = frozenset(
         "armazenamento_com_montagem",
         "armazenamento_sem_distincao_de_caixa",
         "arquivo_nao_regular",
+        "chave_nao_enderecavel",
     }
 )
 COMPLETED: Final = "concluida"
@@ -483,23 +484,38 @@ def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
     with storage_keys_locked(keys, wait=False, storage=default_storage) as locked:
         if not locked:
             return "chave_em_uso"
-        stop = _locked_stop(tid, claim_id, keys)
-        if stop:
-            return stop
         try:
-            if identity is not None:
-                refused = _physical_refusal(keys, *identity)
-                if refused:
-                    return refused
-            for key in keys:
-                default_storage.delete(key)
-            if identity is not None and any(
-                default_storage.exists(key) for key in keys
-            ):
-                return "exclusao_nao_comprovada"
+            refused = _delete_under_locks(tid, claim_id, keys, identity)
         except (OSError, BotoCoreError, ClientError):
             return "storage_failed"
+        except Exception:
+            # Whatever else a backend raises refuses this candidate only: its claim
+            # stays open with the reason and the sweep goes on (AXRM-051).
+            logger.exception(
+                "disposal of claim %s refused by an unexpected error", claim_id
+            )
+            return "falha_inesperada"
+        if refused:
+            return refused
         return PURGED if _finish(tid, client_id, claim_id, now) else COMPLETED
+
+
+def _delete_under_locks(
+    tid: UUID, claim_id: UUID, keys: tuple[str, ...], identity: tuple[str, str] | None
+) -> str:
+    """Under the key locks: prove, delete and prove gone; return why not, or ``."""
+    stop = _locked_stop(tid, claim_id, keys)
+    if stop:
+        return stop
+    if identity is not None:
+        refused = _physical_refusal(keys, *identity)
+        if refused:
+            return refused
+    for key in keys:
+        default_storage.delete(key)
+    if identity is not None and any(default_storage.exists(key) for key in keys):
+        return "exclusao_nao_comprovada"
+    return ""
 
 
 def _kept_as(candidate: Candidate, now: datetime, foreign: set[str]) -> str:

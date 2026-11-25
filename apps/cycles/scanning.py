@@ -28,6 +28,7 @@ clear (`apps.cycles.document_views`).
 """
 
 import hashlib
+import os
 import posixpath
 import socket
 import struct
@@ -36,10 +37,11 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Final, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sentry_sdk
 from django.conf import settings
+from django.core.exceptions import SuspiciousFileOperation
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.db import transaction
@@ -61,14 +63,15 @@ from apps.cycles.evidence import (
 from apps.cycles.records import CycleEvent, ServiceCycle
 from apps.cycles.retention import (
     NotRegularFileError,
-    canonical_key,
     open_stored,
     ownership_refusal,
+    physical_identity,
     single_copy_storage,
     storage_keys_locked,
 )
 from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
 from apps.cycles.services.exceptions import open_exception
+from apps.obligations.models import Document
 
 EICAR: Final = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 EXCEPTION_REASON: Final = "verificacao_indisponivel"
@@ -382,61 +385,99 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
                 return  # a stale ticket writes nothing; its verdict is ignored too
             if state == "claimed":
                 raise ScanDeferred  # never verified without the final copy
-            # What already exists under the names a save may answer, before it runs.
-            existed = {
-                name for name in _spellings(ticket.storage_key) if storage.exists(name)
-            }
-            saved = storage.save(ticket.storage_key, ContentFile(payload))
         except OSError as error:
             msg = "promotion copy failed"
             raise ScannerUnavailable(msg) from error
-    if not _saved_as_requested(storage, saved, ticket):
-        if _created_by_this_save(storage, saved, ticket, existed):
-            _discard(storage, saved)  # a stray object this save itself created
-        msg = "storage did not store the requested document key"
-        raise IntegrityMismatch(msg)
+        _write_final(storage, ticket, payload)
 
 
-def _spellings(key: str) -> set[str]:
-    """Return the names a save of `key` may answer: it and its lexical form."""
-    return {key, posixpath.normpath(key)}
+def _write_final(storage: Storage, ticket: ScanTicket, payload: bytes) -> None:
+    """Write the final object only where nothing is, locally or remotely."""
+    try:
+        if isinstance(storage, FileSystemStorage):
+            _create_exclusive(storage, ticket.storage_key, payload)
+        else:
+            _promote_to_fresh_key(storage, ticket, payload)
+    except FileExistsError as error:
+        raise ScanDeferred from error  # created meanwhile: never overwritten
+    except SuspiciousFileOperation as error:
+        msg = "the document key is not addressable here"
+        raise IntegrityMismatch(msg) from error
+    except OSError as error:
+        msg = "promotion copy failed"
+        raise ScannerUnavailable(msg) from error
 
 
-def _created_by_this_save(
-    storage: Storage, saved: str, ticket: ScanTicket, existed: set[str]
-) -> bool:
-    """Whether a refused save's object is one this save created, so it may go.
+def _create_exclusive(storage: FileSystemStorage, key: str, payload: bytes) -> None:
+    """Create the final file only where nothing is: `O_CREAT|O_EXCL`, no link.
 
-    Only a name the save could answer, absent before it ran, that is neither the
-    source nor its quarantine copy and that no row of any tenant names. Anything
-    else is left in place (AXRM-051).
+    A file that appears between the existence check and this create, under any
+    spelling of the key, makes the create fail; it is never written over.
     """
-    if saved not in _spellings(ticket.storage_key) or saved in existed:
-        return False
-    if canonical_key(saved, storage) == canonical_key(ticket.object_key, storage):
-        return False
-    return not ownership_refusal(ticket.tenant_id, [saved], storage=storage)
+    path = Path(storage.path(key))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(path, flags, storage.file_permissions_mode or 0o666)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
-def _saved_as_requested(storage: Storage, saved: str, ticket: ScanTicket) -> bool:
-    """Whether the save stored the original under the key the document names.
+def _allocate_final_key(requested: str) -> str:
+    """Return a freshly allocated final key: a random name in the originals prefix."""
+    return f"originals/{uuid4().hex}{posixpath.splitext(requested)[1]}"
 
-    Locally, the backend's returned spelling is the same object exactly when the
-    canonical keys agree. Elsewhere a name means only itself: the returned name
-    must equal the requested one, and the object read back under the requested
-    name must have the original's size and digest (AXRM-051).
+
+def _promote_to_fresh_key(storage: Storage, ticket: ScanTicket, payload: bytes) -> None:
+    """Remotely, write the original to a new key and point the document at it.
+
+    A remote save may replace whatever its name already holds, so promotion never
+    writes to a caller-chosen or existing name: it allocates one, and under that
+    name's lock proves no row of any tenant names it and no object is there. The
+    write counts only if it reads back under exactly that name with the original's
+    size and digest. A refusal deletes nothing (AXRM-051).
     """
-    if isinstance(storage, FileSystemStorage):
-        return canonical_key(saved, storage) == canonical_key(
-            ticket.storage_key, storage
-        )
-    if saved != ticket.storage_key:
+    name = _allocate_final_key(ticket.storage_key)
+    with storage_keys_locked([name], wait=False, storage=storage) as locked:
+        if not locked:
+            raise ScanDeferred
+        if ownership_refusal(ticket.tenant_id, [name], storage=storage) or (
+            storage.exists(name)
+        ):
+            msg = "the allocated final key is already in use"
+            raise IntegrityMismatch(msg)
+        saved = storage.save(name, ContentFile(payload))
+        if not _stored_exactly(storage, saved, name, ticket.sha256):
+            msg = "storage did not store the original under its new key"
+            raise IntegrityMismatch(msg)
+        with tenant_context(ticket.tenant_id), transaction.atomic():
+            document_id = (
+                DocumentIntake.objects.filter(pk=ticket.intake_id)
+                .values_list("document_id", flat=True)
+                .get()
+            )
+            moved = Document.objects.filter(
+                pk=document_id, storage_key=ticket.storage_key
+            ).update(storage_key=name)
+        if not moved:
+            msg = "the document changed while it was promoted"
+            raise IntegrityMismatch(msg)
+
+
+def _stored_exactly(storage: Storage, saved: str, name: str, sha256: str) -> bool:
+    """Whether a remote save stored the original under exactly `name`.
+
+    A name means only itself there: the returned name must equal it, and the object
+    read back under it must have the original's size and digest.
+    """
+    if saved != name:
         return False
     try:
-        payload = _read_verified(storage, ticket.storage_key, ticket.sha256)
+        payload = _read_verified(storage, name, sha256)
     except (IntegrityMismatch, OSError):
         return False
-    return len(payload) == storage.size(ticket.storage_key)
+    return len(payload) == storage.size(name)
 
 
 def _write_state(ticket: ScanTicket) -> str:
@@ -514,8 +555,8 @@ def _copy_is_spare(
         LegalHold.objects.filter(client_id=intake.client_id, released_at=None).exists()
         or _disposal_started(intake.document_id)
         # The copy may be the final itself under another name: never "spare".
-        or canonical_key(ticket.object_key, storage)
-        == canonical_key(ticket.storage_key, storage)
+        or physical_identity(ticket.object_key, storage)
+        == physical_identity(ticket.storage_key, storage)
     ):
         return False
     try:
