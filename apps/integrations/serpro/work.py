@@ -52,6 +52,8 @@ TERMO_NOT_IN_FORCE: Final = "termo_nao_vigente"
 BLOCK_PREFIX: Final = "bloqueio-"
 # Identities of a recorded firm block: the issue, or the termo at a version.
 ISSUE_PREFIX: Final = "pendencia-"
+# Frozen in place of a 403 number when the issue cited no 403 at refusal time.
+NO_DENIAL: Final = "000"
 TERMO_PREFIX: Final = f"{TERMO_NOT_IN_FORCE}-v"
 UNCERTAIN: Final = "chamada_provedor_incerta"
 IN_FLIGHT: Final = frozenset(
@@ -129,33 +131,43 @@ def firm_block(connection: ProviderConnection) -> str:
     if issue is not None:
         # Frozen now: the 403 behind the issue when this refusal happened.
         code = issue_denial_code(str(issue.pk))
-        return f"{ISSUE_PREFIX}{issue.pk}" + (
-            f"-{code.rsplit('-', 1)[-1]}" if code else ""
-        )
+        number = code.rsplit("-", 1)[-1] if code else NO_DENIAL
+        return f"{ISSUE_PREFIX}{issue.pk}-{number}"
     if not termo_in_force(connection.pk, timezone.localdate()):
         return f"{TERMO_PREFIX}{connection.version}"
     return ""
 
 
 def issue_denial_code(issue_id: str) -> str:
-    """Return the firm-side 403 code a firm issue cites, or '' if none."""
+    """Return the first firm-side 403 the issue cites, in citation order, or ''.
+
+    A cited ref may be any call that can open the issue: a client page or a firm
+    SP-TERMO call. A document or termo ref carries no 403 (AXRM-045).
+    """
     issue = FirmIntegrationIssue.objects.filter(pk__in=_cited([issue_id])).first()
     if issue is None:
         return ""
-    return (
-        ProviderCall.objects.filter(
-            pk__in=_cited(issue.evidence_refs), provider_code__in=FIRM_DENIAL_CODES
-        )
-        .order_by("pk")
-        .values_list("provider_code", flat=True)
-        .first()
-        or ""
-    )
+    refs = _cited(issue.evidence_refs)
+    codes = {
+        **dict(
+            FirmProviderCall.objects.filter(
+                pk__in=refs, provider_code__in=FIRM_DENIAL_CODES
+            ).values_list("pk", "provider_code")
+        ),
+        **dict(
+            ProviderCall.objects.filter(
+                pk__in=refs, provider_code__in=FIRM_DENIAL_CODES
+            ).values_list("pk", "provider_code")
+        ),
+    }
+    return next((codes[ref] for ref in refs if ref in codes), "")
 
 
 def frozen_code(reason: str) -> str:
     """Return the 403 code a refusal froze when it was recorded, or ''."""
     number = reason.removeprefix(ISSUE_PREFIX)[37:]
+    if number == NO_DENIAL:
+        return ""
     return (
         next((code for code in CAUSES if code.endswith(f"-{number}")), "")
         if number

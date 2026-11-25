@@ -41,6 +41,7 @@ from apps.integrations.serpro.work import (
     ADMISSION_REFUSED,
     BLOCK_PREFIX,
     CLEARED_PREFIX,
+    ISSUE_PREFIX,
     firm_reason,
     frozen_code,
 )
@@ -129,7 +130,12 @@ def firm_refusal_text(query: PaymentQuery) -> str:
     denial = frozen_code(cause) or (
         cause.removeprefix(BLOCK_PREFIX) if cause.startswith(BLOCK_PREFIX) else ""
     )
-    kind = f"código {denial}" if denial else f"registro {cause}"
+    if denial:
+        kind = f"código {denial}"
+    elif cause.startswith(ISSUE_PREFIX):
+        kind = "pendência sem código 403 registrado"
+    else:
+        kind = f"registro {cause}"
     return (
         f"A consulta foi recusada antes do envio por um bloqueio do escritório "
         f"({kind}); a procuração do cliente não foi alterada."
