@@ -64,7 +64,7 @@ def test_outer_rollback_leaves_reported_unserved_bytes_and_retry_reuses_them(
         damaged.write(b"!" + PDF[1:])
     with (
         patch.object(default_storage, "save", wraps=default_storage.save) as overwrite,
-        pytest.raises(RuntimeError, match="integrity"),
+        pytest.raises(OSError, match="integrity"),
     ):
         register(PDF)
     overwrite.assert_not_called()

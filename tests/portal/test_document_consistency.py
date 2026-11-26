@@ -238,7 +238,7 @@ def test_new_quarantine_put_is_read_back_before_registration(
     with mock.patch.object(storage, "save", side_effect=faulty_put):
         try:
             _upload(upload_portal)
-        except RuntimeError as exc:
+        except OSError as exc:
             reason = str(exc)
         else:
             reason = ""
@@ -316,7 +316,7 @@ def test_storage_selected_alternative_name_is_deleted_and_rejected(
 
     monkeypatch.setattr(upload_portal.storage, "save", save_under_alternate)
 
-    with pytest.raises(RuntimeError, match="storage changed the requested"):
+    with pytest.raises(OSError, match="storage changed the requested"):
         _upload(upload_portal)
 
     assert len(alternate_names) == 1
@@ -354,7 +354,7 @@ def test_collision_deletes_only_alternate_and_preserves_requested_object_and_row
             "delete",
             wraps=upload_portal.storage.delete,
         ) as deleted,
-        pytest.raises(RuntimeError, match="storage changed the requested"),
+        pytest.raises(OSError, match="storage changed the requested"),
     ):
         _upload(upload_portal)
 

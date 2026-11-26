@@ -14,6 +14,8 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError
 from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.db import OperationalError, connections
 
 from apps.core.tenancy import tenant_context
@@ -356,6 +358,43 @@ def test_p3a2_a_storage_failure_on_a_paid_pdf_is_billed_and_owned(
     assert _problems(world) == ["aberta"]
     assert scheduled == []
     # Never re-bought automatically.
+    world.clock.advance(days=3)
+    world.advance(report)
+    assert len(world.sent("/Emitir")) == 1
+
+
+def test_bad_readback_of_paid_pdf_finalizes_without_custody_or_retry(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tasks, scheduled = _capture(monkeypatch)
+    report = _protocol(world)
+    scheduled.clear()
+    world.clock.advance(seconds=30)
+    world.script(report_reply())
+    save = default_storage.save
+
+    def save_wrong_bytes(name: str, content: ContentFile) -> str:
+        payload = content.read()
+        return save(name, ContentFile(payload[:-1] + bytes([payload[-1] ^ 1])))
+
+    monkeypatch.setattr("apps.cycles.intake.default_storage.save", save_wrong_bytes)
+    try:
+        state = tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
+    finally:
+        current = world.reload(report)
+        assert current.state == "falha"
+    assert state == "falha"
+    assert current.document_id is None
+    assert _documents(world) == 0
+    assert _calls(world) == [("falhou", 1, 200, "sim")]
+    with tenant_context(world.tenant_id):
+        call = ProviderCall.objects.get(operation="SP-SIT-R")
+        assert call.provider_code == "relatorio_nao_armazenado"
+        assert call.finalized_at is not None
+    assert world.budget().known_liability == EMISSAO_MICROBRL
+    assert world.budget().reserved == 0
+    assert _problems(world) == ["aberta"]
+    assert scheduled == []
     world.clock.advance(days=3)
     world.advance(report)
     assert len(world.sent("/Emitir")) == 1

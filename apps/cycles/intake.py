@@ -41,8 +41,7 @@ visibility boundary.
 
 import hashlib
 import hmac
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
@@ -199,7 +198,6 @@ def _unissued_storage_key(tenant_id: UUID, client_id: UUID, address: str) -> str
 
 @dataclass(slots=True)
 class _Held:
-    address: str
     storage_key: str
     held: str
     created: bool
@@ -207,30 +205,45 @@ class _Held:
 
 
 _held: ContextVar[_Held | None] = ContextVar("held_quarantine", default=None)
+_locked_address: ContextVar[str | None] = ContextVar(
+    "locked_quarantine_address", default=None
+)
+
+
+class QuarantineStorageError(OSError):
+    """The storage backend did not retain the requested, verifiable object."""
 
 
 class QuarantineRequiredError(Exception):
     """The authorized DB preflight found no reusable row. No INSERT has run."""
 
-    def __init__(self, key: str, store: Callable[[], _Held]) -> None:
+    def __init__(
+        self, key: str, address: str, store: Callable[[], _Held]
+    ) -> None:
         """Bind the exact authorized byte and tenant identity for the storage phase."""
         super().__init__("Initial quarantine needs an idle connection.")
-        self.key, self.store = key, store
+        self.key, self.address, self.store = key, address, store
 
-    @contextmanager
-    def staged(self) -> Iterator[None]:
-        """Serialize equal uploads without holding a transaction for external I/O."""
+    def complete[R](self, register: Callable[[], R]) -> R:
+        """Recheck scoped reuse under the mutex before touching storage."""
         assert_no_transaction()
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT pg_advisory_lock(hashtextextended(%s, 0))", [self.key]
             )
         backend = connection.connection
+        protocol = _locked_address.set(self.address)
         try:
-            held = self.store()
+            try:
+                return register()
+            except QuarantineRequiredError as required:
+                stage = required
+            if stage.address != self.address or stage.key != self.key:
+                raise PermissionDenied
+            held = stage.store()
             token = _held.set(held)
             try:
-                yield
+                return register()
             finally:
                 _held.reset(token)
                 # Only discard a failed INSERT's new object while holding the mutex.
@@ -243,6 +256,7 @@ class QuarantineRequiredError(Exception):
                     assert_no_transaction()
                     _discard(held.held)
         finally:
+            _locked_address.reset(protocol)
             if connection.connection is backend:
                 with connection.cursor() as cursor:
                     cursor.execute(
@@ -257,12 +271,11 @@ def quarantine_phases[R](register: Callable[[], R]) -> R:
         return register()
     except QuarantineRequiredError as required:
         stage = required
-    with stage.staged():
-        return register()
+    return stage.complete(register)
 
 
 def tenant_quarantine[R](tenant_id: UUID, register: Callable[[], R]) -> R:
-    """Both DB passes use the same tenant isolation, with no GUC during the PUT."""
+    """Every DB pass uses the same tenant isolation, with no GUC during the PUT."""
 
     def scoped() -> R:
         with tenant_context(tenant_id):
@@ -309,14 +322,14 @@ def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
         if saved != held:
             _discard(saved)
             msg = "storage changed the requested quarantine key"
-            raise RuntimeError(msg)
+            raise QuarantineStorageError(msg)
     if not _verified_object(held, len(payload), digest):
         # Never delete an earlier upload's object on the strength of this retry.
         if created:
             _discard(held)
         msg = "Quarantine integrity check failed: size or digest mismatch."
-        raise RuntimeError(msg)
-    return _Held(address, key, held, created=created)
+        raise QuarantineStorageError(msg)
+    return _Held(key, held, created=created)
 
 
 def _register_document(
@@ -370,7 +383,8 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
     """
     held = _held.get()
     key = _content_key(tenant, client, source, digest, obligation_id)
-    if held is not None and held.address != key:
+    locked_address = _locked_address.get()
+    if locked_address is not None and locked_address != key:
         # A re-resolved membership must not register the bytes against another client.
         raise PermissionDenied
     documents = Document.objects.filter(
@@ -379,7 +393,9 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
     document = documents.filter(sha256=digest).first()
     if document is None:
         if held is None:
+            # Storage addresses distinguish obligation bindings; reuse does not.
             raise QuarantineRequiredError(
+                _content_key(tenant, client, source, digest, None),
                 key,
                 partial(
                     _store,

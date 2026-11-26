@@ -1,4 +1,4 @@
-"""Two scoped passes of one authorized upload, with the quarantine PUT between."""
+"""Scoped upload admission and registration, with quarantine I/O between."""
 
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -35,7 +35,7 @@ def phased_upload[**P](view: Callable[P, HttpResponse]) -> Callable[P, HttpRespo
 
 
 def registration_pass(request: HttpRequest) -> bool:
-    """Only the original, already rate-limited request can own the second pass."""
+    """Only the original, already rate-limited request may re-enter the chain."""
     return _registration.get() is request
 
 
@@ -47,12 +47,16 @@ def dispatch_upload(
     response = get_response(request)
     if not isinstance(response, _PendingUpload):
         return response
-    # The complete portal/firm scope and ATOMIC_REQUESTS have exited. Re-enter
-    # the normal chain for the INSERT: membership, role, scanner and request
-    # visibility are not capabilities that the preflight can carry forward.
-    with response.stage.staged():
-        token = _registration.set(request)
-        try:
-            return get_response(request)
-        finally:
-            _registration.reset(token)
+    # ATOMIC_REQUESTS and the scoped role have unwound. Re-enter them under
+    # the mutex: membership, scanner and request visibility can all change.
+    def register() -> HttpResponseBase:
+        result = get_response(request)
+        if isinstance(result, _PendingUpload):
+            raise result.stage
+        return result
+
+    token = _registration.set(request)
+    try:
+        return response.stage.complete(register)
+    finally:
+        _registration.reset(token)
