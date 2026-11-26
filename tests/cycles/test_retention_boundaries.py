@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Self
+from uuid import uuid4
 
 import pytest
 from django.core.files.base import ContentFile
@@ -103,7 +104,7 @@ def private_content(pub: PublicationGraph, cycle: ServiceCycle) -> Document:
         body=CANARY,
     )
     contents = b"unexpired unknown-period source"
-    key = default_storage.save("retained/unknown-period.bin", ContentFile(contents))
+    key = default_storage.save(f"originals/{uuid4().hex}.bin", ContentFile(contents))
     document = Document.objects.create(
         tenant=pub.graph.tenant,
         client=pub.graph.client,

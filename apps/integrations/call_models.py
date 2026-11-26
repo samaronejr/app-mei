@@ -1,6 +1,6 @@
 """Private protocol identities, immutable attempts, effect barriers and epoch."""
 
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from django.db import models
 from django.utils import timezone
@@ -27,6 +27,17 @@ class CallState(models.TextChoices):
     AUTHORITY = "bloqueada_autoridade", "Bloqueada por autoridade"
     PAUSED = "pausada", "Pausada"
     CANCELLED = "cancelada", "Cancelada"
+
+
+# States in which a call never reached the provider, so it stored no bytes; any
+# other state may have (AXRM-051: a lost runner leaves started or uncertain).
+NO_BYTES_STATES: Final = (
+    CallState.QUEUED,
+    CallState.RESERVED,
+    CallState.FAILED,
+    CallState.DENIED,
+    CallState.QUOTA,
+)
 
 
 class ProviderCall(ClientRecord):

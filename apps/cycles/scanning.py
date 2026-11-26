@@ -28,22 +28,29 @@ clear (`apps.cycles.document_views`).
 """
 
 import hashlib
+import os
+import posixpath
 import socket
 import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import Final, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sentry_sdk
 from django.conf import settings
+from django.core.exceptions import SuspiciousFileOperation
 from django.core.files.base import ContentFile
-from django.core.files.storage import Storage, default_storage
+from django.core.files.storage import FileSystemStorage, Storage, default_storage
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from django.utils._os import safe_makedirs
 
 from apps.accounts.models import User
+from apps.clients.models import ClientCompany
 from apps.core.flags import tenant_has
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
@@ -55,7 +62,20 @@ from apps.cycles.evidence import (
     ScanVerdict,
 )
 from apps.cycles.records import CycleEvent, ServiceCycle
+from apps.cycles.retention import (
+    NotRegularFileError,
+    open_stored,
+    ownership_refusal,
+    physical_identity,
+    resolves_to_document_final,
+    resolves_under,
+    rows_storage,
+    single_copy_storage,
+    storage_keys_locked,
+)
+from apps.cycles.retention_records import ContentPurgeClaim, LegalHold
 from apps.cycles.services.exceptions import open_exception
+from apps.obligations.models import Document
 
 EICAR: Final = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 EXCEPTION_REASON: Final = "verificacao_indisponivel"
@@ -65,6 +85,8 @@ REPLY_MAX_BYTES: Final = 4096
 CHUNK_BYTES: Final = 64 * 1024
 DISABLED_REASON: Final = "clamav_desativado"
 DEADLINE_REASON: Final = "scanner_indisponivel_24h"
+# The scanned or stored bytes were not the original's for 24 h: not an outage.
+MISMATCH_REASON: Final = "conteudo_divergente_24h"
 SCAN_REQUIRED_FLAG: Final = "scan_required"
 
 
@@ -265,8 +287,8 @@ def claim_scan(tenant_id: UUID, intake_id: UUID) -> ScanTicket | None:
             .filter(pk=intake_id, state__in=PENDING_SCAN_STATES)
             .first()
         )
-        if intake is None:
-            return None
+        if intake is None or _disposal_started(intake.document_id):
+            return None  # disposed work is not scanned (AXRM-051)
         return ScanTicket(
             tenant_id=tenant_id,
             intake_id=intake.pk,
@@ -281,11 +303,46 @@ def run_scan(ticket: ScanTicket, scanner: Scanner, storage: Storage) -> Verdict:
     """Phase B: stream the quarantined bytes to the scanner, outside any transaction."""
     assert_no_transaction()
     try:
-        with storage.open(ticket.object_key, "rb") as handle:
-            return scanner.scan(handle)
+        with open_stored(storage, ticket.object_key) as handle:
+            stream = _Digesting(handle)
+            verdict = scanner.scan(stream)
+            # One more read, never hashed: the scanner must have reached EOF.
+            exhausted = handle.read(1) == b""
+    except NotRegularFileError as error:
+        raise ContentMismatch from error  # a FIFO, socket or device is never read
     except OSError as error:
         msg = "quarantined object unreadable"
         raise ScannerUnavailable(msg) from error
+    if not exhausted or stream.hexdigest() != ticket.sha256:
+        # A verdict, clean or infected, belongs only to the original's bytes, every
+        # one of them read by the scanner itself up to EOF (AXRM-051): a short read,
+        # or one that stops where the original would end, has no verdict.
+        raise ContentMismatch
+    return verdict
+
+
+class _Digesting:
+    """Hash exactly what the scanner reads."""
+
+    def __init__(self, handle: ByteStream) -> None:
+        self._handle = handle
+        self._digest = hashlib.sha256()
+
+    def read(self, size: int = -1, /) -> bytes:
+        chunk = self._handle.read(size)
+        self._digest.update(chunk)
+        return chunk
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
+
+
+class ContentMismatch(Exception):  # noqa: N818 - domain vocabulary
+    """The quarantined bytes are not the document's: no clean verdict for them."""
+
+
+class ScanDeferred(Exception):  # noqa: N818 - domain vocabulary
+    """Another scanner or a disposal holds the original: scan again later."""
 
 
 class IntegrityMismatch(Exception):  # noqa: N818 - domain vocabulary
@@ -293,7 +350,7 @@ class IntegrityMismatch(Exception):  # noqa: N818 - domain vocabulary
 
 
 def _read_verified(storage: Storage, key: str, sha256: str) -> bytes:
-    with storage.open(key, "rb") as handle:
+    with open_stored(storage, key) as handle:
         payload: bytes = handle.read()
     if hashlib.sha256(payload).hexdigest() != sha256:
         msg = f"sha256 mismatch at {key}"
@@ -305,24 +362,274 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
     """Phase B, clean file: copy the quarantined bytes to the final key (no delete).
 
     Idempotent across a crash between the copy and phase C: an object already at the
-    final key is accepted only if it hashes to the document's sha256.
+    final key is accepted only if it hashes to the document's sha256. The copy is
+    made under the final key's lock, which the purge also takes, and only while the
+    ticket is the pending scan and no disposal claim exists (AXRM-051): a stale
+    scanner never writes a disposed original back, and never deletes what another
+    scanner may have verified.
     """
     assert_no_transaction()
-    if not ticket.quarantined:
-        return
+    # The final is the file the row names: it is checked and written through the
+    # rows' own storage, never through the scanner's view (AXRM-051).
+    final = rows_storage()
+    with storage_keys_locked([ticket.storage_key], wait=False, storage=final) as locked:
+        if not locked:
+            raise ScanDeferred  # another scanner or a disposal holds the final key
+        try:
+            if not ticket.quarantined:
+                # Scanned in place: the serving file is checked again under its
+                # lock, since a restore may have replaced it after the scan read.
+                _read_verified(final, ticket.storage_key, ticket.sha256)
+                return
+            if final.exists(ticket.storage_key):
+                _read_verified(final, ticket.storage_key, ticket.sha256)
+                return
+            payload = _read_verified(storage, ticket.object_key, ticket.sha256)
+            state = _write_state(ticket)
+            if state == "stale":
+                return  # a stale ticket writes nothing; its verdict is ignored too
+            if state == "claimed":
+                raise ScanDeferred  # never verified without the final copy
+        except OSError as error:
+            msg = "promotion copy failed"
+            raise ScannerUnavailable(msg) from error
+        _write_final(final, ticket, payload)
+
+
+def _write_final(storage: Storage, ticket: ScanTicket, payload: bytes) -> None:
+    """Write the final object only where nothing is, locally or remotely."""
     try:
-        if storage.exists(ticket.storage_key):
-            _read_verified(storage, ticket.storage_key, ticket.sha256)
-            return
-        payload = _read_verified(storage, ticket.object_key, ticket.sha256)
-        saved = storage.save(ticket.storage_key, ContentFile(payload))
+        if isinstance(storage, FileSystemStorage):
+            _create_exclusive(storage, ticket.storage_key, payload)
+        else:
+            _promote_to_fresh_key(storage, ticket, payload)
+    except FileExistsError as error:
+        raise ScanDeferred from error  # created meanwhile: never overwritten
+    except SuspiciousFileOperation as error:
+        msg = "the document key is not addressable here"
+        raise IntegrityMismatch(msg) from error
     except OSError as error:
         msg = "promotion copy failed"
         raise ScannerUnavailable(msg) from error
-    if saved != ticket.storage_key:
-        _discard(storage, saved)
-        msg = "storage changed the requested document key"
-        raise RuntimeError(msg)
+
+
+def _create_exclusive(storage: FileSystemStorage, key: str, payload: bytes) -> None:
+    """Create the final file only where nothing is: `O_CREAT|O_EXCL`, no link.
+
+    A file that appears between the existence check and this create, under any
+    spelling of the key, makes the create fail; it is never written over.
+    """
+    path = Path(storage.path(key))
+    _make_parents(storage, path.parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    # Never more permissive than configured, from the first open: no window in
+    # which the published bytes carry a wider mode (AXRM-051).
+    mode = storage.file_permissions_mode
+    descriptor = os.open(path, flags, 0o666 if mode is None else mode)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    # The configured modes, exactly as `FileSystemStorage.save` applies them.
+    if storage.file_permissions_mode is not None:
+        path.chmod(storage.file_permissions_mode)
+
+
+def _make_parents(storage: FileSystemStorage, directory: Path) -> None:
+    """Create the final's missing directories with the configured directory mode."""
+    if storage.directory_permissions_mode is not None:
+        safe_makedirs(directory, storage.directory_permissions_mode, exist_ok=True)
+    else:
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+def _allocate_final_key(requested: str) -> str:
+    """Return a freshly allocated final key: a random name in the originals prefix."""
+    return f"originals/{uuid4().hex}{posixpath.splitext(requested)[1]}"
+
+
+def _promote_to_fresh_key(storage: Storage, ticket: ScanTicket, payload: bytes) -> None:
+    """Remotely, write the original to a new key and point the document at it.
+
+    A remote save may replace whatever its name already holds, so promotion never
+    writes to a caller-chosen or existing name: it allocates one, and under that
+    name's lock proves no row of any tenant names it and no object is there. The
+    write counts only if it reads back under exactly that name with the original's
+    size and digest. A refusal deletes nothing (AXRM-051).
+    """
+    name = _allocate_final_key(ticket.storage_key)
+    with storage_keys_locked([name], wait=False, storage=storage) as locked:
+        if not locked:
+            raise ScanDeferred
+        if ownership_refusal(ticket.tenant_id, [name], storage=storage) or (
+            storage.exists(name)
+        ):
+            msg = "the allocated final key is already in use"
+            raise IntegrityMismatch(msg)
+        saved = storage.save(name, ContentFile(payload))
+        if not _stored_exactly(storage, saved, name, ticket.sha256):
+            msg = "storage did not store the original under its new key"
+            raise IntegrityMismatch(msg)
+        if not _repoint(ticket, name):
+            # The ticket went stale, the key moved or a disposal owns the row: a
+            # lost race, not a digest failure. The new object stays unnamed.
+            raise ScanDeferred
+
+
+def _repoint(ticket: ScanTicket, name: str) -> bool:
+    """Point the document at its new key, only if nothing changed since the ticket.
+
+    Under the intake's and the document's row locks (the purge takes the latter
+    before it reads and claims a document): the intake must still be the pending
+    scan at the ticket's version, the row must still name the ticket's key, and no
+    disposal claim may exist.
+    """
+    with tenant_context(ticket.tenant_id), transaction.atomic():
+        pending = list(
+            DocumentIntake.objects.select_for_update(no_key=True)
+            .filter(
+                pk=ticket.intake_id,
+                version=ticket.version,
+                state__in=PENDING_SCAN_STATES,
+            )
+            .values_list("document_id", flat=True)
+        )
+        if not pending:
+            return False
+        current = list(
+            Document.objects.select_for_update(no_key=True)
+            .filter(pk=pending[0])
+            .values_list("storage_key", flat=True)
+        )
+        claimed = ContentPurgeClaim.objects.filter(
+            content_kind="document", content_id=pending[0]
+        ).exists()
+        if current != [ticket.storage_key] or claimed:
+            return False
+        Document.objects.filter(pk=pending[0]).update(storage_key=name)
+        return True
+
+
+def _stored_exactly(storage: Storage, saved: str, name: str, sha256: str) -> bool:
+    """Whether a remote save stored the original under exactly `name`.
+
+    A name means only itself there: the returned name must equal it, and the object
+    read back under it must have the original's size and digest.
+    """
+    if saved != name:
+        return False
+    try:
+        payload = _read_verified(storage, name, sha256)
+    except (IntegrityMismatch, OSError):
+        return False
+    return len(payload) == storage.size(name)
+
+
+def _write_state(ticket: ScanTicket) -> str:
+    """Say whether the ticket may write: `stale`, `claimed` (disposal started) or ``."""
+    with tenant_context(ticket.tenant_id):
+        document_id = (
+            DocumentIntake.objects.filter(
+                pk=ticket.intake_id,
+                version=ticket.version,
+                state__in=PENDING_SCAN_STATES,
+            )
+            .values_list("document_id", flat=True)
+            .first()
+        )
+        if document_id is None:
+            return "stale"
+        claimed = ContentPurgeClaim.objects.filter(
+            content_kind="document", content_id=document_id
+        ).exists()
+        return "claimed" if claimed else ""
+
+
+def _discard_quarantine(ticket: ScanTicket, storage: Storage) -> None:
+    """Remove the verified quarantine copy unless anything else may still need it.
+
+    Only on single-copy (local) storage, where the delete is a local unlink that
+    may run under the client lock `place_hold` takes: a hold that commits first
+    keeps the copy, a later one finds it gone. The key is locked like every other
+    writer's, and every check runs under that lock (see `_copy_is_spare`).
+    Elsewhere the copy is left for the purge to account for, never deleted
+    remotely inside the lock (AXRM-051).
+    """
+    if not single_copy_storage(storage):
+        return
+    with storage_keys_locked(
+        [ticket.object_key], wait=False, storage=storage
+    ) as locked:
+        if not locked:
+            return
+        with tenant_context(ticket.tenant_id):
+            document_id = (
+                DocumentIntake.objects.filter(pk=ticket.intake_id)
+                .values_list("document_id", flat=True)
+                .get()
+            )
+        # The purge's own ownership decision, under the copy's lock: cleanup never
+        # decides on its own who else may own this key (AXRM-051).
+        if ownership_refusal(
+            ticket.tenant_id,
+            [ticket.object_key, ticket.storage_key],
+            document_id=document_id,
+            storage=storage,
+        ):
+            return
+        with tenant_context(ticket.tenant_id), transaction.atomic():
+            intake = DocumentIntake.objects.get(pk=ticket.intake_id)
+            ClientCompany.objects.select_for_update(no_key=True).get(
+                pk=intake.client_id
+            )
+            if not _copy_is_spare(ticket, storage, intake):
+                return
+            _discard(storage, ticket.object_key)
+
+
+def _copy_is_spare(
+    ticket: ScanTicket, storage: Storage, intake: DocumentIntake
+) -> bool:
+    """Under the copy's lock: whether nothing else may still need this copy.
+
+    Not when the client is held, another row names the key, a disposal of the
+    original has started (the copy may be its last surviving one), the final copy
+    is gone or no longer the original, or the copy itself is not the original.
+    """
+    if (
+        # Cleanup deletes only inside its own kind's names, on the resolved
+        # name: the copy under this client's quarantine prefix, the final in a
+        # documented form. Any other object, of any kind, is kept (AXRM-051).
+        not resolves_under(
+            ticket.object_key,
+            f"quarantine/{ticket.tenant_id}/{intake.client_id}/",
+            storage,
+        )
+        or not resolves_to_document_final(ticket.storage_key, ticket.tenant_id, storage)
+        or LegalHold.objects.filter(
+            client_id=intake.client_id, released_at=None
+        ).exists()
+        or _disposal_started(intake.document_id)
+        # The copy may be the final itself under another name: never "spare".
+        or _may_be_one_object(storage, ticket.object_key, ticket.storage_key)
+    ):
+        return False
+    try:
+        _read_verified(storage, ticket.storage_key, ticket.sha256)
+        _read_verified(storage, ticket.object_key, ticket.sha256)
+    except (IntegrityMismatch, OSError):
+        return False
+    # Two digests prove equal content, not two files: the inode comparison above
+    # (`_may_be_one_object`) already proved these are two files (AXRM-051).
+    return True
+
+
+def _may_be_one_object(storage: Storage, first: str, second: str) -> bool:
+    """Whether two keys may name one object: equal, or either identity unknown."""
+    try:
+        return physical_identity(first, storage) == physical_identity(second, storage)
+    except Exception:  # noqa: BLE001 - an identity that cannot be told keeps the copy
+        return True
 
 
 def _discard(storage: Storage, key: str) -> None:
@@ -402,6 +709,16 @@ def record_verdict(
         intake = _locked(ticket)
         if intake is None:
             return ScanOutcome.STALE
+        if (
+            verdict is not None
+            and not verdict.infected
+            and ContentPurgeClaim.objects.filter(
+                content_kind="document", content_id=intake.document_id
+            ).exists()
+        ):
+            # A disposal started: never verified now, in the verdict's own
+            # transaction and under the final key's lock (AXRM-051).
+            return ScanOutcome.SKIPPED
         intake.next_scan_at = None
         if verdict is None:
             intake.state = IntakeState.SCAN_UNAVAILABLE
@@ -432,12 +749,27 @@ def backoff(attempts: int) -> timedelta:
     return timedelta(minutes=BACKOFF_MINUTES[min(attempts, len(BACKOFF_MINUTES)) - 1])
 
 
-def record_failure(ticket: ScanTicket, *, now: datetime) -> ScanOutcome:
-    """Phase C, scanner down: schedule a retry, or give up 24 h after the upload."""
+def _disposal_started(document_id: UUID) -> bool:
+    return ContentPurgeClaim.objects.filter(
+        content_kind="document", content_id=document_id
+    ).exists()
+
+
+def record_failure(
+    ticket: ScanTicket, *, now: datetime, reason: str = DEADLINE_REASON
+) -> ScanOutcome:
+    """Phase C, no verdict: schedule a retry, or give up 24 h after the upload.
+
+    `reason` says why at the deadline: the scanner was down, or the bytes were
+    never the original's (`MISMATCH_REASON`).
+    """
     with tenant_context(ticket.tenant_id):
         intake = _locked(ticket)
         if intake is None:
             return ScanOutcome.STALE
+        if _disposal_started(intake.document_id):
+            # A source missing because it was disposed of is not an outage.
+            return ScanOutcome.SKIPPED
         intake.scan_attempts += 1
         if now - intake.created_at < RETRY_DEADLINE:
             intake.next_scan_at = now + backoff(intake.scan_attempts)
@@ -445,7 +777,7 @@ def record_failure(ticket: ScanTicket, *, now: datetime) -> ScanOutcome:
             return ScanOutcome.RETRY
         intake.state = IntakeState.SCAN_UNAVAILABLE
         intake.verdict = ScanVerdict.UNAVAILABLE
-        intake.reason = DEADLINE_REASON
+        intake.reason = reason
         intake.next_scan_at = None
         for cycle, author_id in _save(intake, now):
             open_exception(
@@ -459,6 +791,33 @@ def record_failure(ticket: ScanTicket, *, now: datetime) -> ScanOutcome:
                 evidence_refs=(intake.document_id,),
             )
         return ScanOutcome.UNAVAILABLE
+
+
+def _promote_and_record(
+    ticket: ScanTicket, verdict: Verdict, storage: Storage, now: datetime
+) -> ScanOutcome:
+    """Copy and record under the final key's lock, which the purge also takes.
+
+    The lock spans the copy and the verdict, so a disposal never falls between
+    them (it is re-entrant for `promote`). Contention means someone else is on it:
+    no verdict, and the intake stays due.
+    """
+    with storage_keys_locked(
+        [ticket.storage_key], wait=False, storage=rows_storage()
+    ) as locked:
+        if not locked:
+            return ScanOutcome.SKIPPED
+        try:
+            if not verdict.infected:
+                promote(ticket, storage)
+        except ScanDeferred:
+            return ScanOutcome.SKIPPED
+        except ScannerUnavailable:
+            return record_failure(ticket, now=now)
+        except IntegrityMismatch:
+            # The final already there is not the original: nothing is certified.
+            return record_failure(ticket, now=now, reason=MISMATCH_REASON)
+        return record_verdict(ticket, verdict, now=now)
 
 
 def scan_intake(
@@ -478,13 +837,13 @@ def scan_intake(
         return record_verdict(ticket, None, now=now)
     try:
         verdict = run_scan(ticket, scanner, storage)
-        if not verdict.infected:
-            promote(ticket, storage)
     except ScannerUnavailable:
         return record_failure(ticket, now=now)
-    outcome = record_verdict(ticket, verdict, now=now)
+    except ContentMismatch:
+        return record_failure(ticket, now=now, reason=MISMATCH_REASON)
+    outcome = _promote_and_record(ticket, verdict, storage, now)
     if outcome is ScanOutcome.VERIFIED and ticket.quarantined:
-        _discard(storage, ticket.object_key)
+        _discard_quarantine(ticket, storage)
     return outcome
 
 
@@ -497,8 +856,14 @@ def due_intakes(
     request links -- which every firm scans, flagged or not.
     """
     with tenant_context(tenant_id):
-        pending = DocumentIntake.objects.filter(state__in=PENDING_SCAN_STATES).filter(
-            Q(next_scan_at__isnull=True) | Q(next_scan_at__lte=now)
+        pending = (
+            DocumentIntake.objects.filter(state__in=PENDING_SCAN_STATES)
+            .filter(Q(next_scan_at__isnull=True) | Q(next_scan_at__lte=now))
+            .exclude(
+                document_id__in=ContentPurgeClaim.objects.filter(
+                    content_kind="document"
+                ).values("content_id")
+            )
         )
         if vault_only:
             pending = pending.filter(document__evidence_links__isnull=True)

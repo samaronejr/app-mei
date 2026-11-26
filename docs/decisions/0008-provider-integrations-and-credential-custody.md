@@ -46,14 +46,19 @@ uses only:
   refusal labels);
 - the bulk DAS guide effect runs the PGMEI service: `apps/cycles/bulk_runner.py` and
   `apps/cycles/bulk_effects.py`, importing it inside the function;
-- the federal records read provider call records: `apps/obligations/federal.py`.
+- the federal records read provider call records: `apps/obligations/federal.py`;
+- the retention path dates SERPRO originals from the records that obtained them and
+  keeps authority evidence out of ordinary disposal: `apps/cycles/retention_tasks.py`
+  reads `apps/integrations/serpro/retention.py` and the authority models of
+  `apps/integrations/models.py`, and `apps/cycles/retention.py` reads the provider
+  calls of `apps/integrations/call_models.py` to tell whether a client's content
+  may be federal (AXRM-051).
 
 Pending, not yet on this branch: the fiscal document register of AXRM-021 adds
 `apps/obligations/fiscal_ingest.py`, which reads client links and authority, and
 AXRM-022 adds a Ciencia record reader to the existing
-`apps/cycles/workspace_queries.py`; both arrive with the other wave-A lane. The
-retention part of AXRM-051 amends this list for any read of SERPRO records it adds.
-The wave candidate's review re-checks the list against the merged code.
+`apps/cycles/workspace_queries.py`; both arrive with the other wave-A lane. The wave
+candidate's review re-checks the list against the merged code.
 
 What the rule protected still holds: no `obligations` or `cycles` table has a foreign
 key into `integrations`, and no migration of theirs depends on an `integrations`

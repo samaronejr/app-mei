@@ -2,30 +2,41 @@
 
 import hashlib
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import date, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from typing import NoReturn
+from uuid import uuid4
 
 import pytest
 from django.core.exceptions import ValidationError
 from django.core.files import File
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.urls import reverse
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
+from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.cycles.archive_response import EvidenceArchiveResponse
+from apps.cycles.evidence import DocumentIntake, IntakeState, ScanVerdict
 from apps.cycles.export_records import EvidenceExport, ExportState
 from apps.cycles.export_service import request_export
 from apps.cycles.export_tasks import build_export
 from apps.cycles.retention import place_hold
+from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.retention_tasks import purge_tenant
-from apps.obligations.models import Document
+from apps.obligations.models import (
+    AcquisitionOrigin,
+    Document,
+    Obligation,
+    ObligationType,
+)
 from apps.tenants.models import Membership
 from tests.cycles.document_fixtures import reviewed
 from tests.portal.request_fixtures import PortalSetup, portal_setup
+from tests.ui.factories import make_cnpj
 from tests.ui.refusal_contract import assert_readable_page, assert_readable_refusal
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -180,3 +191,158 @@ def test_an_index_refusal_reads_in_plain_sentences(
         status=HTTPStatus.UNPROCESSABLE_CONTENT,
         reason="O índice não pôde ser gerado. Confira as evidências e tente de novo.",
     )
+
+
+def _federal_client(setup: PortalSetup) -> None:
+    """Give the client a SERPRO original: its archives then need byte proof."""
+    with tenant_context(setup.graph.tenant.pk):
+        Document.objects.create(
+            tenant=setup.graph.tenant,
+            client=setup.graph.client,
+            storage_key=default_storage.save(
+                f"originals/{uuid4().hex}.pdf", ContentFile(b"%PDF-1.7\n")
+            ),
+            sha256=hashlib.sha256(b"%PDF-1.7\n").hexdigest(),
+            original_filename="federal.pdf",
+            content_type="application/pdf",
+            byte_size=9,
+            uploaded_by=setup.graph.actor,
+            acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+            acquisition_receipt_ref=str(uuid4()),
+            portal_visible=False,
+        )
+
+
+def test_an_archive_missing_before_its_claim_is_never_completed(
+    settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    setup, export, _document = ready_export(settings, tmp_path, "archive-missing")
+    _federal_client(setup)
+    assert export.expires_at is not None
+    default_storage.delete(export.storage_key)
+    counts = purge_tenant(
+        setup.graph.tenant.pk,
+        dry_run=False,
+        now=export.expires_at + timedelta(seconds=1),
+    )
+    assert counts["purged"] == 0
+    with tenant_context(setup.graph.tenant.pk):
+        claim = ContentPurgeClaim.objects.get(content_id=export.pk)
+        assert (claim.completed_at, claim.error_code) == (None, "arquivo_ausente")
+        assert EvidenceExport.objects.get(pk=export.pk).state == ExportState.READY
+
+
+def test_an_ordinary_row_never_deletes_a_held_clients_archive(
+    settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    setup, export, _document = ready_export(settings, tmp_path, "archive-alias")
+    tenant = setup.graph.tenant
+    with tenant_context(tenant.pk):
+        setup.graph.client.refresh_from_db()
+        place_hold(
+            setup.graph.actor,
+            setup.graph.client.pk,
+            reason="Preservar a cópia",
+            expected_version=setup.graph.client.version,
+        )
+        sibling = ClientCompany.objects.create(
+            tenant=tenant, cnpj=make_cnpj("510510510001"), legal_name="Sibling"
+        )
+        kind, _ = ObligationType.objects.get_or_create(
+            code="DAS", defaults={"name": "DAS", "periodicity": "monthly"}
+        )
+        old = Obligation.objects.create(
+            tenant=tenant,
+            client=sibling,
+            obligation_type=kind,
+            competence_month=date(2018, 9, 1),
+            nominal_due_date=date(2018, 10, 20),
+            resolved_due_date=date(2018, 10, 20),
+        )
+        # A restored, expired ordinary row of another client whose intake copy is
+        # the ZIP's key (a final key is too short to name an archive's).
+        alias = Document.objects.create(
+            tenant=tenant,
+            client=sibling,
+            obligation=old,
+            storage_key=default_storage.save(
+                f"originals/{uuid4().hex}.pdf", ContentFile(b"%PDF-1.7\n")
+            ),
+            sha256=hashlib.sha256(b"%PDF-1.7\n").hexdigest(),
+            original_filename="alias.pdf",
+            content_type="application/pdf",
+            byte_size=9,
+            uploaded_by=setup.graph.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        DocumentIntake.objects.create(
+            tenant=tenant,
+            client=sibling,
+            document=alias,
+            state=IntakeState.VERIFIED,
+            verdict=ScanVerdict.CLEAN,
+            quarantine_key=export.storage_key,
+            scanned_at=timezone.now(),
+        )
+    assert export.expires_at is not None
+    purge_tenant(tenant.pk, dry_run=False, now=export.expires_at + timedelta(days=1))
+    assert default_storage.exists(export.storage_key)
+    with tenant_context(tenant.pk):
+        assert not ContentPurgeClaim.objects.filter(content_id=alias.pk).exists()
+
+
+def test_a_copy_an_archive_row_names_is_never_deleted_through_a_document(
+    settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    setup, export, _document = ready_export(settings, tmp_path, "archive-names-copy")
+    tenant = setup.graph.tenant
+    with tenant_context(tenant.pk):
+        sibling = ClientCompany.objects.create(
+            tenant=tenant, cnpj=make_cnpj("510510510002"), legal_name="Sibling"
+        )
+        kind, _ = ObligationType.objects.get_or_create(
+            code="DAS", defaults={"name": "DAS", "periodicity": "monthly"}
+        )
+        old = Obligation.objects.create(
+            tenant=tenant,
+            client=sibling,
+            obligation_type=kind,
+            competence_month=date(2018, 9, 1),
+            nominal_due_date=date(2018, 10, 20),
+            resolved_due_date=date(2018, 10, 20),
+        )
+        payload = b"%PDF-1.7\n"
+        alias = Document.objects.create(
+            tenant=tenant,
+            client=sibling,
+            obligation=old,
+            storage_key=default_storage.save(
+                f"originals/{uuid4().hex}.pdf", ContentFile(payload)
+            ),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            original_filename="alias.pdf",
+            content_type="application/pdf",
+            byte_size=len(payload),
+            uploaded_by=setup.graph.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        # The document's own copy, inside its own prefix; a restored archive row
+        # names it, so only the archive lookup can keep it.
+        copy = default_storage.save(
+            f"quarantine/{tenant.pk}/{sibling.pk}/{uuid4().hex}", ContentFile(payload)
+        )
+        DocumentIntake.objects.create(
+            tenant=tenant,
+            client=sibling,
+            document=alias,
+            state=IntakeState.VERIFIED,
+            verdict=ScanVerdict.CLEAN,
+            quarantine_key=copy,
+            scanned_at=timezone.now(),
+        )
+        EvidenceExport.objects.filter(pk=export.pk).update(storage_key=copy)
+    assert export.expires_at is not None
+    purge_tenant(tenant.pk, dry_run=False, now=export.expires_at + timedelta(days=1))
+    assert default_storage.exists(copy)

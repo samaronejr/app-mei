@@ -49,7 +49,8 @@ from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import UploadedFile
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
+from django.db.transaction import TransactionManagementError
 from django.http import Http404
 
 from apps.accounts.models import User
@@ -67,6 +68,7 @@ from apps.cycles.evidence import (
     quarantine_key,
 )
 from apps.cycles.records import CycleEvent
+from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.scanning import scan_required
 from apps.cycles.sniffing import sniff
 from apps.obligations.models import AcquisitionOrigin, Document, Obligation
@@ -209,6 +211,27 @@ def _discard(name: str) -> None:
         sentry_sdk.capture_exception(error)
 
 
+def _locked_private_reuse(client: ClientCompany, document: Document) -> Document:
+    """Re-read a private row for reuse under the client lock the purge claims under.
+
+    Private bytes whose retention disposal has started are never reused
+    (AXRM-051); federal content is always private, and the portal role, which
+    reuses only visible rows, cannot read disposal claims. The lock is held to the
+    caller's commit so the use that follows lands before any later claim; without
+    the caller's transaction it would end here, so reuse refuses to run without one.
+    """
+    if not connection.in_atomic_block:
+        msg = "private reuse must run inside the caller's transaction"
+        raise TransactionManagementError(msg)
+    ClientCompany.objects.select_for_update(no_key=True).get(pk=client.pk)
+    fresh = Document.objects.get(pk=document.pk)
+    if ContentPurgeClaim.objects.filter(
+        content_kind="document", content_id=fresh.pk
+    ).exists():
+        raise UploadRejected
+    return fresh
+
+
 def document_for(  # noqa: PLR0913 - keyword-only: every value is verified context
     *,
     tenant: Tenant,
@@ -251,6 +274,8 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
                 # its intake are the record. No link, no submission event.
                 raise UploadRejected
             return document, False
+    if not source.portal_visible:
+        document = _locked_private_reuse(client, document)
     if document.purged_at is not None:
         raise UploadRejected
     if DocumentIntake.objects.filter(

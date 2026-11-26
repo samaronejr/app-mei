@@ -1,10 +1,11 @@
 """Dry-run-first retention: claim in DB, delete bytes outside, redact in DB."""
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Final
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 from celery import shared_task
@@ -20,6 +21,7 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.completion_records import CompletionJustification
 from apps.cycles.content_redaction import redact_proposal, redact_publication
 from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.evidence import CLEAN_STATES
 from apps.cycles.export_records import EvidenceExport, ExportState
 from apps.cycles.models import (
     ActionProposal,
@@ -33,9 +35,27 @@ from apps.cycles.models import (
     RequestInternal,
     Review,
 )
-from apps.cycles.retention import after_years, retention_decision
+from apps.cycles.retention import (
+    RetentionAnchor,
+    after_years,
+    client_federal_involvement,
+    federal_content,
+    fiscal_expiry,
+    foreign_storage_keys,
+    open_stored,
+    ordered_anchors,
+    ownership_refusal,
+    resolves_to_document_final,
+    resolves_under,
+    retention_decision,
+    single_copy_storage,
+    storage_key_aliased,
+    storage_keys_locked,
+)
 from apps.cycles.retention_records import ContentPurgeClaim
 from apps.delivery.models import OutboundMessage
+from apps.integrations.models import AuthorityRecord, FirmAuthorization
+from apps.integrations.serpro.retention import federal_document_anchors
 from apps.obligations.models import Document
 from apps.tenants.account_state import export_available
 from apps.tenants.models import Tenant
@@ -45,28 +65,59 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
-    """Only authorized storage descriptors leave a retention transaction."""
+    """Only authorized storage descriptors leave a retention transaction.
+
+    `anchors` and `gap` say why a document has its expiry, or why it has none.
+    The operator inventory prints them; the purge decision reads only the expiry.
+    """
 
     client_id: UUID
     kind: str
     id: UUID
     expires_at: datetime | None
     keys: tuple[str, ...] = ()
+    anchors: tuple[RetentionAnchor, ...] = ()
+    gap: str = ""
 
 
-def _document_expiry(document: Document) -> datetime | None:
-    years = list(
-        EvidenceLink.objects.filter(document=document).values_list(
-            "request__cycle__period_end__year", flat=True
-        )
-    )
+def _document_anchors(document: Document) -> tuple[tuple[RetentionAnchor, ...], str]:
+    """Every verified reference dating an original, or the reason none does."""
+    anchors = [
+        RetentionAnchor("ciclo", period_end, cycle_id)
+        for cycle_id, period_end in EvidenceLink.objects.filter(
+            document=document
+        ).values_list("request__cycle_id", "request__cycle__period_end")
+    ]
     if document.obligation is not None:
-        years.append(document.obligation.competence_month.year)
-    expiry = (
-        datetime(max(years) + 6, 1, 1, tzinfo=ZoneInfo("America/Sao_Paulo"))
-        if years and document.retention_class == RetentionClass.FISCAL_EVIDENCE
-        else None
-    )
+        anchors.append(
+            RetentionAnchor(
+                "obrigacao",
+                document.obligation.competence_month,
+                document.obligation.pk,
+            )
+        )
+    # Federal references count with the R1 ones; an unresolved one keeps the original.
+    federal, gap = federal_document_anchors(document)
+    anchors.extend(federal)
+    ordered = ordered_anchors(anchors)
+    if gap:
+        return ordered, gap
+    return ordered, "" if ordered else "sem_vinculo"
+
+
+def _document_retention(
+    document: Document,
+) -> tuple[datetime | None, tuple[RetentionAnchor, ...], str]:
+    """(expiry, anchors, gap): the latest anchored fiscal year, or why none."""
+    if document.retention_class != RetentionClass.FISCAL_EVIDENCE:
+        return None, (), "classe_sem_prazo"
+    anchors, gap = _document_anchors(document)
+    try:
+        expiry = None if gap else fiscal_expiry(anchors)
+    except ValueError:  # a representable date whose year + 6 is not
+        return None, anchors, "data_fora_do_intervalo"
+    if expiry is None:
+        return None, anchors, gap
     # A disposable derivative must never outlive its original's retention.
     # Export claim/request and this decision serialize on the same client.
     for export in EvidenceExport.objects.filter(
@@ -74,10 +125,33 @@ def _document_expiry(document: Document) -> datetime | None:
         state__in=[ExportState.PENDING, ExportState.BUILDING, ExportState.READY],
         index__data__documents__contains=[{"id": str(document.pk)}],
     ):
-        derivative_expiry = export.expires_at or export.created_at + timedelta(days=30)
-        if expiry is not None:
-            expiry = max(expiry, derivative_expiry)
-    return expiry
+        try:
+            derivative_expiry = export.expires_at or (
+                export.created_at + timedelta(days=30)
+            )
+        except OverflowError:  # a representable date whose fallback is not
+            return None, anchors, "data_fora_do_intervalo"
+        expiry = max(expiry, derivative_expiry)
+    return expiry, anchors, ""
+
+
+def _claim_keys(document: Document) -> tuple[str, ...]:
+    """Return the final and quarantine keys in the order the claim trigger expects.
+
+    The trigger aggregates them `ORDER BY key` under the database collation, which is
+    not Python's code-point order: under `en_US` a `quarantine/...` key sorts before
+    a random final key that starts with "Z", and a claim in the other order is
+    refused as a different storage descriptor.
+    """
+    final = Document.objects.filter(pk=document.pk).values_list(
+        "storage_key", flat=True
+    )
+    held = (
+        DocumentIntake.objects.filter(document=document)
+        .exclude(quarantine_key="")
+        .values_list("quarantine_key", flat=True)
+    )
+    return tuple(final.union(held).order_by("storage_key"))
 
 
 def _candidates(target: Candidate | None = None) -> list[Candidate]:
@@ -91,14 +165,16 @@ def _candidates(target: Candidate | None = None) -> list[Candidate]:
             else documents.none()
         )
     for document in documents.select_related("obligation"):
-        expiry = _document_expiry(document)
-        intake = DocumentIntake.objects.filter(document=document).first()
-        keys = {document.storage_key}
-        if intake is not None and intake.quarantine_key:
-            keys.add(intake.quarantine_key)
+        expiry, anchors, gap = _document_retention(document)
         candidates.append(
             Candidate(
-                document.client_id, "document", document.pk, expiry, tuple(sorted(keys))
+                document.client_id,
+                "document",
+                document.pk,
+                expiry,
+                _claim_keys(document),
+                anchors,
+                gap,
             )
         )
     exports = EvidenceExport.objects.filter(state=ExportState.READY)
@@ -137,7 +213,7 @@ def _candidates(target: Candidate | None = None) -> list[Candidate]:
                 proposal.client_id,
                 "proposal",
                 proposal.pk,
-                after_years(proposal.created_at, retention_years),
+                _after(proposal.created_at, retention_years),
             )
         )
     candidates.extend(_text_candidates(target))
@@ -190,7 +266,7 @@ def _text_candidates(target: Candidate | None) -> list[Candidate]:
                 continue
             query = query.filter(pk=target.id, client_id=target.client_id)
         candidates.extend(
-            Candidate(client_id, kind, pk, after_years(when, years))
+            Candidate(client_id, kind, pk, _after(when, years))
             for client_id, pk, when in query.values_list("client_id", "pk", created)
         )
     return candidates
@@ -253,6 +329,305 @@ def _redact_private(claim: ContentPurgeClaim, now: datetime) -> None:
             raise ValueError(message)
 
 
+def _after(value: datetime, years: int) -> datetime | None:
+    """Return `after_years`, or None (no expiry: kept) when the date cannot exist."""
+    try:
+        return after_years(value, years)
+    except (OverflowError, ValueError):
+        return None
+
+
+SCOPE_REFUSAL: Final = "chave_fora_do_prefixo"
+
+
+def _scope_refusal(candidate: Candidate) -> str:
+    """Refuse keys outside the candidate's own kind, on the backend-resolved name.
+
+    The storage also holds account exports, export attempts, provider and
+    delivery journals and tenant branding, some named by no row: a disposal only
+    ever deletes inside its own kind's names. An evidence export's archive lies
+    under `exports/{tenant}/{client}/{export}/`; a document's final is one of
+    the shapes documents are written with, and its intake copies lie under
+    `quarantine/{tenant}/{client}/` (AXRM-051).
+    """
+    if candidate.kind not in {"document", "export"}:
+        return ""
+    tenant = (
+        ClientCompany.objects.filter(pk=candidate.client_id)
+        .values_list("tenant_id", flat=True)
+        .first()
+    )
+    if candidate.kind == "export":
+        prefix = f"exports/{tenant}/{candidate.client_id}/{candidate.id}/"
+        allowed = all(
+            resolves_under(key, prefix, default_storage) for key in candidate.keys
+        )
+    else:
+        final = (
+            Document.objects.filter(pk=candidate.id)
+            .values_list("storage_key", flat=True)
+            .first()
+        )
+        copies = f"quarantine/{tenant}/{candidate.client_id}/"
+        allowed = all(
+            resolves_to_document_final(key, tenant, default_storage)
+            if key == final
+            else resolves_under(key, copies, default_storage)
+            for key in candidate.keys
+        )
+    return "" if tenant is not None and allowed else SCOPE_REFUSAL
+
+
+def disposal_refusal(candidate: Candidate) -> str:
+    """Name what is unproved about destroying a copy; empty when it may be claimed.
+
+    A key another row names is never deleted through this one, whatever either
+    row is. Authority evidence is never ordinary evidence. Federal content (an
+    original SERPRO obtained or a report holds, or an archive of a client whose
+    content may be federal) is disposed of only on single-copy storage, and a
+    federal original also needs every intake clean. Whether the stored bytes are
+    still the original is proved again, under the key lock, before the delete.
+    """
+    scope = _scope_refusal(candidate)
+    if scope:
+        return scope
+    if candidate.kind == "export":
+        if storage_key_aliased(
+            candidate.keys, export_id=candidate.id, storage=default_storage
+        ):
+            return "chave_compartilhada"
+        unsupported = not single_copy_storage() and client_federal_involvement(
+            candidate.client_id
+        )
+        return "armazenamento_nao_suportado" if unsupported else ""
+    if candidate.kind != "document":
+        return ""
+    if storage_key_aliased(
+        candidate.keys, document_id=candidate.id, storage=default_storage
+    ):
+        return "chave_compartilhada"
+    return _document_refusal(
+        Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
+    )
+
+
+def _document_refusal(document: Document) -> str:
+    if (
+        AuthorityRecord.objects.filter(evidence_document=document).exists()
+        or FirmAuthorization.objects.filter(signed_document=document).exists()
+    ):
+        return "evidencia_de_autorizacao"
+    if not federal_content(document):
+        return ""
+    if not single_copy_storage():
+        return "armazenamento_nao_suportado"
+    intakes = DocumentIntake.objects.filter(document=document)
+    if not intakes.exists() or intakes.exclude(state__in=CLEAN_STATES).exists():
+        return "verificacao_pendente"
+    return ""
+
+
+def _physical_refusal(keys: tuple[str, ...], final_key: str, sha256: str) -> str:
+    """Prove every stored copy is the original's bytes (outside a transaction)."""
+    assert_no_transaction()
+    if not default_storage.exists(final_key):
+        return "arquivo_ausente"
+    for key in keys:
+        if key != final_key and not default_storage.exists(key):
+            continue
+        with open_stored(default_storage, key) as handle:
+            if hashlib.sha256(handle.read()).hexdigest() != sha256:
+                return "conteudo_divergente"
+    return ""
+
+
+PROOF_REFUSALS: Final = frozenset(
+    {
+        "arquivo_ausente",
+        "conteudo_divergente",
+        "chave_em_uso",
+        "chaves_divergentes",
+        "chave_compartilhada",
+        "armazenamento_com_atalho",
+        "chave_fora_do_armazenamento",
+        "arquivo_com_vinculos",
+        "armazenamento_nao_inspecionavel",
+        "armazenamento_com_montagem",
+        "armazenamento_sem_distincao_de_caixa",
+        "arquivo_nao_regular",
+        "chave_nao_enderecavel",
+        "identidade_indeterminada",
+        "armazenamento_divergente",
+        "chave_fora_do_prefixo",
+    }
+)
+COMPLETED: Final = "concluida"
+PURGED: Final = "removida"
+
+
+def _identity(candidate: Candidate) -> tuple[str, str] | None:
+    """Return the final key and sha256 a disposal must prove, read under the lock.
+
+    A federal original, and an archive of a client whose content may be federal,
+    are deleted only once their stored bytes are proved.
+    """
+    if candidate.kind == "export":
+        export = EvidenceExport.objects.get(
+            pk=candidate.id, client_id=candidate.client_id
+        )
+        if not client_federal_involvement(candidate.client_id):
+            return None
+        return export.storage_key, export.sha256
+    if candidate.kind != "document":
+        return None
+    document = Document.objects.get(pk=candidate.id, client_id=candidate.client_id)
+    if not federal_content(document):
+        return None
+    return document.storage_key, document.sha256
+
+
+def _locked_stop(tid: UUID, claim_id: UUID, keys: tuple[str, ...]) -> str:
+    """Under the key locks: why this claim must not delete these keys, or ``.
+
+    A claim another worker completed is done. Ownership is decided here, for the
+    keys about to be deleted, never from a lookup made before the locks (AXRM-051).
+    """
+    with tenant_context(tid):
+        claim = ContentPurgeClaim.objects.get(pk=claim_id)
+        if claim.completed_at is not None:
+            return COMPLETED
+        # The target's own keys are read again here: a row that moved to other
+        # keys since its claim was compared never has the old ones deleted.
+        current = _candidates(
+            Candidate(claim.client_id, claim.content_kind, claim.content_id, None)
+        )
+        if not current or set(current[0].keys) != set(keys):
+            return "chaves_divergentes"
+        own = (
+            {"document_id": claim.content_id}
+            if claim.content_kind == "document"
+            else {"export_id": claim.content_id}
+        )
+    return ownership_refusal(tid, keys, **own, storage=default_storage)
+
+
+def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock
+    tid: UUID,
+    *,
+    client_id: UUID,
+    claim_id: UUID,
+    keys: tuple[str, ...],
+    identity: tuple[str, str] | None,
+    now: datetime,
+) -> str:
+    """Dispose of a claim's keys and complete it; return the outcome.
+
+    Everything happens under the key locks, which every writer of these keys also
+    takes: the claim is re-read (an overlapping worker may have completed it), the
+    bytes are proved to be the original, deleted, proved gone, and the claim is
+    completed before the locks are released, so no other holder can act on the
+    keys between the delete and the completion. A claim whose keys another holder
+    has locked stays open for a later run.
+    """
+    assert_no_transaction()
+    with storage_keys_locked(keys, wait=False, storage=default_storage) as locked:
+        if not locked:
+            return "chave_em_uso"
+        try:
+            refused = _delete_under_locks(tid, claim_id, keys, identity)
+        except (OSError, BotoCoreError, ClientError):
+            return "storage_failed"
+        except Exception:
+            # Whatever else a backend raises refuses this candidate only: its claim
+            # stays open with the reason and the sweep goes on (AXRM-051).
+            logger.exception(
+                "disposal of claim %s refused by an unexpected error", claim_id
+            )
+            return "falha_inesperada"
+        if refused:
+            return refused
+        return PURGED if _finish(tid, client_id, claim_id, now) else COMPLETED
+
+
+def _delete_under_locks(
+    tid: UUID, claim_id: UUID, keys: tuple[str, ...], identity: tuple[str, str] | None
+) -> str:
+    """Under the key locks: prove, delete and prove gone; return why not, or ``."""
+    stop = _locked_stop(tid, claim_id, keys)
+    if stop:
+        return stop
+    if identity is not None:
+        refused = _physical_refusal(keys, *identity)
+        if refused:
+            return refused
+    for key in keys:
+        default_storage.delete(key)
+    if identity is not None and any(default_storage.exists(key) for key in keys):
+        return "exclusao_nao_comprovada"
+    return ""
+
+
+def _kept_as(candidate: Candidate, now: datetime, foreign: set[str]) -> str:
+    """Return the count a retained candidate falls under; empty when it may be claimed.
+
+    The refusal runs before a claim exists and before an open claim (recovery)
+    deletes anything, so a refused original keeps its bytes and its evidence.
+    """
+    decision = retention_decision(candidate.client_id, candidate.expires_at, now=now)
+    if not decision.eligible:
+        return "held" if decision.reason == "legal_hold" else "retained"
+    if foreign.intersection(candidate.keys):
+        return "retained"  # another tenant's row names one of these keys
+    return "retained" if disposal_refusal(candidate) else ""
+
+
+def _finish(tid: UUID, client_id: UUID, claim_id: UUID, now: datetime) -> bool:
+    """Complete one claim once; an overlapping run that finished it first wins."""
+    with tenant_context(tid):
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=client_id)
+        claim = ContentPurgeClaim.objects.select_for_update().get(pk=claim_id)
+        if claim.completed_at is not None:
+            return False
+        _redact(claim, now)
+        claim.completed_at = now
+        claim.error_code = ""
+        claim.save(update_fields=["completed_at", "error_code"])
+        return True
+
+
+def _count(tid: UUID, claim_id: UUID, outcome: str, counts: dict[str, int]) -> None:
+    """Count one disposal; an unproved one leaves its claim open with the reason."""
+    if outcome == PURGED:
+        counts["purged"] += 1
+    elif outcome != COMPLETED:
+        counts["retained" if outcome in PROOF_REFUSALS else "failed"] += 1
+        with tenant_context(tid):
+            ContentPurgeClaim.objects.filter(pk=claim_id, completed_at=None).update(
+                error_code=outcome
+            )
+
+
+def _foreign_or_none(tid: UUID, keys: list[str]) -> set[str] | None:
+    """Return the keys another tenant's rows name, or None when the lookup fails."""
+    try:
+        return foreign_storage_keys(tid, keys, default_storage)
+    except Exception:
+        logger.exception("ownership lookup failed for tenant %s", tid)
+        return None
+
+
+def _foreign_for(tid: UUID, batch: set[str] | None, candidate: Candidate) -> set[str]:
+    """Return the batch result, or redo it for this candidate if the batch failed.
+
+    A candidate whose own lookup also fails counts every key as another tenant's:
+    it is kept, and neither failure stops the sweep (AXRM-051).
+    """
+    if batch is not None:
+        return batch
+    own = _foreign_or_none(tid, list(candidate.keys))
+    return set(candidate.keys) if own is None else own
+
+
 def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
     """Honor holds committed before the deletion claim and retain retry evidence."""
     assert_no_transaction()
@@ -261,7 +636,10 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
         if not tenant_has(tid, "cycles_r1"):
             return counts
         candidates = _candidates()
+    # Storage keys are global: a key a row of another tenant names is never deleted.
+    batch = _foreign_or_none(tid, [key for c in candidates for key in c.keys])
     for candidate in candidates:
+        foreign = _foreign_for(tid, batch, candidate)
         with tenant_context(tid):
             # PLATFORM_QUERY_OK: cancellation and deletion claims share this fence.
             tenant = Tenant.objects.select_for_update(no_key=True).get(pk=tid)
@@ -273,13 +651,21 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             ClientCompany.objects.select_for_update(no_key=True).get(
                 pk=candidate.client_id
             )
+            if candidate.kind == "document":
+                # Promotion repoints a document only under this row lock and only
+                # while no claim exists: the row read and the claim are one step.
+                list(
+                    Document.objects.select_for_update(no_key=True)
+                    .filter(pk=candidate.id)
+                    .values_list("pk", flat=True)
+                )
             fresh_rows = _candidates(candidate)
             if not fresh_rows:
                 continue
             fresh = fresh_rows[0]
-            decision = retention_decision(fresh.client_id, fresh.expires_at, now=now)
-            if not decision.eligible:
-                counts["held" if decision.reason == "legal_hold" else "retained"] += 1
+            kept = _kept_as(fresh, now, foreign)
+            if kept:
+                counts[kept] += 1
                 continue
             counts["eligible"] += 1
             if dry_run:
@@ -293,27 +679,18 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             if claim.completed_at is not None:
                 continue
             claim_id, keys = claim.pk, tuple(claim.storage_keys)
-        try:
-            assert_no_transaction()
-            for key in keys:
-                default_storage.delete(key)
-        except (OSError, BotoCoreError, ClientError):
-            counts["failed"] += 1
-            with tenant_context(tid):
-                ContentPurgeClaim.objects.filter(pk=claim_id).update(
-                    error_code="storage_failed"
-                )
-            continue
-        with tenant_context(tid):
-            ClientCompany.objects.select_for_update(no_key=True).get(
-                pk=candidate.client_id
-            )
-            claim = ContentPurgeClaim.objects.select_for_update().get(pk=claim_id)
-            _redact(claim, now)
-            claim.completed_at = now
-            claim.error_code = ""
-            claim.save(update_fields=["completed_at", "error_code"])
-            counts["purged"] += 1
+            identity = _identity(fresh)
+        # A recovered claim deletes only the keys it was taken for and that the
+        # row still names, checked under their locks (`_locked_stop`).
+        outcome = _dispose(
+            tid,
+            client_id=candidate.client_id,
+            claim_id=claim_id,
+            keys=keys,
+            identity=identity,
+            now=now,
+        )
+        _count(tid, claim_id, outcome, counts)
     return counts
 
 

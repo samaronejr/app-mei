@@ -38,6 +38,7 @@ from apps.clients.models import ClientCompany, Engagement
 from apps.core.flags import tenant_has
 from apps.cycles.models import ServiceCycle
 from apps.cycles.openers import CLOSED_STATES, fallback_owner, open_once, owner_for
+from apps.cycles.retention_records import ContentPurgeClaim
 from apps.cycles.services.exceptions import ExceptionReason
 from apps.integrations.models import (
     ACTIVE_ISSUE_STATES,
@@ -444,6 +445,23 @@ def _validate_evidence(document: Document | None, client: ClientCompany) -> None
         raise ValidationError(message, code="evidence_document")
 
 
+def _refuse_disposed(document: Document | None) -> None:
+    """Refuse evidence whose retention disposal has started (AXRM-051).
+
+    Read under the client lock the purge claims under: a claim that committed first
+    is seen here, and a purge that comes later sees this authority use.
+    """
+    if document is None:
+        return
+    claimed = ContentPurgeClaim.objects.filter(
+        content_kind="document", content_id=document.pk
+    ).exists()
+    purged = Document.objects.filter(pk=document.pk, purged_at__isnull=False)
+    if claimed or purged.exists():
+        message = "Este documento está em remoção pelo prazo de guarda."
+        raise ValidationError(message, code="evidence_document")
+
+
 def _locked_head(
     actor: User, client_id: UUID, service: str, expected_version: int
 ) -> tuple[ClientCompany, AuthorityRecord | None]:
@@ -514,6 +532,7 @@ def declare_authority(  # noqa: PLR0913 - the rendered form's fields plus the cl
     _validate_evidence(evidence_document, visible)
     with transaction.atomic():
         client, head = _locked_head(actor, client_id, service, expected_version)
+        _refuse_disposed(evidence_document)
         # A revision whose validity ended -- active or still pending verification --
         # can be declared again; otherwise a pending declaration that lapsed before
         # anyone verified it could never be verified, revoked or replaced.

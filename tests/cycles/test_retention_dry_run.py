@@ -4,6 +4,7 @@ import hashlib
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from django.core.files.base import ContentFile
@@ -41,7 +42,7 @@ def old_original(setup: CycleSetup) -> Document:
         resolved_due_date=date(2018, 10, 20),
     )
     contents = b"retention source original"
-    key = default_storage.save("retained/aged.pdf", ContentFile(contents))
+    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(contents))
     document = Document.objects.create(
         tenant=setup.tenant,
         client=setup.client,
@@ -174,7 +175,9 @@ def test_fresh_standalone_original_cannot_be_deleted(
     setup = cycle_setup("retention-backstop")
     contents = b"retention protected original"
     with tenant_context(setup.tenant.pk):
-        key = default_storage.save("retained/original.bin", ContentFile(contents))
+        key = default_storage.save(
+            f"originals/{uuid4().hex}.bin", ContentFile(contents)
+        )
         document = Document.objects.create(
             tenant=setup.tenant,
             client=setup.client,
