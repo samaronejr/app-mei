@@ -20,8 +20,10 @@ AXRM-016 (plan todo 16; A6 SP-SIT-P/SP-SIT-R, A7.3, A7.4).
   finalization, quarantine and report progress. The fenced admission hook checks
   the maximum announced deadline at reserve, claim and dispatch start.
 * A paid PDF and its report association commit together before finalization.
-  Every report state can adopt it, including `limite_de_tentativas`. A failure
-  before that private commit remains the disclosed pre-durable window.
+  Every report state can adopt it, including `limite_de_tentativas`. A paid PDF
+  that cannot be kept ends the report as `falha` before finalization, so a late
+  finalization never turns it into another emission. A failure before either
+  commit remains the disclosed pre-durable window.
 
 The PDF is never parsed: it is stored as an actor-less, portal-invisible
 `provedor_federal` original through `ingest_system_document` and must pass the
@@ -140,6 +142,13 @@ MAX_WAIT_MS: Final = 86_400_000
 ENVELOPE_MARGIN: Final = 4096
 MAX_REPORT_BYTES: Final = (XML_LIMIT - ENVELOPE_MARGIN) // 4 * 3
 NOT_STORED: Final = "relatorio_nao_armazenado"
+_PDF_STORAGE_FAILURES: Final = (
+    UploadScannerOff,
+    UploadRejected,
+    OSError,
+    BotoCoreError,
+    ClientError,
+)
 # Rescheduling a delivery that found another runner's live lease.
 LEASE_MARGIN: Final = timedelta(seconds=30)
 INVALID_REPLY: Final = "resposta_sitfis_invalida"
@@ -263,9 +272,10 @@ class SitfisAdapter:
     A malformed success is a failed call (billed by its HTTP status), never a
     success whose processing could raise after finalization. A valid reply is
     written to the report before the protocol finalizes the call: the protocol,
-    SERPRO's wait, and the paid PDF stored as a private original. Whoever applies
-    the call later (this runner, a redelivery, a runner taking over an expired
-    lease) uses that record, so a received reply is never lost or bought again.
+    SERPRO's wait, and the paid PDF stored as a private original, or the report's
+    billed failure when that PDF cannot be kept. Whoever applies the call later
+    (this runner, a redelivery, a runner taking over an expired lease) uses that
+    record, so a received reply is never lost or bought again.
     """
 
     def __init__(self, inner: SerproAdapter, tenant_id: UUID, report_id: UUID) -> None:
@@ -345,13 +355,7 @@ class SitfisAdapter:
                 payload=self.reply.pdf,
             )
             self.reply.document_id = document.pk
-        except (
-            UploadScannerOff,
-            UploadRejected,
-            OSError,
-            BotoCoreError,
-            ClientError,
-        ) as error:
+        except _PDF_STORAGE_FAILURES as error:
             # Billed (by the HTTP 200) and never requested again automatically.
             logger.warning(
                 "SITFIS report not stored",
@@ -392,17 +396,22 @@ def ingest_system_document(
         )
 
     with report_writer(tenant_id, report_id):
-        return _ingest_document(
-            tenant_id=tenant_id,
-            client_id=_client_of(tenant_id, report_id),
-            origin=AcquisitionOrigin.FEDERAL_PROVIDER,
-            receipt_ref=str(call_id),
-            payload=payload,
-            filename=f"situacao-fiscal-{report_id}.pdf",
-            content_type="application/pdf",
-            retention_class=RetentionClass.FISCAL_EVIDENCE,
-            on_registered=associate,
-        )
+        try:
+            return _ingest_document(
+                tenant_id=tenant_id,
+                client_id=_client_of(tenant_id, report_id),
+                origin=AcquisitionOrigin.FEDERAL_PROVIDER,
+                receipt_ref=str(call_id),
+                payload=payload,
+                filename=f"situacao-fiscal-{report_id}.pdf",
+                content_type="application/pdf",
+                retention_class=RetentionClass.FISCAL_EVIDENCE,
+                on_registered=associate,
+            )
+        except _PDF_STORAGE_FAILURES:
+            # A waiting wire guard must see the terminal decision before it sends.
+            _end_not_stored(tenant_id, report_id, call_id)
+            raise
 
 
 def _receive(
@@ -411,6 +420,19 @@ def _receive(
     """Record this call's receipt in every call and report state."""
     with report_writer(tenant_id, report_id), tenant_context(tenant_id):
         _store_reply(_locked(report_id), call_id, reply)
+
+
+def _end_not_stored(tenant_id: UUID, report_id: UUID, call_id: UUID) -> None:
+    """End the report on a paid PDF that cannot be kept, under the writer mutex."""
+    with tenant_context(tenant_id):
+        report = _locked(report_id)
+        if report.document_id is not None or report.state in FINAL_STATES:
+            return
+        call = ProviderCall.objects.get(pk=call_id, client_id=report.client_id)
+        report.emission_attempts = max(
+            report.emission_attempts, _attempt_of(report, call)
+        )
+        _finish(report, FiscalReportState.FALHA, EMISSION_OPERATION, call)
 
 
 def _store_reply(

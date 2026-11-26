@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import nullcontext
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection, transaction
@@ -15,6 +17,7 @@ from django.db import connection, transaction
 from apps.core.tasks import assert_no_transaction
 from apps.core.tenancy import tenant_context
 from apps.cycles import intake
+from apps.cycles.evidence import quarantine_key
 from apps.obligations.models import Document, FiscalDocument
 from tests.obligations import test_fiscal_documents as direct
 from tests.obligations.fiscal_fixtures import nfse
@@ -92,3 +95,39 @@ def test_store_itself_refuses_before_storage(setup: PortalSetup, mode: str) -> N
     with tenant_context(setup.graph.tenant.pk):
         assert not Document.objects.exists()
         assert not FiscalDocument.objects.exists()
+
+
+class LocalDigestError(AssertionError):
+    """A defect in the application's own digest, outside the storage backend."""
+
+
+def test_local_verification_defect_is_not_a_storage_failure(
+    setup: PortalSetup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = nfse()
+    digest = hashlib.sha256(payload).hexdigest()
+    key = default_storage.save(
+        quarantine_key(setup.graph.tenant.pk, setup.graph.client.pk, "witness"),
+        ContentFile(payload),
+    )
+
+    class FailingDigest:
+        def __init__(self, data: bytes = b"") -> None:
+            if data:
+                self.update(data)
+
+        def update(self, _data: bytes) -> None:
+            raise LocalDigestError
+
+        def hexdigest(self) -> str:
+            return digest
+
+    monkeypatch.setattr(intake, "hashlib", SimpleNamespace(sha256=FailingDigest))
+    escaped: Exception | None = None
+    try:
+        intake._verify_object(key, len(payload), digest)
+    except Exception as error:  # noqa: BLE001 - classify whatever escapes
+        escaped = error
+    assert isinstance(escaped, LocalDigestError), (
+        f"A local verification defect escaped as {escaped!r}."
+    )

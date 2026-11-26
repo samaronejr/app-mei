@@ -7,11 +7,12 @@ P1a-c, P2a-b, P3a2, P3b2 and P4 are adapted here with the oracle the plan asks
 for: the same harness, the repaired expectation.
 """
 
+from __future__ import annotations
+
 import base64
 import threading
-from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -26,8 +27,9 @@ from apps.core.tenancy import tenant_context
 from apps.cycles.models import Exception as CycleException
 from apps.cycles.models import ServiceCycle
 from apps.cycles.scanning import EICAR, FakeScanner
-from apps.integrations.call_models import ProviderCall
+from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
 from apps.obligations.models import Document, FiscalSituationReport
+from apps.tenants.models import UsageKind, UsageRecord
 from tests.fakes.provider import Reply
 from tests.integrations.sitfis_support import (
     EMISSAO_MICROBRL,
@@ -42,6 +44,10 @@ from tests.integrations.sitfis_support import (
     world,
 )
 from tests.obligations.test_iss_retention_storage import ISSVault
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from uuid import UUID
 
 pytestmark = pytest.mark.django_db(transaction=True)
 __all__ = ["clock", "world"]
@@ -373,7 +379,7 @@ def test_bad_readback_of_paid_pdf_finalizes_without_custody_or_retry(
 ) -> None:
     save = default_storage.save
 
-    def save_wrong_bytes(name: str, content: ContentFile) -> str:
+    def save_wrong_bytes(name: str, content: ContentFile[bytes]) -> str:
         payload = content.read()
         return save(name, ContentFile(payload[:-1] + bytes([payload[-1] ^ 1])))
 
@@ -439,6 +445,108 @@ def _assert_unstored_paid_reply(world: World, monkeypatch: pytest.MonkeyPatch) -
     world.clock.advance(days=3)
     world.advance(report)
     assert len(world.sent("/Emitir")) == 1
+
+
+def _interrupt_first_read_back(
+    monkeypatch: pytest.MonkeyPatch, fault: Callable[[int], bytes]
+) -> list[str]:
+    open_object = default_storage.open
+    reads: list[str] = []
+
+    @contextmanager
+    def slow_read(name: str, mode: str = "rb") -> Iterator[File[bytes]]:
+        with open_object(name, mode) as stored:
+            if reads or not name.startswith("quarantine/") or mode != "rb":
+                yield stored
+                return
+            reads.append(name)
+            with patch.object(stored.file, "read", fault):
+                yield stored
+
+    monkeypatch.setattr(default_storage, "open", slow_read)
+    return reads
+
+
+@pytest.mark.parametrize(
+    "at_mutex_handoff", [False, True], ids=["redelivery", "mutex-handoff"]
+)
+def test_a_paid_pdf_whose_read_back_fails_after_the_lease_is_not_bought_again(
+    world: World, monkeypatch: pytest.MonkeyPatch, at_mutex_handoff: bool
+) -> None:
+    tasks, scheduled = _capture(monkeypatch)
+    report = _protocol(world)
+    scheduled.clear()
+    world.clock.advance(seconds=30)
+    world.script(report_reply())
+    mod = sitfis()
+    writer = mod.report_writer
+    handed_off = False
+    during_read: str | None = None
+
+    @contextmanager
+    def deliver_at_unlock(tenant_id: UUID, report_id: UUID) -> Iterator[None]:
+        nonlocal handed_off
+        try:
+            with writer(tenant_id, report_id):
+                yield
+        finally:
+            if reads and not handed_off:
+                # The next runner gets the first turn after custody releases
+                # the mutex, before the old runner can finalize or retry a lock.
+                handed_off = True
+                world.advance(report)
+
+    def retries_outlive_the_lease(_size: int) -> bytes:
+        nonlocal during_read
+        world.clock.advance(seconds=121)
+        if at_mutex_handoff:
+            during_read = world.advance(report).state
+            world.clock.advance(seconds=61)
+            world.script(report_reply())
+        raise RetriesExceededError(TimeoutError())
+
+    reads = _interrupt_first_read_back(monkeypatch, retries_outlive_the_lease)
+    if at_mutex_handoff:
+        monkeypatch.setattr(mod, "report_writer", deliver_at_unlock)
+    first = tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
+    if not at_mutex_handoff:
+        # A normal redelivery after the 60-second default wait.
+        world.clock.advance(seconds=61)
+        world.script(report_reply())
+        tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
+    assert len(world.sent("/Emitir")) == 1
+    assert handed_off == at_mutex_handoff
+    assert during_read == ("aguardando" if at_mutex_handoff else None)
+    assert len(reads) == 1
+    current = world.reload(report)
+    assert (first, current.state, current.document_id) == ("falha", "falha", None)
+    assert _documents(world) == 0
+    assert _problems(world) == ["aberta"]
+    assert scheduled == []
+    _assert_paid_late_observation(world)
+
+
+def _assert_paid_late_observation(world: World) -> None:
+    [call] = world.calls("SP-SIT-R")
+    with tenant_context(world.tenant_id):
+        late = ProviderCallAttempt.objects.get(call=call, observation="late")
+        usage = list(
+            UsageRecord.objects.filter(metric="serpro_emissao").values_list(
+                "kind", "quantity"
+            )
+        )
+    # The lease fence is unchanged: the call stays uncertain, its billed reply kept.
+    assert call.state == CallState.UNCERTAIN
+    assert (late.outcome, late.http_status, late.provider_code, late.billed) == (
+        CallState.FAILED,
+        200,
+        "relatorio_nao_armazenado",
+        "sim",
+    )
+    assert usage == [(UsageKind.CONFIRMED, 1)]
+    budget = world.budget()
+    assert budget.reserved == 0
+    assert budget.known_liability + budget.uncertain_exposure == EMISSAO_MICROBRL
 
 
 def test_an_s3_error_on_a_paid_pdf_is_billed_and_owned(

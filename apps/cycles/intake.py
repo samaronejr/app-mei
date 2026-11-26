@@ -220,9 +220,7 @@ class QuarantineStorageError(OSError):
 class QuarantineRequiredError(Exception):
     """The authorized DB preflight found no reusable row. No INSERT has run."""
 
-    def __init__(
-        self, key: str, address: str, store: Callable[[], _Held]
-    ) -> None:
+    def __init__(self, key: str, address: str, store: Callable[[], _Held]) -> None:
         """Bind the exact authorized byte and tenant identity for the storage phase."""
         super().__init__("Initial quarantine needs an idle connection.")
         self.key, self.address, self.store = key, address, store
@@ -287,22 +285,14 @@ def tenant_quarantine[R](tenant_id: UUID, register: Callable[[], R]) -> R:
     return quarantine_phases(scoped)
 
 
-def _verify_object(key: str, size: int, digest: str) -> None:
-    """Count and hash the bytes actually read, bounded even for an oversized object."""
-    assert_no_transaction()
-    received = 0
-    checksum = hashlib.sha256()
+def _read_back(key: str, limit: int) -> bytes:
+    """Read at most `limit` stored bytes; only backend failures become typed."""
     try:
         with default_storage.open(key, "rb") as stored:
-            while received <= size:
-                block = stored.read(min(CHUNK_BYTES, size - received + 1))
-                if not block:
-                    break
-                received += len(block)
-                checksum.update(block)
-    except Exception as error:  # noqa: BLE001 - normalize only this backend read
+            data: bytes = stored.read(limit)
+    except Exception as error:
         # Managed downloads can raise non-I/O exceptions while decoding a response.
-        # Exception text can contain object keys or endpoints; record the origin instead.
+        # Never log exception text, which can name the object or its endpoint.
         frame = extract_tb(error.__traceback__, limit=-1)[0]
         logger.warning(
             "Quarantine read-back failed: %s at %s:%d (%s)",
@@ -313,7 +303,14 @@ def _verify_object(key: str, size: int, digest: str) -> None:
         )
         msg = "Quarantine integrity check failed: object could not be read."
         raise QuarantineStorageError(msg) from error
-    if received != size or checksum.hexdigest() != digest:
+    return data
+
+
+def _verify_object(key: str, size: int, digest: str) -> None:
+    """Compare the stored bytes, reading at most one byte past `size`."""
+    assert_no_transaction()
+    stored = _read_back(key, size + 1)
+    if len(stored) != size or hashlib.sha256(stored).hexdigest() != digest:
         msg = "Quarantine integrity check failed: size or digest mismatch."
         raise QuarantineStorageError(msg)
 

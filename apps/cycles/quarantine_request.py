@@ -47,6 +47,7 @@ def dispatch_upload(
     response = get_response(request)
     if not isinstance(response, _PendingUpload):
         return response
+
     # ATOMIC_REQUESTS and the scoped role have unwound. Re-enter them under
     # the mutex: membership, scanner and request visibility can all change.
     def register() -> HttpResponseBase:

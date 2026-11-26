@@ -1,11 +1,11 @@
 """S15 C: the same bytes twice give one Document and two links, with no error."""
 
 import hashlib
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
 from threading import Barrier, local
+from typing import TYPE_CHECKING
 
 import pytest
 from django.db import connection, connections
@@ -23,6 +23,9 @@ from apps.cycles.models import (
 )
 from apps.obligations.models import Document
 from tests.portal.request_fixtures import PortalSetup, portal_setup, upload
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -121,7 +124,9 @@ def test_concurrent_identical_uploads_leave_only_the_claimed_object(
         links = list(EvidenceLink.objects.filter(document=document))
     assert {link.request_id for link in links} == {setup.request.pk, second.pk}
     assert sorted(link.relinked for link in links) == [False, True]
-    stored = {p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()}
+    stored = {
+        p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()
+    }
     assert stored == {claim}
 
 
