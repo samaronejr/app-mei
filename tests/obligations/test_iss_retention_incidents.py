@@ -215,10 +215,15 @@ def test_pre_sequence_legacy_incident_is_retained_and_blocks_recovery(
     before = ("audit", "0007_datasubjectrequest_notification_bookkeeping")
     with _as_migrator():
         executor = MigrationExecutor(connection)
+        expected_reverse = [("audit", "0008_fiscal_event_order", True)]
+        backfill = ("obligations", "0031_backfill_iss_retention_party")
+        if backfill in executor.loader.graph.nodes:
+            # The backfill reads fiscal_order, so it must be unapplied first.
+            expected_reverse.insert(0, (*backfill, True))
         assert [
             (m.app_label, m.name, reverse)
             for m, reverse in executor.migration_plan([before])
-        ] == [("audit", "0008_fiscal_event_order", True)]
+        ] == expected_reverse
         executor.migrate([before])
         old_event = executor.loader.project_state([before]).apps.get_model(
             "audit", "Event"

@@ -1,4 +1,4 @@
-"""Reconcile the ISS party before re-enabling consumers after a code revert."""
+"""Backfill the ISS retention party before re-enabling readers after a code revert."""
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connections
