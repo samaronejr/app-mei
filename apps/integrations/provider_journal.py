@@ -106,6 +106,18 @@ def tenant_ids() -> set[UUID]:
     return _prefix_tenants("provider-journal") | _prefix_tenants(FIRM_PREFIX)
 
 
+def object_keys(tenant_id: UUID) -> tuple[list[str], list[str]]:
+    """List one tenant's client and firm journal object keys, outside transactions."""
+    assert_no_transaction()
+    try:
+        return (
+            list(_paths(f"provider-journal/{tenant_id}")),
+            list(_paths(f"{FIRM_PREFIX}/{tenant_id}")),
+        )
+    except (OSError, BotoCoreError, ClientError):
+        raise JournalError from None
+
+
 def read(tenant_id: UUID) -> list[JournalRecord]:
     """Read outside transactions; malformed objects fail the whole inventory."""
     assert_no_transaction()
