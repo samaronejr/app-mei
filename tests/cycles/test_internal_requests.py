@@ -37,7 +37,7 @@ from tests.cycles.approval_fixtures import SIGNAL_TIMEOUT, LockSignal
 from tests.cycles.internal_request_fixtures import (
     attach_filing,
     filing_subject,
-    prior_ordinary_cutover,
+    legacy_guide_requests,
     upload_for_internal_review,
 )
 from tests.cycles.portal_upgrade_fixtures import migration_owner
@@ -279,6 +279,7 @@ def test_database_enforces_internal_identity_and_attribution(
 
 
 def test_migration_adopts_only_the_legacy_guide(setup: PortalSetup) -> None:
+    """Both title- and provenance-adopted guides round-trip to their exact old rows."""
     executor = MigrationExecutor(connection)
     assert NEW in executor.loader.graph.nodes, "The purpose migration is absent."
     old = executor.loader.project_state([OLD])
@@ -288,82 +289,66 @@ def test_migration_adopts_only_the_legacy_guide(setup: PortalSetup) -> None:
     with migration_owner():
         executor.unapply_migration(old, migration)
         try:
-            fields = {
-                "tenant_id": graph.tenant.pk,
-                "client_id": graph.client.pk,
-                "cycle_id": setup.cycle.pk,
-                "title": "Guia DAS oficial",
-                "created_by_id": graph.actor.pk,
-                "required": False,
-            }
-            namesake = legacy.create(**fields, state="interno")
-            prior_ordinary_cutover(setup, namesake.pk)
-            guide = legacy.create(**fields, state="interno")
-            other = legacy.create(**fields, state="solicitado")
-            duplicate = legacy.create(**fields, state="interno")
-            peer_scope = {
-                **fields,
-                "client_id": setup.other_client.pk,
-                "cycle_id": setup.other_request.cycle_id,
-            }
-            peer_namesake = legacy.create(**peer_scope, state="interno")
-            recovered = legacy.create(
-                **{**peer_scope, "title": "Renamed"}, state="interno"
-            )
-            old.apps.get_model("cycles", "CycleEvent")._base_manager.create(
-                tenant_id=graph.tenant.pk,
-                client_id=setup.other_client.pk,
-                cycle_id=setup.other_request.cycle_id,
-                actor_id=graph.actor.pk,
-                type="request.created",
-                aggregate_type="EvidenceRequest",
-                aggregate_id=recovered.pk,
-                aggregate_version=1,
-                payload={"origin": "pgmei"},
-            )
+            guide_id, expected = legacy_guide_requests(old.apps, setup)
+            rows = legacy.filter(tenant_id=graph.tenant.pk).order_by("pk")
+            before = list(rows.values())
         finally:
             executor.apply_migration(old.clone(), migration)
     with tenant_context(graph.tenant.pk):
-        expected = {row.pk: None for row in (namesake, peer_namesake, other, duplicate)}
-        expected_purposes = {**expected, guide.pk: GUIDE, recovered.pk: GUIDE}
-        retained = EvidenceRequest.objects.filter(pk__in=expected_purposes)
-        assert dict(retained.values_list("pk", "purpose")) == expected_purposes
-        assert requests.ensure_internal_request(setup.cycle, GUIDE).pk == guide.pk
+        retained = EvidenceRequest.objects.filter(pk__in=expected)
+        assert dict(retained.values_list("pk", "purpose")) == expected
+        assert requests.ensure_internal_request(setup.cycle, GUIDE).pk == guide_id
+    with migration_owner():
+        try:
+            executor.unapply_migration(old, migration)
+        except IrreversibleError as error:
+            msg = "Rollback refused human-authored guides"
+            raise AssertionError(msg) from error
+        try:
+            assert NEW not in executor.recorder.applied_migrations()
+            assert list(rows.values()) == before
+        finally:
+            executor.apply_migration(old.clone(), migration)
 
 
-@pytest.mark.parametrize(
-    "staff_municipal", [False, True], ids=["system", "staff-municipal"]
-)
-def test_reverse_refuses_purposed_requests(
-    setup: PortalSetup, staff_municipal: bool
+@pytest.mark.parametrize("has_system", [False, True], ids=["staff-only", "system"])
+def test_reverse_refuses_only_system_requests(
+    setup: PortalSetup, has_system: bool
 ) -> None:
     executor = MigrationExecutor(connection)
     assert NEW in executor.loader.graph.nodes
     old = executor.loader.project_state([OLD])
     migration = executor.loader.get_migration(*NEW)
     graph = setup.graph
-    link = None
     with tenant_context(graph.tenant.pk):
-        if staff_municipal:
-            request = requests.ensure_internal_request(
-                setup.cycle,
-                MUNICIPAL,
-                obligation=filing_subject(setup),
-                actor=graph.actor,
-            )
-            link, _ = attach_filing(setup, request)
-        else:
-            request = requests.ensure_internal_request(setup.cycle, PERIOD)
+        staff = requests.ensure_internal_request(
+            setup.cycle, MUNICIPAL, obligation=filing_subject(setup), actor=graph.actor
+        )
+        link, _ = attach_filing(setup, staff)
+        system = (
+            requests.ensure_internal_request(setup.cycle, PERIOD)
+            if has_system
+            else None
+        )
     with migration_owner():
         try:
-            with pytest.raises(IrreversibleError):
-                executor.unapply_migration(old, migration)
+            executor.unapply_migration(old, migration)
+        except IrreversibleError:
+            assert has_system, "A staff-authored request must not prevent rollback"
+        except IntegrityError as error:
+            msg = "Rollback reached DDL with a system request"
+            raise AssertionError(msg) from error
+        else:
+            assert not has_system, "Rollback accepted a system-created request"
         finally:
             if NEW not in executor.recorder.applied_migrations():
                 executor.apply_migration(old.clone(), migration)
-    retained = setup.reload(request)
-    assert retained.purpose == (MUNICIPAL if staff_municipal else PERIOD)
-    assert retained.created_by_id == (graph.actor.pk if staff_municipal else None)
-    if link is not None:
-        with tenant_context(graph.tenant.pk):
-            assert EvidenceLink.objects.filter(pk=link.pk, request=request).exists()
+    retained = setup.reload(staff)
+    assert retained.created_by_id == graph.actor.pk
+    assert retained.purpose == (MUNICIPAL if has_system else None)
+    with tenant_context(graph.tenant.pk):
+        assert EvidenceLink.objects.filter(pk=link.pk, request=staff).exists()
+    if system is not None:
+        retained = setup.reload(system)
+        assert retained.purpose == PERIOD
+        assert retained.created_by_id is None

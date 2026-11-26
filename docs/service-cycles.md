@@ -65,7 +65,7 @@ it is not an account ID. A human-authored request keeps its actual creator UUID.
 The underlying system request and its creation event have no human author.
 This encoding keeps the published V1 schema and archived V1 generations intact.
 
-The request-purpose migration can be reversed only while no request carries a
-purpose. This includes guide requests adopted during the upgrade and municipal
-proof created by staff. After that point use a forward repair: dropping the
-purpose would let a municipal filing be mistaken for a payment receipt.
+Before the first system-created request, the request-purpose migration can be
+reversed. Adoption adds only a purpose to an existing human-authored guide;
+dropping that column restores its original row. Once a request has no human
+creator, the old schema cannot represent it. Use a forward repair instead.

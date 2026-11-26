@@ -2,6 +2,8 @@
 
 from uuid import UUID
 
+from django.apps.registry import Apps
+
 from apps.audit.models import Event as AuditEvent
 from apps.cycles.evidence import (
     DocumentIntake,
@@ -108,3 +110,48 @@ def prior_ordinary_cutover(setup: PortalSetup, request_id: UUID) -> None:
             "reason": "revision_gap_or_duplicate",
         },
     )
+
+
+def legacy_guide_requests(
+    apps: Apps, setup: PortalSetup
+) -> tuple[UUID, dict[UUID, str | None]]:
+    """Seed the pre-purpose schema with a title match, a recorded guide and decoys."""
+    legacy = apps.get_model("cycles", "EvidenceRequest")._base_manager
+    graph = setup.graph
+    fields = {
+        "tenant_id": graph.tenant.pk,
+        "client_id": graph.client.pk,
+        "cycle_id": setup.cycle.pk,
+        "title": "Guia DAS oficial",
+        "created_by_id": graph.actor.pk,
+        "required": False,
+    }
+    namesake = legacy.create(**fields, state="interno")
+    prior_ordinary_cutover(setup, namesake.pk)
+    guide = legacy.create(**fields, state="interno", version=3)
+    other = legacy.create(**fields, state="solicitado")
+    duplicate = legacy.create(**fields, state="interno")
+    peer = {
+        **fields,
+        "client_id": setup.other_client.pk,
+        "cycle_id": setup.other_request.cycle_id,
+    }
+    peer_namesake = legacy.create(**peer, state="interno")
+    recovered = legacy.create(**{**peer, "title": "Renamed"}, state="interno")
+    apps.get_model("cycles", "CycleEvent")._base_manager.create(
+        tenant_id=graph.tenant.pk,
+        client_id=setup.other_client.pk,
+        cycle_id=setup.other_request.cycle_id,
+        actor_id=graph.actor.pk,
+        type="request.created",
+        aggregate_type="EvidenceRequest",
+        aggregate_id=recovered.pk,
+        aggregate_version=1,
+        payload={"origin": "pgmei"},
+    )
+    purposes = {row.pk: None for row in (namesake, peer_namesake, other, duplicate)}
+    return guide.pk, {
+        **purposes,
+        guide.pk: "guia_das_oficial",
+        recovered.pk: "guia_das_oficial",
+    }

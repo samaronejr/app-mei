@@ -39,21 +39,21 @@ FROM adopted WHERE r.id = adopted.id;
 """
 
 
-def refuse_reverse_with_purposes(
+def refuse_reverse_with_system_requests(
     apps: Apps, schema_editor: BaseDatabaseSchemaEditor
 ) -> None:
-    """Keep the meaning of every purposed row, even when a human created it."""
+    """The old schema cannot represent a request without a human creator."""
     schema_editor.execute(
         "LOCK TABLE public.cycles_evidencerequest IN ACCESS EXCLUSIVE MODE"
     )
     request = apps.get_model("cycles", "EvidenceRequest")
-    # CROSS_TENANT_OK: a stored purpose in any firm requires forward repair.
+    # CROSS_TENANT_OK: restoring NOT NULL requires a creator on every firm's rows.
     if (
         request._base_manager.using(schema_editor.connection.alias)
-        .filter(purpose__isnull=False)
+        .filter(created_by__isnull=True)
         .exists()
     ):
-        msg = "Requests with stable purposes exist; keep them and use forward repair."
+        msg = "System-created requests have no human creator; use forward repair."
         raise IrreversibleError(msg)
 
 
@@ -123,7 +123,10 @@ class Migration(migrations.Migration):
                 name="evidencerequest_purpose_uniq",
             ),
         ),
+        # Adoption changes only purpose; reversing AddField removes it.
         migrations.RunSQL(ADOPT_GUIDES, migrations.RunSQL.noop),
         # Last forwards, FIRST backwards: refuse before removing any control.
-        migrations.RunPython(migrations.RunPython.noop, refuse_reverse_with_purposes),
+        migrations.RunPython(
+            migrations.RunPython.noop, refuse_reverse_with_system_requests
+        ),
     ]
