@@ -188,6 +188,14 @@ APPROVED_LITERAL_SOURCES: Final[dict[LiteralPin, str]] = {
         "assert_fact's outcome comparison; not an obligation status."
     ),
     LiteralPin(
+        "apps/cycles/retention_inventory.py",
+        "unknown",
+        'UNKNOWN: Final = "unknown"',
+    ): (
+        "AXRM-051: the retention inventory's lifecycle state for a bucket rule it "
+        "cannot read or interpret, not the onboarding status whose value it shares."
+    ),
+    LiteralPin(
         "apps/obligations/coverage.py",
         "unknown",
         'UNKNOWN: Final = "unknown"',

@@ -77,6 +77,11 @@ FIELD_CLASSES: Final[Mapping[str, str]] = {
 }
 
 
+# The lifecycle state of a rule this inventory does not interpret, or could not
+# read: the inventory's own vocabulary, not a model status.
+UNKNOWN: Final = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class Lifecycle:
     """What the bucket's noncurrent-version expiry is known to be.
@@ -102,7 +107,7 @@ def lifecycle(storage: Storage) -> Lifecycle:
     if single_copy_storage(storage):
         return Lifecycle("single-copy")
     if not isinstance(storage, S3Storage):
-        return Lifecycle("unknown")
+        return Lifecycle(UNKNOWN)
     client, bucket = _s3(storage)
     try:
         config = client.get_bucket_lifecycle_configuration(Bucket=bucket)
@@ -110,7 +115,7 @@ def lifecycle(storage: Storage) -> Lifecycle:
         code = error.response.get("Error", {}).get("Code")
         # An S3-compatible endpoint may answer this while a native rule exists.
         return Lifecycle(
-            "unverified" if code == "NoSuchLifecycleConfiguration" else "unknown"
+            "unverified" if code == "NoSuchLifecycleConfiguration" else UNKNOWN
         )
     rules: list[tuple[str, int]] = []
     for rule in config.get("Rules", []):
@@ -119,7 +124,7 @@ def lifecycle(storage: Storage) -> Lifecycle:
         expiry = rule.get("NoncurrentVersionExpiration", {})
         selector = rule.get("Filter", {"Prefix": rule.get("Prefix", "")})
         if "NewerNoncurrentVersions" in expiry or set(selector) - {"Prefix"}:
-            return Lifecycle("unknown")
+            return Lifecycle(UNKNOWN)
         if expiry.get("NoncurrentDays"):
             rules.append(
                 (str(selector.get("Prefix", "")), int(expiry["NoncurrentDays"]))
