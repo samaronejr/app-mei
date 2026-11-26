@@ -67,6 +67,8 @@ from apps.cycles.retention import (
     open_stored,
     ownership_refusal,
     physical_identity,
+    resolves_to_document_final,
+    resolves_under,
     rows_storage,
     single_copy_storage,
     storage_keys_locked,
@@ -595,7 +597,18 @@ def _copy_is_spare(
     is gone or no longer the original, or the copy itself is not the original.
     """
     if (
-        LegalHold.objects.filter(client_id=intake.client_id, released_at=None).exists()
+        # Cleanup deletes only inside its own kind's names, on the resolved
+        # name: the copy under this client's quarantine prefix, the final in a
+        # documented form. Any other object, of any kind, is kept (AXRM-051).
+        not resolves_under(
+            ticket.object_key,
+            f"quarantine/{ticket.tenant_id}/{intake.client_id}/",
+            storage,
+        )
+        or not resolves_to_document_final(ticket.storage_key, ticket.tenant_id, storage)
+        or LegalHold.objects.filter(
+            client_id=intake.client_id, released_at=None
+        ).exists()
         or _disposal_started(intake.document_id)
         # The copy may be the final itself under another name: never "spare".
         or _may_be_one_object(storage, ticket.object_key, ticket.storage_key)

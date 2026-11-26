@@ -290,3 +290,59 @@ def test_an_ordinary_row_never_deletes_a_held_clients_archive(
     assert default_storage.exists(export.storage_key)
     with tenant_context(tenant.pk):
         assert not ContentPurgeClaim.objects.filter(content_id=alias.pk).exists()
+
+
+def test_a_copy_an_archive_row_names_is_never_deleted_through_a_document(
+    settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    setup, export, _document = ready_export(settings, tmp_path, "archive-names-copy")
+    tenant = setup.graph.tenant
+    with tenant_context(tenant.pk):
+        sibling = ClientCompany.objects.create(
+            tenant=tenant, cnpj=make_cnpj("510510510002"), legal_name="Sibling"
+        )
+        kind, _ = ObligationType.objects.get_or_create(
+            code="DAS", defaults={"name": "DAS", "periodicity": "monthly"}
+        )
+        old = Obligation.objects.create(
+            tenant=tenant,
+            client=sibling,
+            obligation_type=kind,
+            competence_month=date(2018, 9, 1),
+            nominal_due_date=date(2018, 10, 20),
+            resolved_due_date=date(2018, 10, 20),
+        )
+        payload = b"%PDF-1.7\n"
+        alias = Document.objects.create(
+            tenant=tenant,
+            client=sibling,
+            obligation=old,
+            storage_key=default_storage.save(
+                f"originals/{uuid4().hex}.pdf", ContentFile(payload)
+            ),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            original_filename="alias.pdf",
+            content_type="application/pdf",
+            byte_size=len(payload),
+            uploaded_by=setup.graph.actor,
+            acquisition_origin=AcquisitionOrigin.UPLOAD_STAFF,
+            portal_visible=False,
+        )
+        # The document's own copy, inside its own prefix; a restored archive row
+        # names it, so only the archive lookup can keep it.
+        copy = default_storage.save(
+            f"quarantine/{tenant.pk}/{sibling.pk}/{uuid4().hex}", ContentFile(payload)
+        )
+        DocumentIntake.objects.create(
+            tenant=tenant,
+            client=sibling,
+            document=alias,
+            state=IntakeState.VERIFIED,
+            verdict=ScanVerdict.CLEAN,
+            quarantine_key=copy,
+            scanned_at=timezone.now(),
+        )
+        EvidenceExport.objects.filter(pk=export.pk).update(storage_key=copy)
+    assert export.expires_at is not None
+    purge_tenant(tenant.pk, dry_run=False, now=export.expires_at + timedelta(days=1))
+    assert default_storage.exists(copy)

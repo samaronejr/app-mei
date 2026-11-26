@@ -235,12 +235,53 @@ def _remote_identity(key: str, storage: Storage) -> bytes:
     equal. A name it refuses raises, and its identity is then unknown. A backend
     without such a resolution falls back to the lexical form (AXRM-051).
     """
+    return b"remote:" + _remote_name(key, storage).encode("utf-8", "surrogateescape")
+
+
+def _remote_name(key: str, storage: Storage) -> str:
     normalize = getattr(storage, "_normalize_name", None)
     if normalize is None:
-        name = posixpath.normpath(key.replace("\\", "/"))
-    else:
-        name = normalize(clean_name(key))
-    return b"remote:" + name.encode("utf-8", "surrogateescape")
+        return posixpath.normpath(key.replace("\\", "/"))
+    resolved: str = normalize(clean_name(key))
+    return resolved
+
+
+def resolves_under(key: str, prefix: str, storage: Storage) -> bool:
+    """Whether a key resolves strictly inside a prefix (the resolved name)."""
+    name = resolved_name(key, storage)
+    return name is not None and name.startswith(prefix) and len(name) > len(prefix)
+
+
+def resolves_to_document_final(key: str, tenant: object, storage: Storage) -> bool:
+    """Whether a key resolves to one of the names documents are written with.
+
+    A random single-segment key (intake), a fresh `originals/` key (remote
+    promotion) or this tenant's `qualification/` record; nothing else.
+    """
+    name = resolved_name(key, storage)
+    if name is None:
+        return False
+    return bool(
+        re.fullmatch(r"[A-Za-z0-9_-]+", name)
+        or re.fullmatch(r"originals/[^/]+", name)
+        or re.fullmatch(rf"qualification/{re.escape(str(tenant))}/[^/]+", name)
+    )
+
+
+def resolved_name(key: str, storage: Storage) -> str | None:
+    """Return the root-relative name the backend resolves a key to, or None.
+
+    Locally the real path the backend addresses, relative to the real root (None
+    when it leaves the root); remotely the backend's own resolution. Prefix and
+    shape checks read this name, never the spelling (AXRM-051).
+    """
+    try:
+        if not isinstance(storage, FileSystemStorage):
+            return _remote_name(key, storage)
+        path, root = _resolved(storage, key), real_root(storage)
+        return path.relative_to(root).as_posix() if _inside(path, root) else None
+    except Exception:  # noqa: BLE001 - a name that cannot be resolved is refused
+        return None
 
 
 def _resolved(storage: FileSystemStorage, key: str) -> Path:
