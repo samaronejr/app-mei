@@ -38,6 +38,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 from storages.backends.s3 import S3Storage
+from storages.utils import clean_name
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
@@ -2966,3 +2967,50 @@ def test_cleanup_through_another_storage_object_keeps_the_copy(world: World) -> 
     )
     assert outcome == scanning.ScanOutcome.VERIFIED
     assert default_storage.exists(intake.quarantine_key)
+
+
+@pytest.mark.parametrize("spelling", ["leading-slash", "leading-dotdot"])
+def test_a_remote_key_is_the_object_the_backend_resolves(
+    world: World, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    # The production backend itself, as configured there (no location); its own
+    # name resolution is all that is exercised, so no request is ever sent.
+    bucket = S3Storage(
+        bucket_name="axrm051-synthetic",
+        endpoint_url="https://storage.invalid",
+        access_key="synthetic-access",
+        secret_key="synthetic-secret",  # noqa: S106 - no request is ever sent
+    )
+    monkeypatch.setattr(retention, "rows_storage", lambda: bucket, raising=False)
+    key = f"originals/{uuid4().hex}.pdf"
+    held = f"/{key}" if spelling == "leading-slash" else f"../{key}"
+    # One object to S3 (the stubs do not declare its name resolution).
+    assert bucket._normalize_name(clean_name(held)) == key  # type: ignore[attr-defined]
+    _foreign_original(world, held)  # another tenant's held original, so spelled
+    refusal = retention.ownership_refusal(world.tenant_id, [key], storage=bucket)
+    assert refusal == "chave_compartilhada"
+
+
+def test_a_lock_name_that_cannot_be_computed_keeps_the_file(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, _ = _ordinary_pending(world, with_final=True)
+    named = retention._path_identity
+    failed: list[str] = []
+
+    def fails_once(key: str, storage: Storage) -> bytes:
+        if key == document.storage_key and not failed:
+            failed.append(key)  # the backend fails once, as the lock is named
+            message = "the backend failed once"
+            raise ValueError(message)
+        return named(key, storage)
+
+    monkeypatch.setattr(retention, "_path_identity", fails_once, raising=False)
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert failed == [document.storage_key]
+    assert default_storage.exists(document.storage_key)
+    claim = _claim(world, document.pk)
+    assert claim is not None
+    assert claim.completed_at is None

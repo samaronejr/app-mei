@@ -20,6 +20,7 @@ from django.core.files.storage import FileSystemStorage, Storage, default_storag
 from django.db import connection, transaction
 from django.db.models import QuerySet
 from django.http import Http404
+from storages.utils import clean_name
 
 from apps.accounts.models import User
 from apps.audit.services import ObjectRef, record_event
@@ -214,7 +215,7 @@ def physical_identity(key: str, storage: Storage) -> bytes:
     one by its lexical name (AXRM-051).
     """
     if not isinstance(storage, FileSystemStorage):
-        return _lexical_identity(key)
+        return _remote_identity(key, storage)
     path = _resolved(storage, key)
     try:
         status = _lstat(path)
@@ -225,10 +226,21 @@ def physical_identity(key: str, storage: Storage) -> bytes:
     return b"inode:%d:%d" % (status.st_dev, status.st_ino)
 
 
-def _lexical_identity(key: str) -> bytes:
-    return b"remote:" + posixpath.normpath(key.replace("\\", "/")).encode(
-        "utf-8", "surrogateescape"
-    )
+def _remote_identity(key: str, storage: Storage) -> bytes:
+    """Return the object a remote backend itself resolves a key to.
+
+    A backend that resolves names (django-storages' S3Storage strips a leading `/`
+    and folds `..` and `.` through `_normalize_name(clean_name(...))`) is asked
+    for its own resolution, so every spelling that names one object compares
+    equal. A name it refuses raises, and its identity is then unknown. A backend
+    without such a resolution falls back to the lexical form (AXRM-051).
+    """
+    normalize = getattr(storage, "_normalize_name", None)
+    if normalize is None:
+        name = posixpath.normpath(key.replace("\\", "/"))
+    else:
+        name = normalize(clean_name(key))
+    return b"remote:" + name.encode("utf-8", "surrogateescape")
 
 
 def _resolved(storage: FileSystemStorage, key: str) -> Path:
@@ -243,7 +255,7 @@ def _resolved(storage: FileSystemStorage, key: str) -> Path:
 def _path_identity(key: str, storage: Storage) -> bytes:
     """Return the name a lock takes for a key: the same before and after it exists."""
     if not isinstance(storage, FileSystemStorage):
-        return _lexical_identity(key)
+        return _remote_identity(key, storage)
     return b"path:" + os.fsencode(_resolved(storage, key))
 
 
@@ -497,15 +509,16 @@ def ownership_refusal(
     return local_layout_refusal(named, storage)
 
 
-def _key_lock_id(key: str, storage: Storage | None = None) -> int:
+def _key_lock_id(key: str, storage: Storage | None = None) -> int | None:
     # One lock per object, whatever spelling or storage root a caller holds.
     chosen = default_storage if storage is None else storage
     # Locks are named by path, which stays the same before and after the object
-    # exists; a key that cannot be resolved still gets a lock, never an error.
+    # exists. A name that cannot be computed is None: never a substitute lock,
+    # which another holder of the same object would not share (AXRM-051).
     try:
         name = _path_identity(key, chosen)
-    except Exception:  # noqa: BLE001 - its disposal is refused under the lock
-        name = b"unidentified:" + key.encode("utf-8", "surrogateescape")
+    except Exception:  # noqa: BLE001 - the caller refuses, keeping the bytes
+        return None
     digest = hashlib.sha256(b"axorim-storage-key:" + name).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
@@ -520,7 +533,12 @@ def storage_keys_locked(
     locks, outside any transaction, so verifying the bytes and deleting them (or
     checking for a claim and writing them) is one step no other holder can split.
     """
-    lock_ids = sorted({_key_lock_id(key, storage) for key in keys if key})
+    computed = {_key_lock_id(key, storage) for key in keys if key}
+    if None in computed:
+        # A lock that cannot be named is never taken: refused, nothing is touched.
+        yield False
+        return
+    lock_ids = sorted(lock_id for lock_id in computed if lock_id is not None)
     taken: list[int] = []
     try:
         with connection.cursor() as cursor:
