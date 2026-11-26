@@ -1199,12 +1199,26 @@ def test_a_receipt_retry_after_a_401_refused_at_claim_is_reported_as_stored(
         return real_claim(*args, **kwargs)
 
     monkeypatch.setattr(protocol, "claim", renew_then_claim)
+    real_perform = protocol.perform
+    escaped: list[AdmissionDeniedError] = []
+
+    def observed_perform(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        try:
+            return real_perform(*args, **kwargs)
+        except AdmissionDeniedError as error:
+            escaped.append(error)
+            raise
+
+    monkeypatch.setattr(payments, "perform", observed_perform)
     world.script(Reply(status=401))
     tenant, actor = world.termo.tenant.pk, world.termo.actor
     try:
         call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
     except AdmissionDeniedError:
         pytest.fail("the retry claim's refusal escaped the receipt worker")
+    # perform itself returns once the retry claim's refusal is recorded; it never
+    # hands that refusal to its caller (AXRM-045).
+    assert escaped == [], "perform raised the retry claim's refusal"
     # Then the retry is a recorded refusal, reported as stored, released.
     assert call is not None
     assert call.state == "bloqueada_autoridade"
