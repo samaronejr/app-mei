@@ -41,6 +41,7 @@ from apps.obligations.models import FederalConsultation, FederalPayment
 from tests.integrations import pagtoweb_support as support
 from tests.integrations.pagtoweb_support import World, denied, page, world
 from tests.integrations.serpro_support import serpro_module
+from tests.integrations.test_pagtoweb import receipts
 from tests.integrations.test_pagtoweb_ownership import lease_runs_out
 
 __all__ = ["world"]
@@ -1048,4 +1049,51 @@ def test_a_quota_refusal_at_claim_records_the_budgets_own_reason(
         "reserva_vencida",
         1,
     )
+    assert len(world.sent()) == 1
+
+
+@DB
+def test_a_saved_quota_refusal_wins_over_a_gone_termo_on_redelivery(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 full, sent and billed; page 2 is reserved, then the budget
+    # window turns over, so its claim commits a quota refusal on the call...
+    real = import_module("apps.integrations.call_protocol").reserve
+    reserved = []
+
+    def reserve_then_turn_the_window(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real(*args, **kwargs)
+        reserved.append(row)
+        if len(reserved) == 2:
+            with tenant_context(world.termo.tenant.pk):
+                budget = ProviderBudget.objects.get()
+                earlier = (budget.window_start - timedelta(days=1)).replace(day=1)
+                ProviderBudget.objects.update(window_start=earlier)
+        return row
+
+    def die(*_args: object, **_kwargs: object) -> None:
+        raise SystemExit
+
+    world.script(page(support.darfs(100)))
+    with monkeypatch.context() as patch:
+        patch.setattr(payments, "reserve", reserve_then_turn_the_window)
+        # ...and the worker stops before settling it.
+        patch.setattr(payments, "_refused_quota", die)
+        with pytest.raises(SystemExit):
+            world.consult()
+    assert [c.state for c in world.calls()] == ["sucesso", "bloqueada_cota"]
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get(client=world.termo.client)
+    # When the firm's termo is gone and the task is redelivered.
+    monkeypatch.setattr(payments, "termo_parties", lambda *_args: None)
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then the refusal already recorded on the call wins over the live preflight,
+    # and its quota receipt is written after page 1's (AXRM-045).
+    assert (settled.state, settled.failure_code, settled.pages_fetched) == (
+        "falha",
+        "reserva_vencida",
+        1,
+    )
+    assert receipts(world) == [("encontrado", 100), ("cota_esgotada", 0)]
     assert len(world.sent()) == 1
