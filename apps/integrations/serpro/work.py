@@ -13,14 +13,28 @@ from apps.core.flags import tenant_has
 from apps.core.tenancy import tenant_context
 from apps.cycles.openers import fallback_owner
 from apps.cycles.services.exceptions import ExceptionReason
-from apps.integrations.authority import Problem, raise_problem
+from apps.integrations.authority import (
+    OPERATION_REQUIREMENTS,
+    Problem,
+    raise_problem,
+    record_authority_denial,
+)
 from apps.integrations.call_contracts import Claim
 from apps.integrations.call_models import CallState, FirmProviderCall, ProviderCall
 from apps.integrations.models import (
+    AUTHORITY_CATALOG,
+    CODE_NOT_REQUIRED,
     ClientProviderLink,
     FirmAuthorization,
     FirmAuthorizationStatus,
     ProviderConnection,
+)
+from apps.integrations.serpro.denials import (
+    CAUSES,
+    FIRM_DENIAL_CODES,
+    PLATFORM_CAUSES,
+    DenialCause,
+    denial_cause,
 )
 from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.integrations.serpro.termo_state import termo_head, termo_in_force
@@ -28,6 +42,19 @@ from apps.tenants.models import Tenant
 
 AUTH_FAILED: Final = "autenticacao_serpro_recusada"
 PROC_MISSING: Final = "autorizacao_procurador_ausente"
+# A firm block that refused a call and has cleared since it was recorded.
+CLEARED_PREFIX: Final = "encerrado-"
+# Admission refusals: the client's own absence, or one with no recorded cause.
+CLIENT_ABSENT: Final = "autorizacao_ausente"
+ADMISSION_REFUSED: Final = "admissao_recusada"
+# Firm blocks, named when admission refuses: the termo, or the 403 behind the issue.
+TERMO_NOT_IN_FORCE: Final = "termo_nao_vigente"
+BLOCK_PREFIX: Final = "bloqueio-"
+# Identities of a recorded firm block: the issue, or the termo at a version.
+ISSUE_PREFIX: Final = "pendencia-"
+# Frozen in place of a 403 number when the issue cited no 403 at refusal time.
+NO_DENIAL: Final = "000"
+TERMO_PREFIX: Final = f"{TERMO_NOT_IN_FORCE}-v"
 UNCERTAIN: Final = "chamada_provedor_incerta"
 IN_FLIGHT: Final = frozenset(
     {
@@ -52,6 +79,147 @@ REASONS: Final = {
 }
 
 
+def own_denial(call: ProviderCall) -> DenialCause:
+    """Route one billed SERPRO 403 to the owner its reason code names (A6).
+
+    Idempotent: the protocol's post-call hook and the consumer settling the call
+    both run it. Only the client-procuracao codes touch a client's authority (and
+    only for a service that needs one). A firm-termo or platform code opens the
+    firm issue, which already refuses that firm's calls at admission, so such a
+    billed call is not repeated. A provider failure or an unknown code changes
+    nothing here, and nothing re-sends a billed denial.
+    """
+    cause = denial_cause(call.provider_code)
+    service = OPERATION_REQUIREMENTS[call.operation].service
+    if (
+        cause == DenialCause.PROCURACAO_CLIENTE
+        and service is not None
+        and AUTHORITY_CATALOG[service][1] != CODE_NOT_REQUIRED
+    ):
+        record_authority_denial(
+            call.client, call.operation, source_call_ref=str(call.pk), http_status=403
+        )
+    elif cause == DenialCause.TERMO_ESCRITORIO or cause in PLATFORM_CAUSES:
+        own_firm_condition(call.link.connection, PROC_MISSING, [str(call.pk)])
+    return cause
+
+
+def _cited(refs: list[str]) -> list[UUID]:
+    cited = []
+    for ref in refs:
+        try:
+            cited.append(UUID(ref))
+        except ValueError:
+            continue
+    return cited
+
+
+def firm_block(connection: ProviderConnection) -> str:
+    """Name the firm's block by its identity, or '' when there is none.
+
+    The open firm issue by its id (`pendencia-<id>`), else the termo not in force
+    at this connection version (`termo_nao_vigente-v<version>`): a later block of
+    the same kind is a different blocker, never this one (AXRM-045).
+    """
+    issue = (
+        FirmIntegrationIssue.objects.filter(
+            connection_id=connection.pk, reason=PROC_MISSING, state__in=ACTIVE_STATES
+        )
+        .order_by("created_at", "pk")
+        .first()
+    )
+    if issue is not None:
+        # Frozen now: the 403 behind the issue when this refusal happened.
+        code = issue_denial_code(str(issue.pk))
+        number = code.rsplit("-", 1)[-1] if code else NO_DENIAL
+        return f"{ISSUE_PREFIX}{issue.pk}-{number}"
+    if not termo_in_force(connection.pk, timezone.localdate()):
+        return f"{TERMO_PREFIX}{connection.version}"
+    return ""
+
+
+def issue_denial_code(issue_id: str) -> str:
+    """Return the first firm-side 403 the issue cites, in citation order, or ''.
+
+    A cited ref may be any call that can open the issue: a client page or a firm
+    SP-TERMO call. A document or termo ref carries no 403 (AXRM-045).
+    """
+    issue = FirmIntegrationIssue.objects.filter(pk__in=_cited([issue_id])).first()
+    if issue is None:
+        return ""
+    refs = _cited(issue.evidence_refs)
+    codes = {
+        **dict(
+            FirmProviderCall.objects.filter(
+                pk__in=refs, provider_code__in=FIRM_DENIAL_CODES
+            ).values_list("pk", "provider_code")
+        ),
+        **dict(
+            ProviderCall.objects.filter(
+                pk__in=refs, provider_code__in=FIRM_DENIAL_CODES
+            ).values_list("pk", "provider_code")
+        ),
+    }
+    return next((codes[ref] for ref in refs if ref in codes), "")
+
+
+def frozen_code(reason: str) -> str:
+    """Return the 403 code a refusal froze when it was recorded, or ''."""
+    number = reason.removeprefix(ISSUE_PREFIX)[37:]
+    if number == NO_DENIAL:
+        return ""
+    return (
+        next((code for code in CAUSES if code.endswith(f"-{number}")), "")
+        if number
+        else ""
+    )
+
+
+def block_holds(reason: str, connection: ProviderConnection) -> bool:
+    """Whether the specific blocker a refusal recorded still holds.
+
+    That issue still open, or the termo still not in force at that same version.
+    A code recorded without an identity (an older one) never holds unless proven.
+    """
+    if reason.startswith(ISSUE_PREFIX):
+        cited = _cited([reason.removeprefix(ISSUE_PREFIX)[:36]])
+        return FirmIntegrationIssue.objects.filter(
+            pk__in=cited, state__in=ACTIVE_STATES
+        ).exists()
+    if reason.startswith(TERMO_PREFIX):
+        version = reason.removeprefix(TERMO_PREFIX)
+        return (
+            version.isdigit()
+            and connection.version == int(version)
+            and not termo_in_force(connection.pk, timezone.localdate())
+        )
+    return False
+
+
+def firm_reason(reason: str) -> bool:
+    """Whether a recorded refusal reason names a firm block (with or without id)."""
+    return reason in {PROC_MISSING, TERMO_NOT_IN_FORCE} or reason.startswith(
+        (ISSUE_PREFIX, TERMO_PREFIX, BLOCK_PREFIX)
+    )
+
+
+def refusal_cause(reason: str, connection: ProviderConnection) -> str:
+    """Classify an admission refusal by the cause recorded when it happened.
+
+    '' only for the client's own absent authority. A firm refusal keeps the
+    blocker it named while that one holds; once it has cleared it is
+    `encerrado-<blocker>`. A refusal with no firm or client cause is never the
+    client's (AXRM-045).
+    """
+    if reason == CLIENT_ABSENT:
+        return ""
+    if firm_reason(reason):
+        return (
+            reason if block_holds(reason, connection) else f"{CLEARED_PREFIX}{reason}"
+        )
+    return ADMISSION_REFUSED
+
+
 def own_client_result(ticket: Claim) -> None:
     """Only finalized SERPRO conditions open work, never arbitrary provider prose."""
     with tenant_context(ticket.tenant_id):
@@ -60,23 +228,18 @@ def own_client_result(ticket: Claim) -> None:
         )
         if call.provider != "serpro":
             return
-        reason = ""
-        if call.http_status == 401 and call.attempts == 2:  # noqa: PLR2004
-            reason = AUTH_FAILED
-        elif call.provider_code == "AcessoNegado-ICGERENCIADOR-016":
-            reason = PROC_MISSING
-        if reason:
+        if call.state == CallState.DENIED:
+            own_denial(call)
+        elif call.http_status == 401 and call.attempts == 2:  # noqa: PLR2004
             raise_problem(
                 call.client,
                 Problem(
-                    reason,
+                    AUTH_FAILED,
                     call.pk,
                     review_on=timezone.localdate(),
                     service=call.operation,
                 ),
             )
-            if reason == PROC_MISSING:
-                own_firm_condition(call.link.connection, reason, [str(call.pk)])
 
 
 def _active_issue(connection_id: UUID, reason: str) -> FirmIntegrationIssue | None:

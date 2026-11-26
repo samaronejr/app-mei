@@ -18,12 +18,12 @@ from apps.integrations.serpro.models import ACTIVE_STATES, FirmIntegrationIssue
 from apps.integrations.serpro.work import PROC_MISSING, own_client_result
 from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
+from tests.integrations.pagtoweb_support import denied
 from tests.integrations.serpro_retry_support import (
     client_dispatch,
     provider_link,
     spend_link,
 )
-from tests.integrations.test_serpro_termo import DENIAL_016
 
 pytestmark = pytest.mark.django_db(transaction=True)
 __all__ = ["provider_link", "spend_link"]
@@ -33,7 +33,8 @@ def test_billed_403_work_converges_after_both_sessions_observe_absence(
     spend_link: ClientProviderLink,
 ) -> None:
     # Given a real billed denial before its client/firm work has materialized.
-    with FakeSerpro((Reply(status=403, body=DENIAL_016), Reply())) as peer:
+    # A6: 020 is the firm's procurador token missing or expired (AXRM-045).
+    with FakeSerpro((denied(code="AcessoNegado-ICGERENCIADOR-020"), Reply())) as peer:
         row, ticket, adapter = client_dispatch(spend_link, peer.origin)
         result = call_protocol._perform_once(ticket, adapter)
         assert (result.state, result.billed) == (CallState.DENIED, "sim")
@@ -55,7 +56,7 @@ def test_billed_403_work_converges_after_both_sessions_observe_absence(
             if (
                 not stopped
                 and sql.startswith("SELECT")
-                and 'FROM "integrations_integrationissue"' in sql
+                and 'FROM "integrations_firmintegrationissue"' in sql
             ):
                 stopped = True
                 absent.wait()
@@ -85,27 +86,23 @@ def test_billed_403_work_converges_after_both_sessions_observe_absence(
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(contend), pool.submit(contend)]
         outcomes = [future.result(timeout=15) for future in futures]
-    # Then both callers finish and the one owned row in each scope stays minimized.
+    # Then both callers finish and the one owned firm row stays minimized; a termo
+    # denial opens no client issue (AXRM-045).
     assert len({backend for backend, _ in outcomes}) == 2
     assert sorted(outcome for _, outcome in outcomes) == ["converged", "converged"]
     with tenant_context(spend_link.tenant_id):
-        client_issue = IntegrationIssue.objects.get(
-            client=spend_link.client, reason=PROC_MISSING, state="aberta"
+        assert not IntegrationIssue.objects.filter(client=spend_link.client).exists()
+        firm_issues = list(
+            FirmIntegrationIssue.objects.filter(
+                connection=spend_link.connection,
+                reason=PROC_MISSING,
+                state__in=ACTIVE_STATES,
+            )
         )
-        firm_issue = FirmIntegrationIssue.objects.get(
-            connection=spend_link.connection,
-            reason=PROC_MISSING,
-            state__in=ACTIVE_STATES,
-        )
-        assert client_issue.owner_id is not None
+        assert len(firm_issues) == 1
+        firm_issue = firm_issues[0]
         assert firm_issue.owner_id is not None
-        assert client_issue.evidence_refs == firm_issue.evidence_refs == [str(row.pk)]
-        assert (
-            Event.objects.filter(
-                action="integrations.issue_opened", object_id=str(client_issue.pk)
-            ).count()
-            == 1
-        )
+        assert firm_issue.evidence_refs == [str(row.pk)]
         assert (
             Event.objects.filter(
                 action="integrations.firm_issue_opened", object_id=str(firm_issue.pk)

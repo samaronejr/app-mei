@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from apps.integrations.models import ISSUE_SERVICE_LENGTH
+from apps.integrations.serpro.denials import result_cause
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -30,7 +31,22 @@ class StaleClaimError(Exception):
 
 
 class AdmissionDeniedError(Exception):
-    """Live provider, tenant, authority, approval or budget controls refuse I/O."""
+    """Live provider, tenant, authority, approval or budget controls refuse I/O.
+
+    `reason` names the refusing cause when the control knows it; dispatch keeps it
+    on the call in the refusal's own transaction, so settlement reads that record.
+    """
+
+    reason: str = ""
+
+    def __init__(self, *args: object, reason: str = "") -> None:
+        """Carry the bounded refusal code next to the refused state.
+
+        A subclass that set its own reason first keeps it, and a refusal without
+        one keeps its state code: no refusal is ever recorded blank (AXRM-045).
+        """
+        super().__init__(*args)
+        self.reason = reason or self.reason or (str(args[0]) if args else "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +80,8 @@ class CallResult:
     billed: Literal["sim", "nao", "desconhecido"]
     response_digest: str = ""
     settled_microbrl: int | None = None
+    # A provider's closed denial cause (SERPRO 403: `serpro.denials.DenialCause`).
+    denial_cause: str = ""
 
     def __post_init__(self) -> None:
         """Accept only execution outcomes and minimized symbolic adapter codes."""
@@ -79,6 +97,8 @@ class CallResult:
             }
             or re.fullmatch(r"[A-Za-z0-9_.-]{0,64}", self.provider_code) is None
             or self.billed not in {"sim", "nao", "desconhecido"}
+            # A denial code requires its closed cause; anything else requires ''.
+            or self.denial_cause != result_cause(self.state, self.provider_code)
             or (
                 self.http_status is not None
                 and (

@@ -20,12 +20,32 @@ from django.conf import settings
 from apps.authz.services import can
 from apps.core.flags import tenant_has
 from apps.integrations.call_models import CallState, ProviderCall
+from apps.integrations.serpro.denials import (
+    DenialCause,
+    denial_cause,
+    denial_text,
+    is_denial_code,
+)
 from apps.integrations.serpro.models import (
     ACTIVE_QUERY_STATES,
     PaymentQuery,
     PaymentQueryState,
 )
-from apps.integrations.serpro.payments import CHECKS, FLAG, receipt_request_key
+from apps.integrations.serpro.payments import (
+    CHECKS,
+    FIRM_REFUSALS,
+    FLAG,
+    receipt_request_key,
+)
+from apps.integrations.serpro.work import (
+    ADMISSION_REFUSED,
+    BLOCK_PREFIX,
+    CLEARED_PREFIX,
+    CLIENT_ABSENT,
+    ISSUE_PREFIX,
+    firm_reason,
+    frozen_code,
+)
 from apps.obligations.models import (
     Document,
     FederalEnvironment,
@@ -40,6 +60,7 @@ if TYPE_CHECKING:
     from apps.clients.models import ClientCompany
 
 HISTORY: Final = 5
+# A firm-side admission refusal: never the client's procuracao (AXRM-045).
 
 
 class PaymentBadge(StrEnum):
@@ -85,9 +106,61 @@ def _plural(count: int, singular: str, plural: str) -> str:
     return f"{count} {singular if count == 1 else plural}"
 
 
+def firm_refusal(code: str) -> bool:
+    """Whether a failure code names a firm-side admission refusal."""
+    return code in FIRM_REFUSALS or firm_reason(code) or code.startswith(CLEARED_PREFIX)
+
+
+def firm_refusal_text(query: PaymentQuery) -> str:
+    """Name a firm-side refusal by the code recorded with it, without page facts."""
+    code = query.failure_code
+    if code == "termo_ausente":
+        return (
+            "A consulta parou: não havia termo de autorização do escritório em "
+            f"vigor; {UNCHANGED}."
+        )
+    if code == ADMISSION_REFUSED:
+        return f"A admissão recusou a consulta sem registrar a causa; {UNCHANGED}."
+    cause = code.removeprefix(CLEARED_PREFIX)
+    denial = frozen_code(cause) or (
+        cause.removeprefix(BLOCK_PREFIX) if cause.startswith(BLOCK_PREFIX) else ""
+    )
+    if denial:
+        kind = f"código {denial}"
+    elif cause.startswith(ISSUE_PREFIX):
+        kind = "pendência sem código 403 registrado"
+    else:
+        kind = f"registro {cause}"
+    return (
+        f"A admissão recusou a consulta por um bloqueio do escritório ({kind}); "
+        f"{UNCHANGED}."
+    )
+
+
+UNCHANGED: Final = "a procuração do cliente não foi alterada"
+
+
+def _client_refusal_text(query: PaymentQuery) -> str:
+    """Name the client's refusal by the code recorded with it, without page facts."""
+    code = query.failure_code
+    if code != CLIENT_ABSENT:
+        return (
+            "A Receita respondeu por falta da procuração eletrônica do cliente "
+            f"(código {code})."
+        )
+    return (
+        "A admissão recusou a consulta: a procuração eletrônica do cliente (00004) "
+        "não estava em vigor."
+    )
+
+
 def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
-    """Explain one consultation without inferring anything about non-payment."""
-    pages = _plural(query.pages_fetched, "página obtida", "páginas obtidas")
+    """Explain one consultation without inferring anything about non-payment.
+
+    It names the recorded code only; which pages were sent and billed is stated
+    from the recorded page calls in the history wording (AXRM-045).
+    """
+    code = query.failure_code
     match query.state:
         case PaymentQueryState.NA_FILA | PaymentQueryState.EM_ANDAMENTO:
             return "Consulta em andamento. A página é atualizada ao recarregar."
@@ -98,31 +171,32 @@ def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
             matched = _plural(
                 query.matched_count, "associado a DAS", "associados a DAS"
             )
-            return f"{found} ({pages}); {matched}."
+            return f"{found}; {matched}."
         case PaymentQueryState.NADA_LOCALIZADO:
             return (
                 "Nenhum pagamento localizado no intervalo consultado. "
                 "Isso não indica falta de pagamento."
             )
         case PaymentQueryState.SEM_PROCURACAO:
-            return (
-                "Sem procuração eletrônica (código 00004) para este cliente. "
-                "Consulta não realizada; registre e verifique a procuração."
-            )
-        case PaymentQueryState.COTA_ESGOTADA:
-            return (
-                "Limite mensal de consultas atingido. Nenhuma consulta foi feita "
-                "depois disso."
-            )
+            return _client_refusal_text(query)
+        case PaymentQueryState.FALHA if firm_refusal(code):
+            return firm_refusal_text(query)
+        case PaymentQueryState.FALHA | PaymentQueryState.INCERTO if is_denial_code(
+            code
+        ):
+            return f"{denial_text(code)} Consulta não repetida."
         case PaymentQueryState.INCERTO:
-            return "O resultado é incerto. Confira com a equipe antes de repetir."
-        case _ if query.failure_code == "limite_de_paginas":
             return (
-                f"A consulta atingiu o limite de 10 páginas ({pages}); "
-                "o resultado pode estar incompleto."
+                f"O resultado é incerto (registro {code}). Confira com a equipe "
+                "antes de repetir."
+            )
+        case _ if code == "limite_de_paginas":
+            return (
+                "A consulta atingiu o limite de 10 páginas; o resultado pode estar "
+                "incompleto."
             )
         case _:
-            return f"A consulta não foi concluída ({pages}, mantidas)."
+            return f"A consulta não foi concluída (registro {code})."
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +273,10 @@ def _receipt(call: ProviderCall | None, document: Document | None) -> str:
         if document is None:
             return "Comprovante emitido, mas não armazenado"
         return "Comprovante armazenado (somente equipe; verificação antivírus)"
+    if call.state == CallState.DENIED and (
+        denial_cause(call.provider_code) != DenialCause.PROCURACAO_CLIENTE
+    ):
+        return f"{denial_text(call.provider_code)} Comprovante não emitido."
     return RECEIPT_LABELS.get(call.state, "Situação do comprovante desconhecida")
 
 

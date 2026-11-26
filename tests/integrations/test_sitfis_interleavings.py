@@ -21,8 +21,12 @@ from apps.clients.models import ClientCompany
 from apps.cycles.models import Exception as CycleException
 from apps.cycles.models import ServiceCycle
 from apps.integrations.call_models import CallState, ProviderCall
-from apps.integrations.models import ClientProviderLink, IntegrationIssue
-from apps.integrations.serpro import registration
+from apps.integrations.models import (
+    ClientProviderLink,
+    IntegrationIssue,
+    ProviderConnection,
+)
+from apps.integrations.serpro import registration, work
 from apps.integrations.serpro import sitfis as mod
 from apps.integrations.serpro.models import FirmIntegrationIssue
 from apps.obligations.models import Document, FederalConsultation, FiscalSituationReport
@@ -165,7 +169,8 @@ class Scenario:
             dispatch_started_at=None,
             finalized_at=None,
             link=ClientProviderLink(
-                connection_id=uuid4(),
+                # In memory: admission reads the firm's block from this connection.
+                connection=ProviderConnection(pk=uuid4(), version=1),
                 tenant_id=self.report.tenant_id,
                 client_id=self.report.client_id,
             ),
@@ -276,7 +281,7 @@ def test_every_bounded_two_runner_ordering_preserves_wait_and_paid_pdf(
         if all(order.index(a) < order.index(b) for a, b in edges)
     ]
     assert len(orderings) == 15
-    monkeypatch.setattr(registration, "termo_in_force", lambda *args: True)
+    monkeypatch.setattr(work, "termo_in_force", lambda *args: True)
     monkeypatch.setattr(
         registration, "authority_for", lambda *args, **kwargs: _row(usable=True)
     )
@@ -300,7 +305,7 @@ def test_applying_a_newer_short_reply_keeps_the_older_announced_task_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A task must sleep until the same maximum that its send fence enforces."""
-    monkeypatch.setattr(registration, "termo_in_force", lambda *args: True)
+    monkeypatch.setattr(work, "termo_in_force", lambda *args: True)
     monkeypatch.setattr(
         registration, "authority_for", lambda *args, **kwargs: _row(usable=True)
     )

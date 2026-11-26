@@ -220,6 +220,8 @@ def _prepare(ticket: Claim) -> Dispatch | AdmissionDeniedError | StaleClaimError
                 if str(error) == CallState.PAUSED
                 else CallState.AUTHORITY
             )
+            # The cause as it stood when refused, durable with the refusal.
+            call.provider_code = error.reason
         call.version += 1
         call.save()
         return error

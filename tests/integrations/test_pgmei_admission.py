@@ -17,11 +17,13 @@ from apps.core.tenancy import tenant_context
 from apps.integrations import call_protocol
 from apps.integrations.authority import Admission, AuthorityDecision
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
+from apps.integrations.call_contracts import AdmissionDeniedError
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_state import lock_controls
 from apps.integrations.serpro import pgmei, registration
 from apps.integrations.serpro.adapter import SerproAdapter
 from apps.integrations.serpro.reauthentication import schedule_client_retry
+from apps.integrations.serpro.work import CLIENT_ABSENT
 from apps.integrations.transport import ProviderTransport
 from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
@@ -391,10 +393,18 @@ def test_other_operations_never_enter_the_guide_hook(
 
     with tenant_context(world.tenant_id):
         call.operation = operation
-        expected = registration.client_authority(call)
+        expected = _authority_outcome(call)
     monkeypatch.setattr(pgmei, "guide_admission", forbidden)
     with tenant_context(world.tenant_id):
-        assert registration.client_authority(call) is expected
+        assert _authority_outcome(call) == expected
+
+
+def _authority_outcome(call: ProviderCall) -> bool | str:
+    """The admission answer: allowed, or the cause a refusal names (AXRM-045)."""
+    try:
+        return registration.client_authority(call)
+    except AdmissionDeniedError as refused:
+        return refused.reason
 
 
 @pytest.mark.parametrize(
@@ -418,4 +428,7 @@ def test_client_authority_cannot_bypass_the_service_decision(
     monkeypatch.setattr(pgmei, "guide_admission", forbidden)
     with tenant_context(world.tenant_id):
         call.operation = operation
-        assert registration.client_authority(call) is False
+        with pytest.raises(AdmissionDeniedError) as refused:
+            registration.client_authority(call)
+    # The refusal names the client's own absent authority (AXRM-045).
+    assert refused.value.reason == CLIENT_ABSENT
