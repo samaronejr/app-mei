@@ -1727,11 +1727,24 @@ def _malformed_mount_table(case: _Layout) -> tuple[str, str, str]:
 
 
 def _case_blind(case: _Layout) -> tuple[str, str, str]:
-    # Stand-in for a case-folding directory: two names differing only in case
-    # open one entry.
+    # Stand-in for a case-folding directory: every case of the name opens the one
+    # entry, so the probe sees it whichever name the directory lists first.
     (case.root / "cased").mkdir()
     (case.root / "cased" / "Case.pdf").write_bytes(b"one entry")
-    (case.root / "cased" / "case.pdf").hardlink_to(case.root / "cased" / "Case.pdf")
+    for other in ("case.pdf", "CASE.PDF"):
+        (case.root / "cased" / other).hardlink_to(case.root / "cased" / "Case.pdf")
+    # The listing order is the filesystem's; list lowercase first, the order in
+    # which a partial stand-in would go unseen, so no run depends on it.
+    walk = os.walk
+
+    def lowercase_first(
+        top: Path, onerror: Callable[[OSError], object] | None = None
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        for parent, directories, files in walk(top, onerror=onerror):
+            directories.sort(reverse=True)
+            yield parent, directories, sorted(files, reverse=True)
+
+    case.monkeypatch.setattr(os, "walk", lowercase_first)
     _foreign_original(case.world, case.held)
     return case.copy, case.held, "armazenamento_sem_distincao_de_caixa"
 
@@ -2920,8 +2933,11 @@ def test_the_final_is_never_wider_than_configured_even_before_its_chmod(
 
 
 def test_the_layout_proof_refuses_a_key_whose_identity_is_unknown(
-    monkeypatch: pytest.MonkeyPatch,
+    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Its own root: the proof walks the whole root before any key, so the shared
+    # one would judge whatever other tests left in it.
+    settings.MEDIA_ROOT = tmp_path
     key = f"originals/{uuid4().hex}.pdf"
     real_path = default_storage.path
 
@@ -3152,7 +3168,10 @@ def test_cleanup_never_deletes_through_an_object_of_another_kind(
         assert default_storage.exists(intake.quarantine_key)
 
 
-def test_cleanup_sees_two_spellings_of_one_file_as_one_object() -> None:
+def test_cleanup_sees_two_spellings_of_one_file_as_one_object(
+    settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    settings.MEDIA_ROOT = tmp_path  # its own root, never the shared one
     key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"one"))
     other = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"one"))
     doubled = key.replace("/", "//", 1)
