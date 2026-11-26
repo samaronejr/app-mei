@@ -2,11 +2,12 @@
 
 import hashlib
 import threading
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
 import pytest
-from django.db import connections
+from django.db import connections, transaction
 from django.db.models import F
 
 from apps.audit.models import Event
@@ -500,3 +501,103 @@ def test_a_claim_refusal_closes_the_consultation_from_the_stored_call(
     assert (settled.state, receipt.provider_ref) == ("negado", str(refused.pk))
     assert world.budget().reserved == 0
     assert world.sent("/Emitir") == []
+
+
+def _hold(
+    world: World, lock: Callable[[], object]
+) -> tuple[threading.Thread, threading.Event, list[str]]:
+    """Hold one row lock on a second connection until released."""
+    held, release = threading.Event(), threading.Event()
+    errors: list[str] = []
+
+    def run() -> None:
+        try:
+            with tenant_context(world.tenant_id), transaction.atomic():
+                lock()
+                held.set()
+                assert release.wait(timeout=30)
+        except BaseException as error:  # noqa: BLE001 - return thread failures
+            errors.append(repr(error))
+        finally:
+            connections.close_all()
+
+    holder = threading.Thread(target=run)
+    holder.start()
+    assert held.wait(timeout=15)
+    return holder, release, errors
+
+
+def _refuse_at_claim_while(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    lock: Any,  # noqa: ANN401
+) -> tuple[FiscalSituationReport, Any, list[str]]:
+    """Run one claim whose refusal commits, then hold `lock` before SITFIS settles."""
+    mod = sitfis()
+    report, first = _ready(world)
+    original = mod.claim
+    holders: list[tuple[threading.Thread, threading.Event, list[str]]] = []
+
+    def refused_then_locked(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        with tenant_context(world.tenant_id):
+            link = ClientProviderLink.objects.get(pk=first.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        try:
+            return original(*args, **kwargs)
+        finally:
+            holders.append(_hold(world, lambda: lock(first)))
+
+    monkeypatch.setattr(mod, "claim", refused_then_locked)
+    mod._run(world.tenant_id, report.pk, first)
+    monkeypatch.setattr(mod, "claim", original)
+    [(holder, release, errors)] = holders
+    release.set()
+    holder.join(timeout=30)
+    return report, first, errors
+
+
+def _lock_connection(first: Any) -> None:  # noqa: ANN401
+    link = ClientProviderLink.objects.get(pk=first.link_id)
+    list(ProviderConnection.objects.select_for_update().filter(pk=link.connection_id))
+
+
+def _lock_call(first: Any) -> None:  # noqa: ANN401
+    list(ProviderCall.objects.select_for_update().filter(request_key=first.key))
+
+
+def test_a_lock_on_the_connection_never_hides_a_committed_claim_refusal(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the claim commits a refusal, and another worker then holds the
+    # connection's row lock while SITFIS settles it...
+    report, first, errors = _refuse_at_claim_while(world, monkeypatch, _lock_connection)
+    assert errors == []
+    # Then the report still closes from the stored call, never with a blank ref.
+    refused = world.calls(first.operation)[-1]
+    assert refused.state == "bloqueada_autoridade"
+    settled = world.reload(report)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (settled.state, receipt.provider_ref) == ("falha", str(refused.pk))
+
+
+def test_a_locked_refused_call_defers_its_report_and_never_closes_it_blank(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the claim commits a refusal, and another worker then holds that
+    # call's own row lock while SITFIS settles it...
+    report, first, errors = _refuse_at_claim_while(world, monkeypatch, _lock_call)
+    assert errors == []
+    # Then that pass defers: the report is not closed, least of all blank...
+    deferred = world.reload(report)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=deferred.consultation_id)
+    assert (deferred.state, receipt.provider_ref) == (report.state, "")
+    # ...and the next pass settles it from the stored call.
+    refused = world.calls(first.operation)[-1]
+    settled = world.advance(deferred)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (settled.state, receipt.provider_ref) == ("falha", str(refused.pk))

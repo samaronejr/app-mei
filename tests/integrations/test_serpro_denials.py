@@ -1301,3 +1301,44 @@ def test_a_receipt_refused_at_dispatch_after_a_401_retry_claim_is_stored(
         held = ProviderReservation.objects.filter(call=call, state="reserved")
         assert not held.exists()
     assert len(world.sent("/Emitir")) == 1
+
+
+@DB
+def test_a_budget_error_while_settling_a_sent_receipt_is_not_reported_as_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When the SP-COMP is sent, and while it is on the wire its reservation and
+    # budget month stop matching, so settling it raises a budget refusal.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_transmit = protocol.transmit
+
+    def transmit_then_lose_the_budget(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        reply = real_transmit(*args, **kwargs)
+        with tenant_context(world.termo.tenant.pk):
+            ProviderReservation.objects.filter(call__operation="SP-COMP").update(
+                attempt_number=F("attempt_number") + 50
+            )
+            budget = ProviderBudget.objects.get()
+            earlier = (budget.window_start - timedelta(days=1)).replace(day=1)
+            ProviderBudget.objects.update(window_start=earlier)
+        return reply
+
+    monkeypatch.setattr(protocol, "transmit", transmit_then_lose_the_budget)
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    escaped: list[AdmissionDeniedError] = []
+    try:
+        payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError as error:
+        escaped.append(error)
+    # Then that unrecorded refusal reaches the task, never a "stored" call.
+    assert [error.reason for error in escaped] == ["cota_ausente"], (
+        "the receipt worker swallowed a refusal it never recorded"
+    )
+    with tenant_context(tenant):
+        call = ProviderCall.objects.get(operation="SP-COMP")
+    assert call.state not in ("bloqueada_autoridade", "pausada", "bloqueada_cota")

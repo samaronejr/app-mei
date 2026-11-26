@@ -40,7 +40,7 @@ becomes todo 14's per-call `FederalConsultation` receipt. Rules:
 from __future__ import annotations
 
 import hashlib
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from datetime import timedelta
 from logging import getLogger
 from typing import TYPE_CHECKING, Final, cast
@@ -999,6 +999,10 @@ def queue_payment_receipt(actor: User, client_id: UUID, payment_id: UUID) -> Non
     transaction.on_commit(lambda: emit_payment_receipt_task.delay(*args))
 
 
+# The states a refused admission leaves recorded on its call (`record_refusal`).
+RECORDED_REFUSALS: Final = (CallState.AUTHORITY, CallState.PAUSED, CallState.QUOTA)
+
+
 def emit_payment_receipt(
     tenant_id: UUID, payment_id: UUID, actor_id: UUID
 ) -> ProviderCall | None:
@@ -1043,11 +1047,19 @@ def emit_payment_receipt(
     adapter = ReceiptAdapter(
         SerproAdapter(_transport(cast("Environment", environment)), parties, data)
     )
-    # A 403 is owned by the protocol's post-call hook (`work.own_denial`). A
-    # dispatch refusal, first or after a 401 retry, is recorded and released on
-    # the call; the call is then reported as stored, as for a claim (AXRM-045).
-    with suppress(AdmissionDeniedError):
+    # A 403 is owned by the protocol's post-call hook (`work.own_denial`).
+    try:
         perform(ticket, adapter)
+    except AdmissionDeniedError:
+        # Only a refusal the protocol recorded and committed on the call (a
+        # dispatch refusal, first or after a 401 retry) is reported as stored;
+        # anything else, such as a settlement's budget error, propagates.
+        with tenant_context(tenant_id):
+            recorded = ProviderCall.objects.filter(
+                pk=row.pk, state__in=RECORDED_REFUSALS
+            ).exists()
+        if not recorded:
+            raise
     with tenant_context(tenant_id):
         call = ProviderCall.objects.get(pk=row.pk)
     if call.state == CallState.SUCCESS and adapter.pdf is not None:
