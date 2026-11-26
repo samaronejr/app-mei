@@ -221,6 +221,7 @@ _EXTRA_DEFAULTS: dict[str, dict[str, object]] = {
         # The kind/obligation CHECK admits exactly two shapes; 'documento' is the
         # one a generic seed can satisfy without inventing an obligation row.
         "kind": "documento",
+        "created_by": _SEEDED_PARENT,
     },
     "tenants.BillingAccount": {
         # The account page renders next_invoice_on|data unconditionally.
