@@ -1,5 +1,6 @@
 """Database-only admission locks and uncertainty work for provider calls."""
 
+from typing import Final
 from uuid import UUID
 
 from django.conf import settings
@@ -8,6 +9,7 @@ from django.utils import timezone
 
 from apps.audit.services import ObjectRef, record_event
 from apps.core.flags import tenant_row_has
+from apps.core.tenancy import tenant_context
 from apps.integrations.authority import client_owner
 from apps.integrations.budget_alerts import refused
 from apps.integrations.budget_pricing import BudgetDeniedError
@@ -80,6 +82,18 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
         raise AdmissionDeniedError(CallState.AUTHORITY, reason=reason)
     if not operation.policy.authorize(call):
         raise AdmissionDeniedError(CallState.AUTHORITY)
+
+
+# The states `record_refusal` leaves on a refused call.
+RECORDED_REFUSALS: Final = (CallState.AUTHORITY, CallState.PAUSED, CallState.QUOTA)
+
+
+def refusal_recorded(tenant_id: UUID, call_id: UUID) -> bool:
+    """Whether a refusal was recorded and committed on this call (AXRM-045)."""
+    with tenant_context(tenant_id):
+        return ProviderCall.objects.filter(
+            pk=call_id, state__in=RECORDED_REFUSALS
+        ).exists()
 
 
 def record_refusal(call: ProviderCall, error: AdmissionDeniedError) -> None:

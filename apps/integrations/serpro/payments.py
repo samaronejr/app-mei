@@ -80,6 +80,7 @@ from apps.integrations.budget_settlement import release
 from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
+from apps.integrations.call_state import refusal_recorded
 from apps.integrations.models import (
     AuthorityService,
     ClientProviderLink,
@@ -999,10 +1000,6 @@ def queue_payment_receipt(actor: User, client_id: UUID, payment_id: UUID) -> Non
     transaction.on_commit(lambda: emit_payment_receipt_task.delay(*args))
 
 
-# The states a refused admission leaves recorded on its call (`record_refusal`).
-RECORDED_REFUSALS: Final = (CallState.AUTHORITY, CallState.PAUSED, CallState.QUOTA)
-
-
 def emit_payment_receipt(
     tenant_id: UUID, payment_id: UUID, actor_id: UUID
 ) -> ProviderCall | None:
@@ -1054,11 +1051,7 @@ def emit_payment_receipt(
         # Only a refusal the protocol recorded and committed on the call (a
         # dispatch refusal, first or after a 401 retry) is reported as stored;
         # anything else, such as a settlement's budget error, propagates.
-        with tenant_context(tenant_id):
-            recorded = ProviderCall.objects.filter(
-                pk=row.pk, state__in=RECORDED_REFUSALS
-            ).exists()
-        if not recorded:
+        if not refusal_recorded(tenant_id, row.pk):
             raise
     with tenant_context(tenant_id):
         call = ProviderCall.objects.get(pk=row.pk)

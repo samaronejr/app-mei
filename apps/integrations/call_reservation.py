@@ -128,8 +128,11 @@ def claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
             return None
         except AdmissionDeniedError as error:
             # Recorded and released here as dispatch does, then raised once this
-            # commits: a refused call is never left reserved (AXRM-045).
-            record_refusal(call, error)
+            # commits: a refused call is never left reserved (AXRM-045). A pause
+            # only holds a sent retry, which reserves nothing until admitted: it
+            # stays a retry for the sweep, never ended as paused.
+            if not (call.state == CallState.RETRY and str(error) == CallState.PAUSED):
+                record_refusal(call, error)
             refusal = error
         else:
             call.fence += 1

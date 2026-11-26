@@ -20,6 +20,7 @@ from apps.integrations.call_dispatch import (
 from apps.integrations.call_finalization import finalize
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_reservation import claim, reserve
+from apps.integrations.call_state import refusal_recorded
 from apps.integrations.serpro.reauthentication import schedule_client_retry
 
 __all__ = [
@@ -63,7 +64,11 @@ def perform(ticket: Claim, adapter: Adapter, *, keep: Keep | None = None) -> Cal
         try:
             retry = claim(ticket.tenant_id, ticket.call_id)
         except AdmissionDeniedError:
-            retry = None  # The claim recorded the refusal and released it (AXRM-045).
+            # Only a refusal the claim recorded on the call ends the retry here;
+            # an unrecorded one (a pause) reaches the caller (AXRM-045).
+            if not refusal_recorded(ticket.tenant_id, ticket.call_id):
+                raise
+            retry = None
         if retry is not None:
             result = _perform_once(retry, adapter, keep)
     from apps.integrations.serpro.work import own_client_result  # noqa: PLC0415
