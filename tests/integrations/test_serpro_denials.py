@@ -55,7 +55,8 @@ DB: Final = pytest.mark.django_db(transaction=True)
 def history(world: World, query: PaymentQuery) -> str:
     """The client page's sentence for one consultation, as staff read it."""
     with tenant_context(query.tenant_id):
-        section = panel(world.termo.actor, world.termo.client, support.COMPETENCE)
+        client = ClientCompany.objects.get(pk=query.client_id)
+        section = panel(world.termo.actor, client, support.COMPETENCE)
     assert section is not None
     [row] = [row for row in section.queries if row.query.pk == query.pk]
     return row.detail
