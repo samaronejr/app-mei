@@ -19,7 +19,6 @@ from typing import Any, Final
 
 import pytest
 from django.db.models import F
-from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.clients.models import ClientCompany
@@ -52,14 +51,19 @@ __all__ = ["world"]
 DB: Final = pytest.mark.django_db(transaction=True)
 
 
-def history(world: World, query: PaymentQuery) -> str:
-    """The client page's sentence for one consultation, as staff read it."""
+def history_row(world: World, query: PaymentQuery) -> Any:  # noqa: ANN401
+    """The client page's row for one consultation, as staff read it."""
     with tenant_context(query.tenant_id):
         client = ClientCompany.objects.get(pk=query.client_id)
         section = panel(world.termo.actor, client, support.COMPETENCE)
     assert section is not None
     [row] = [row for row in section.queries if row.query.pk == query.pk]
-    return row.detail
+    return row
+
+
+def history(world: World, query: PaymentQuery) -> str:
+    """The client page's sentence for one consultation."""
+    return str(history_row(world, query).detail)
 
 
 FIXTURE: Final = Path(__file__).parents[1] / "fixtures" / "providers" / "serpro"
@@ -1006,7 +1010,7 @@ def test_a_partial_quota_after_a_billed_page_ends_by_the_budget_refusal(
     assert len(world.sent()) == 1
     assert history(world, stopped) == (
         "O controle de custos recusou a página 2 antes do envio: o limite mensal "
-        "de consultas do escritório acabou. A página 1 foi enviada e cobrada."
+        "de consultas acabou. A página 1 foi enviada e cobrada."
     )
 
 
@@ -1386,12 +1390,12 @@ def test_a_billed_unsettled_page_stays_sent_and_billed_after_the_termo_goes(
         (
             "cota_esgotada",
             "cota_esgotada",
-            ": o limite mensal de consultas do escritório acabou.",
+            ": o limite mensal de consultas acabou.",
         ),
         (
             "cota_esgotada",
             "cota_ausente",
-            ": não há limite mensal de consultas configurado para o escritório.",
+            ": não há limite mensal de consultas configurado.",
         ),
         (
             "cota_esgotada",
@@ -1425,12 +1429,6 @@ def test_every_budget_reason_has_its_own_sentence(
     assert query_detail(query, []) == (
         f"O controle de custos recusou a consulta antes do envio{why} "
         "Nenhuma página foi enviada."
-    )
-
-
-def _call(*, sent: bool, billed: str) -> ProviderCall:
-    return ProviderCall(
-        dispatch_started_at=timezone.now() if sent else None, billed=billed
     )
 
 
@@ -1469,9 +1467,12 @@ def _call(*, sent: bool, billed: str) -> ProviderCall:
 def test_page_facts_come_from_each_recorded_page_call(
     pages: list[tuple[int, bool, str]], facts: str
 ) -> None:
-    calls = [(n, _call(sent=sent, billed=billed)) for n, sent, billed in pages]
-    facts_of = import_module("apps.integrations.serpro.payments_panel").page_facts
-    assert facts_of(calls) == facts
+    panel_module = import_module("apps.integrations.serpro.payments_panel")
+    recorded = [
+        panel_module.PageFact(number, sent, billed, refused=False)
+        for number, sent, billed in pages
+    ]
+    assert panel_module.page_facts(recorded) == facts
 
 
 @DB
@@ -1513,3 +1514,97 @@ def test_a_budget_error_while_settling_a_sent_receipt_is_not_reported_as_stored(
     with tenant_context(tenant):
         call = ProviderCall.objects.get(operation="SP-COMP")
     assert call.state not in ("bloqueada_autoridade", "pausada", "bloqueada_cota")
+
+
+@DB
+def test_a_missing_tariff_never_wears_the_limit_reached_badge(
+    world: World,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    settings.USAGE_UNIT_PRICES_BRL = {"serpro_emissao": "0.32"}
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", "tarifa_ausente")
+    # Then the badge names the cost control, never an exhausted limit (AXRM-045).
+    assert history_row(world, query).label == "Recusada pelo controle de custos"
+
+
+@DB
+@pytest.mark.parametrize(
+    ("platform_cap", "code"),
+    [({"serpro": "0"}, "cota_esgotada"), ({}, "cota_ausente")],
+    ids=["platform-spent", "platform-absent"],
+)
+def test_a_platform_cap_refusal_never_blames_the_firms_limit(
+    world: World,
+    settings: Any,  # noqa: ANN401
+    platform_cap: dict[str, str],
+    code: str,
+) -> None:
+    # Given the firm's own budget has room, and only the platform's cap refuses.
+    settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = platform_cap
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", code)
+    # Then the history names the cap without claiming it was the firm's.
+    text = history(world, query)
+    assert "escritório" not in text
+    assert "limite mensal de consultas" in text
+
+
+@DB
+def test_a_401_first_send_stays_sent_when_its_retry_is_refused_at_dispatch(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 gets a complete 401, its retry is claimed, and the budget
+    # month turns over before that retry is dispatched.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def claim_then_turn_the_window(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real_claim(*args, **kwargs)
+        with tenant_context(world.termo.tenant.pk):
+            budget = ProviderBudget.objects.get()
+            earlier = (budget.window_start - timedelta(days=1)).replace(day=1)
+            ProviderBudget.objects.update(window_start=earlier)
+        return ticket
+
+    monkeypatch.setattr(protocol, "claim", claim_then_turn_the_window)
+    world.script(Reply(status=401))
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", "reserva_vencida")
+    assert len(world.sent()) == 1
+    # Then the 401 send stays in the history, and the refusal is its retry's.
+    assert history(world, query) == (
+        "O controle de custos recusou a nova tentativa da página 1 antes do envio: "
+        "a reserva de custo da página venceu antes do envio. "
+        "A página 1 foi enviada, sem cobrança."
+    )
+
+
+@DB
+def test_an_unknown_budget_code_on_a_later_page_names_that_page(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 is full and billed, and the budget refuses page 2's
+    # reservation with a code this release does not know.
+    budget_module = import_module("apps.integrations.budget")
+    real_check = budget_module.check_cap
+    priced: list[int] = []
+
+    def refuse_the_second_page(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        if args[1] > 0:
+            priced.append(args[1])
+            if len(priced) == 2:
+                unknown = "orcamento_novo"
+                pricing = import_module("apps.integrations.budget_pricing")
+                raise pricing.BudgetDeniedError(unknown)
+        real_check(*args, **kwargs)
+
+    monkeypatch.setattr(budget_module, "check_cap", refuse_the_second_page)
+    world.script(page(support.darfs(100)))
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("falha", "orcamento_novo")
+    # Then the generic budget sentence still names page 2 and the code.
+    assert history(world, query) == (
+        "O controle de custos recusou a página 2 antes do envio "
+        "(registro orcamento_novo). A página 1 foi enviada e cobrada."
+    )

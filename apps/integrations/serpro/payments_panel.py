@@ -19,7 +19,7 @@ from django.conf import settings
 
 from apps.authz.services import can
 from apps.core.flags import tenant_has
-from apps.integrations.call_models import CallState, ProviderCall
+from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
 from apps.integrations.serpro.denials import (
     DenialCause,
     denial_cause,
@@ -155,12 +155,21 @@ def _client_refusal_text(query: PaymentQuery) -> str:
     )
 
 
-PageCall = tuple[int, ProviderCall]
+@dataclass(frozen=True, slots=True)
+class PageFact:
+    """What one page's call and its attempts record: sent, billed, refused."""
 
-# The budget's own refusal reasons, each stated exactly (AXRM-045).
+    number: int
+    sent: bool
+    billed: str
+    refused: bool
+
+
+# The budget's own refusal reasons, each stated exactly. A cap reason does not
+# record whether the firm's or the platform's ceiling refused (AXRM-045).
 QUOTA_REASONS: Final = {
-    "cota_esgotada": "o limite mensal de consultas do escritório acabou",
-    "cota_ausente": "não há limite mensal de consultas configurado para o escritório",
+    "cota_esgotada": "o limite mensal de consultas acabou",
+    "cota_ausente": "não há limite mensal de consultas configurado",
     "tarifa_ausente": "não há tarifa cadastrada para esta consulta",
     "tarifa_invalida": "a tarifa cadastrada para esta consulta é inválida",
     "reserva_ausente": "a reserva de custo da página não foi encontrada",
@@ -168,24 +177,51 @@ QUOTA_REASONS: Final = {
 }
 # Recorded by older releases without the budget's reason.
 LEGACY_QUOTA: Final = "cota_esgotada_parcial"
+QUOTA_LABEL: Final = "Recusada pelo controle de custos"
 
 
-def page_calls(queries: list[PaymentQuery]) -> dict[object, list[PageCall]]:
-    """Each consultation's recorded page calls by page number, in one lookup."""
+def _fact(
+    number: int, call: ProviderCall, attempts: list[ProviderCallAttempt]
+) -> PageFact:
+    """Read one page: sent if its call started a dispatch or recorded any attempt.
+
+    A retry's claim clears the call's dispatch start, so an earlier attempt
+    (a 401, say) is still a send when the retry is then refused (AXRM-045).
+    """
+    charges = [attempt.billed for attempt in attempts]
+    if call.dispatch_started_at is not None:
+        charges.append(call.billed)
+    if "sim" in charges:
+        billed = "sim"
+    elif "desconhecido" in charges:
+        billed = "desconhecido"
+    else:
+        billed = "nao"
+    return PageFact(number, bool(charges), billed, call.state == CallState.QUOTA)
+
+
+def page_calls(queries: list[PaymentQuery]) -> dict[object, list[PageFact]]:
+    """Each consultation's recorded page facts by page number, in two lookups."""
     owners = {
         key: (query.pk, number)
         for query in queries
         for key, number in page_numbers(query).items()
     }
-    found: dict[object, list[PageCall]] = {query.pk: [] for query in queries}
-    for call in ProviderCall.objects.filter(
-        client_id__in={query.client_id for query in queries},
-        request_key__in=list(owners),
-    ):
+    calls = list(
+        ProviderCall.objects.filter(
+            client_id__in={query.client_id for query in queries},
+            request_key__in=list(owners),
+        )
+    )
+    attempts: dict[object, list[ProviderCallAttempt]] = {call.pk: [] for call in calls}
+    for attempt in ProviderCallAttempt.objects.filter(call_id__in=list(attempts)):
+        attempts[attempt.call_id].append(attempt)
+    found: dict[object, list[PageFact]] = {query.pk: [] for query in queries}
+    for call in calls:
         owner, number = owners[call.request_key]
-        found[owner].append((number, call))
-    for calls in found.values():
-        calls.sort(key=lambda page: page[0])
+        found[owner].append(_fact(number, call, attempts[call.pk]))
+    for pages in found.values():
+        pages.sort(key=lambda page: page.number)
     return found
 
 
@@ -201,16 +237,16 @@ def _pages(numbers: list[int]) -> str:
     return f"as páginas {joined}"
 
 
-def page_facts(calls: list[PageCall]) -> str:
+def page_facts(pages: list[PageFact]) -> str:
     """State which pages were sent and billed, from the recorded page calls only.
 
-    A page is sent once its dispatch started, and billed only when its call
-    records a charge: a 204 is sent without one (AXRM-045).
+    A page is billed only when a call or attempt records a charge: a 204 or a
+    401 is sent without one (AXRM-045).
     """
-    sent = [number for number, call in calls if call.dispatch_started_at]
+    sent = [page.number for page in pages if page.sent]
     if not sent:
         return "Nenhuma página foi enviada."
-    billing = {number: call.billed for number, call in calls if number in sent}
+    billing = {page.number: page.billed for page in pages if page.sent}
     billed = [number for number in sent if billing[number] == "sim"]
     unknown = [number for number in sent if billing[number] == "desconhecido"]
     free = [number for number in sent if number not in billed + unknown]
@@ -232,19 +268,31 @@ def page_facts(calls: list[PageCall]) -> str:
     return f"{text}: {'; '.join(parts)}."
 
 
-def quota_refusal(query: PaymentQuery) -> bool:
-    """Whether the consultation ended on the budget's refusal."""
+def quota_refusal(query: PaymentQuery, pages: list[PageFact]) -> bool:
+    """Whether the consultation ended on the budget's refusal.
+
+    A failure whose page call the budget refused is one, whatever its code.
+    """
     code = query.failure_code
     return query.state == PaymentQueryState.COTA_ESGOTADA or (
         query.state == PaymentQueryState.FALHA
-        and (code in QUOTA_REASONS or code == LEGACY_QUOTA)
+        and (
+            code in QUOTA_REASONS
+            or code == LEGACY_QUOTA
+            or any(page.refused for page in pages)
+        )
     )
 
 
-def _quota_text(query: PaymentQuery, calls: list[PageCall]) -> str:
-    """Name the budget's own recorded reason, and the page it refused."""
-    refused = [number for number, call in calls if call.state == CallState.QUOTA]
-    which = _pages(refused[-1:]) if refused else "a consulta"
+def _quota_text(query: PaymentQuery, pages: list[PageFact]) -> str:
+    """Name the budget's own recorded reason, and the page or retry it refused."""
+    refused = [page for page in pages if page.refused]
+    if not refused:
+        which = "a consulta"
+    elif refused[-1].sent:
+        which = f"a nova tentativa da página {refused[-1].number}"
+    else:
+        which = _pages([refused[-1].number])
     code = query.failure_code
     refusal = f"O controle de custos recusou {which} antes do envio"
     if code in QUOTA_REASONS:
@@ -252,17 +300,26 @@ def _quota_text(query: PaymentQuery, calls: list[PageCall]) -> str:
     return f"{refusal} (registro {code})."
 
 
-def query_detail(query: PaymentQuery, calls: list[PageCall]) -> str:
+def query_label(query: PaymentQuery) -> str:
+    """Name the row's badge: only a spent cap reads as the limit reached."""
+    if query.state == PaymentQueryState.COTA_ESGOTADA and (
+        query.failure_code != "cota_esgotada"
+    ):
+        return QUOTA_LABEL
+    return PaymentQueryState(query.state).label
+
+
+def query_detail(query: PaymentQuery, pages: list[PageFact]) -> str:
     """Explain one ended consultation, then which of its pages were sent and billed.
 
-    The page facts come from the consultation's recorded page calls, never from
-    its page counter (AXRM-045).
+    The page facts come from the consultation's recorded page calls and their
+    attempts, never from its page counter (AXRM-045).
     """
     if query.state in ACTIVE_QUERY_STATES:
         return "Consulta em andamento. A página é atualizada ao recarregar."
-    if quota_refusal(query):
-        return f"{_quota_text(query, calls)} {page_facts(calls)}"
-    return f"{_outcome(query)} {page_facts(calls)}"
+    if quota_refusal(query, pages):
+        return f"{_quota_text(query, pages)} {page_facts(pages)}"
+    return f"{_outcome(query)} {page_facts(pages)}"
 
 
 def _outcome(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
@@ -443,7 +500,7 @@ def federal_payments_panel(
         queries=[
             QueryRow(
                 query=query,
-                label=PaymentQueryState(query.state).label,
+                label=query_label(query),
                 badge=QUERY_BADGES.get(query.state, ""),
                 detail=query_detail(query, calls_by_query[query.pk]),
                 environment_label=_environment_label(query.environment),
