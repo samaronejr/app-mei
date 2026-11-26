@@ -590,11 +590,11 @@ def test_a_locked_refused_call_defers_its_report_and_never_closes_it_blank(
     # call's own row lock while SITFIS settles it...
     report, first, errors = _refuse_at_claim_while(world, monkeypatch, _lock_call)
     assert errors == []
-    # Then that pass defers: the report is not closed, least of all blank...
+    # Then that pass defers: the report stays emitting, its receipt unwritten...
     deferred = world.reload(report)
     with tenant_context(world.tenant_id):
         receipt = FederalConsultation.objects.get(pk=deferred.consultation_id)
-    assert (deferred.state, receipt.provider_ref) == (report.state, "")
+    assert (deferred.state, receipt.provider_ref) == ("emitindo", "")
     # ...and the next pass settles it from the stored call.
     refused = world.calls(first.operation)[-1]
     settled = world.advance(deferred)
