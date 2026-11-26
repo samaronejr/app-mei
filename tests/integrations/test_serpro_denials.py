@@ -10,6 +10,7 @@ failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
@@ -1012,6 +1013,39 @@ def test_a_partial_quota_records_the_budgets_own_reason(
     assert (stopped.state, stopped.failure_code, stopped.pages_fetched) == (
         "falha",
         "tarifa_ausente",
+        1,
+    )
+    assert len(world.sent()) == 1
+
+
+@DB
+def test_a_quota_refusal_at_claim_records_the_budgets_own_reason(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 full and billed; page 2 is reserved, then the budget window
+    # turns over before its claim, so the claim refuses the held reservation.
+    real = import_module("apps.integrations.call_protocol").reserve
+    reserved = []
+
+    def reserve_then_turn_the_window(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real(*args, **kwargs)
+        reserved.append(row)
+        if len(reserved) == 2:
+            with tenant_context(world.termo.tenant.pk):
+                budget = ProviderBudget.objects.get()
+                earlier = (budget.window_start - timedelta(days=1)).replace(day=1)
+                ProviderBudget.objects.update(window_start=earlier)
+        return row
+
+    monkeypatch.setattr(payments, "reserve", reserve_then_turn_the_window)
+    world.script(page(support.darfs(100)))
+    stopped = world.consult()
+    # Then page 2's call records the claim's quota refusal, and the consultation
+    # keeps that same reason (AXRM-045).
+    assert [c.state for c in world.calls()] == ["sucesso", "bloqueada_cota"]
+    assert (stopped.state, stopped.failure_code, stopped.pages_fetched) == (
+        "falha",
+        "reserva_vencida",
         1,
     )
     assert len(world.sent()) == 1
