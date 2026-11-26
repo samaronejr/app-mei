@@ -2,8 +2,11 @@
 
 import re
 from datetime import date
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client
 from django.utils import timezone
@@ -94,6 +97,37 @@ def test_stale_rendered_form_returns_conflict_without_another_revision(
 
     with tenant_context(firm.tenant.pk):
         assert AuthorityRecord.objects.count() == 1
+
+
+@pytest.mark.parametrize("invalid", ["active-transition", "wrong-code", "date-order"])
+def test_invalid_declaration_never_stages_evidence(
+    firm: Firm, settings: SettingsWrapper, tmp_path: Path, invalid: str
+) -> None:
+    from apps.integrations.models import AuthorityRecord  # noqa: PLC0415
+    from apps.obligations.models import Document  # noqa: PLC0415
+
+    settings.MEDIA_ROOT = tmp_path
+    settings.CLAMAV_ENABLED = True
+    browser = firm.as_owner()
+    url = f"{_url(firm)}autoridades/sitfis/declarar/"
+    valid = {"code": "00002", "valid_from": "2026-01-01", "expected_version": "0"}
+    if invalid == "active-transition":
+        assert browser.post(url, valid).status_code == 302
+    data = valid.copy()
+    if invalid == "active-transition":
+        data["expected_version"] = "1"
+    elif invalid == "wrong-code":
+        data["code"] = "00004"
+    else:
+        data["valid_to"] = "2025-12-31"
+    file = SimpleUploadedFile("new.pdf", b"%PDF-1.4 evidence\n%%EOF", "application/pdf")
+    with patch.object(default_storage, "save", wraps=default_storage.save) as put:
+        response = browser.post(url, {**data, "evidence": file})
+    assert response.status_code == (409 if invalid == "active-transition" else 422)
+    assert put.call_count == 0, "Evidence was staged before declaration validation."
+    with tenant_context(firm.tenant.pk):
+        assert not Document.objects.exists()
+        assert AuthorityRecord.objects.count() == int(invalid == "active-transition")
 
 
 def test_authority_panel_is_flag_gated_and_staff_has_no_write_actions(

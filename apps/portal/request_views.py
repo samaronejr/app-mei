@@ -49,6 +49,7 @@ from apps.cycles.intake import (
     intake_upload,
 )
 from apps.cycles.models import Exception as CycleException
+from apps.cycles.quarantine_request import phased_upload
 from apps.cycles.services.exceptions import ACTIVE_STATES
 from apps.cycles.services.requests import client_status
 from apps.portal.hosts import portal_slug_from_host
@@ -300,6 +301,7 @@ def _refused(request: PortalVaultRequest, pk: UUID, message: str) -> HttpRespons
 @require_http_methods(["POST"])
 @login_required
 @require_can(VAULT_CAPABILITY)
+@phased_upload
 def request_upload(request: PortalVaultRequest, pk: UUID) -> HttpResponse:
     """Accept one file against one of the client's open requests (S7.5).
 

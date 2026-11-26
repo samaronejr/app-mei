@@ -168,10 +168,8 @@ class Command(BaseCommand):
             raise CommandError(msg)
 
         bucket_keys = _bucket_keys(default_storage)
-        if not phase_one.storage_keys and bucket_keys:
-            msg = "Refusing empty document union for a non-empty bucket."
-            raise CommandError(msg)
-
+        # A complete scan of an empty installation is valid: a first rolled-back
+        # upload can already have left a quarantine object without a document.
         orphan_keys = bucket_keys - phase_one.storage_keys
         orphan_reports = _orphan_reports(default_storage, orphan_keys)
 

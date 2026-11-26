@@ -209,16 +209,19 @@ def test_staff_sees_requests_preview_and_recebido(
     from django.core.files.uploadedfile import SimpleUploadedFile  # noqa: PLC0415
 
     from apps.cycles.intake import intake_upload  # noqa: PLC0415
+    from tests.obligations.ingest_fixtures import scoped_upload  # noqa: PLC0415
 
     with tenant_context(live.firm.tenant.pk):
         company = EvidenceRequest.objects.get(pk=journey.request.pk).client
-        intake_upload(
-            journey.portal_user,
-            journey.request.pk,
-            SimpleUploadedFile("notas-setembro.pdf", b"%PDF-1.4 staff view\n"),
-            tenant=live.firm.tenant,
-            client=company,
-        )
+    scoped_upload(
+        live.firm.tenant,
+        intake_upload,
+        journey.portal_user,
+        journey.request.pk,
+        SimpleUploadedFile("notas-setembro.pdf", b"%PDF-1.4 staff view\n"),
+        tenant=live.firm.tenant,
+        client=company,
+    )
     page = open_page(live, None)
     page.goto(live.url(f"/ciclos/{journey.cycle_id}/"))
     section = page.page.locator("#solicitacoes")

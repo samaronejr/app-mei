@@ -531,6 +531,15 @@ premature.
    command reads real document bytes.
 4. Document loss or a checksum mismatch is a **stop condition**. Do not continue
    inviting users; go to [incident-severity-ladder](#incident-severity-ladder).
+5. A rollback after an initial quarantine PUT can leave a private object with
+   no document row. It cannot be downloaded or scanned through the application.
+   Retry the upload normally: the same scoped key is reused after its SHA-256 is
+   verified. `reconcile_documents` lists remaining unclaimed quarantine keys
+   as `ORPHAN` with their age, even if no document rows have ever committed.
+   Failure to scan a tenant, or an incomplete tenant count, suppresses the
+   orphan report. It does not delete objects: have an operator verify
+   the upload is no longer in flight and the key is still unreferenced before
+   cleanup. Never delete a key solely because an earlier request rolled back.
 
 ---
 

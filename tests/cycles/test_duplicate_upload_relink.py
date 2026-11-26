@@ -1,13 +1,18 @@
 """S15 C: the same bytes twice give one Document and two links, with no error."""
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
+from threading import Barrier, local
+from typing import TYPE_CHECKING
 
 import pytest
+from django.db import connection, connections
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
+from apps.cycles import intake
 from apps.cycles.models import (
     CycleEvent,
     DocumentIntake,
@@ -18,6 +23,9 @@ from apps.cycles.models import (
 )
 from apps.obligations.models import Document
 from tests.portal.request_fixtures import PortalSetup, portal_setup, upload
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -71,6 +79,55 @@ def test_same_bytes_to_two_requests_reuse_one_document(setup: PortalSetup) -> No
     assert [link.request_id for link in links] == [setup.request.pk, second.pk]
     assert [link.relinked for link in links] == [False, True]
     assert events == len(links)
+
+
+def test_concurrent_identical_uploads_leave_only_the_claimed_object(
+    setup: PortalSetup, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    second = _second_request(setup)
+    admitted = Barrier(2, timeout=20)
+    document_for: Callable[..., tuple[Document, bool]] = intake.document_for
+    thread_state = local()
+
+    def wait_at_first_admission(**kwargs: object) -> tuple[Document, bool]:
+        try:
+            return document_for(**kwargs)
+        except intake.QuarantineRequiredError:
+            if not getattr(thread_state, "admitted", False):
+                thread_state.admitted = True
+                admitted.wait()
+            raise
+
+    monkeypatch.setattr(intake, "document_for", wait_at_first_admission)
+
+    def send(request: EvidenceRequest) -> None:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET ROLE app_runtime")
+            response = setup.portal().post(
+                f"/solicitacoes/{request.pk}/enviar",
+                {"file": upload("nota.pdf", PAYLOAD)},
+                headers={"HX-Request": "true"},
+            )
+            assert response.status_code == HTTPStatus.OK
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(send, request) for request in (setup.request, second)]
+        for future in futures:
+            future.result(timeout=45)
+
+    with tenant_context(setup.graph.tenant.pk):
+        document = Document.objects.get()
+        claim = DocumentIntake.objects.get(document=document).quarantine_key
+        links = list(EvidenceLink.objects.filter(document=document))
+    assert {link.request_id for link in links} == {setup.request.pk, second.pk}
+    assert sorted(link.relinked for link in links) == [False, True]
+    stored = {
+        p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()
+    }
+    assert stored == {claim}
 
 
 def test_same_bytes_to_the_same_request_again_changes_nothing(

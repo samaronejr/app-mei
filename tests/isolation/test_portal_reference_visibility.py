@@ -36,7 +36,12 @@ from apps.cycles.services.requests import PRIVATE_OBLIGATION, send_requests
 from apps.obligations.models import Document, Obligation, SourceObservation
 from apps.obligations.observations import record_staff_fact
 from apps.obligations.tasks import materialize_receipt_observations
-from tests.obligations.ingest_fixtures import PDF, ingest_setup, portal_cursor
+from tests.obligations.ingest_fixtures import (
+    PDF,
+    ingest_setup,
+    portal_cursor,
+    scoped_upload,
+)
 from tests.portal.request_fixtures import PortalSetup, upload
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -121,14 +126,16 @@ def test_link_and_fact_hide_with_their_evidence_document(
 ) -> None:
     # Given a VISIBLE subject whose staff fact cites a link to a hidden original.
     subject = _obligation(setup, visible=True)
+    document, _ = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("evidence.pdf", PDF + b"evidence"),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+        portal_visible=document_visible,
+    )
     with tenant_context(setup.graph.tenant.pk):
-        document, _ = staff_upload(
-            setup.graph.actor,
-            upload("evidence.pdf", PDF + b"evidence"),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-            portal_visible=document_visible,
-        )
         link = EvidenceLink.objects.create(
             tenant=setup.graph.tenant,
             client=setup.graph.client,
@@ -176,13 +183,16 @@ def test_request_bound_to_a_hidden_obligation_is_unreadable_and_unanswerable(
             requested_at=timezone.now(),
             created_by=setup.graph.actor,
         )
-        document, _ = staff_upload(
-            setup.graph.actor,
-            upload("receipt.pdf", PDF + b"receipt"),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-            portal_visible=True,
-        )
+    document, _ = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("receipt.pdf", PDF + b"receipt"),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+        portal_visible=True,
+    )
+    with tenant_context(setup.graph.tenant.pk):
         link = EvidenceLink.objects.create(
             tenant=setup.graph.tenant,
             client=setup.graph.client,
@@ -343,14 +353,16 @@ def _clear_and_serve(document: Document, payload: bytes) -> None:
 def _served_staff_document(
     setup: PortalSetup, *, name: str, payload: bytes, visible: bool = True
 ) -> Document:
+    document, _ = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload(name, payload),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+        portal_visible=visible,
+    )
     with tenant_context(setup.graph.tenant.pk):
-        document, _ = staff_upload(
-            setup.graph.actor,
-            upload(name, payload),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-            portal_visible=visible,
-        )
         _clear_and_serve(document, payload)
     return document
 
@@ -392,14 +404,16 @@ def test_reviewer_b1_bound_staff_document_and_its_intake_stay_hidden(
     hidden = _obligation(setup, visible=False)
     assert _portal_ids(setup, "obligations_obligation", [hidden.pk]) == set()
     payload = PDF + b"PRIVATE-BOUND-DOCUMENT-CANARY"
+    document, _ = scoped_upload(
+        setup.graph.tenant,
+        staff_upload,
+        setup.graph.actor,
+        upload("PRIVATE-BOUND-DOCUMENT-CANARY.pdf", payload),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+        portal_visible=True,
+    )
     with tenant_context(setup.graph.tenant.pk):
-        document, _ = staff_upload(
-            setup.graph.actor,
-            upload("PRIVATE-BOUND-DOCUMENT-CANARY.pdf", payload),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-            portal_visible=True,
-        )
         Document.objects.filter(pk=document.pk).update(obligation=hidden)
         _clear_and_serve(document, payload)
         intake = DocumentIntake.objects.get(document=document)

@@ -32,7 +32,7 @@ from tests.integrations.test_sitfis_interleavings import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from contextlib import AbstractContextManager
 
     import pytest
@@ -76,10 +76,12 @@ class WireScenario(Scenario):
         finally:
             self.held = False
 
-    def persist(self, **kwargs: object) -> Document:
-        self.durable_document = uuid4()
+    def persist(
+        self, *, on_registered: Callable[[Document], None], **kwargs: object
+    ) -> Document:
+        assert self.held
         document = Document(
-            pk=self.durable_document,
+            pk=uuid4(),
             tenant_id=self.report.tenant_id,
             client_id=self.report.client_id,
             acquisition_origin=AcquisitionOrigin.FEDERAL_PROVIDER,
@@ -87,7 +89,10 @@ class WireScenario(Scenario):
             portal_visible=False,
             created_at=self.current,
         )
+        # Like real ingestion, associate the report before publishing the original.
+        on_registered(document)
         self.documents.append(document)
+        self.durable_document = document.pk
         return document
 
     def receive_recorded(self) -> None:
@@ -100,7 +105,7 @@ class WireScenario(Scenario):
                     reply=self.receipt,
                     payload=b"%PDF-1.7 synthetic model\n%%EOF\n",
                 )
-                self.receipt.document_id = document.pk
+                assert self.report.document_id == document.pk
             else:
                 mod._receive(
                     self.report.tenant_id, self.report.pk, self.a.pk, self.receipt

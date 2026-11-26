@@ -67,6 +67,7 @@ from apps.core.tenancy import (
     current_client_id,
     current_tenant_id,
 )
+from apps.cycles.quarantine_request import dispatch_upload
 from apps.portal.hosts import portal_slug_from_host
 from apps.tenants.branding import Brand, brand_for
 from apps.tenants.models import Membership, Tenant
@@ -192,7 +193,7 @@ class HostDispatchMiddleware:
         """Point the request at the portal urlconf when the host is a portal host."""
         if portal_slug_from_host(request.get_host()) is not None:
             request.urlconf = PORTAL_URLCONF
-        return self.get_response(request)
+        return dispatch_upload(request, self.get_response)
 
 
 class PortalMiddleware:

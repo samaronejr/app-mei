@@ -38,6 +38,7 @@ from tests.obligations.fiscal_fixtures import (
     nfse,
     summary,
 )
+from tests.obligations.ingest_fixtures import scoped_upload
 from tests.obligations.test_fiscal_documents import (
     binding,
     document,
@@ -266,13 +267,15 @@ def test_v1_fields_and_stale_reason_do_not_prevent_v2_classification(
     setup: PortalSetup,
 ) -> None:
     payload = nfe(issuer=CLIENT)
+    original, _ = scoped_upload(
+        setup.graph.tenant,
+        vault_upload,
+        setup.portal_user,
+        SimpleUploadedFile("documento-fiscal.xml", payload),
+        tenant=setup.graph.tenant,
+        client=setup.graph.client,
+    )
     with tenant_context(setup.graph.tenant.pk):
-        original, _ = vault_upload(
-            setup.portal_user,
-            SimpleUploadedFile("documento-fiscal.xml", payload),
-            tenant=setup.graph.tenant,
-            client=setup.graph.client,
-        )
         intake = DocumentIntake.objects.get(document=original)
     scan_intake(
         setup.graph.tenant.pk, intake.pk, scanner=FakeScanner(), now=timezone.now()

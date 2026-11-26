@@ -28,7 +28,7 @@ from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import DocumentIntake, IntakeState
-from apps.cycles.intake import UploadRejected, vault_upload
+from apps.cycles.intake import UploadRejected, tenant_quarantine, vault_upload
 from apps.cycles.scanning import (
     EICAR,
     ClamdScanner,
@@ -37,6 +37,7 @@ from apps.cycles.scanning import (
     scan_intake,
     scan_required,
 )
+from apps.obligations.models import Document
 from apps.tenants.models import Membership, Tenant
 
 EICAR_NAME: Final = "scanner-selfcheck-eicar.pdf"
@@ -146,11 +147,18 @@ class Command(BaseCommand):
         """Upload through the vault intake, scan once, return (state, reason, doc)."""
         name, payload = file
         upload = SimpleUploadedFile(name, payload, content_type="application/pdf")
-        with tenant_context(tenant.pk):
+
+        def register() -> Document | None:
             try:
-                document, _ = vault_upload(user, upload, tenant=tenant, client=client)
+                return vault_upload(user, upload, tenant=tenant, client=client)[0]
             except UploadRejected:
-                return "recusado_na_entrada", "", ""
+                # Commit the refused intake, as the portal boundary does.
+                return None
+
+        document = tenant_quarantine(tenant.pk, register)
+        if document is None:
+            return "recusado_na_entrada", "", ""
+        with tenant_context(tenant.pk):
             intake_id = DocumentIntake.objects.get(document=document).pk
         scan_intake(tenant.pk, intake_id, scanner=clamd, now=timezone.now())
         with tenant_context(tenant.pk):

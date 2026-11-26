@@ -21,6 +21,7 @@ never marks a missing fact as obtained.
 """
 
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from typing import Final
@@ -509,6 +510,7 @@ def declare_authority(  # noqa: PLR0913 - the rendered form's fields plus the cl
     expected_version: int,
     valid_to: dt.date | None = None,
     evidence_document: Document | None = None,
+    acquire_evidence: Callable[[ClientCompany], Document | None] | None = None,
     today: dt.date | None = None,
 ) -> AuthorityRecord:
     """Record a human declaration of authority; never a verification."""
@@ -517,6 +519,9 @@ def declare_authority(  # noqa: PLR0913 - the rendered form's fields plus the cl
     _require(actor, visible.pk)
     _validate_declaration(service, code, valid_from, valid_to, on)
     _validate_evidence(evidence_document, visible)
+    if acquire_evidence is not None and evidence_document is not None:
+        message = "Informe somente uma origem para a evidência."
+        raise ValidationError(message, code="evidence_document")
     with transaction.atomic():
         client, head = _locked_head(actor, client_id, service, expected_version)
         # A revision whose validity ended -- active or still pending verification --
@@ -533,6 +538,11 @@ def declare_authority(  # noqa: PLR0913 - the rendered form's fields plus the cl
                 "verifique-a ou revogue-a antes de registrar outra."
             )
             raise InvalidTransitionError(message)
+        if acquire_evidence is not None:
+            # The upload's first pass can request staging only after this transition
+            # is legal. Its second pass repeats the same checks under the client lock.
+            evidence_document = acquire_evidence(client)
+            _validate_evidence(evidence_document, client)
         return _append(
             client,
             head,

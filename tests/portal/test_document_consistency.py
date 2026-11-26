@@ -22,6 +22,7 @@ from pytest_django.fixtures import SettingsWrapper
 from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import current_tenant_id, tenant_context
+from apps.cycles.evidence import DocumentIntake
 from apps.obligations.models import Document
 from apps.tenants.models import Membership, Tenant, TenantRole
 from tests.support import enrol_totp
@@ -215,6 +216,39 @@ def test_object_write_failure_creates_no_metadata_row(
         assert not Document.objects.exists()
 
 
+@pytest.mark.parametrize(
+    "damaged",
+    [UPLOAD_PAYLOAD[:-1], b"!" + UPLOAD_PAYLOAD[1:], UPLOAD_PAYLOAD + b"!"],
+    ids=["truncated", "wrong-digest", "overlong"],
+)
+def test_new_quarantine_put_is_read_back_before_registration(
+    upload_portal: UploadPortal, damaged: bytes
+) -> None:
+    storage = upload_portal.storage
+    save_bytes = storage.save
+    received_keys: list[str] = []
+
+    def faulty_put(name: str, content: File[bytes]) -> str:
+        assert content.read() == UPLOAD_PAYLOAD
+        key = save_bytes(name, File(BytesIO(damaged)))
+        assert key == name
+        received_keys.append(key)
+        return key
+
+    with mock.patch.object(storage, "save", side_effect=faulty_put):
+        try:
+            _upload(upload_portal)
+        except OSError as exc:
+            reason = str(exc)
+        else:
+            reason = ""
+    assert len(received_keys) == 1
+    assert "integrity" in reason, "A fresh PUT was registered without verified bytes."
+    with tenant_context(upload_portal.tenant.pk):
+        assert not Document.objects.exists()
+        assert not DocumentIntake.objects.exists()
+
+
 def test_row_save_failure_deletes_the_object_written_by_this_request(
     upload_portal: UploadPortal,
 ) -> None:
@@ -282,7 +316,7 @@ def test_storage_selected_alternative_name_is_deleted_and_rejected(
 
     monkeypatch.setattr(upload_portal.storage, "save", save_under_alternate)
 
-    with pytest.raises(RuntimeError, match="storage changed the requested"):
+    with pytest.raises(OSError, match="storage changed the requested"):
         _upload(upload_portal)
 
     assert len(alternate_names) == 1
@@ -320,7 +354,7 @@ def test_collision_deletes_only_alternate_and_preserves_requested_object_and_row
             "delete",
             wraps=upload_portal.storage.delete,
         ) as deleted,
-        pytest.raises(RuntimeError, match="storage changed the requested"),
+        pytest.raises(OSError, match="storage changed the requested"),
     ):
         _upload(upload_portal)
 
@@ -592,20 +626,29 @@ def test_reconcile_processed_tenant_count_mismatch_aborts_before_bucket_listing(
     assert "ORPHAN" not in stdout.getvalue()
 
 
-def test_reconcile_empty_union_with_nonempty_bucket_aborts_without_orphan_report(
+def test_reconcile_complete_empty_union_reports_unclaimed_keys_without_deleting(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The sweep-empty guard refuses to classify a populated bucket from zero rows."""
+    """A verified empty installation can have a first PUT with no committed row."""
     storage = FileSystemStorage(location=tmp_path)
     _patch_reconcile_storage(monkeypatch, storage)
     storage.save("unclaimed-key", File(BytesIO(b"unclaimed")))
     stdout = StringIO()
 
-    with pytest.raises(CommandError, match="empty document union"):
-        call_command(RECONCILE_COMMAND, stdout=stdout)
-
-    assert "ORPHAN" not in stdout.getvalue()
+    with mock.patch.object(storage, "delete", wraps=storage.delete) as delete:
+        try:
+            call_command(RECONCILE_COMMAND, stdout=stdout)
+        except CommandError as error:
+            message = "A complete empty inventory must report its unclaimed objects."
+            raise AssertionError(message) from error
+    report = stdout.getvalue()
+    assert "documents=0" in report
+    assert "orphan_candidates=1" in report
+    assert "ORPHAN storage_key=unclaimed-key age_seconds=" in report
+    assert "COMPLETE report-only" in report
+    delete.assert_not_called()
+    assert storage.exists("unclaimed-key")
 
 
 def test_reconcile_command_has_no_destructive_storage_path() -> None:

@@ -40,22 +40,31 @@ visibility boundary.
 """
 
 import hashlib
+import hmac
+import logging
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import partial
+from traceback import extract_tb
 from typing import Final
 from uuid import UUID
 
 import sentry_sdk
 from django.conf import settings
+from django.core.exceptions import PermissionDenied
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import UploadedFile
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.http import Http404
 
 from apps.accounts.models import User
 from apps.authz.objects import load_visible_client
 from apps.clients.models import ClientCompany
 from apps.core.retention import RetentionClass
+from apps.core.tasks import assert_no_transaction
+from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import (
     CLIENT_OPEN_STATES,
     REJECTED_STATES,
@@ -75,6 +84,7 @@ from apps.tenants.models import Tenant
 CHUNK_BYTES: Final = 64 * 1024
 SHA256_CONSTRAINT: Final = "document_tenant_client_sha256_uniq"
 LINK_CONSTRAINT: Final = "evidencelink_request_document_uniq"
+logger = logging.getLogger(__name__)
 
 
 def _constraint(error: IntegrityError) -> str | None:
@@ -151,6 +161,160 @@ def read_capped(upload: UploadedFile) -> tuple[bytes, str]:
     return b"".join(parts), digest.hexdigest()
 
 
+def _content_key(
+    tenant: Tenant,
+    client: ClientCompany,
+    source: DocumentSource,
+    digest: str,
+    obligation_id: UUID | str | None,
+) -> str:
+    # A visible upload and a private provider original must never share an
+    # object (including during retention). Do not expose a plaintext hash key.
+    identity = ":".join(
+        map(
+            str,
+            (tenant.pk, client.pk, source.portal_visible, obligation_id or "", digest),
+        )
+    )
+    return hmac.new(
+        settings.SECRET_KEY.encode(),
+        f"quarantine:v1:{identity}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _unissued_storage_key(tenant_id: UUID, client_id: UUID, address: str) -> str:
+    """Allocate an object generation under the stable content-address mutex."""
+    # A binding can change after a row is issued. A caller permitted to create
+    # a new row need not be permitted to see the old one. The storage phase
+    # tests occupancy of opaque keys only; never fetch or reuse that row.
+    with tenant_context(tenant_id):
+        issued = Document.objects.filter(client_id=client_id)
+        while issued.filter(storage_key=address).exists():
+            address = hmac.new(
+                settings.SECRET_KEY.encode(),
+                f"quarantine:generation:{address}".encode(),
+                hashlib.sha256,
+            ).hexdigest()
+    return address
+
+
+@dataclass(slots=True)
+class _Held:
+    storage_key: str
+    held: str
+    created: bool
+    insert_failed: bool = False
+
+
+_held: ContextVar[_Held | None] = ContextVar("held_quarantine", default=None)
+_locked_address: ContextVar[str | None] = ContextVar(
+    "locked_quarantine_address", default=None
+)
+
+
+class QuarantineStorageError(OSError):
+    """The storage backend did not retain the requested, verifiable object."""
+
+
+class QuarantineRequiredError(Exception):
+    """The authorized DB preflight found no reusable row. No INSERT has run."""
+
+    def __init__(self, key: str, address: str, store: Callable[[], _Held]) -> None:
+        """Bind the exact authorized byte and tenant identity for the storage phase."""
+        super().__init__("Initial quarantine needs an idle connection.")
+        self.key, self.address, self.store = key, address, store
+
+    def complete[R](self, register: Callable[[], R]) -> R:
+        """Recheck scoped reuse under the mutex before touching storage."""
+        assert_no_transaction()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_lock(hashtextextended(%s, 0))", [self.key]
+            )
+        backend = connection.connection
+        protocol = _locked_address.set(self.address)
+        try:
+            try:
+                return register()
+            except QuarantineRequiredError as required:
+                stage = required
+            if stage.address != self.address or stage.key != self.key:
+                raise PermissionDenied
+            held = stage.store()
+            token = _held.set(held)
+            try:
+                return register()
+            finally:
+                _held.reset(token)
+                # Only discard a failed INSERT's new object while holding the mutex.
+                # An outer rollback leaves bytes for retry or the orphan report.
+                if (
+                    held.insert_failed
+                    and held.created
+                    and connection.connection is backend
+                ):
+                    assert_no_transaction()
+                    _discard(held.held)
+        finally:
+            _locked_address.reset(protocol)
+            if connection.connection is backend:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(hashtextextended(%s, 0))", [self.key]
+                    )
+
+
+def quarantine_phases[R](register: Callable[[], R]) -> R:
+    """Repeat DB admission/registration after storing new content outside it."""
+    assert_no_transaction()
+    try:
+        return register()
+    except QuarantineRequiredError as required:
+        stage = required
+    return stage.complete(register)
+
+
+def tenant_quarantine[R](tenant_id: UUID, register: Callable[[], R]) -> R:
+    """Every DB pass uses the same tenant isolation, with no GUC during the PUT."""
+
+    def scoped() -> R:
+        with tenant_context(tenant_id):
+            return register()
+
+    return quarantine_phases(scoped)
+
+
+def _read_back(key: str, limit: int) -> bytes:
+    """Read at most `limit` stored bytes; only backend failures become typed."""
+    try:
+        with default_storage.open(key, "rb") as stored:
+            data: bytes = stored.read(limit)
+    except Exception as error:
+        # Managed downloads can raise non-I/O exceptions while decoding a response.
+        # Never log exception text, which can name the object or its endpoint.
+        frame = extract_tb(error.__traceback__, limit=-1)[0]
+        logger.warning(
+            "Quarantine read-back failed: %s at %s:%d (%s)",
+            type(error).__name__,
+            frame.filename,
+            frame.lineno,
+            frame.name,
+        )
+        msg = "Quarantine integrity check failed: object could not be read."
+        raise QuarantineStorageError(msg) from error
+    return data
+
+
+def _verify_object(key: str, size: int, digest: str) -> None:
+    """Compare the stored bytes, reading at most one byte past `size`."""
+    assert_no_transaction()
+    stored = _read_back(key, size + 1)
+    if len(stored) != size or hashlib.sha256(stored).hexdigest() != digest:
+        msg = "Quarantine integrity check failed: size or digest mismatch."
+        raise QuarantineStorageError(msg)
+
+
 def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
     *,
     tenant: Tenant,
@@ -160,46 +324,55 @@ def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
     payload: bytes,
     digest: str,
     obligation_id: UUID | str | None = None,
-) -> tuple[Document, DocumentIntake]:
-    sniffed = sniff(payload)
-    document = Document(
-        tenant=tenant,
-        client=client,
-        obligation_id=obligation_id,
-        sha256=digest,
-        original_filename=(upload.name or "documento")[:255],
-        # The sniffed type, never the declared one; a refused file has no type.
-        content_type=sniffed or "application/octet-stream",
-        byte_size=len(payload),
-        uploaded_by=source.actor,
-        portal_visible=source.portal_visible,
-        client_upload=source.client_upload,
-        acquisition_origin=source.origin,
-        acquisition_receipt_ref=source.receipt_ref,
-        retention_class=source.retention_class,
-    )
-    held = quarantine_key(tenant.pk, client.pk, document.storage_key)
-    saved = default_storage.save(held, ContentFile(payload))
-    if saved != held:
-        _discard(saved)
-        msg = "storage changed the requested quarantine key"
-        raise RuntimeError(msg)
+) -> _Held:
+    assert_no_transaction()
+    if upload.size != len(payload) or hashlib.sha256(payload).hexdigest() != digest:
+        msg = "Quarantine payload does not match its prepared identity."
+        raise ValueError(msg)
+    address = _content_key(tenant, client, source, digest, obligation_id)
+    key = _unissued_storage_key(tenant.pk, client.pk, address)
+    held = quarantine_key(tenant.pk, client.pk, key)
+    created = not default_storage.exists(held)
+    if created:
+        saved = default_storage.save(held, ContentFile(payload))
+        if saved != held:
+            _discard(saved)
+            msg = "storage changed the requested quarantine key"
+            raise QuarantineStorageError(msg)
+    try:
+        _verify_object(held, len(payload), digest)
+    except QuarantineStorageError:
+        # Never delete an earlier upload's object on the strength of this retry.
+        if created:
+            _discard(held)
+        raise
+    return _Held(key, held, created=created)
+
+
+def _register_document(
+    document: Document,
+    held: _Held,
+    sniffed: str | None,
+) -> DocumentIntake:
     try:
         with transaction.atomic():
             document.save(force_insert=True)
             intake = DocumentIntake.objects.create(
-                tenant=tenant,
-                client=client,
+                tenant_id=document.tenant_id,
+                client_id=document.client_id,
                 document=document,
                 state=IntakeState.QUARANTINED if sniffed else IntakeState.REJECTED_TYPE,
                 reason="" if sniffed else "tipo_nao_aceito",
                 sniffed_type=sniffed or "",
-                quarantine_key=held,
+                quarantine_key=held.held,
             )
-    except Exception:
-        _discard(saved)
+    except IntegrityError as error:
+        held.insert_failed = _constraint(error) != SHA256_CONSTRAINT
         raise
-    return document, intake
+    except Exception:
+        held.insert_failed = True
+        raise
+    return intake
 
 
 def _discard(name: str) -> None:
@@ -225,21 +398,52 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
     upload of bytes the firm or a provider already holds privately is a separate,
     visible row, never the hidden one.
     """
+    held = _held.get()
+    key = _content_key(tenant, client, source, digest, obligation_id)
+    locked_address = _locked_address.get()
+    if locked_address is not None and locked_address != key:
+        # A re-resolved membership must not register the bytes against another client.
+        raise PermissionDenied
     documents = Document.objects.filter(
         client=client, portal_visible=source.portal_visible
     )
     document = documents.filter(sha256=digest).first()
     if document is None:
-        try:
-            document, intake = _store(
-                tenant=tenant,
-                client=client,
-                source=source,
-                upload=upload,
-                payload=payload,
-                digest=digest,
-                obligation_id=obligation_id,
+        if held is None:
+            # Storage addresses distinguish obligation bindings; reuse does not.
+            raise QuarantineRequiredError(
+                _content_key(tenant, client, source, digest, None),
+                key,
+                partial(
+                    _store,
+                    tenant=tenant,
+                    client=client,
+                    source=source,
+                    upload=upload,
+                    payload=payload,
+                    digest=digest,
+                    obligation_id=obligation_id,
+                ),
             )
+        sniffed = sniff(payload)
+        candidate = Document(
+            tenant=tenant,
+            client=client,
+            obligation_id=obligation_id,
+            storage_key=held.storage_key,
+            sha256=digest,
+            original_filename=(upload.name or "documento")[:255],
+            content_type=sniffed or "application/octet-stream",
+            byte_size=len(payload),
+            uploaded_by=source.actor,
+            portal_visible=source.portal_visible,
+            client_upload=source.client_upload,
+            acquisition_origin=source.origin,
+            acquisition_receipt_ref=source.receipt_ref,
+            retention_class=source.retention_class,
+        )
+        try:
+            intake = _register_document(candidate, held, sniffed)
         except IntegrityError as error:
             if _constraint(error) != SHA256_CONSTRAINT:
                 raise
@@ -250,7 +454,7 @@ def document_for(  # noqa: PLR0913 - keyword-only: every value is verified conte
                 # Committed with the caller's transaction: the refused original and
                 # its intake are the record. No link, no submission event.
                 raise UploadRejected
-            return document, False
+            return candidate, False
     if document.purged_at is not None:
         raise UploadRejected
     if DocumentIntake.objects.filter(
