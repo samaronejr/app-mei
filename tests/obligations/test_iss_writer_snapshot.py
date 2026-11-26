@@ -135,12 +135,15 @@ def test_stale_scan_cannot_record_an_outage_in_either_order(
     original = inputs[1]
     with fault_iss_original("503", original.storage_key, nfse()):
         incomplete = writer._prepare_iss_originals(*inputs)
-        attached = _attach_distinct(
-            fiscal,
-            setup,
-            original,
-            nfse().replace(b">2</tpRetISSQN>", b"> 2 </tpRetISSQN>"),
-        )
+    # The fixture attaches B while healthy. Attribute the outage only when the
+    # resolver under test commits its complete snapshot, not while seeding B.
+    attached = _attach_distinct(
+        fiscal,
+        setup,
+        original,
+        nfse().replace(b">2</tpRetISSQN>", b"> 2 </tpRetISSQN>"),
+    )
+    with fault_iss_original("503", original.storage_key, nfse()):
         complete = writer._prepare_iss_originals(*inputs)
     failed = next(witness for witness in complete if witness.document_id == original.pk)
     healthy = next(

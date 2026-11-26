@@ -53,3 +53,33 @@ def nfse(*, version: str = "1.01", extra: str = "") -> bytes:
         "<trib><tribMun><tpRetISSQN>2</tpRetISSQN></tribMun></trib></valores>"
         f"{extra}</infDPS></DPS></infNFSe></NFSe>"
     ).encode()
+
+
+def retention_element(code: str | None) -> bytes:
+    """Build the exact XML element, or omit it completely."""
+    return f"<tpRetISSQN>{code}</tpRetISSQN>".encode() if code is not None else b""
+
+
+def nfse_with_retention(element: bytes) -> bytes:
+    return nfse().replace(retention_element("2"), element)
+
+
+UNTRUSTED_ISS_ELEMENTS = [
+    ("mixed", retention_element("1<invalid/>3"), "1"),
+    ("padded", retention_element(" 2 "), "2"),
+    ("padded-unknown", retention_element(" 9 "), "9"),
+    ("nbsp", retention_element("&#160;1&#160;"), "1"),
+    ("duplicate", retention_element("2") + retention_element("3"), "2"),
+    ("same-duplicate", retention_element("2") * 2, "2"),
+    ("unknown", retention_element("9"), "9"),
+    ("absent", b"", None),
+    ("empty", retention_element(""), None),
+    ("blank", retention_element(" \n\t "), None),
+]
+LEGACY_ISS_DIGEST = {
+    "1": "5a1484c78d39e67f4de40baaf9a9f2d595119dd7390affb1a80f743e2e5a4236",
+    "2": "432a8f92f97c2db78227ca7274b6aa9049996135ed923d57554cbbddc9a80368",
+    "3": "727d55fc31436728dc981bcfa265484cd45bec4837dbb7fe67fb543450d40760",
+    "9": "1ec3baa0de88b1f27f228e4653ffda651b712dabc1dc671b77b334381c937245",
+    None: "eef28260ad24b706acc70305bab8880cd52e517156968a8c8ba9a39a23228670",
+}

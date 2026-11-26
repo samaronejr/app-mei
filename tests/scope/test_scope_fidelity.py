@@ -521,9 +521,42 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
     ),
     (
         ISS_INGEST_FILE,
+        'if extraction.family == "nfse_nacional" and prepared.keys() != set(',
+        1,
+        "Checks received national originals against the locked snapshot before writes."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        ISS_INGEST_FILE,
         'if fiscal.family != "nfse_nacional":',
         1,
         "Limits ISS evidence resolution to the national receipt layout."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        ISS_INGEST_FILE,
+        'if fiscal.family == "nfse_nacional":',
+        2,
+        "Limits evidence refresh and incident projection to national receipts."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        ISS_INGEST_FILE,
+        (
+            'owned = {"iss_projection_owned": True} '
+            'if fiscal.family == "nfse_nacional" else {}'
+        ),
+        1,
+        "Marks ownership only for received national evidence." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        ISS_INGEST_FILE,
+        (
+            "if fiscal.current_revision_id == revision.pk "
+            'and fiscal.family == "nfse_nacional":'
+        ),
+        1,
+        "Checks the accepted national originals after a digest contradiction."
         + FISCAL_RECEIPT_ONLY,
     ),
     (

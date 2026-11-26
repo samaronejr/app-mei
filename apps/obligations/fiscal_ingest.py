@@ -49,6 +49,7 @@ from apps.cycles.scanning import scan_intake, scanner_from_settings
 from apps.integrations.authority import Problem, raise_problem
 from apps.integrations.models import ClientProviderLink, ProviderEnvironment
 from apps.obligations.iss_retention_evidence_v1 import (
+    EVIDENCE_DISAGREES,
     EVIDENCE_UNAVAILABLE,
     ISSDecision,
     ISSOriginal,
@@ -57,8 +58,10 @@ from apps.obligations.iss_retention_evidence_v1 import (
     verify_iss_original,
 )
 from apps.obligations.iss_retention_incidents import (
+    CONSISTENCY_INCIDENT,
     ISSOutageIdentity,
     ISSResolution,
+    incident_episode,
     iss_evidence_key,
     reconcile_iss_incident,
 )
@@ -125,14 +128,35 @@ class PreparedFiscalDocument:
     original: Document
     intake: DocumentIntake
     extraction: FiscalExtraction
+    iss_originals: Mapping[ISSOriginal, ISSDecision]
 
-    def register(self, receipt_ref: str) -> FiscalDocument:
+    def register(
+        self,
+        receipt_ref: str,
+        iss_originals: Mapping[ISSOriginal, ISSDecision] | None = None,
+    ) -> FiscalDocument:
         """Register these prepared bytes inside the caller's page transaction."""
         return _register(
             replace(self.context, receipt_ref=receipt_ref),
             self.original,
             self.intake,
             self.extraction,
+            self.iss_originals if iss_originals is None else iss_originals,
+        )
+
+    def refresh_iss_originals(self) -> "PreparedFiscalDocument":
+        """Read a new evidence snapshot after registration rolled back."""
+        return replace(
+            self,
+            iss_originals=_prepare_iss_originals(
+                self.context, self.original, self.extraction
+            ),
+        )
+
+    def check_iss_originals(self) -> None:
+        """Read-only page preflight. The caller already holds this client's lock."""
+        _check_prepared(
+            self.context, self.original, self.extraction, self.iss_originals
         )
 
 
@@ -147,6 +171,18 @@ def _prepare_iss_originals(
     assert_no_transaction()
     if extraction.family != "nfse_nacional":
         return {}
+    with tenant_context(context.tenant_id):
+        originals = _expected_originals(context, original, extraction)
+    return {
+        witness: verify_iss_original(witness) if witness.usable() else ISSDecision()
+        for witness in originals
+    }
+
+
+def _expected_originals(
+    context: FiscalSource, original: Document, extraction: FiscalExtraction
+) -> list[ISSOriginal]:
+    """DB-only view including the proposed original, before any artifact exists."""
     code = next(
         (
             field.value
@@ -155,30 +191,38 @@ def _prepare_iss_originals(
         ),
         None,
     )
-    with tenant_context(context.tenant_id):
-        revision_id = (
-            FiscalRevision.objects.filter(
-                client_id=context.client_id,
-                document__environment=context.environment,
-                document__family=extraction.family,
-                document__key_namespace=extraction.key_namespace,
-                document__document_key=extraction.document_key,
-                provider_version=context.provider_version,
-                source_namespace=context.source_namespace,
-            )
-            .values_list("id", flat=True)
-            .first()
+    revision_id = (
+        FiscalRevision.objects.filter(
+            client_id=context.client_id,
+            document__environment=context.environment,
+            document__family=extraction.family,
+            document__key_namespace=extraction.key_namespace,
+            document__document_key=extraction.document_key,
+            provider_version=context.provider_version,
+            source_namespace=context.source_namespace,
         )
-        originals = revision_iss_originals(
-            connection,
-            (context.tenant_id, context.client_id, revision_id),
-            incoming=(original.pk, code),
-        )
-    return {
-        witness: verify_iss_original(witness) if witness.usable() else ISSDecision()
-        for witness in originals
-        if witness.document_id is not None
-    }
+        .values_list("id", flat=True)
+        .first()
+    )
+    witnesses = revision_iss_originals(
+        connection,
+        (context.tenant_id, context.client_id, revision_id),
+        incoming=(original.pk, code),
+    )
+    return [w for w in witnesses if w.document_id is not None]
+
+
+def _check_prepared(
+    context: FiscalSource,
+    original: Document,
+    extraction: FiscalExtraction,
+    prepared: Mapping[ISSOriginal, ISSDecision],
+) -> None:
+    if extraction.family == "nfse_nacional" and prepared.keys() != set(
+        _expected_originals(context, original, extraction)
+    ):
+        message = "Os originais do ISS mudaram durante a preparação."
+        raise StaleISSOriginalsError(message)
 
 
 def _current_iss_resolution(
@@ -239,6 +283,27 @@ def _set_iss_projection(
     return changed
 
 
+def _refresh_current_iss(
+    fiscal: FiscalDocument,
+    revision: FiscalRevision,
+    prepared: Mapping[ISSOriginal, ISSDecision],
+) -> None:
+    if fiscal.family == "nfse_nacional":
+        resolution = _current_iss_resolution(fiscal, revision, prepared)
+        state, decision, _ = resolution
+        changed = _set_iss_projection(
+            fiscal,
+            decision.code,
+            new_projection=iss_old_fields_may_change(fiscal, revision, resolution),
+        )
+        if state != fiscal.fiscal_state:
+            fiscal.fiscal_state = state
+            changed.append("fiscal_state")
+        if changed:
+            fiscal.version += 1
+            fiscal.save(update_fields=[*changed, "version"])
+
+
 def iss_old_fields_may_change(
     fiscal: FiscalDocument,
     revision: FiscalRevision,
@@ -269,6 +334,27 @@ def iss_old_fields_may_change(
         .first()
     )
     return metadata is not None and metadata.get("iss_projection_owned") is True
+
+
+def _disagreeing_revision(
+    fiscal: FiscalDocument,
+    client: ClientCompany,
+    original: Document,
+    revision: FiscalRevision,
+    prepared: Mapping[ISSOriginal, ISSDecision],
+) -> FiscalDocument:
+    _incident(fiscal, client, original, revision)
+    if fiscal.current_revision_id == revision.pk and fiscal.family == "nfse_nacional":
+        # A rejected candidate is not evidence for the accepted revision. The
+        # same bytes can already belong to it (e.g. conflicting provider state).
+        if not RevisionArtifact.objects.filter(
+            revision=revision, document=original, role="xml_original"
+        ).exists():
+            prepared = {
+                w: d for w, d in prepared.items() if w.document_id != original.pk
+            }
+        _current_iss_resolution(fiscal, revision, prepared)
+    return fiscal
 
 
 def _iss_projection(code: str | None, stated: Decimal | None) -> dict[str, object]:
@@ -314,12 +400,8 @@ def _projection(extraction: FiscalExtraction) -> dict[str, object]:
         message = "Municipio de incidencia invalido."
         raise ValidationError(message)
     projection["municipality_incidence"] = municipality
-    retained = values.get("iss_withheld_flag", "")
-    withheld = {"1": False, "2": True, "3": True}.get(retained)
-    projection["iss_withheld_flag"] = withheld
-    projection["iss_withheld_amount"] = (
-        projection["iss_stated"] if withheld is True else None
-    )
+    # The extracted indicator is not verified retained evidence.
+    projection.update(_iss_projection(None, None))
     return projection
 
 
@@ -514,20 +596,41 @@ def _classify(
 
 
 def _incident(
-    fiscal: FiscalDocument, client: ClientCompany, original: Document
+    fiscal: FiscalDocument,
+    client: ClientCompany,
+    original: Document,
+    conflicting_revision: FiscalRevision,
 ) -> None:
+    metadata: dict[str, object] = {
+        "original_document_id": str(original.pk),
+        "revision_id": str(fiscal.current_revision_id),
+        "cause": EVIDENCE_DISAGREES,
+    }
+    if conflicting_revision.pk != fiscal.current_revision_id:
+        metadata["conflicting_revision_id"] = str(conflicting_revision.pk)
+    ref = ObjectRef("FiscalDocument", str(fiscal.pk))
+    if (
+        fiscal.fiscal_state == "incerta"
+        and incident_episode(ref, str(fiscal.current_revision_id))
+        .filter(metadata=metadata)
+        .exists()
+    ):
+        return
     fiscal.fiscal_state = "incerta"
+    fields = ["fiscal_state", "version"]
+    if fiscal.family == "nfse_nacional":
+        fields += _set_iss_projection(fiscal, None, new_projection=False)
     fiscal.version += 1
-    fiscal.save(update_fields=["fiscal_state", "version"])
+    fiscal.save(update_fields=fields)
     raise_problem(
         client,
         Problem("incidente_consistencia_fiscal", fiscal.pk, timezone.localdate()),
     )
     record_event(
-        action="fiscal.consistency_incident",
+        action=CONSISTENCY_INCIDENT,
         tenant_id=client.tenant_id,
-        obj=ObjectRef("FiscalDocument", str(fiscal.pk)),
-        metadata={"original_document_id": str(original.pk)},
+        obj=ref,
+        metadata=metadata,
     )
 
 
@@ -536,6 +639,7 @@ def _register(
     original: Document,
     intake: DocumentIntake,
     extraction: FiscalExtraction,
+    iss_originals: Mapping[ISSOriginal, ISSDecision],
 ) -> FiscalDocument:
     projection = _projection(extraction)
     values = {field.name: field.value for field in extraction.fields}
@@ -569,6 +673,8 @@ def _register(
         ).encode()
     ).hexdigest()
     _, client = _authorize(context)
+    # Also covers historical and conflicting revisions that return early.
+    _check_prepared(context, original, extraction, iss_originals)
     provenance = (
         _binding(context, client) if extraction.summary_only else {"role_basis": "xml"}
     )
@@ -613,8 +719,7 @@ def _register(
         provider_version=context.provider_version,
     ).first()
     if revision is not None and revision.semantic_digest != digest:
-        _incident(fiscal, client, original)
-        return fiscal
+        return _disagreeing_revision(fiscal, client, original, revision, iss_originals)
     if revision is None:
         revision = FiscalRevision.objects.create(
             tenant_id=context.tenant_id,
@@ -643,6 +748,9 @@ def _register(
         role="resumo" if extraction.summary_only else "xml_original",
         defaults={"tenant_id": context.tenant_id},
     )
+    if fiscal.current_revision_id == revision.pk:
+        _refresh_current_iss(fiscal, revision, iss_originals)
+        return fiscal
     newest_source_version = max(
         int(value)
         for value in FiscalRevision.objects.filter(
@@ -655,9 +763,7 @@ def _register(
         fiscal.current_revision.fiscal_state in TERMINAL_STATES
         and state != fiscal.current_revision.fiscal_state
     ):
-        _incident(fiscal, client, original)
-        return fiscal
-    if fiscal.current_revision_id == revision.pk:
+        _incident(fiscal, client, original, revision)
         return fiscal
     counterpart = ROLE_COUNTERPART[context.client_role]
     for name, value in projection.items():
@@ -666,17 +772,22 @@ def _register(
     fiscal.counterpart_name = values.get(f"{counterpart}_name", "")
     fiscal.current_revision = revision
     fiscal.fiscal_state = state
-    fiscal.role_verification = role
-    fiscal.summary_only = extraction.summary_only
-    fiscal.version += 1
-    fiscal.save()
+    owned = {"iss_projection_owned": True} if fiscal.family == "nfse_nacional" else {}
     record_event(
         action="fiscal.head_changed",
         tenant_id=context.tenant_id,
         actor=context.actor,
         obj=ObjectRef("FiscalRevision", str(revision.pk)),
-        metadata={"document_id": str(fiscal.pk), "role_verification": role},
+        metadata={"document_id": str(fiscal.pk), "role_verification": role, **owned},
     )
+    fiscal.fiscal_state, iss, _ = _current_iss_resolution(
+        fiscal, revision, iss_originals, derive_on_recovery=True
+    )
+    _set_iss_projection(fiscal, iss.code, new_projection=not iss.cause)
+    fiscal.role_verification = role
+    fiscal.summary_only = extraction.summary_only
+    fiscal.version += 1
+    fiscal.save()
     return fiscal
 
 
@@ -711,7 +822,13 @@ def prepare_fiscal_document(
     if not extraction.document_key or len(extraction.document_key) > KEY_MAX:
         code = "missing_fiscal_key"
         raise UnsafeDocument(code)
-    return PreparedFiscalDocument(context, original, intake, extraction)
+    return PreparedFiscalDocument(
+        context,
+        original,
+        intake,
+        extraction,
+        _prepare_iss_originals(context, original, extraction),
+    )
 
 
 def ingest_fiscal_document(  # noqa: PLR0913 - the plan's keyword-only server contract
@@ -756,5 +873,10 @@ def ingest_fiscal_document(  # noqa: PLR0913 - the plan's keyword-only server co
     )
     if prepared is None:
         return None
+    try:
+        with tenant_context(tenant_id):
+            return prepared.register(receipt_ref)
+    except StaleISSOriginalsError:
+        prepared = prepared.refresh_iss_originals()
     with tenant_context(tenant_id):
         return prepared.register(receipt_ref)
