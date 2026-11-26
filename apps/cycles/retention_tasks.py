@@ -411,6 +411,7 @@ PROOF_REFUSALS: Final = frozenset(
         "arquivo_nao_regular",
         "chave_nao_enderecavel",
         "identidade_indeterminada",
+        "armazenamento_divergente",
     }
 )
 COMPLETED: Final = "concluida"
@@ -559,6 +560,27 @@ def _count(tid: UUID, claim_id: UUID, outcome: str, counts: dict[str, int]) -> N
             )
 
 
+def _foreign_or_none(tid: UUID, keys: list[str]) -> set[str] | None:
+    """Return the keys another tenant's rows name, or None when the lookup fails."""
+    try:
+        return foreign_storage_keys(tid, keys, default_storage)
+    except Exception:
+        logger.exception("ownership lookup failed for tenant %s", tid)
+        return None
+
+
+def _foreign_for(tid: UUID, batch: set[str] | None, candidate: Candidate) -> set[str]:
+    """Return the batch result, or redo it for this candidate if the batch failed.
+
+    A candidate whose own lookup also fails counts every key as another tenant's:
+    it is kept, and neither failure stops the sweep (AXRM-051).
+    """
+    if batch is not None:
+        return batch
+    own = _foreign_or_none(tid, list(candidate.keys))
+    return set(candidate.keys) if own is None else own
+
+
 def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
     """Honor holds committed before the deletion claim and retain retry evidence."""
     assert_no_transaction()
@@ -568,10 +590,9 @@ def purge_tenant(tid: UUID, *, dry_run: bool, now: datetime) -> dict[str, int]:
             return counts
         candidates = _candidates()
     # Storage keys are global: a key a row of another tenant names is never deleted.
-    foreign = foreign_storage_keys(
-        tid, [key for c in candidates for key in c.keys], default_storage
-    )
+    batch = _foreign_or_none(tid, [key for c in candidates for key in c.keys])
     for candidate in candidates:
+        foreign = _foreign_for(tid, batch, candidate)
         with tenant_context(tid):
             # PLATFORM_QUERY_OK: cancellation and deletion claims share this fence.
             tenant = Tenant.objects.select_for_update(no_key=True).get(pk=tid)

@@ -67,6 +67,7 @@ from apps.cycles.retention import (
     open_stored,
     ownership_refusal,
     physical_identity,
+    rows_storage,
     single_copy_storage,
     storage_keys_locked,
 )
@@ -366,19 +367,20 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
     scanner may have verified.
     """
     assert_no_transaction()
-    with storage_keys_locked(
-        [ticket.storage_key], wait=False, storage=storage
-    ) as locked:
+    # The final is the file the row names: it is checked and written through the
+    # rows' own storage, never through the scanner's view (AXRM-051).
+    final = rows_storage()
+    with storage_keys_locked([ticket.storage_key], wait=False, storage=final) as locked:
         if not locked:
             raise ScanDeferred  # another scanner or a disposal holds the final key
         try:
             if not ticket.quarantined:
                 # Scanned in place: the serving file is checked again under its
                 # lock, since a restore may have replaced it after the scan read.
-                _read_verified(storage, ticket.storage_key, ticket.sha256)
+                _read_verified(final, ticket.storage_key, ticket.sha256)
                 return
-            if storage.exists(ticket.storage_key):
-                _read_verified(storage, ticket.storage_key, ticket.sha256)
+            if final.exists(ticket.storage_key):
+                _read_verified(final, ticket.storage_key, ticket.sha256)
                 return
             payload = _read_verified(storage, ticket.object_key, ticket.sha256)
             state = _write_state(ticket)
@@ -389,7 +391,7 @@ def promote(ticket: ScanTicket, storage: Storage) -> None:
         except OSError as error:
             msg = "promotion copy failed"
             raise ScannerUnavailable(msg) from error
-        _write_final(storage, ticket, payload)
+        _write_final(final, ticket, payload)
 
 
 def _write_final(storage: Storage, ticket: ScanTicket, payload: bytes) -> None:
@@ -418,7 +420,10 @@ def _create_exclusive(storage: FileSystemStorage, key: str, payload: bytes) -> N
     path = Path(storage.path(key))
     _make_parents(storage, path.parent)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    descriptor = os.open(path, flags, 0o666)
+    # Never more permissive than configured, from the first open: no window in
+    # which the published bytes carry a wider mode (AXRM-051).
+    mode = storage.file_permissions_mode
+    descriptor = os.open(path, flags, 0o666 if mode is None else mode)
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(payload)
         handle.flush()
@@ -463,32 +468,44 @@ def _promote_to_fresh_key(storage: Storage, ticket: ScanTicket, payload: bytes) 
         if not _stored_exactly(storage, saved, name, ticket.sha256):
             msg = "storage did not store the original under its new key"
             raise IntegrityMismatch(msg)
-        with tenant_context(ticket.tenant_id), transaction.atomic():
-            document_id = (
-                DocumentIntake.objects.filter(pk=ticket.intake_id)
-                .values_list("document_id", flat=True)
-                .get()
+        if not _repoint(ticket, name):
+            # The ticket went stale, the key moved or a disposal owns the row: a
+            # lost race, not a digest failure. The new object stays unnamed.
+            raise ScanDeferred
+
+
+def _repoint(ticket: ScanTicket, name: str) -> bool:
+    """Point the document at its new key, only if nothing changed since the ticket.
+
+    Under the intake's and the document's row locks (the purge takes the latter
+    before it reads and claims a document): the intake must still be the pending
+    scan at the ticket's version, the row must still name the ticket's key, and no
+    disposal claim may exist.
+    """
+    with tenant_context(ticket.tenant_id), transaction.atomic():
+        pending = list(
+            DocumentIntake.objects.select_for_update(no_key=True)
+            .filter(
+                pk=ticket.intake_id,
+                version=ticket.version,
+                state__in=PENDING_SCAN_STATES,
             )
-            # The document's row lock, which the purge also takes before it reads
-            # the document and claims it: a repoint and a claim never interleave.
-            current = list(
-                Document.objects.select_for_update(no_key=True)
-                .filter(pk=document_id)
-                .values_list("storage_key", flat=True)
-            )
-            claimed = ContentPurgeClaim.objects.filter(
-                content_kind="document", content_id=document_id
-            ).exists()
-            moved = (
-                Document.objects.filter(pk=document_id).update(storage_key=name)
-                if current == [ticket.storage_key] and not claimed
-                else 0
-            )
-        if claimed:
-            raise ScanDeferred  # a disposal owns the row: the new object stays unnamed
-        if not moved:
-            msg = "the document changed while it was promoted"
-            raise IntegrityMismatch(msg)
+            .values_list("document_id", flat=True)
+        )
+        if not pending:
+            return False
+        current = list(
+            Document.objects.select_for_update(no_key=True)
+            .filter(pk=pending[0])
+            .values_list("storage_key", flat=True)
+        )
+        claimed = ContentPurgeClaim.objects.filter(
+            content_kind="document", content_id=pending[0]
+        ).exists()
+        if current != [ticket.storage_key] or claimed:
+            return False
+        Document.objects.filter(pk=pending[0]).update(storage_key=name)
+        return True
 
 
 def _stored_exactly(storage: Storage, saved: str, name: str, sha256: str) -> bool:
@@ -581,8 +598,7 @@ def _copy_is_spare(
         LegalHold.objects.filter(client_id=intake.client_id, released_at=None).exists()
         or _disposal_started(intake.document_id)
         # The copy may be the final itself under another name: never "spare".
-        or physical_identity(ticket.object_key, storage)
-        == physical_identity(ticket.storage_key, storage)
+        or _may_be_one_object(storage, ticket.object_key, ticket.storage_key)
     ):
         return False
     try:
@@ -590,19 +606,17 @@ def _copy_is_spare(
         _read_verified(storage, ticket.object_key, ticket.sha256)
     except (IntegrityMismatch, OSError):
         return False
-    # Defence in depth: two digests prove equal content, not two files.
-    return not _same_stored_file(storage, ticket.object_key, ticket.storage_key)
+    # Two digests prove equal content, not two files: the inode comparison above
+    # (`_may_be_one_object`) already proved these are two files (AXRM-051).
+    return True
 
 
-def _same_stored_file(storage: Storage, first: str, second: str) -> bool:
-    """Whether two keys open one local file (same device and inode)."""
-    if not isinstance(storage, FileSystemStorage):
-        return False
+def _may_be_one_object(storage: Storage, first: str, second: str) -> bool:
+    """Whether two keys may name one object: equal, or either identity unknown."""
     try:
-        one, other = Path(storage.path(first)).stat(), Path(storage.path(second)).stat()
-    except OSError:
-        return True  # unproved: treat as the same file, so nothing is deleted
-    return (one.st_dev, one.st_ino) == (other.st_dev, other.st_ino)
+        return physical_identity(first, storage) == physical_identity(second, storage)
+    except Exception:  # noqa: BLE001 - an identity that cannot be told keeps the copy
+        return True
 
 
 def _discard(storage: Storage, key: str) -> None:
@@ -776,7 +790,7 @@ def _promote_and_record(
     no verdict, and the intake stays due.
     """
     with storage_keys_locked(
-        [ticket.storage_key], wait=False, storage=storage
+        [ticket.storage_key], wait=False, storage=rows_storage()
     ) as locked:
         if not locked:
             return ScanOutcome.SKIPPED
