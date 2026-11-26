@@ -927,16 +927,21 @@ def run_payment_query(tenant_id: UUID, query_id: UUID) -> PaymentQuery:
 def _ends_before_pages(query: PaymentQuery) -> PaymentQuery | None:
     """End a consultation that must not reach its next page, else None.
 
-    A refusal saved at dispatch is authoritative: it is settled from that record
-    first, before any re-check of the firm's or the client's state (AXRM-045).
+    A refusal already recorded on the next page's call (quota or authority) is
+    authoritative: it is settled from that record first, before any re-check of
+    the firm's or the client's state (AXRM-045).
     """
     saved = ProviderCall.objects.filter(
         client_id=query.client_id,
         request_key=_page_key(query, query.pages_fetched),
-        state=CallState.AUTHORITY,
+        state__in=(CallState.AUTHORITY, CallState.QUOTA),
     ).first()
     if saved is not None:
         receipt = _receipt(query, saved.request_digest, str(saved.pk))
+        if saved.state == CallState.QUOTA:
+            return _refused_quota(
+                query, query.pages_fetched, receipt, saved.provider_code
+            )
         return _authority_refusal(query, saved.provider_code, receipt)
     if not _initiator_allowed(query):
         return _finish(query, PaymentQueryState.FALHA, "solicitante_sem_permissao")
