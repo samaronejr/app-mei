@@ -92,7 +92,7 @@ def test_unassigned_staff_gets_404_with_no_row_written(
         assert peer.requests == []
     assert calls(guide_world) == []
     with tenant_context(guide_world.tenant_id):
-        assert not EvidenceRequest.objects.filter(title=pgmei.GUIDE_TITLE).exists()
+        assert not EvidenceRequest.objects.filter(cycle=guide_world.cycle).exists()
         assert not Event.objects.filter(action=pgmei.REQUESTED_EVENT).exists()
 
 
@@ -162,7 +162,7 @@ def test_guide_is_private_quarantined_and_linked_on_a_firm_only_request(
         intake = DocumentIntake.objects.get(document=document)
         assert intake.state == IntakeState.QUARANTINED
         request = EvidenceRequest.objects.get(cycle=guide_world.cycle)
-        assert request.title == pgmei.GUIDE_TITLE
+        assert (request.purpose, request.obligation_id) == ("guia_das_oficial", None)
         assert request.required is False
         assert request.state == pgmei.FIRM_ONLY_STATE
         assert request.state not in CLIENT_VISIBLE_STATES

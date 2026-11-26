@@ -154,6 +154,30 @@ def test_no_unique_constraint_omits_the_client_column() -> None:
     )
 
 
+def test_internal_request_identity_partial_index_is_client_scoped() -> None:
+    """The partial identity is a unique index, not a pg_constraint row."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT i.indisunique, i.indnullsnotdistinct,
+                   pg_get_expr(i.indpred, i.indrelid),
+                   ARRAY(
+                       SELECT pg_get_indexdef(i.indexrelid, col.n, true)
+                       FROM generate_series(1, i.indnkeyatts) AS col(n)
+                   )
+            FROM pg_index i
+            WHERE i.indrelid = 'public.cycles_evidencerequest'::regclass
+              AND i.indexrelid = to_regclass('public.evidencerequest_purpose_uniq')
+            """
+        )
+        assert cursor.fetchone() == (
+            True,
+            True,
+            "(purpose IS NOT NULL)",
+            ["tenant_id", "client_id", "cycle_id", "purpose", "obligation_id"],
+        )
+
+
 def test_the_constraint_exemption_is_not_a_blanket() -> None:
     # Given the named exemptions
     # Then each still exists on a real table, so a stale name cannot sit in the literal

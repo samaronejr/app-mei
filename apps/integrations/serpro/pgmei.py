@@ -45,7 +45,7 @@ from apps.cycles.evidence import (
     EvidenceLink,
     EvidenceRequest,
     LinkOrigin,
-    RequestInternal,
+    RequestPurpose,
     RequestState,
 )
 from apps.cycles.intake import (
@@ -57,6 +57,7 @@ from apps.cycles.intake import (
 from apps.cycles.models import CycleEvent, ServiceCycle
 from apps.cycles.services.cycle import OPEN_STATES, load_cycle
 from apps.cycles.services.exceptions import ExceptionReason
+from apps.cycles.services.requests import ensure_internal_request
 from apps.integrations.authority import Problem, raise_problem
 from apps.integrations.budget_pricing import BudgetDeniedError, microbrl
 from apps.integrations.budget_settlement import release
@@ -879,47 +880,8 @@ def _requested(call: ProviderCall) -> tuple[UUID, UUID] | None:
 
 
 def _guide_request(cycle: ServiceCycle, actor: User) -> EvidenceRequest:
-    """Reuse the cycle's firm-only guide request, or create it (until todo 29)."""
-    request = (
-        EvidenceRequest.objects.select_for_update()
-        .filter(cycle=cycle, title=GUIDE_TITLE, state=FIRM_ONLY_STATE)
-        .order_by("created_at", "pk")
-        .first()
-    )
-    if request is not None:
-        return request
-    request = EvidenceRequest.objects.create(
-        tenant_id=cycle.tenant_id,
-        client_id=cycle.client_id,
-        cycle=cycle,
-        title=GUIDE_TITLE,
-        required=False,
-        state=FIRM_ONLY_STATE,
-        created_by=actor,
-    )
-    RequestInternal.objects.create(
-        tenant_id=cycle.tenant_id,
-        client_id=cycle.client_id,
-        request=request,
-        instructions=(
-            "Guia emitida pelo PGMEI (SERPRO). Revise o arquivo e publique pela "
-            "etapa Guia DAS do mês, com aprovação."
-        ),
-    )
-    cycle.version += 1
-    cycle.save(update_fields=["version"])
-    CycleEvent.objects.create(
-        tenant_id=cycle.tenant_id,
-        client_id=cycle.client_id,
-        cycle=cycle,
-        actor=actor,
-        type="request.created",
-        aggregate_type="EvidenceRequest",
-        aggregate_id=request.pk,
-        aggregate_version=request.version,
-        payload={"origin": "pgmei"},
-    )
-    return request
+    """Reuse the guide request by purpose, regardless of its displayed title."""
+    return ensure_internal_request(cycle, RequestPurpose.DAS_GUIDE, actor=actor)
 
 
 def _link_in_cycle(
@@ -954,7 +916,7 @@ def _link_in_cycle(
                 "link_id": str(link.pk),
             },
         )
-    return cycle, link
+    return request.cycle, link
 
 
 def _observe(
@@ -1157,7 +1119,7 @@ def guide_panel(
     guide_requests = {
         row.pk
         for row in requests
-        if row.title == GUIDE_TITLE and row.state == FIRM_ONLY_STATE
+        if row.purpose == RequestPurpose.DAS_GUIDE and row.obligation_id is None
     }
     obtained = any(link.request_id in guide_requests for link in links)
     try:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from django.db import DatabaseError, connection, transaction
@@ -208,7 +208,14 @@ def test_bulk_notice_only_sends_the_draft_request() -> None:
 def test_admin_reparent_and_delete_cannot_release_retained_internal_evidence() -> None:
     setup = portal_setup("internal-request-reparent")
     link = internal_request_link(setup.graph, setup.cycle)
-    cases = (
+    # With no purpose, the state change reaches the lifetime trigger itself.
+    states = {*RequestState.values, "future_state"} - {RequestState.INTERNAL}
+    set_state = "UPDATE cycles_evidencerequest SET state = %s WHERE id = %s"
+    cases: tuple[tuple[str, tuple[str, UUID] | list[UUID], str], ...] = (
+        *(
+            (set_state, (state, link.request_id), "evidencerequest_internal_lifetime")
+            for state in sorted(states)
+        ),
         (
             "UPDATE cycles_evidencelink SET request_id = %s WHERE id = %s",
             [setup.request.pk, link.pk],
