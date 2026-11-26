@@ -100,10 +100,18 @@ def record_refusal(call: ProviderCall, error: AdmissionDeniedError) -> None:
     """Record an admission refusal on the call and release its reservation.
 
     One handling for claim and dispatch: a refused call is never left reserved,
-    and the cause the refusal names stays with it (AXRM-045).
+    and the cause the refusal names stays with it (AXRM-045). A pause never ends
+    a call that already sent a request: it goes back to retry, still owned by
+    its sweep or settlement, with only its next attempt's reservation released.
     """
     release(call)
-    if isinstance(error, BudgetDeniedError):
+    if (
+        call.attempts > 0
+        and str(error) == CallState.PAUSED
+        and not isinstance(error, BudgetDeniedError)
+    ):
+        call.state = CallState.RETRY
+    elif isinstance(error, BudgetDeniedError):
         call.state = CallState.QUOTA
         call.provider_code = error.reason
         refused(call)

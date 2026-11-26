@@ -1342,3 +1342,50 @@ def test_a_budget_error_while_settling_a_sent_receipt_is_not_reported_as_stored(
     with tenant_context(tenant):
         call = ProviderCall.objects.get(operation="SP-COMP")
     assert call.state not in ("bloqueada_autoridade", "pausada", "bloqueada_cota")
+
+
+@DB
+def test_a_paused_receipt_retry_is_resumed_by_a_later_delivery(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    # Given one DAS payment, and its SP-COMP gets a complete 401 whose retry
+    # claim meets a pause.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(protocol, "claim", pause_then_claim)
+    world.script(Reply(status=401))
+    tasks = import_module("apps.integrations.serpro.tasks")
+    later: list[tuple[str, ...]] = []
+
+    def schedule(args: tuple[str, ...], **_kwargs: Any) -> None:  # noqa: ANN401
+        later.append(args)
+
+    monkeypatch.setattr(tasks.emit_payment_receipt_task, "apply_async", schedule)
+    args = (str(world.termo.tenant.pk), str(das.pk), str(world.termo.actor.pk))
+    outcomes: list[str] = []
+    # When the task is delivered, then redelivered while still paused.
+    for _ in range(2):
+        try:
+            outcomes.append(tasks.emit_payment_receipt_task(*args))
+        except AdmissionDeniedError as error:
+            outcomes.append(f"raised {error}")
+    # Then each delivery hands the same call to a later one; nothing is re-sent.
+    assert (outcomes, later) == (
+        ["aguardar_nova_tentativa", "aguardar_nova_tentativa"],
+        [args, args],
+    )
+    with tenant_context(world.termo.tenant.pk):
+        call = ProviderCall.objects.get(operation="SP-COMP")
+    assert (call.state, call.attempts) == ("aguardar_nova_tentativa", 1)
+    assert len(world.sent("/Emitir")) == 1

@@ -1195,8 +1195,8 @@ def _refused(
                 call.save()
             elif call.state in _COMMITTED_REFUSALS:
                 kind, reason = call.state, call.provider_code
-            else:
-                call = None
+            # Any other state (a sent call a pause holds for retry, say) is still
+            # this step's call: the receipt names it (AXRM-045).
         if report.state in FINAL_STATES or _next(report)[1] != step.key:
             return
         link = call.link if call is not None else serpro_link(report.client)

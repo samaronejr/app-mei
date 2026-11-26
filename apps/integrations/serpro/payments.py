@@ -77,7 +77,7 @@ from apps.integrations.authority import (
 )
 from apps.integrations.budget_pricing import BudgetDeniedError
 from apps.integrations.budget_settlement import release
-from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
+from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest, Claim
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
 from apps.integrations.call_state import refusal_recorded
@@ -1000,6 +1000,20 @@ def queue_payment_receipt(actor: User, client_id: UUID, payment_id: UUID) -> Non
     transaction.on_commit(lambda: emit_payment_receipt_task.delay(*args))
 
 
+def _receipt_claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
+    """Claim the receipt's call; a refusal is reported as stored once recorded.
+
+    A pause holding a sent retry is not recorded: it reaches the task, which
+    resumes the same call later (AXRM-045).
+    """
+    try:
+        return claim(tenant_id, call_id)
+    except AdmissionDeniedError:
+        if not refusal_recorded(tenant_id, call_id):
+            raise
+        return None
+
+
 def emit_payment_receipt(
     tenant_id: UUID, payment_id: UUID, actor_id: UUID
 ) -> ProviderCall | None:
@@ -1033,10 +1047,7 @@ def emit_payment_receipt(
         )
     except AdmissionDeniedError:
         return None
-    try:
-        ticket = claim(tenant_id, row.pk)
-    except AdmissionDeniedError:
-        ticket = None  # The claim recorded the refusal and released the reservation.
+    ticket = _receipt_claim(tenant_id, row.pk)
     if ticket is None:
         # Report the call as stored now, never the row as it was reserved.
         with tenant_context(tenant_id):
