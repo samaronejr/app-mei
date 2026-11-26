@@ -2933,8 +2933,11 @@ def test_the_final_is_never_wider_than_configured_even_before_its_chmod(
 
 
 def test_the_layout_proof_refuses_a_key_whose_identity_is_unknown(
-    monkeypatch: pytest.MonkeyPatch,
+    settings: SettingsWrapper, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Its own root: the proof walks the whole root before any key, so the shared
+    # one would judge whatever other tests left in it.
+    settings.MEDIA_ROOT = tmp_path
     key = f"originals/{uuid4().hex}.pdf"
     real_path = default_storage.path
 
@@ -3165,7 +3168,10 @@ def test_cleanup_never_deletes_through_an_object_of_another_kind(
         assert default_storage.exists(intake.quarantine_key)
 
 
-def test_cleanup_sees_two_spellings_of_one_file_as_one_object() -> None:
+def test_cleanup_sees_two_spellings_of_one_file_as_one_object(
+    settings: SettingsWrapper, tmp_path: Path
+) -> None:
+    settings.MEDIA_ROOT = tmp_path  # its own root, never the shared one
     key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"one"))
     other = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"one"))
     doubled = key.replace("/", "//", 1)
