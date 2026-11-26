@@ -1727,11 +1727,24 @@ def _malformed_mount_table(case: _Layout) -> tuple[str, str, str]:
 
 
 def _case_blind(case: _Layout) -> tuple[str, str, str]:
-    # Stand-in for a case-folding directory: two names differing only in case
-    # open one entry.
+    # Stand-in for a case-folding directory: every case of the name opens the one
+    # entry, so the probe sees it whichever name the directory lists first.
     (case.root / "cased").mkdir()
     (case.root / "cased" / "Case.pdf").write_bytes(b"one entry")
-    (case.root / "cased" / "case.pdf").hardlink_to(case.root / "cased" / "Case.pdf")
+    for other in ("case.pdf", "CASE.PDF"):
+        (case.root / "cased" / other).hardlink_to(case.root / "cased" / "Case.pdf")
+    # The listing order is the filesystem's; list lowercase first, the order in
+    # which a partial stand-in would go unseen, so no run depends on it.
+    walk = os.walk
+
+    def lowercase_first(
+        top: Path, onerror: Callable[[OSError], object] | None = None
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        for parent, directories, files in walk(top, onerror=onerror):
+            directories.sort(reverse=True)
+            yield parent, directories, sorted(files, reverse=True)
+
+    case.monkeypatch.setattr(os, "walk", lowercase_first)
     _foreign_original(case.world, case.held)
     return case.copy, case.held, "armazenamento_sem_distincao_de_caixa"
 
