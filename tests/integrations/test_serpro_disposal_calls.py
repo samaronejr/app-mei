@@ -568,8 +568,15 @@ def test_an_archive_of_a_staff_first_guide_is_unsupported_on_versioned_storage(
         # One default storage, as in production: the rows' and the purge's.
         monkeypatch.setattr(retention, "default_storage", bucket)
         monkeypatch.setattr(retention_tasks, "default_storage", bucket)
+        export_id = uuid4()  # an archive at the key an evidence export is written to
         archive = Candidate(
-            client.pk, "export", uuid4(), None, (f"exports/{uuid4().hex}.zip",)
+            client.pk,
+            "export",
+            export_id,
+            None,
+            (
+                f"exports/{guide_world.tenant_id}/{client.pk}/{export_id}/0-x/archive.zip",
+            ),
         )
         assert disposal_refusal(archive) == "armazenamento_nao_suportado"
 

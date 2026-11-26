@@ -1284,7 +1284,12 @@ def test_a_key_attached_after_the_ownership_lookup_is_checked_under_the_lock(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     document, intake = _ordinary_pending(world, with_final=True)
-    held = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    # A key of the copy's own kind (inside its quarantine prefix) that another
+    # tenant's row holds: only the check under the lock can see it.
+    held = default_storage.save(
+        f"{posixpath.dirname(intake.quarantine_key)}/{uuid4().hex}",
+        ContentFile(b"held"),
+    )
     _foreign_original(world, held)
     lookup = retention.foreign_storage_keys
     calls: list[int] = []
@@ -1325,7 +1330,12 @@ def test_two_spellings_of_one_file_are_one_key(
     world: World, restored: str, spelling: str
 ) -> None:
     document, intake = _ordinary_pending(world, with_final=True)
-    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    # Inside the copy's own prefix, so only the row lookup can keep it (a short
+    # name: a Document's key, spelled with `restored/../`, holds 128 characters).
+    key = default_storage.save(
+        f"{posixpath.dirname(intake.quarantine_key)}/{uuid4().hex[:16]}",
+        ContentFile(b"held"),
+    )
     # One side names the file another way (`a//b` or `a/x/../b`); storage reads
     # one file.
     spelled = (
@@ -1662,7 +1672,7 @@ def _symlink(case: _Layout, *, here_side: bool) -> tuple[str, str, str]:
 
 
 def _hard_link(case: _Layout) -> tuple[str, str, str]:
-    here = f"quarantine/{uuid4().hex}"
+    here = f"{posixpath.dirname(case.copy)}/{uuid4().hex}"  # inside its own prefix
     (case.root / here).parent.mkdir(parents=True, exist_ok=True)
     (case.root / here).hardlink_to(case.root / case.held)
     _foreign_original(case.world, case.held)
@@ -1685,8 +1695,8 @@ def _sealed(case: _Layout) -> tuple[str, str, str]:
 
 
 def _under_a_file(case: _Layout) -> tuple[str, str, str]:
-    # A restored descriptor under a regular file.
-    return f"{case.held}/child", case.held, "armazenamento_nao_inspecionavel"
+    # A restored descriptor under a regular file, inside its own prefix.
+    return f"{case.copy}/child", case.held, "armazenamento_nao_inspecionavel"
 
 
 def _mounted(case: _Layout) -> tuple[str, str, str]:
@@ -1727,7 +1737,7 @@ def _case_blind(case: _Layout) -> tuple[str, str, str]:
 
 
 def _fifo(case: _Layout) -> tuple[str, str, str]:
-    here = f"quarantine/{uuid4().hex}"
+    here = f"{posixpath.dirname(case.copy)}/{uuid4().hex}"  # inside its own prefix
     (case.root / here).parent.mkdir(parents=True, exist_ok=True)
     os.mkfifo(case.root / here)  # one link, no writer: opening it would block
     return here, case.held, "arquivo_nao_regular"
@@ -1795,11 +1805,12 @@ def test_a_file_with_names_no_lookup_sees_is_never_deleted(
     if layout == "fifo":
         assert (root / here).exists()
     claim = _claim(world, document.pk)
-    if layout in {"symlink-here", "symlink-elsewhere", "hard-link"}:
-        # One side names the held file through the link; physical identity (the
-        # inode) is the held file's own, so the sweep refuses it as shared before
-        # any claim. The walk's and the link count's own refusals are witnessed
-        # by symlink-unrelated and hard-link-unrelated.
+    if layout in {"symlink-here", "symlink-elsewhere", "hard-link", "outside-root"}:
+        # Refused before any claim: either one side names the held file through
+        # the link (physical identity, the inode, is the held file's own), or
+        # the key leaves its own prefix (`outside-root` leaves the root too). The
+        # walk's and the link count's own refusals are witnessed by
+        # symlink-unrelated and hard-link-unrelated.
         assert claim is None
         return
     assert claim is not None
@@ -1933,7 +1944,11 @@ def test_an_absolute_or_reentering_spelling_is_the_same_key(
 ) -> None:
     document, intake = _ordinary_pending(world, with_final=True)
     root = Path(default_storage.path("")).resolve()
-    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"held"))
+    # Inside the copy's own prefix, so only the row lookup can keep it.
+    key = default_storage.save(
+        f"{posixpath.dirname(intake.quarantine_key)}/{uuid4().hex}",
+        ContentFile(b"held"),
+    )
     absolute, reentry = str(root / key), f"../{root.name}/{key}"
     if spelled == "absolute-elsewhere":
         _foreign_copy(world, absolute)  # the held row is the one spelled oddly
@@ -3014,3 +3029,132 @@ def test_a_lock_name_that_cannot_be_computed_keeps_the_file(
     claim = _claim(world, document.pk)
     assert claim is not None
     assert claim.completed_at is None
+
+
+def _decided(world: World, document_id: UUID) -> str:
+    """Return the pre-claim refusal the sweep gives this document."""
+    with tenant_context(world.tenant_id):
+        (candidate,) = [c for c in retention_tasks._candidates() if c.id == document_id]
+        return retention_tasks.disposal_refusal(candidate)
+
+
+@pytest.mark.parametrize("via", ["intake-copy", "document-final"])
+@pytest.mark.parametrize("held", ["provider-journal", "account-export", "tenant-logo"])
+def test_a_restored_intake_never_reaches_another_kinds_object(
+    world: World, held: str, via: str
+) -> None:
+    document, _intake = _ordinary_pending(world, with_final=True)
+    other = uuid4()  # another tenant; no row anywhere names its object
+    key = {
+        "provider-journal": f"provider-journal/{other}/2026/10/{uuid4()}-1-result.json",
+        "account-export": f"account-exports/{other}/{uuid4()}/0-x/archive.zip",
+        "tenant-logo": f"branding/{other}/{uuid4()}/logo.png",
+    }[held]
+    saved = default_storage.save(key, ContentFile(b"another tenant's object"))
+    with tenant_context(world.tenant_id):
+        # A restored descriptor: the intake's copy, or the document's own final.
+        if via == "intake-copy":
+            DocumentIntake.objects.filter(document_id=document.pk).update(
+                quarantine_key=saved
+            )
+        else:
+            Document.objects.filter(pk=document.pk).update(storage_key=saved)
+    assert _decided(world, document.pk) == "chave_fora_do_prefixo"
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert default_storage.exists(saved)
+    assert _claim(world, document.pk) is None
+
+
+def test_a_dot_dot_escape_from_the_copies_prefix_is_refused(world: World) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    prefix = posixpath.dirname(intake.quarantine_key)
+    target = default_storage.save(
+        f"provider-journal/{uuid4()}/2026/10/{uuid4()}-1-result.json",
+        ContentFile(b"another tenant's object"),
+    )
+    escaped = f"{prefix}/../../../{target}"  # starts with the prefix as spelled
+    with tenant_context(world.tenant_id):
+        DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=escaped)
+    assert _decided(world, document.pk) == "chave_fora_do_prefixo"
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert default_storage.exists(target)
+
+
+def test_a_dot_dot_escape_is_refused_on_the_name_s3_resolves(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=True)
+    bucket = S3Storage(
+        bucket_name="axrm051-synthetic",
+        endpoint_url="https://storage.invalid",
+        access_key="synthetic-access",
+        secret_key="synthetic-secret",  # noqa: S106 - no request is ever sent
+    )
+    # One default storage, as in production: S3, never contacted here.
+    monkeypatch.setattr(retention, "default_storage", bucket)
+    monkeypatch.setattr(retention_tasks, "default_storage", bucket)
+    prefix = posixpath.dirname(intake.quarantine_key)
+    escaped = f"{prefix}/../../../provider-journal/{uuid4()}/2026/10/r-result.json"
+    assert not bucket._normalize_name(clean_name(escaped)).startswith(  # type: ignore[attr-defined]
+        "quarantine/"
+    )
+    with tenant_context(world.tenant_id):
+        candidate = retention_tasks.Candidate(
+            document.client_id,
+            "document",
+            document.pk,
+            None,
+            (document.storage_key, escaped),
+        )
+        assert retention_tasks.disposal_refusal(candidate) == "chave_fora_do_prefixo"
+
+
+def test_an_export_archive_outside_its_own_prefix_is_refused(world: World) -> None:
+    with tenant_context(world.tenant_id):
+        archive = retention_tasks.Candidate(
+            world.termo.client.pk,
+            "export",
+            uuid4(),
+            None,
+            (f"account-exports/{world.tenant_id}/{uuid4()}/0-x/archive.zip",),
+        )
+        assert retention_tasks.disposal_refusal(archive) == "chave_fora_do_prefixo"
+
+
+@pytest.mark.parametrize("offered_as", ["copy", "final"])
+def test_cleanup_never_deletes_through_an_object_of_another_kind(
+    world: World, offered_as: str
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    with default_storage.open(intake.quarantine_key, "rb") as handle:
+        payload = handle.read()
+    # Another kind's object holding the original's exact bytes, so every digest
+    # check passes: only the confinement to cleanup's own names can refuse.
+    foreign = default_storage.save(
+        f"provider-journal/{uuid4()}/2026/10/{uuid4()}-1-result.json",
+        ContentFile(payload),
+    )
+    with tenant_context(world.tenant_id):
+        if offered_as == "copy":
+            DocumentIntake.objects.filter(pk=intake.pk).update(quarantine_key=foreign)
+        else:
+            Document.objects.filter(pk=intake.document_id).update(storage_key=foreign)
+    scanning.scan_intake(
+        world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+    )
+    assert default_storage.exists(foreign)
+    if offered_as == "final":
+        # The intake's own copy is the only copy cleanup could have deleted.
+        assert default_storage.exists(intake.quarantine_key)
+
+
+def test_cleanup_sees_two_spellings_of_one_file_as_one_object() -> None:
+    key = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"one"))
+    other = default_storage.save(f"originals/{uuid4().hex}.pdf", ContentFile(b"one"))
+    doubled = key.replace("/", "//", 1)
+    assert scanning._may_be_one_object(default_storage, doubled, key) is True
+    assert scanning._may_be_one_object(default_storage, other, key) is False

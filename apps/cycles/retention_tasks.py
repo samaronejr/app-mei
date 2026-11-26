@@ -45,6 +45,8 @@ from apps.cycles.retention import (
     open_stored,
     ordered_anchors,
     ownership_refusal,
+    resolves_to_document_final,
+    resolves_under,
     retention_decision,
     single_copy_storage,
     storage_key_aliased,
@@ -335,6 +337,47 @@ def _after(value: datetime, years: int) -> datetime | None:
         return None
 
 
+SCOPE_REFUSAL: Final = "chave_fora_do_prefixo"
+
+
+def _scope_refusal(candidate: Candidate) -> str:
+    """Refuse keys outside the candidate's own kind, on the backend-resolved name.
+
+    The storage also holds account exports, export attempts, provider and
+    delivery journals and tenant branding, some named by no row: a disposal only
+    ever deletes inside its own kind's names. An evidence export's archive lies
+    under `exports/{tenant}/{client}/{export}/`; a document's final is one of
+    the shapes documents are written with, and its intake copies lie under
+    `quarantine/{tenant}/{client}/` (AXRM-051).
+    """
+    if candidate.kind not in {"document", "export"}:
+        return ""
+    tenant = (
+        ClientCompany.objects.filter(pk=candidate.client_id)
+        .values_list("tenant_id", flat=True)
+        .first()
+    )
+    if candidate.kind == "export":
+        prefix = f"exports/{tenant}/{candidate.client_id}/{candidate.id}/"
+        allowed = all(
+            resolves_under(key, prefix, default_storage) for key in candidate.keys
+        )
+    else:
+        final = (
+            Document.objects.filter(pk=candidate.id)
+            .values_list("storage_key", flat=True)
+            .first()
+        )
+        copies = f"quarantine/{tenant}/{candidate.client_id}/"
+        allowed = all(
+            resolves_to_document_final(key, tenant, default_storage)
+            if key == final
+            else resolves_under(key, copies, default_storage)
+            for key in candidate.keys
+        )
+    return "" if tenant is not None and allowed else SCOPE_REFUSAL
+
+
 def disposal_refusal(candidate: Candidate) -> str:
     """Name what is unproved about destroying a copy; empty when it may be claimed.
 
@@ -345,6 +388,9 @@ def disposal_refusal(candidate: Candidate) -> str:
     federal original also needs every intake clean. Whether the stored bytes are
     still the original is proved again, under the key lock, before the delete.
     """
+    scope = _scope_refusal(candidate)
+    if scope:
+        return scope
     if candidate.kind == "export":
         if storage_key_aliased(
             candidate.keys, export_id=candidate.id, storage=default_storage
@@ -412,6 +458,7 @@ PROOF_REFUSALS: Final = frozenset(
         "chave_nao_enderecavel",
         "identidade_indeterminada",
         "armazenamento_divergente",
+        "chave_fora_do_prefixo",
     }
 )
 COMPLETED: Final = "concluida"
