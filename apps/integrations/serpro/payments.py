@@ -40,7 +40,7 @@ becomes todo 14's per-call `FederalConsultation` receipt. Rules:
 from __future__ import annotations
 
 import hashlib
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import timedelta
 from logging import getLogger
 from typing import TYPE_CHECKING, Final, cast
@@ -1043,8 +1043,11 @@ def emit_payment_receipt(
     adapter = ReceiptAdapter(
         SerproAdapter(_transport(cast("Environment", environment)), parties, data)
     )
-    # A 403 is owned by the protocol's post-call hook (`work.own_denial`).
-    perform(ticket, adapter)
+    # A 403 is owned by the protocol's post-call hook (`work.own_denial`). A
+    # dispatch refusal, first or after a 401 retry, is recorded and released on
+    # the call; the call is then reported as stored, as for a claim (AXRM-045).
+    with suppress(AdmissionDeniedError):
+        perform(ticket, adapter)
     with tenant_context(tenant_id):
         call = ProviderCall.objects.get(pk=row.pk)
     if call.state == CallState.SUCCESS and adapter.pdf is not None:

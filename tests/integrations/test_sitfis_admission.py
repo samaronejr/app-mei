@@ -13,6 +13,7 @@ from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import CycleEvent, CycleState, ServiceCycle
 from apps.cycles.models import Exception as CycleException
+from apps.integrations.authority import head_record, revoke_authority
 from apps.integrations.call_contracts import CallRequest
 from apps.integrations.call_dispatch import begin_io
 from apps.integrations.call_models import ProviderCall, ProviderEffectBarrier
@@ -450,3 +451,52 @@ def test_a_stale_claim_meeting_a_late_wait_is_refused_and_released(
     )
     assert world.budget().reserved == 0
     assert len(world.sent("/Emitir")) == 1
+
+
+def test_a_claim_refusal_closes_the_consultation_from_the_stored_call(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = sitfis()
+    report, first = _ready(world)
+    original = mod.claim
+
+    def absent_on_a_moved_version(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        # Given the client's authority is revoked and the connection version
+        # moves before this claim, so the claim records `autorizacao_ausente`...
+        with tenant_context(world.tenant_id):
+            head = head_record(world.termo.client.pk, "sitfis")
+            assert head is not None
+            revoke_authority(
+                world.termo.actor,
+                world.termo.client.pk,
+                service="sitfis",
+                expected_version=head.version,
+            )
+            link = ClientProviderLink.objects.get(pk=first.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        try:
+            return original(*args, **kwargs)
+        finally:
+            # ...and the link is disabled once that refusal has committed.
+            with tenant_context(world.tenant_id):
+                ClientProviderLink.objects.filter(pk=first.link_id).update(
+                    status="revogada"
+                )
+
+    monkeypatch.setattr(mod, "claim", absent_on_a_moved_version)
+    mod._run(world.tenant_id, report.pk, first)
+    # Then the report settles from the refusal stored on the call, classified
+    # against that call's own link, and its receipt names that call (AXRM-045).
+    refused = world.calls(first.operation)[-1]
+    assert (refused.state, refused.provider_code) == (
+        "bloqueada_autoridade",
+        "autorizacao_ausente",
+    )
+    settled = world.reload(report)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (settled.state, receipt.provider_ref) == ("negado", str(refused.pk))
+    assert world.budget().reserved == 0
+    assert world.sent("/Emitir") == []

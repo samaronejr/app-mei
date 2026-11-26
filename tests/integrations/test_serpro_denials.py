@@ -1212,3 +1212,78 @@ def test_a_receipt_retry_after_a_401_refused_at_claim_is_reported_as_stored(
         held = ProviderReservation.objects.filter(call=call, state="reserved")
         assert not held.exists()
     assert len(world.sent("/Emitir")) == 1
+
+
+def _renew(world: World) -> None:
+    with tenant_context(world.termo.tenant.pk):
+        ProviderConnection.objects.filter(pk=world.termo.connection.pk).update(
+            version=F("version") + 1
+        )
+
+
+@DB
+def test_a_receipt_refused_at_its_first_dispatch_is_reported_as_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its SP-COMP is claimed at v1, then a termo renewal moves the
+    # connection to v2 before the dispatch.
+    real_claim = import_module("apps.integrations.call_protocol").claim
+
+    def claim_then_renew(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real_claim(*args, **kwargs)
+        _renew(world)
+        return ticket
+
+    monkeypatch.setattr(payments, "claim", claim_then_renew)
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        call = None
+    # Then the dispatch refusal is recorded, released and reported as stored.
+    assert call is not None, "the dispatch refusal escaped the receipt worker"
+    assert call.state == "bloqueada_autoridade"
+    with tenant_context(tenant):
+        held = ProviderReservation.objects.filter(call=call, state="reserved")
+        assert not held.exists()
+    assert world.sent("/Emitir") == []
+
+
+@DB
+def test_a_receipt_refused_at_dispatch_after_a_401_retry_claim_is_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its first SP-COMP attempt gets a complete 401, the retry's claim
+    # succeeds, and the connection version moves before the retry's dispatch.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def claim_then_renew(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real_claim(*args, **kwargs)
+        _renew(world)
+        return ticket
+
+    monkeypatch.setattr(protocol, "claim", claim_then_renew)
+    world.script(Reply(status=401))
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        call = None
+    # Then the retry's dispatch refusal is recorded, released, reported as stored.
+    assert call is not None, "the retry dispatch refusal escaped the receipt worker"
+    assert call.state == "bloqueada_autoridade"
+    with tenant_context(tenant):
+        held = ProviderReservation.objects.filter(call=call, state="reserved")
+        assert not held.exists()
+    assert len(world.sent("/Emitir")) == 1
