@@ -21,7 +21,7 @@ from apps.integrations.call_dispatch import Dispatch
 from apps.integrations.call_models import CallState
 from apps.integrations.journal_schema import JournalRecord
 from apps.integrations.models import IntegrationIssue
-from apps.integrations.serpro import registration
+from apps.integrations.serpro import registration, work
 from apps.integrations.serpro import sitfis as mod
 from apps.integrations.serpro.models import FirmIntegrationIssue
 from apps.obligations.models import AcquisitionOrigin, Document
@@ -221,7 +221,7 @@ def test_all_dispatch_admission_and_first_byte_gap_orderings(
     )
     orders = tuple(_orders(steps, edges))
     assert len(orders) == 28
-    monkeypatch.setattr(registration, "termo_in_force", lambda *args: True)
+    monkeypatch.setattr(work, "termo_in_force", lambda *args: True)
     monkeypatch.setattr(
         registration, "authority_for", lambda *args, **kwargs: _row(usable=True)
     )
