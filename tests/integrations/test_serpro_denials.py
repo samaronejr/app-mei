@@ -1650,3 +1650,61 @@ def test_a_replayed_unbilled_204_reads_sent_without_a_charge(
     settled = payments.run_payment_query(query.tenant_id, query.pk)
     # Then the definitive observation wins: sent, without a charge (AXRM-045).
     assert history(world, settled).endswith("A página 1 foi enviada, sem cobrança.")
+
+
+@DB
+@pytest.mark.parametrize("late_first", [True, False], ids=["late-first", "late-last"])
+def test_a_metered_late_reply_reads_billed_whatever_the_row_order(
+    world: World, monkeypatch: pytest.MonkeyPatch, late_first: bool
+) -> None:
+    # Given page 1 is dispatched and journaled, then its runner dies on the wire.
+    protocol = import_module("apps.integrations.call_protocol")
+    replay = import_module("apps.integrations.provider_replay")
+    started: list[Any] = []
+
+    def die_on_the_wire(dispatch: Any, *_args: Any) -> Any:  # noqa: ANN401
+        started.append(dispatch)
+        raise SystemExit
+
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "transmit", die_on_the_wire)
+        with pytest.raises(SystemExit):
+            world.consult()
+    [dispatch] = started
+    receipt = dispatch.receipt
+
+    def metered_late_reply() -> None:
+        # The original billed 200, arriving after the epoch changed (`late`).
+        with tenant_context(world.termo.tenant.pk):
+            call = ProviderCall.objects.get(pk=receipt.call_id)
+            ProviderCallAttempt.objects.create(
+                tenant_id=call.tenant_id,
+                client_id=call.client_id,
+                call=call,
+                attempt_id=receipt.attempt_id,
+                attempt_number=receipt.attempt_number,
+                fence=receipt.fence,
+                outcome="sucesso",
+                observation="late",
+                http_status=200,
+                billed="sim",
+            )
+
+    # When the same attempt has a provisional unknown (from the replayed start)
+    # and a metered late reply, recorded in either order, before any result.
+    if late_first:
+        metered_late_reply()
+    with override_settings(PROVIDERS_PAUSED=True):
+        replay.reconcile(uuid4())
+    if not late_first:
+        metered_late_reply()
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get(client=world.termo.client)
+        observations = sorted(
+            ProviderCallAttempt.objects.values_list("observation", "billed")
+        )
+    assert observations == [("late", "sim"), ("uncertain", "desconhecido")]
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then the recorded charge is never lost to the unknown (AXRM-045).
+    assert history(world, settled).endswith("A página 1 foi enviada e cobrada.")

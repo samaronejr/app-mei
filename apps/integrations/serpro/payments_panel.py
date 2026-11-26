@@ -183,6 +183,21 @@ QUOTA_LABEL: Final = "Recusada pelo controle de custos"
 DEFINITIVE: Final = "result"
 
 
+def _attempt_charge(rows: list[ProviderCallAttempt]) -> str:
+    """Decide one attempt's charge by meaning, never by the order rows are read.
+
+    Its definitive result decides; without one, a recorded charge is never lost
+    to a provisional unknown (AXRM-045).
+    """
+    definitive = [row.billed for row in rows if row.observation == DEFINITIVE]
+    if definitive:
+        return definitive[0]
+    charges = {row.billed for row in rows}
+    if "sim" in charges:
+        return "sim"
+    return "desconhecido" if "desconhecido" in charges else "nao"
+
+
 def _fact(
     number: int, call: ProviderCall, attempts: list[ProviderCallAttempt]
 ) -> PageFact:
@@ -191,13 +206,10 @@ def _fact(
     A retry's claim clears the call's dispatch start, so an earlier attempt
     (a 401, say) is still a send when the retry is then refused (AXRM-045).
     """
-    observed: dict[object, ProviderCallAttempt] = {}
+    by_attempt: dict[object, list[ProviderCallAttempt]] = {}
     for attempt in attempts:
-        # One charge per attempt: its definitive observation wins (AXRM-045).
-        held = observed.get(attempt.attempt_id)
-        if held is None or attempt.observation == DEFINITIVE:
-            observed[attempt.attempt_id] = attempt
-    charges = [attempt.billed for attempt in observed.values()]
+        by_attempt.setdefault(attempt.attempt_id, []).append(attempt)
+    charges = [_attempt_charge(rows) for rows in by_attempt.values()]
     if call.dispatch_started_at is not None:
         charges.append(call.billed)
     if "sim" in charges:
