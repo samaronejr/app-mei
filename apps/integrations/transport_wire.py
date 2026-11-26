@@ -6,6 +6,8 @@ from contextlib import closing, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from http import HTTPStatus
+from http.client import HTTPResponse
+from io import BufferedReader, BytesIO
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
@@ -18,6 +20,7 @@ from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.exceptions import HTTPError, ReadTimeoutError
 
 from apps.delivery.privacy import delivery_secrets
+from apps.integrations.transport_headers import read_response_head
 from apps.integrations.transport_types import ProviderResponse, TransportFailure
 
 if TYPE_CHECKING:
@@ -50,8 +53,9 @@ class _Watchdog:
     body bytes resets per-receive socket timeouts, but not this deadline).
     """
 
-    def __init__(self, budget: float) -> None:
-        self._budget = budget
+    def __init__(self, limits: WireLimits) -> None:
+        self.limits = limits
+        self._budget = limits.read
         self._lock = threading.Lock()
         self._sock: socket.socket | None = None
         self._timer: threading.Timer | None = None
@@ -84,22 +88,45 @@ class _Watchdog:
             timer.cancel()
 
 
-_EXCHANGE: ContextVar[_Watchdog | None] = ContextVar("provider_exchange", default=None)
+_EXCHANGE: ContextVar[_Watchdog] = ContextVar("provider_exchange")
 
 
 def _watch(sock: socket.socket | None) -> None:
-    watchdog = _EXCHANGE.get()
+    watchdog = _EXCHANGE.get(None)
     if watchdog is not None and sock is not None:
         watchdog.attach(sock)
 
 
+class _StrictHTTPResponse(HTTPResponse):
+    """Initialize the streaming reader only from unambiguous response fields."""
+
+    def begin(self) -> None:
+        if self.headers is not None:
+            return
+        stream = self.fp
+        head = read_response_head(stream, _EXCHANGE.get().limits.size)
+        # http.client's first int(length), and later urllib3's, now see only
+        # the single bounded value. Keep all buffered body bytes for read1.
+        replay: BufferedReader = BufferedReader(BytesIO(head))
+        with replay:
+            try:
+                self.fp = replay
+                super().begin()
+            finally:
+                self.fp = stream
+
+
 class _WatchedHTTPConnection(HTTPConnection):
+    response_class = _StrictHTTPResponse
+
     def connect(self) -> None:
         super().connect()
         _watch(self.sock)
 
 
 class _WatchedHTTPSConnection(HTTPSConnection):
+    response_class = _StrictHTTPResponse
+
     def connect(self) -> None:
         super().connect()
         _watch(self.sock)
@@ -125,24 +152,13 @@ class _WatchedAdapter(HTTPAdapter):
         self.poolmanager.pool_classes_by_scheme = pools
 
 
-def _check_declared(response: Response, limits: WireLimits) -> None:
-    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-        msg = "codificacao_nao_permitida"
-        raise TransportFailure(msg, response.status_code)
-    length = response.headers.get("Content-Length")
-    if length is not None:
-        if not length.isascii() or not length.isdigit():
-            msg = "resposta_invalida"
-            raise TransportFailure(msg, response.status_code)
-        if int(length) > limits.size:
-            msg = "resposta_excede_limite"
-            raise TransportFailure(msg, response.status_code)
-
-
 def _consume(
     response: Response, limits: WireLimits, deadline: float
 ) -> ProviderResponse:
-    _check_declared(response, limits)
+    # The validated head replays only codings other than identity.
+    if "Content-Encoding" in response.headers:
+        msg = "codificacao_nao_permitida"
+        raise TransportFailure(msg, response.status_code)
     # read1 performs at most one buffered socket read. Unlike read(chunk_size),
     # a peer dripping bytes cannot hold us until a whole chunk has accumulated.
     # A read that blocks past the deadline is ended by the exchange watchdog.
@@ -209,7 +225,7 @@ def _exchange(
     that the watchdog ended with a closed socket or a truncated body.
     """
     prepared = request.prepare()
-    watchdog = _Watchdog(limits.read)
+    watchdog = _Watchdog(limits)
     token = _EXCHANGE.set(watchdog)
     # urllib3 logs the request line (path and query) while this call runs.
     with delivery_secrets(

@@ -59,6 +59,8 @@ class Reply:
     # completing the declared body) until the peer closes.
     gap: float = 0.0
     hold_open: bool = False
+    # When a framing test needs the exact HTTP status line and field bytes.
+    raw_response: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +77,7 @@ class _Server(HTTPServer):
 
 class _Handler(BaseHTTPRequestHandler):
     server: _Server
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: str) -> None:  # noqa: A002
         """No bodies, request URLs or headers in process logs."""
@@ -89,6 +92,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._respond()
 
     def _respond(self) -> None:
+        # One exchange per connection, including close-delimited raw replies.
+        self.close_connection = True
         peer = self.server.peer
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         peer.requests.append(
@@ -102,7 +107,11 @@ class _Handler(BaseHTTPRequestHandler):
         if reply.held:
             peer.release.wait(timeout=5)
         try:
+            if reply.raw_response is not None:
+                self.wfile.write(reply.raw_response)
+                return
             self.send_response(reply.status)
+            self.send_header("Connection", "close")
             for key, value in reply.headers:
                 self.send_header(key, value)
             if reply.declared_length:

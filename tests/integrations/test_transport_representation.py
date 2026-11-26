@@ -4,13 +4,108 @@ import pytest
 
 from apps.integrations.call_models import CallState
 from apps.integrations.focus.ciencia_wire import _registration_result
-from apps.integrations.transport_types import ProviderResponse, TransportFailure
+from apps.integrations.transport import ProviderTransport
+from apps.integrations.transport_types import (
+    ProviderRequest,
+    ProviderResponse,
+    TransportFailure,
+)
+from apps.integrations.transport_wire import XML_LIMIT
+from tests.fakes.focus import FakeFocus
+from tests.fakes.provider import Reply, permitted_send
 
 REGISTERED = (
     b'{"status":"evento_registrado","status_sefaz":"135",'
     b'"tipo":"ciencia","protocolo":"891170005150285"}'
 )
 REFUSED = b'{"status":"erro","status_sefaz":"596","tipo":"ciencia"}'
+
+
+def wire_outcome(
+    peer: FakeFocus, ca_file: str = ""
+) -> ProviderResponse | TransportFailure | ValueError:
+    try:
+        return permitted_send(
+            ProviderTransport("focus", "fake", peer.origin, ca_file),
+            "FC-NFE",
+            ProviderRequest(),
+        )
+    except (TransportFailure, ValueError) as error:
+        return error
+
+
+@pytest.mark.parametrize("body", [REGISTERED, REFUSED], ids=["registered", "refused"])
+@pytest.mark.parametrize("coding", ["chunked ", "chunked\t", " chunked "])
+def test_claimed_chunk_coding_cannot_deliver_unframed_json(
+    body: bytes, coding: str
+) -> None:
+    reply = Reply(
+        body=body, headers=(("Transfer-Encoding", coding),), declared_length=False
+    )
+    with FakeFocus((reply,)) as peer:
+        outcome = wire_outcome(peer)
+        assert isinstance(outcome, TransportFailure), outcome
+        assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        (("Content-Length", "9" * 4301),),
+        (("Content-Length", "0" * 4301),),
+        (("Content-Length", str(XML_LIMIT + 1)),),
+        (("Content-Length", ""),),
+        (("Content-Length", "-1"),),
+        (("Content-Length", "+2"),),
+        (("Content-Length", "2.0"),),
+        (("Content-Length", "2 0"),),
+        (("Content-Length", "\xb2"),),
+        (("Content-Length", "2, 3"),),
+        (("Content-Length", "2"), ("Content-Length", "3")),
+    ],
+    ids=[
+        "reviewer-4301-nines",
+        "unbounded-leading-zeroes",
+        "body-limit-plus-one",
+        "empty",
+        "negative",
+        "signed",
+        "fractional",
+        "internal-whitespace",
+        "non-ascii-digit",
+        "conflicting-combined-values",
+        "conflicting-duplicate-fields",
+    ],
+)
+def test_invalid_declared_length_is_a_typed_wire_failure(
+    headers: tuple[tuple[str, str], ...],
+) -> None:
+    with FakeFocus((Reply(body=b"", headers=headers, declared_length=False),)) as peer:
+        outcome = wire_outcome(peer)
+        assert isinstance(outcome, TransportFailure), outcome
+        assert outcome.code in {
+            "resposta_invalida",
+            "resposta_excede_limite",
+            "conexao_interrompida",
+        }
+        assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize("padding", ["", "000"])
+def test_bounded_decimal_lengths_preserve_complete_json(padding: str) -> None:
+    reply = Reply(
+        body=REGISTERED,
+        headers=(("Content-Length", padding + str(len(REGISTERED))),),
+        declared_length=False,
+    )
+    with FakeFocus((reply,)) as peer:
+        response = permitted_send(
+            ProviderTransport("focus", "fake", peer.origin),
+            "FC-NFE",
+            ProviderRequest(),
+        )
+        assert response.body == REGISTERED
+        assert _registration_result(response).state == CallState.SUCCESS
 
 
 @pytest.mark.parametrize("body", [REGISTERED, REFUSED], ids=["registered", "refused"])
