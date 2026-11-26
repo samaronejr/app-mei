@@ -124,7 +124,6 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
         "cycles/fiscal_document_review.html",
         {
             "fiscal": fiscal,
-            "iss_party_ready": iss_party_is_ready(fiscal),
             "cycle": selected,
             "cycles": cycles,
             "revisions": revisions,
@@ -133,6 +132,7 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
             "input_digest": input_digest(fiscal),
             "decisions": DECISIONS,
             "error": error,
+            "iss_party_ready": iss_party_is_ready(fiscal),
         },
         status=status,
     )

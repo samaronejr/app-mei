@@ -4,20 +4,60 @@ import hashlib
 import json
 from collections.abc import Iterable
 from typing import Final
+from uuid import UUID
 
 from django.db import connection
 from django.db.models import QuerySet
+from psycopg.sql import SQL
 
 from apps.audit.models import Event
 from apps.audit.services import ObjectRef, record_event
+from apps.core.tenancy import current_tenant_id
+from apps.cycles.evidence import CLEAN_STATES
 from apps.obligations.iss_retention_evidence_v1 import (
+    _ORIGINALS,
     ISSDecision,
     ISSOriginal,
-    revision_iss_originals,
 )
+from apps.obligations.iss_retention_v1 import ISS_SOURCE_SPAN
 from apps.obligations.models.fiscal import FiscalDocument
 
 _READY: Final = "fiscal.iss_party_ready"
+
+# A request transaction at READ COMMITTED does not give separate SELECTs
+# one snapshot. Compare the rendered head and read its witnesses and marks
+# in one statement, without blocking a writer or contacting the vault.
+_CURRENT_READINESS: Final = (
+    SQL("""
+    WITH originals (
+        fiscal_id, tenant_id, client_id, revision_id, party, state,
+        document_id, storage_key, sha256, byte_size, code
+    ) AS ({originals})
+    SELECT (
+        SELECT json_agg(
+            json_build_array(document_id, storage_key, sha256, byte_size, code)
+        ) FROM originals WHERE document_id IS NOT NULL
+    )::text,
+    ARRAY(
+        SELECT mark.metadata::text
+        FROM audit_event AS mark
+        WHERE mark.tenant_id = head.tenant_id
+          AND mark.action = %(action)s
+          AND mark.object_type = 'FiscalDocument'
+          AND mark.object_id = head.id::text
+          AND mark.metadata->>'client_id' = head.client_id::text
+          AND mark.metadata->>'revision_id' = %(revision)s::uuid::text
+    )
+    FROM obligations_fiscaldocument AS head
+    WHERE head.id = %(fiscal)s AND head.tenant_id = %(tenant)s
+      AND head.client_id = %(client)s
+      AND (head.current_revision_id, head.version, head.family,
+           head.fiscal_state, head.iss_retention_party)
+        = (%(revision)s::uuid, %(version)s, %(family)s, %(state)s, %(party)s)
+""")
+    .format(originals=SQL(_ORIGINALS))
+    .as_string()
+)
 
 
 def _can_have_label(fiscal: FiscalDocument) -> bool:
@@ -75,10 +115,37 @@ def record_iss_party_ready(
 
 
 def iss_party_is_ready(fiscal: FiscalDocument) -> bool:
-    """Check the exact current evidence without contacting the vault or provider."""
-    if not _can_have_label(fiscal):
+    """Check that the rendered head is current and has a matching receipt."""
+    if current_tenant_id.get() != fiscal.tenant_id or not _can_have_label(fiscal):
         return False
-    originals = revision_iss_originals(
-        connection, (fiscal.tenant_id, fiscal.client_id, fiscal.current_revision_id)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            _CURRENT_READINESS,
+            {
+                "fiscal": fiscal.pk,
+                "tenant": fiscal.tenant_id,
+                "client": fiscal.client_id,
+                "revision": fiscal.current_revision_id,
+                "version": fiscal.version,
+                "family": fiscal.family,
+                "state": fiscal.fiscal_state,
+                "party": fiscal.iss_retention_party,
+                "action": _READY,
+                "clean_states": sorted(CLEAN_STATES),
+                "span": ISS_SOURCE_SPAN,
+                "incoming": None,
+                "code": None,
+                "after": None,
+                "limit": 0,
+            },
+        )
+        result = cursor.fetchone()
+    if result is None:
+        return False
+    witnesses, marks = result
+    originals = (
+        ISSOriginal(UUID(document_id), key, digest, size, code)
+        for document_id, key, digest, size, code in json.loads(witnesses or "[]")
     )
-    return _marks(fiscal).filter(metadata=_stamp(fiscal, originals)).exists()
+    stamp = _stamp(fiscal, originals)
+    return any(json.loads(mark) == stamp for mark in marks)
