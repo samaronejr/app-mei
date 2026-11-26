@@ -16,9 +16,11 @@ from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
+from uuid import uuid4
 
 import pytest
 from django.db.models import F
+from django.test import override_settings
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.clients.models import ClientCompany
@@ -26,7 +28,7 @@ from apps.core.tenancy import tenant_context
 from apps.integrations.authority import head_record
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_contracts import AdmissionDeniedError
-from apps.integrations.call_models import ProviderCall
+from apps.integrations.call_models import ProviderCall, ProviderCallAttempt
 from apps.integrations.models import (
     ClientProviderLink,
     IntegrationIssue,
@@ -1608,3 +1610,43 @@ def test_an_unknown_budget_code_on_a_later_page_names_that_page(
         "O controle de custos recusou a página 2 antes do envio "
         "(registro orcamento_novo). A página 1 foi enviada e cobrada."
     )
+
+
+@DB
+def test_a_replayed_unbilled_204_reads_sent_without_a_charge(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 is dispatched and journaled, then the runner dies on the wire.
+    protocol = import_module("apps.integrations.call_protocol")
+    journal = import_module("apps.integrations.provider_journal")
+    replay = import_module("apps.integrations.provider_replay")
+    contracts = import_module("apps.integrations.call_contracts")
+    started: list[Any] = []
+
+    def die_on_the_wire(dispatch: Any, *_args: Any) -> Any:  # noqa: ANN401
+        started.append(dispatch)
+        raise SystemExit
+
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "transmit", die_on_the_wire)
+        with pytest.raises(SystemExit):
+            world.consult()
+    [dispatch] = started
+    # When recovery first sees only the start (a provisional observation), then
+    # the recovered complete, unbilled 204 for the same attempt.
+    with override_settings(PROVIDERS_PAUSED=True):
+        replay.reconcile(uuid4())
+    result = contracts.CallResult("sucesso", 204, "", "nao")
+    journal.append(replace(dispatch.receipt, result=result))
+    with override_settings(PROVIDERS_PAUSED=True):
+        replay.reconcile(uuid4())
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get(client=world.termo.client)
+        observations = sorted(
+            ProviderCallAttempt.objects.values_list("observation", "billed")
+        )
+    assert len(observations) == 2
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then the definitive observation wins: sent, without a charge (AXRM-045).
+    assert history(world, settled).endswith("A página 1 foi enviada, sem cobrança.")

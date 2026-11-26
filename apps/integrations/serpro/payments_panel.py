@@ -163,6 +163,7 @@ class PageFact:
     sent: bool
     billed: str
     refused: bool
+    code: str = ""
 
 
 # The budget's own refusal reasons, each stated exactly. A cap reason does not
@@ -178,6 +179,8 @@ QUOTA_REASONS: Final = {
 # Recorded by older releases without the budget's reason.
 LEGACY_QUOTA: Final = "cota_esgotada_parcial"
 QUOTA_LABEL: Final = "Recusada pelo controle de custos"
+# An attempt's definitive observation; replay may also leave a provisional one.
+DEFINITIVE: Final = "result"
 
 
 def _fact(
@@ -188,7 +191,13 @@ def _fact(
     A retry's claim clears the call's dispatch start, so an earlier attempt
     (a 401, say) is still a send when the retry is then refused (AXRM-045).
     """
-    charges = [attempt.billed for attempt in attempts]
+    observed: dict[object, ProviderCallAttempt] = {}
+    for attempt in attempts:
+        # One charge per attempt: its definitive observation wins (AXRM-045).
+        held = observed.get(attempt.attempt_id)
+        if held is None or attempt.observation == DEFINITIVE:
+            observed[attempt.attempt_id] = attempt
+    charges = [attempt.billed for attempt in observed.values()]
     if call.dispatch_started_at is not None:
         charges.append(call.billed)
     if "sim" in charges:
@@ -197,7 +206,8 @@ def _fact(
         billed = "desconhecido"
     else:
         billed = "nao"
-    return PageFact(number, bool(charges), billed, call.state == CallState.QUOTA)
+    refused = call.state == CallState.QUOTA
+    return PageFact(number, bool(charges), billed, refused, call.provider_code)
 
 
 def page_calls(queries: list[PaymentQuery]) -> dict[object, list[PageFact]]:
@@ -269,9 +279,10 @@ def page_facts(pages: list[PageFact]) -> str:
 
 
 def quota_refusal(query: PaymentQuery, pages: list[PageFact]) -> bool:
-    """Whether the consultation ended on the budget's refusal.
+    """Whether the budget's refusal is what closed the consultation.
 
-    A failure whose page call the budget refused is one, whatever its code.
+    Only the cause it was closed with counts: a budget code, or the code a
+    refused page call records. A stale runner's later refusal never does.
     """
     code = query.failure_code
     return query.state == PaymentQueryState.COTA_ESGOTADA or (
@@ -279,21 +290,22 @@ def quota_refusal(query: PaymentQuery, pages: list[PageFact]) -> bool:
         and (
             code in QUOTA_REASONS
             or code == LEGACY_QUOTA
-            or any(page.refused for page in pages)
+            or any(page.refused and page.code == code for page in pages)
         )
     )
 
 
 def _quota_text(query: PaymentQuery, pages: list[PageFact]) -> str:
     """Name the budget's own recorded reason, and the page or retry it refused."""
-    refused = [page for page in pages if page.refused]
+    code = query.failure_code
+    cited = [page for page in pages if page.refused and page.code == code]
+    refused = cited or [page for page in pages if page.refused]
     if not refused:
         which = "a consulta"
     elif refused[-1].sent:
         which = f"a nova tentativa da página {refused[-1].number}"
     else:
         which = _pages([refused[-1].number])
-    code = query.failure_code
     refusal = f"O controle de custos recusou {which} antes do envio"
     if code in QUOTA_REASONS:
         return f"{refusal}: {QUOTA_REASONS[code]}."
