@@ -21,7 +21,11 @@ from apps.clients.models import ClientCompany
 from apps.cycles.models import Exception as CycleException
 from apps.cycles.models import ServiceCycle
 from apps.integrations.call_models import CallState, ProviderCall
-from apps.integrations.models import ClientProviderLink, IntegrationIssue
+from apps.integrations.models import (
+    ClientProviderLink,
+    IntegrationIssue,
+    ProviderConnection,
+)
 from apps.integrations.serpro import registration, work
 from apps.integrations.serpro import sitfis as mod
 from apps.integrations.serpro.models import FirmIntegrationIssue
@@ -165,7 +169,8 @@ class Scenario:
             dispatch_started_at=None,
             finalized_at=None,
             link=ClientProviderLink(
-                connection_id=uuid4(),
+                # In memory: admission reads the firm's block from this connection.
+                connection=ProviderConnection(pk=uuid4(), version=1),
                 tenant_id=self.report.tenant_id,
                 client_id=self.report.client_id,
             ),
