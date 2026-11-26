@@ -10,6 +10,7 @@ failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any, Final
 
 import pytest
 from django.db.models import F
+from pytest_django.fixtures import SettingsWrapper
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
@@ -250,10 +252,7 @@ def test_every_documented_403_reaches_only_its_own_owner(
     assert ("falta da procuração" in detail) is (cause == CLIENT)
     if cause != CLIENT:
         expected = denials_api().DENIAL_TEXT[cause]
-        assert detail == (
-            "A página 1 foi enviada e cobrada; antes dela, nenhuma página foi enviada. "
-            f"{expected} (código {code}). Consulta não repetida."
-        )
+        assert detail == f"{expected} (código {code}). Consulta não repetida."
     # When a person asks again: nothing is re-sent automatically, and a cause
     # whose owner has not acted refuses before any byte.
     world.script(page([]))
@@ -356,22 +355,22 @@ def test_a_firm_termo_403_on_a_receipt_is_firm_work_with_its_own_label(
         (
             "falha",
             "limite_de_paginas",
-            "A consulta atingiu o limite de 10 páginas; as páginas 1 a 10 foram",
+            "A consulta atingiu o limite de 10 páginas",
         ),
         (
             "falha",
             "resposta_pagtoweb_invalida",
-            "A página 11 falhou (resposta_pagtoweb_invalida); antes dela, as páginas",
+            "A consulta não foi concluída (registro resposta_pagtoweb_invalida).",
         ),
         (
             "incerto",
             "pagina_nao_registrada",
-            "A página 11 teve resultado incerto; antes dela, as páginas 1 a 10 foram",
+            "O resultado é incerto (registro pagina_nao_registrada).",
         ),
         (
             "falha",
             "termo_ausente",
-            "A página 11 não foi enviada: não havia termo de autorização do escritório",
+            "A consulta parou: não havia termo de autorização do escritório",
         ),
     ],
     ids=["page-limit", "failure", "uncertain", "firm-termo"],
@@ -876,7 +875,7 @@ def test_a_firm_termo_call_403_before_the_run_ends_it_as_the_missing_termo(
     # Then it ends as the firm's missing termo, stated as such, never the client's.
     assert (refused.state, refused.failure_code) == ("falha", "termo_ausente")
     detail = query_detail(refused)
-    assert "antes dela, nenhuma página foi enviada" in detail
+    assert "não havia termo de autorização do escritório em vigor" in detail
     assert "procuração do cliente não foi alterada" in detail
 
 
@@ -905,8 +904,7 @@ def test_a_page_2_block_after_a_billed_page_1_states_both_pages(
         1,
     )
     detail = query_detail(refused)
-    assert "A página 2 foi recusada pela admissão" in detail
-    assert "antes dela, a página 1 foi enviada e cobrada" in detail
+    assert "A admissão recusou a consulta por um bloqueio do escritório" in detail
     assert "antes do envio" not in detail
 
 
@@ -942,8 +940,7 @@ def test_a_termo_gone_on_redelivery_after_a_billed_page_states_that_page(
         1,
     )
     detail = query_detail(settled)
-    assert "antes dela, a página 1 foi enviada e cobrada" in detail
-    assert "A página 2 não foi enviada: não havia termo" in detail
+    assert "A consulta parou: não havia termo" in detail
 
 
 @DB
@@ -972,6 +969,88 @@ def test_the_block_an_sp_termo_403_opens_freezes_that_firm_calls_code(
     with tenant_context(termo.tenant.pk):
         connection = ProviderConnection.objects.get(pk=termo.connection.pk)
         assert work.firm_block(connection) == first_issue(world, platform)
+
+
+@DB
+def test_a_partial_quota_after_a_billed_page_ends_by_the_budget_refusal(
+    world: World,
+) -> None:
+    # Given the budget covers one page, and page 1 is full (so page 2 follows).
+    with tenant_context(world.termo.tenant.pk):
+        ProviderBudget.objects.update(cap_microbrl=300_000)
+    world.script(page(support.darfs(100)))
+    stopped = world.consult()
+    # Then the quota stops page 2 before sending, after page 1 was billed.
+    assert (stopped.state, stopped.failure_code, stopped.pages_fetched) == (
+        "falha",
+        "cota_esgotada",
+        1,
+    )
+    assert len(world.sent()) == 1
+    assert (
+        query_detail(stopped)
+        == "A consulta não foi concluída (registro cota_esgotada)."
+    )
+
+
+@DB
+def test_a_partial_quota_records_the_budgets_own_reason(
+    world: World, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+) -> None:
+    # Given page 1 full and billed; then the consulta tariff is gone before
+    # page 2 is reserved, while quota is still available.
+    real = import_module("apps.integrations.call_protocol").reserve
+    reserved = []
+
+    def reserve_without_tariff(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        reserved.append(1)
+        if len(reserved) == 2:
+            settings.USAGE_UNIT_PRICES_BRL = {"serpro_emissao": "0.32"}
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(payments, "reserve", reserve_without_tariff)
+    world.script(page(support.darfs(100)))
+    stopped = world.consult()
+    # Then the refusal keeps the budget's own reason, never a generic quota one.
+    assert (stopped.state, stopped.failure_code, stopped.pages_fetched) == (
+        "falha",
+        "tarifa_ausente",
+        1,
+    )
+    assert len(world.sent()) == 1
+
+
+@DB
+def test_a_quota_refusal_at_claim_records_the_budgets_own_reason(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 full and billed; page 2 is reserved, then the budget window
+    # turns over before its claim, so the claim refuses the held reservation.
+    real = import_module("apps.integrations.call_protocol").reserve
+    reserved = []
+
+    def reserve_then_turn_the_window(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real(*args, **kwargs)
+        reserved.append(row)
+        if len(reserved) == 2:
+            with tenant_context(world.termo.tenant.pk):
+                budget = ProviderBudget.objects.get()
+                earlier = (budget.window_start - timedelta(days=1)).replace(day=1)
+                ProviderBudget.objects.update(window_start=earlier)
+        return row
+
+    monkeypatch.setattr(payments, "reserve", reserve_then_turn_the_window)
+    world.script(page(support.darfs(100)))
+    stopped = world.consult()
+    # Then page 2's call records the claim's quota refusal, and the consultation
+    # keeps that same reason (AXRM-045).
+    assert [c.state for c in world.calls()] == ["sucesso", "bloqueada_cota"]
+    assert (stopped.state, stopped.failure_code, stopped.pages_fetched) == (
+        "falha",
+        "reserva_vencida",
+        1,
+    )
+    assert len(world.sent()) == 1
 
 
 @DB
@@ -1011,26 +1090,6 @@ def test_a_firm_termo_call_403_after_the_claim_is_frozen_in_the_refusal(
         first_issue(world, platform),
     )
     assert platform in query_detail(refused)
-
-
-@DB
-def test_a_partial_quota_after_a_billed_page_states_both_pages(world: World) -> None:
-    # Given the budget covers one page, and page 1 is full (so page 2 follows).
-    with tenant_context(world.termo.tenant.pk):
-        ProviderBudget.objects.update(cap_microbrl=300_000)
-    world.script(page(support.darfs(100)))
-    stopped = world.consult()
-    # Then the quota stops page 2 before sending, after page 1 was billed.
-    assert (stopped.state, stopped.failure_code, stopped.pages_fetched) == (
-        "falha",
-        "cota_esgotada_parcial",
-        1,
-    )
-    assert len(world.sent()) == 1
-    assert query_detail(stopped) == (
-        "A página 2 não foi enviada: o limite mensal de consultas acabou; antes "
-        "dela, a página 1 foi enviada e cobrada."
-    )
 
 
 @DB
