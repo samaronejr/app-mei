@@ -32,6 +32,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage, Storage, default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
+from django.db.models import F
 from django.db.transaction import TransactionManagementError
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -1635,6 +1636,13 @@ class _Layout:
     copy: str
 
 
+def _unrelated_hard_link(case: _Layout) -> tuple[str, str, str]:
+    # A second name for this copy that no row spells: only the link count sees it.
+    (case.root / "spare").mkdir(exist_ok=True)
+    (case.root / "spare" / f"alias-{case.name}").hardlink_to(case.root / case.copy)
+    return case.copy, case.held, "arquivo_com_vinculos"
+
+
 def _unrelated_symlink(case: _Layout) -> tuple[str, str, str]:
     # An in-root directory link that no row spells: only the walk can see it.
     (case.root / "legacy").symlink_to(case.root / "originals", target_is_directory=True)
@@ -1728,6 +1736,7 @@ _LAYOUTS: dict[str, Callable[[_Layout], tuple[str, str, str]]] = {
     "symlink-here": lambda case: _symlink(case, here_side=True),
     "symlink-elsewhere": lambda case: _symlink(case, here_side=False),
     "symlink-unrelated": _unrelated_symlink,
+    "hard-link-unrelated": _unrelated_hard_link,
     "hard-link": _hard_link,
     "outside-root": _outside_root,
     "sealed-directory": _sealed,
@@ -1746,6 +1755,7 @@ _LAYOUTS: dict[str, Callable[[_Layout], tuple[str, str, str]]] = {
         "symlink-here",
         "symlink-elsewhere",
         "symlink-unrelated",
+        "hard-link-unrelated",
         "hard-link",
         "outside-root",
         "sealed-directory",
@@ -1784,10 +1794,11 @@ def test_a_file_with_names_no_lookup_sees_is_never_deleted(
     if layout == "fifo":
         assert (root / here).exists()
     claim = _claim(world, document.pk)
-    if layout in {"symlink-here", "symlink-elsewhere"}:
-        # One side spells the held file through the link; physical identity
-        # resolves that spelling, so the sweep refuses it as shared before any
-        # claim. The walk's own refusal is witnessed by symlink-unrelated.
+    if layout in {"symlink-here", "symlink-elsewhere", "hard-link"}:
+        # One side names the held file through the link; physical identity (the
+        # inode) is the held file's own, so the sweep refuses it as shared before
+        # any claim. The walk's and the link count's own refusals are witnessed
+        # by symlink-unrelated and hard-link-unrelated.
         assert claim is None
         return
     assert claim is not None
@@ -2345,7 +2356,9 @@ def test_cleanup_decides_with_the_storage_that_deletes(
         storage=other,
     )
     assert outcome == scanning.ScanOutcome.VERIFIED
-    assert other.exists(document.storage_key)
+    # The final is the file the row names, written through the rows' storage; the
+    # copy in the other storage is never compared across, so it is kept.
+    assert default_storage.exists(document.storage_key)
     assert copy.exists()
 
 
@@ -2505,6 +2518,7 @@ def _promote_remotely(
 ) -> object:
     """Scan with a remote store that, as in production, holds the rows' objects."""
     monkeypatch.setattr(retention, "rows_storage", lambda: bucket, raising=False)
+    monkeypatch.setattr(scanning, "rows_storage", lambda: bucket, raising=False)
     return scanning.scan_intake(
         world.tenant_id,
         intake.pk,
@@ -2590,38 +2604,46 @@ def test_a_refused_save_never_deletes_the_sole_copy(
     assert intake.quarantine_key in bucket.objects
 
 
+@pytest.mark.parametrize("raised", [ValueError, KeyError])
 def test_an_unidentifiable_key_never_stops_the_batch_and_fails_closed(
-    world: World, monkeypatch: pytest.MonkeyPatch
+    world: World, monkeypatch: pytest.MonkeyPatch, raised: type[Exception]
 ) -> None:
     bad, _ = _ordinary_pending(world, with_final=True)
     other, _ = _ordinary_pending(world, with_final=True)
+    make_firm(f"axrm051-r14-{uuid4().hex[:8]}", client_count=1)  # a second tenant
     real_path = default_storage.path
 
     def refusing(name: str) -> str:
         if name == bad.storage_key:
             message = "the backend cannot address this name"
-            raise ValueError(message)
+            raise raised(message)
         return real_path(name)
 
+    decided: dict[UUID, str] = {}
+    kept_as = retention_tasks._kept_as
+
+    def recording(
+        candidate: retention_tasks.Candidate, now: datetime, foreign: set[str]
+    ) -> str:
+        decided[candidate.id] = kept_as(candidate, now, foreign)
+        return decided[candidate.id]
+
     monkeypatch.setattr(default_storage, "path", refusing)
-    counts: dict[str, int] = {}
+    monkeypatch.setattr(retention_tasks, "_kept_as", recording)
     escaped: BaseException | None = None
     try:
-        counts = purge_tenant(
+        purge_tenant(
             world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
         )
     except Exception as error:  # noqa: BLE001 - the escape itself is asserted
         escaped = error
     assert escaped is None
-    claim = _claim(world, bad.pk)
-    assert claim is not None
-    assert (claim.completed_at, claim.error_code) == (None, "identidade_indeterminada")
-    # The neighbour is processed, and kept: a row whose identity cannot be
-    # computed may name its file too (fail closed).
-    assert sum(counts.values()) >= 2
+    # Both are reached and decided by their own ids, and both are kept: the bad
+    # candidate's unknown identity matches every row, and its row may name the
+    # neighbour's file too (fail closed both ways). Nothing is claimed.
+    assert (decided.get(bad.pk), decided.get(other.pk)) == ("retained", "retained")
+    assert (_claim(world, bad.pk), _claim(world, other.pk)) == (None, None)
     assert default_storage.exists(other.storage_key)
-    kept = _claim(world, other.pk)
-    assert kept is None or kept.completed_at is None
 
 
 def test_cleanup_sees_a_held_owner_through_a_symlink_in_the_rows_root(
@@ -2649,19 +2671,12 @@ def test_cleanup_sees_a_held_owner_through_a_symlink_in_the_rows_root(
         legacy.unlink()
 
 
-def test_the_rows_root_is_walked_as_well_as_the_deleting_one(world: World) -> None:
+def test_any_storage_but_the_rows_own_is_refused(world: World) -> None:
     root = Path(default_storage.path("")).resolve()
     nested = FileSystemStorage(location=str(root / f"pilot-{uuid4().hex[:8]}"))
     key = nested.save(f"quarantine/{uuid4().hex}", ContentFile(b"copy"))
-    elsewhere = root / f"elsewhere-{uuid4().hex[:8]}"
-    elsewhere.mkdir()
-    link = root / f"legacy-{uuid4().hex[:8]}"
-    link.symlink_to(elsewhere, target_is_directory=True)  # outside the nested root
-    try:
-        refusal = retention.ownership_refusal(world.tenant_id, [key], storage=nested)
-    finally:
-        link.unlink()
-    assert refusal == "armazenamento_com_atalho"
+    refusal = retention.ownership_refusal(world.tenant_id, [key], storage=nested)
+    assert refusal == "armazenamento_divergente"
 
 
 def test_promotion_never_repoints_a_document_a_disposal_has_claimed(
@@ -2742,15 +2757,20 @@ def test_the_purge_reads_and_claims_a_document_under_its_row_lock(
     assert seen == ["locked"]
 
 
+@pytest.mark.parametrize(
+    ("file_mode", "directory_mode"), [(0o600, 0o700), (0o664, 0o775)]
+)
 def test_the_exclusive_create_applies_the_configured_modes(
-    world: World, settings: SettingsWrapper
+    world: World, settings: SettingsWrapper, file_mode: int, directory_mode: int
 ) -> None:
     _document, intake = _ordinary_pending(world, with_final=False)
     final = f"originals/{uuid4().hex}/final.pdf"  # a directory that does not exist
     with tenant_context(world.tenant_id):
         Document.objects.filter(pk=intake.document_id).update(storage_key=final)
-    settings.FILE_UPLOAD_PERMISSIONS = 0o600
-    settings.FILE_UPLOAD_DIRECTORY_PERMISSIONS = 0o700
+    # The second pair has group write, which umask 0022 strips: only the explicit
+    # modes, as `FileSystemStorage.save` applies them, give it back.
+    settings.FILE_UPLOAD_PERMISSIONS = file_mode
+    settings.FILE_UPLOAD_DIRECTORY_PERMISSIONS = directory_mode
     previous = os.umask(0o022)
     try:
         outcome = scanning.scan_intake(
@@ -2760,5 +2780,189 @@ def test_the_exclusive_create_applies_the_configured_modes(
         os.umask(previous)
     assert outcome == scanning.ScanOutcome.VERIFIED
     path = Path(default_storage.path(final))
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == file_mode
+    assert stat.S_IMODE(path.parent.stat().st_mode) == directory_mode
+
+
+def test_a_candidate_whose_identity_is_unknown_matches_every_row(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    key = intake.quarantine_key
+    _foreign_copy(world, key.replace("/", "/./", 1))  # a held row, spelled another way
+    known = retention._identity_or_none
+
+    def unknown_for_the_candidate(name: str, storage: Storage) -> bytes | None:
+        return None if name == key else known(name, storage)
+
+    monkeypatch.setattr(retention, "_identity_or_none", unknown_for_the_candidate)
+    assert retention.foreign_storage_keys(world.tenant_id, [key], default_storage) == {
+        key
+    }
+
+
+def test_a_bind_mounted_view_of_a_held_file_is_the_same_file(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, _intake = _ordinary_pending(world, with_final=True)
+    root = Path(default_storage.path("")).resolve()
+    final = root / document.storage_key
+    view = root / "view" / Path(document.storage_key).name
+    # Stand-in for a bind-mounted view (which needs privileges): at the lstat
+    # boundary, the view's path is the final's own inode.
+    real_lstat = retention._lstat
+    held = final.lstat()
+
+    def through_the_view(path: object) -> os.stat_result:
+        return held if Path(os.fsdecode(path)) == view else real_lstat(path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(retention, "_lstat", through_the_view, raising=False)
+    _foreign_original(world, f"view/{Path(document.storage_key).name}")
+    purge_tenant(
+        world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+    )
+    assert final.exists()
+    assert _claim(world, document.pk) is None
+
+
+def test_promotion_verifies_the_file_the_row_names(world: World) -> None:
+    document, intake = _ordinary_pending(world, with_final=False)
+    root = Path(default_storage.path("")).resolve()
+    nested = FileSystemStorage(location=str(root / f"pilot-{uuid4().hex[:8]}"))
+    with default_storage.open(intake.quarantine_key, "rb") as handle:
+        nested.save(intake.quarantine_key, ContentFile(handle.read()))
+    # A different benign PDF already serves the row's key in the rows' storage.
+    other_pdf = b"%PDF-1.7\n% another benign document\n%%EOF\n"
+    default_storage.save(document.storage_key, ContentFile(other_pdf))
+    outcome = scanning.scan_intake(
+        world.tenant_id,
+        intake.pk,
+        scanner=FakeScanner(),
+        now=timezone.now(),
+        storage=nested,
+    )
+    assert outcome != scanning.ScanOutcome.VERIFIED
+    with default_storage.open(document.storage_key, "rb") as handle:
+        assert handle.read() == other_pdf
+
+
+@pytest.mark.parametrize("change", ["ticket-went-stale", "key-moved"])
+def test_a_remote_repoint_rechecks_the_ticket(
+    world: World, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    old = _document_key(world, intake)
+    moved = f"originals/{uuid4().hex}.pdf"
+    bucket = _remote_bucket(intake, "faithful")
+    real_save = bucket._save
+
+    def meanwhile(name: str, content: File[bytes]) -> str:
+        # Another attempt acts while this upload is in flight.
+        with tenant_context(world.tenant_id):
+            if change == "ticket-went-stale":
+                DocumentIntake.objects.filter(pk=intake.pk).update(
+                    version=F("version") + 1
+                )
+            else:
+                Document.objects.filter(pk=intake.document_id).update(storage_key=moved)
+        return real_save(name, content)
+
+    monkeypatch.setattr(bucket, "_save", meanwhile)
+    outcome = _promote_remotely(world, monkeypatch, intake, bucket)
+    # A lost race, never a digest failure: deferred, and the row left as it was.
+    assert outcome == scanning.ScanOutcome.SKIPPED
+    assert _document_key(world, intake) == (
+        old if change == "ticket-went-stale" else moved
+    )
+
+
+def test_the_final_is_never_wider_than_configured_even_before_its_chmod(
+    world: World, settings: SettingsWrapper, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, intake = _ordinary_pending(world, with_final=False)
+    final = Path(default_storage.path(document.storage_key))
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.parent.chmod(0o755)  # an existing, traversable directory
+    settings.FILE_UPLOAD_PERMISSIONS = 0o600
+    real_chmod = Path.chmod
+
+    def stopped(self: Path, mode: int, *args: object, **kwargs: object) -> None:
+        if self == final:
+            message = "the worker stops before its chmod"
+            raise OSError(message)
+        real_chmod(self, mode, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "chmod", stopped)
+    previous = os.umask(0o022)
+    try:
+        scanning.scan_intake(
+            world.tenant_id, intake.pk, scanner=FakeScanner(), now=timezone.now()
+        )
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(final.stat().st_mode) == 0o600
+
+
+def test_the_layout_proof_refuses_a_key_whose_identity_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = f"originals/{uuid4().hex}.pdf"
+    real_path = default_storage.path
+
+    def refusing(name: str) -> str:
+        if name == key:
+            message = "the backend cannot address this name"
+            raise KeyError(message)
+        return real_path(name)
+
+    monkeypatch.setattr(default_storage, "path", refusing)
+    try:
+        refusal = retention.local_layout_refusal([key], default_storage)
+    except Exception as error:  # noqa: BLE001 - an escape is itself the failure
+        refusal = f"raised {error!r}"
+    assert refusal == "identidade_indeterminada"
+
+
+def test_a_failed_batch_lookup_is_redone_per_candidate(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document, _ = _ordinary_pending(world, with_final=True)
+    lookup = retention.foreign_storage_keys
+    calls: list[int] = []
+
+    def failing_once(*args: object, **kwargs: object) -> set[str]:
+        calls.append(1)
+        if len(calls) == 1:
+            message = "the batch lookup failed"
+            raise RuntimeError(message)
+        return lookup(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(retention_tasks, "foreign_storage_keys", failing_once)
+    escaped: BaseException | None = None
+    try:
+        purge_tenant(
+            world.tenant_id, dry_run=False, now=datetime(2030, 1, 1, tzinfo=SAO_PAULO)
+        )
+    except Exception as error:  # noqa: BLE001 - the escape itself is asserted
+        escaped = error
+    assert escaped is None
+    claim = _claim(world, document.pk)
+    assert claim is not None  # reached, decided and disposed of on its own lookup
+    assert claim.completed_at is not None
+
+
+def test_cleanup_through_another_storage_object_keeps_the_copy(world: World) -> None:
+    _document, intake = _ordinary_pending(world, with_final=False)
+    # The same root, through a second storage object: never the rows' own.
+    same_root = FileSystemStorage(
+        location=str(Path(default_storage.path("")).resolve())
+    )
+    outcome = scanning.scan_intake(
+        world.tenant_id,
+        intake.pk,
+        scanner=FakeScanner(),
+        now=timezone.now(),
+        storage=same_root,
+    )
+    assert outcome == scanning.ScanOutcome.VERIFIED
+    assert default_storage.exists(intake.quarantine_key)

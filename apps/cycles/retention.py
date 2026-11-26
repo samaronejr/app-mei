@@ -98,16 +98,9 @@ def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) ->
     if not isinstance(chosen, FileSystemStorage):
         return ""
     root = real_root(chosen)
-    roots = [root]
-    rows = rows_storage()
-    if isinstance(rows, FileSystemStorage) and real_root(rows) != root:
-        # The rows consulted are resolved under their own root: a symlink, mount
-        # or case-blind directory there may alias these files too (AXRM-051).
-        roots.append(real_root(rows))
-    for each in roots:
-        refusal = _mount_refusal(each) or _walk_refusal(each)
-        if refusal:
-            return refusal
+    refusal = _mount_refusal(root) or _walk_refusal(root)
+    if refusal:
+        return refusal
     return next(
         (refusal for key in keys if (refusal := _key_refusal(chosen, root, key))), ""
     )
@@ -214,17 +207,44 @@ def _addressed(storage: FileSystemStorage, key: str) -> Path | None:
 def physical_identity(key: str, storage: Storage) -> bytes:
     """Return the identity of the object a key names in `storage`, as bytes.
 
-    On local storage it is the absolute real path of the file the backend addresses
-    (a spelling the backend refuses is resolved directly, for identification only),
-    so keys of nested, overlapping or sibling roots compare equal exactly when they
-    name one file. Elsewhere it is the lexical name (AXRM-051).
+    An existing local regular file is its inode, `(st_dev, st_ino)` from `lstat`
+    at the path the backend addresses: a bind-mounted view, a hard link, a
+    symlinked ancestor or any other alias then compares equal by construction. A
+    local object that does not exist yet is named by that real path, and a remote
+    one by its lexical name (AXRM-051).
     """
     if not isinstance(storage, FileSystemStorage):
-        return b"remote:" + posixpath.normpath(key.replace("\\", "/")).encode()
+        return _lexical_identity(key)
+    path = _resolved(storage, key)
+    try:
+        status = _lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return b"path:" + os.fsencode(path)  # no such object can exist there yet
+    if not stat.S_ISREG(status.st_mode):
+        return b"path:" + os.fsencode(path)
+    return b"inode:%d:%d" % (status.st_dev, status.st_ino)
+
+
+def _lexical_identity(key: str) -> bytes:
+    return b"remote:" + posixpath.normpath(key.replace("\\", "/")).encode(
+        "utf-8", "surrogateescape"
+    )
+
+
+def _resolved(storage: FileSystemStorage, key: str) -> Path:
+    """Return the real path the backend addresses for a key.
+
+    A spelling the backend refuses is resolved directly, for identification only.
+    """
     path = _addressed(storage, key)
-    if path is None:
-        path = Path(os.path.realpath(Path(storage.location) / key))
-    return os.fsencode(path)
+    return path or Path(os.path.realpath(Path(storage.location) / key))
+
+
+def _path_identity(key: str, storage: Storage) -> bytes:
+    """Return the name a lock takes for a key: the same before and after it exists."""
+    if not isinstance(storage, FileSystemStorage):
+        return _lexical_identity(key)
+    return b"path:" + os.fsencode(_resolved(storage, key))
 
 
 def rows_storage() -> Storage:
@@ -232,16 +252,9 @@ def rows_storage() -> Storage:
     return default_storage
 
 
-def _comparable(storage: Storage) -> bool:
-    """Whether keys of `storage` can be compared with the rows' physical identities.
-
-    Two local roots always can (by real path); a remote store only with itself.
-    """
-    rows = rows_storage()
-    both_local = isinstance(storage, FileSystemStorage) and isinstance(
-        rows, FileSystemStorage
-    )
-    return both_local or storage is rows
+def _is_rows_storage(storage: Storage) -> bool:
+    """Whether `storage` is the rows' own storage: one storage per decision."""
+    return storage is rows_storage()
 
 
 def _key_refusal(storage: FileSystemStorage, root: Path, key: str) -> str:
@@ -346,19 +359,22 @@ def _identity_or_none(key: str, storage: Storage) -> bytes | None:
     """Return `physical_identity`, or None when it cannot be computed; never raises."""
     try:
         return physical_identity(key, storage)
-    except (ValueError, OSError, RuntimeError, SuspiciousFileOperation):
+    except Exception:  # noqa: BLE001 - any failure means "unknown", never a stop
         return None
-
-
-def _identities(keys: Iterable[str], storage: Storage) -> set[bytes]:
-    """Return the physical identities of these keys that can be computed."""
-    return {i for key in keys if (i := _identity_or_none(key, storage)) is not None}
 
 
 def _row_names(raw: str, identities: set[bytes]) -> bool:
     """Whether a stored row's key names one of these objects (or cannot be told)."""
     identity = _identity_or_none(raw, rows_storage())
     return identity is None or identity in identities
+
+
+def _known_identities(keys: Iterable[str], storage: Storage) -> set[bytes] | None:
+    """Return these keys' identities, or None when any of them is unknown."""
+    identities = [_identity_or_none(key, storage) for key in keys]
+    if any(identity is None for identity in identities):
+        return None  # an unknown candidate matches every row, never none
+    return {identity for identity in identities if identity is not None}
 
 
 def _naming(
@@ -369,18 +385,17 @@ def _naming(
 ) -> QuerySet[Any]:
     """Return the rows of `model` whose key names one of these keys' objects.
 
-    The keys belong to `storage`; every row belongs to the rows' own storage and is
-    resolved through it, never through the caller's. Every row is compared by
-    physical identity, never pre-filtered by its spelling, and a row whose
-    identity cannot be computed counts as naming every key. When the two storages
-    cannot be compared, every row counts (AXRM-051).
+    Every row is compared by physical identity, never pre-filtered by its
+    spelling. A row whose identity cannot be computed counts as naming every key,
+    and so does every row when a key's own identity is unknown or the keys belong
+    to any storage but the rows' own (AXRM-051).
     """
     chosen = default_storage if storage is None else storage
     named = [key for key in keys if key]
-    if not _comparable(chosen):
-        return model.objects.all()
-    identities = _identities(named, chosen)
     stored = model.objects.exclude(**{f"{field}__isnull": True}).exclude(**{field: ""})
+    identities = _known_identities(named, chosen) if _is_rows_storage(chosen) else None
+    if identities is None:
+        return stored  # another storage, or an unknown key: every row counts
     matching = [
         pk for pk, raw in stored.values_list("pk", field) if _row_names(raw, identities)
     ]
@@ -440,13 +455,14 @@ def foreign_storage_keys(
                     _naming(model, field, named, storage).values_list(field, flat=True)
                 )
     chosen = default_storage if storage is None else storage
-    if not _comparable(chosen):
+    if not _is_rows_storage(chosen):
         return set(named) if found else set()
     return {
         key
         for key in named
         for raw in found
-        if _row_names(raw, _identities([key], chosen))
+        if (identities := _known_identities([key], chosen)) is None
+        or _row_names(raw, identities)
     }
 
 
@@ -468,6 +484,10 @@ def ownership_refusal(
     named = [key for key in keys if key]
     if not named:
         return ""
+    if not _is_rows_storage(default_storage if storage is None else storage):
+        # Only the rows' own storage may read or delete what the rows name; any
+        # other is never compared across, so nothing is deleted (AXRM-051).
+        return "armazenamento_divergente"
     with tenant_context(tenant_id):
         shared = storage_key_aliased(
             named, document_id=document_id, export_id=export_id, storage=storage
@@ -480,11 +500,12 @@ def ownership_refusal(
 def _key_lock_id(key: str, storage: Storage | None = None) -> int:
     # One lock per object, whatever spelling or storage root a caller holds.
     chosen = default_storage if storage is None else storage
-    # A key whose identity cannot be computed still gets a lock (its disposal is
-    # refused under it); the lock never raises outside the candidate's guard.
-    name = _identity_or_none(key, chosen) or b"unidentified:" + key.encode(
-        "utf-8", "surrogateescape"
-    )
+    # Locks are named by path, which stays the same before and after the object
+    # exists; a key that cannot be resolved still gets a lock, never an error.
+    try:
+        name = _path_identity(key, chosen)
+    except Exception:  # noqa: BLE001 - its disposal is refused under the lock
+        name = b"unidentified:" + key.encode("utf-8", "surrogateescape")
     digest = hashlib.sha256(b"axorim-storage-key:" + name).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
