@@ -9,14 +9,18 @@ for: the same harness, the repaired expectation.
 
 import base64
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from botocore.exceptions import ClientError
 from django.core.exceptions import ValidationError
-from django.core.files.base import ContentFile
+from django.core.files.base import ContentFile, File
 from django.core.files.storage import default_storage
 from django.db import OperationalError, connections
+from s3transfer.exceptions import RetriesExceededError
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import Exception as CycleException
@@ -37,6 +41,7 @@ from tests.integrations.sitfis_support import (
     sitfis,
     world,
 )
+from tests.obligations.test_iss_retention_storage import ISSVault
 
 pytestmark = pytest.mark.django_db(transaction=True)
 __all__ = ["clock", "world"]
@@ -366,11 +371,6 @@ def test_p3a2_a_storage_failure_on_a_paid_pdf_is_billed_and_owned(
 def test_bad_readback_of_paid_pdf_finalizes_without_custody_or_retry(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tasks, scheduled = _capture(monkeypatch)
-    report = _protocol(world)
-    scheduled.clear()
-    world.clock.advance(seconds=30)
-    world.script(report_reply())
     save = default_storage.save
 
     def save_wrong_bytes(name: str, content: ContentFile) -> str:
@@ -378,11 +378,52 @@ def test_bad_readback_of_paid_pdf_finalizes_without_custody_or_retry(
         return save(name, ContentFile(payload[:-1] + bytes([payload[-1] ^ 1])))
 
     monkeypatch.setattr("apps.cycles.intake.default_storage.save", save_wrong_bytes)
+    _assert_unstored_paid_reply(world, monkeypatch)
+
+
+@pytest.mark.parametrize("fault", ["range-metadata", "stream-retries-exhausted"])
+def test_native_quarantine_read_failure_finalizes_paid_pdf(
+    world: World, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    open_object = default_storage.open
+    reads: list[str] = []
+
+    @contextmanager
+    def open_for_verification(name: str, mode: str = "rb") -> Iterator[File[bytes]]:
+        with open_object(name, mode) as stored:
+            if not name.startswith("quarantine/") or mode != "rb":
+                yield stored
+                return
+            reads.append(name)
+            if fault == "range-metadata":
+                vault = ISSVault(stored.read(), status=206, content_range="bytes 0-999")
+                with vault.intercept(), vault.storage.open(name, mode) as managed:
+                    yield managed
+            else:
+                exhausted = RetriesExceededError(TimeoutError())
+                with patch.object(stored.file, "read", side_effect=exhausted):
+                    yield stored
+
+    monkeypatch.setattr(default_storage, "open", open_for_verification)
     try:
-        state = tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
-    finally:
-        current = world.reload(report)
-        assert current.state == "falha"
+        _assert_unstored_paid_reply(world, monkeypatch)
+    except (ValueError, RetriesExceededError) as exc:
+        if not reads:
+            raise
+        message = "The quarantine read failure escaped the paid reply."
+        raise AssertionError(message) from exc
+    assert len(reads) == 1
+
+
+def _assert_unstored_paid_reply(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    tasks, scheduled = _capture(monkeypatch)
+    report = _protocol(world)
+    scheduled.clear()
+    world.clock.advance(seconds=30)
+    world.script(report_reply())
+    state = tasks.advance_situation_report_task(str(world.tenant_id), str(report.pk))
+    current = world.reload(report)
+    assert current.state == "falha"
     assert state == "falha"
     assert current.document_id is None
     assert _documents(world) == 0

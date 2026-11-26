@@ -41,10 +41,12 @@ visibility boundary.
 
 import hashlib
 import hmac
+import logging
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
+from traceback import extract_tb
 from typing import Final
 from uuid import UUID
 
@@ -82,6 +84,7 @@ from apps.tenants.models import Tenant
 CHUNK_BYTES: Final = 64 * 1024
 SHA256_CONSTRAINT: Final = "document_tenant_client_sha256_uniq"
 LINK_CONSTRAINT: Final = "evidencelink_request_document_uniq"
+logger = logging.getLogger(__name__)
 
 
 def _constraint(error: IntegrityError) -> str | None:
@@ -284,19 +287,35 @@ def tenant_quarantine[R](tenant_id: UUID, register: Callable[[], R]) -> R:
     return quarantine_phases(scoped)
 
 
-def _verified_object(key: str, size: int, digest: str) -> bool:
+def _verify_object(key: str, size: int, digest: str) -> None:
     """Count and hash the bytes actually read, bounded even for an oversized object."""
     assert_no_transaction()
     received = 0
     checksum = hashlib.sha256()
-    with default_storage.open(key, "rb") as stored:
-        while received <= size:
-            block = stored.read(min(CHUNK_BYTES, size - received + 1))
-            if not block:
-                break
-            received += len(block)
-            checksum.update(block)
-    return received == size and checksum.hexdigest() == digest
+    try:
+        with default_storage.open(key, "rb") as stored:
+            while received <= size:
+                block = stored.read(min(CHUNK_BYTES, size - received + 1))
+                if not block:
+                    break
+                received += len(block)
+                checksum.update(block)
+    except Exception as error:  # noqa: BLE001 - normalize only this backend read
+        # Managed downloads can raise non-I/O exceptions while decoding a response.
+        # Exception text can contain object keys or endpoints; record the origin instead.
+        frame = extract_tb(error.__traceback__, limit=-1)[0]
+        logger.warning(
+            "Quarantine read-back failed: %s at %s:%d (%s)",
+            type(error).__name__,
+            frame.filename,
+            frame.lineno,
+            frame.name,
+        )
+        msg = "Quarantine integrity check failed: object could not be read."
+        raise QuarantineStorageError(msg) from error
+    if received != size or checksum.hexdigest() != digest:
+        msg = "Quarantine integrity check failed: size or digest mismatch."
+        raise QuarantineStorageError(msg)
 
 
 def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
@@ -323,12 +342,13 @@ def _store(  # noqa: PLR0913 - keyword-only: every value is verified context
             _discard(saved)
             msg = "storage changed the requested quarantine key"
             raise QuarantineStorageError(msg)
-    if not _verified_object(held, len(payload), digest):
+    try:
+        _verify_object(held, len(payload), digest)
+    except QuarantineStorageError:
         # Never delete an earlier upload's object on the strength of this retry.
         if created:
             _discard(held)
-        msg = "Quarantine integrity check failed: size or digest mismatch."
-        raise QuarantineStorageError(msg)
+        raise
     return _Held(key, held, created=created)
 
 
