@@ -1177,19 +1177,23 @@ def _refused(
         kind, reason = str(error), error.reason
         call = None
         if row_id is not None:
+            # Only the call row is locked: a lock another worker holds on its
+            # connection never hides the call (AXRM-045).
             call = (
-                ProviderCall.objects.select_for_update(skip_locked=True)
+                ProviderCall.objects.select_for_update(skip_locked=True, of=("self",))
                 .select_related("link__connection")
                 .filter(pk=row_id)
                 .first()
             )
-            if call is not None and call.state == CallState.RESERVED:
+            if call is None:
+                return  # Another runner holds the call: a later pass settles it.
+            if call.state == CallState.RESERVED:
                 release(call)
                 call.state = CallState.CANCELLED
                 call.provider_code = str(error)[:64]
                 call.version += 1
                 call.save()
-            elif call is not None and call.state in _COMMITTED_REFUSALS:
+            elif call.state in _COMMITTED_REFUSALS:
                 kind, reason = call.state, call.provider_code
             else:
                 call = None
