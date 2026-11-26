@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from django.db.models import QuerySet
 
     from apps.integrations.call_models import ProviderCall
+    from apps.obligations.iss_retention_evidence_v1 import ISSDecision, ISSOriginal
 
 PAGE_SIZE: Final = 100
 CLIENT_LIMIT: Final = 10
@@ -517,6 +518,9 @@ def _current(run: SyncRun, current: SyncRun) -> bool:
 
 def _commit_page(run: SyncRun, page: PreparedPage, guard: TokenGuard) -> SyncRun:
     """Recheck live admission, register every revision, then compare-and-swap."""
+    # The run fixes tenant, client, environment and source namespace. Only an
+    # earlier accepted original of this exact revision extends an entry's set.
+    accepted: dict[tuple[str, str, str, str], dict[ISSOriginal, ISSDecision]] = {}
     with tenant_context(run.tenant_id):
         link = _locked_link(run.client_id, run.stream.link_id)
         stream = SyncStream.objects.select_for_update().get(pk=run.stream_id)
@@ -530,10 +534,24 @@ def _commit_page(run: SyncRun, page: PreparedPage, guard: TokenGuard) -> SyncRun
             or stream.cursor_version != page.cursor_version
         ):
             raise PageRefusedError
+        # One cursor commits one page. Check every entry against the locked,
+        # pre-page database before any registration can even consume an audit
+        # sequence number. Page-local accepted originals are added below.
+        for entry in page.entries:
+            entry.fiscal.check_iss_originals()
         for entry in page.entries:
             prepared = entry.fiscal
             context = prepared.context
-            fiscal = prepared.register(page.receipt_ref)
+            extraction = prepared.extraction
+            revision_key = (
+                extraction.family,
+                extraction.key_namespace,
+                extraction.document_key,
+                context.provider_version,
+            )
+            prior = accepted.setdefault(revision_key, {})
+            iss_originals = prior | dict(prepared.iss_originals)
+            fiscal = prepared.register(page.receipt_ref, iss_originals)
             revision = FiscalRevision.objects.get(
                 document=fiscal,
                 source_namespace=context.source_namespace,
@@ -545,6 +563,11 @@ def _commit_page(run: SyncRun, page: PreparedPage, guard: TokenGuard) -> SyncRun
                 revision=revision, document=prepared.original
             ).exists():
                 continue
+            prior.update(
+                (w, decision)
+                for w, decision in prepared.iss_originals.items()
+                if w.document_id == prepared.original.pk
+            )
             retained = not prepared.extraction.summary_only
             CaptureAcquisition.objects.get_or_create(
                 tenant_id=run.tenant_id,
@@ -689,7 +712,14 @@ def _synchronize_pages(
                 last_api_success_at=timezone.now()
             )
         page = _prepare_page(run, link, response, guard)
-        run = _commit_page(run, page, guard)
+        try:
+            run = _commit_page(run, page, guard)
+        except fiscal_ingest.StaleISSOriginalsError:
+            refreshed = tuple(
+                replace(entry, fiscal=entry.fiscal.refresh_iss_originals())
+                for entry in page.entries
+            )
+            run = _commit_page(run, replace(page, entries=refreshed), guard)
         if page.count < PAGE_SIZE:
             return _finish(run, "concluida", complete=True)
     return _finish(run, "parcial", "limite_de_paginas")
@@ -716,7 +746,12 @@ def synchronize(tenant_id: UUID, stream_id: UUID) -> SyncRun | None:
             return _synchronize_pages(run, link, guard)
         except CaptureReadLimitedError as error:
             state, code = "parcial", error.code
-        except (CaptureLockLostError, PageRefusedError, StaleClaimError):
+        except (
+            CaptureLockLostError,
+            PageRefusedError,
+            StaleClaimError,
+            fiscal_ingest.StaleISSOriginalsError,
+        ):
             state, code = "bloqueada", "execucao_substituida"
         except AdmissionDeniedError:
             state, code = "bloqueada", "admissao_recusada"

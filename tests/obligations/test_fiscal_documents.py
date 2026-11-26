@@ -1,6 +1,7 @@
 """AXRM-020 acceptance through the real vault, scanner and PostgreSQL policies."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -23,9 +24,11 @@ from apps.cycles.evidence import (
     ExtractedField,
     IntakeState,
 )
+from apps.cycles.parsing import UnsafeDocument
 from apps.cycles.records import Exception as CycleException
 from apps.cycles.scanning import FakeScanner
 from apps.integrations.models import ClientProviderLink, ProviderConnection
+from apps.obligations import fiscal_ingest
 from apps.obligations.fiscal_ingest import ingest_fiscal_document
 from apps.obligations.models import (
     Document,
@@ -38,11 +41,17 @@ from tests.obligations.fiscal_fixtures import (
     CLIENT,
     COUNTERPART,
     KEY,
+    LEGACY_ISS_DIGEST,
+    UNTRUSTED_ISS_ELEMENTS,
     nfe,
     nfse,
+    nfse_with_retention,
+    retention_element,
     summary,
 )
 from tests.obligations.ingest_fixtures import ingest_setup, portal_cursor
+from tests.obligations.iss_vault_fixture import fault_iss_original
+from tests.obligations.iss_writer_fixtures import no_vault_escape, post_scan_503
 from tests.portal.request_fixtures import PortalSetup
 
 if TYPE_CHECKING:
@@ -275,7 +284,11 @@ def test_same_version_different_semantics_opens_consistency_incident(
             "FiscalDocument",
             str(current.pk),
         )
-        assert event.metadata == {"original_document_id": str(conflicting.pk)}
+        assert event.metadata == {
+            "original_document_id": str(conflicting.pk),
+            "revision_id": str(original.current_revision_id),
+            "cause": "evidence_disagrees",
+        }
 
 
 def test_newer_snapshot_cannot_erase_established_cancellation(
@@ -637,8 +650,6 @@ def test_unknown_layout_keeps_note_and_unconfirmed_role_for_review(
 
 
 def test_national_ingest_projects_only_stated_iss_values(setup: PortalSetup) -> None:
-    from decimal import Decimal  # noqa: PLC0415
-
     with patch(
         "apps.obligations.fiscal_ingest.scanner_from_settings",
         return_value=FakeScanner(),
@@ -664,6 +675,234 @@ def test_national_ingest_projects_only_stated_iss_values(setup: PortalSetup) -> 
     assert result.iss_withheld_flag is True
     assert result.iss_withheld_amount == Decimal("12.34")
     assert result.municipality_incidence == "3303302"
+
+
+def _ingest_iss(
+    setup: PortalSetup, evidence: str | bytes | None, *, version: int = 1
+) -> FiscalDocument:
+    element = evidence if isinstance(evidence, bytes) else retention_element(evidence)
+    with no_vault_escape():
+        fiscal = ingest(
+            setup,
+            version=version,
+            payload=nfse_with_retention(element),
+            client_role="tomador",
+            source_namespace="focus:nfse_recebidas",
+        )
+    assert isinstance(fiscal, FiscalDocument)
+    return fiscal
+
+
+@pytest.mark.parametrize(
+    ("code", "party", "withheld"),
+    [
+        ("1", "nao_retido", False),
+        ("2", "tomador", True),
+        ("3", "intermediario", True),
+        ("9", "desconhecido", None),
+        (None, "desconhecido", None),
+    ],
+)
+def test_iss_retention_party_comes_only_from_source_code(
+    setup: PortalSetup, code: str | None, party: str, withheld: bool | None
+) -> None:
+    _ingest_iss(setup, code)
+    current = document(setup)
+    assert current.iss_retention_party == party
+    assert current.iss_withheld_flag is withheld
+    assert current.iss_stated == Decimal("12.34")
+    assert current.iss_withheld_amount == (Decimal("12.34") if withheld else None)
+
+
+_UNTRUSTED_XML_PARAMS = [
+    pytest.param(element, code, id=name)
+    for name, element, code in UNTRUSTED_ISS_ELEMENTS
+]
+
+
+@pytest.mark.parametrize(
+    ("element", "legacy_code"),
+    _UNTRUSTED_XML_PARAMS,
+)
+def test_iss_retention_projection_does_not_change_legacy_extraction(
+    setup: PortalSetup, element: bytes, legacy_code: str | None
+) -> None:
+    _ingest_iss(setup, element)
+    fiscal = document(setup)
+    assert _iss_projection(fiscal) == ("desconhecido", None, None)
+    with tenant_context(fiscal.tenant_id):
+        fields = list(
+            ExtractedField.objects.filter(name="iss_withheld_flag").values_list(
+                "value", "origin", "source_span", "extractor_version"
+            )
+        )
+    assert fields == (
+        [(legacy_code, "xml", "DPS/infDPS/valores/trib/tribMun/tpRetISSQN", "2")]
+        if legacy_code is not None
+        else []
+    )
+
+
+def _iss_projection(
+    fiscal: FiscalDocument,
+) -> tuple[str, bool | None, Decimal | None]:
+    return (
+        fiscal.iss_retention_party,
+        fiscal.iss_withheld_flag,
+        fiscal.iss_withheld_amount,
+    )
+
+
+@pytest.mark.parametrize(("code", "digest"), LEGACY_ISS_DIGEST.items())
+def test_iss_retention_semantic_digest_still_uses_the_raw_code(
+    setup: PortalSetup, code: str | None, digest: str
+) -> None:
+    _ingest_iss(setup, code)
+    assert revision_of(document(setup)).semantic_digest == digest
+
+
+def test_iss_retention_padded_oversize_field_still_refuses(setup: PortalSetup) -> None:
+    refusal = None
+    try:
+        _ingest_iss(setup, f" {'9' * 256} ")
+    except UnsafeDocument as error:
+        refusal = error.code
+    assert refusal == "field_too_long"
+    with tenant_context(setup.graph.tenant.pk):
+        assert not FiscalDocument.objects.exists()
+
+
+def _source_document(fiscal: FiscalDocument) -> Document:
+    return RevisionArtifact.objects.get(
+        revision_id=fiscal.current_revision_id, role="xml_original"
+    ).document
+
+
+_STATED = Decimal("12.34")
+
+
+def _incidents(fiscal: FiscalDocument) -> list[str]:
+    with tenant_context(fiscal.tenant_id):
+        return list(
+            Event.objects.filter(
+                action="fiscal.consistency_incident", object_id=str(fiscal.pk)
+            )
+            .order_by("pk")
+            .values_list("metadata__cause", flat=True)
+        )
+
+
+def test_iss_retention_fresh_vault_failure_keeps_new_amount_unset(
+    setup: PortalSetup,
+) -> None:
+    element = retention_element("2")
+    with post_scan_503(nfse_with_retention(element)):
+        initial = _ingest_iss(setup, element)
+    assert initial.fiscal_state == "incerta"
+    assert _iss_projection(initial) == ("desconhecido", None, None)
+    assert _incidents(initial) == ["evidence_unavailable"]
+    with tenant_context(initial.tenant_id):
+        assert Event.objects.filter(
+            action="fiscal.consistency_incident",
+            object_id=str(initial.pk),
+            metadata__cause="evidence_unavailable",
+            metadata__derive_fields=True,
+        ).exists()
+        assert (
+            CycleException.objects.filter(
+                reason_code="incidente_consistencia_fiscal", subject_ref=initial.pk
+            ).count()
+            == 1
+        )
+    recovered = _ingest_iss(setup, element)
+    assert recovered.fiscal_state == "autorizada"
+    assert _iss_projection(recovered) == ("tomador", True, _STATED)
+    assert (
+        revision_of(recovered).semantic_digest == revision_of(initial).semantic_digest
+    )
+    assert _ingest_iss(setup, element).version == recovered.version
+
+
+@pytest.mark.parametrize(("first", "second"), [("2", "3"), ("3", "2")])
+@pytest.mark.parametrize("previous_outage", [False, True])
+def test_iss_retention_real_contradiction_survives_old_original_s3_503(
+    setup: PortalSetup, first: str, second: str, previous_outage: bool
+) -> None:
+    initial = _ingest_iss(setup, first)
+    revision = revision_of(initial)
+    with tenant_context(initial.tenant_id):
+        source = _source_document(initial)
+    with fault_iss_original(
+        "503", source.storage_key, nfse_with_retention(retention_element(first))
+    ):
+        if previous_outage:
+            # A formerly retryable incident must not clear a later contradiction.
+            assert _ingest_iss(setup, first).fiscal_state == "incerta"
+        disputed = _ingest_iss(setup, second)
+    assert disputed.fiscal_state == "incerta"
+    assert _iss_projection(disputed) == ("desconhecido", True, _STATED)
+    assert set(_incidents(disputed)) == {"evidence_disagrees", "evidence_unavailable"}
+    with tenant_context(initial.tenant_id):
+        assert (
+            CycleException.objects.filter(
+                reason_code="incidente_consistencia_fiscal", subject_ref=initial.pk
+            ).count()
+            == 1
+        )
+        assert FiscalRevision.objects.filter(document=initial).count() == 1
+        # Keep both originals; attach only the head.
+        assert Document.objects.count() == 2
+        assert RevisionArtifact.objects.filter(revision=revision).count() == 1
+    for _ in range(2):
+        replay = _ingest_iss(setup, first)
+        assert replay.fiscal_state == "incerta"
+        assert replay.current_revision_id == revision.pk
+        assert revision_of(replay).semantic_digest == revision.semantic_digest
+    expected = ["evidence_disagrees", "evidence_unavailable"]
+    assert _incidents(replay) == (expected[::-1] if previous_outage else expected)
+
+
+@pytest.mark.parametrize("incoming_padded", [False, True], ids=["clean", "padded"])
+def test_iss_retention_direct_ingest_retries_after_a_new_original_is_attached(
+    setup: PortalSetup, incoming_padded: bool
+) -> None:
+    prepare = fiscal_ingest.prepare_fiscal_document
+    incoming, competing_code = (" 2 ", "2") if incoming_padded else ("2", " 2 ")
+
+    def add_competing_original(
+        context: fiscal_ingest.FiscalSource,
+        *,
+        payload_bytes: bytes | None,
+        summary: dict[str, str] | None,
+    ) -> fiscal_ingest.PreparedFiscalDocument | None:
+        prepared = prepare(context, payload_bytes=payload_bytes, summary=summary)
+        competing = prepare(
+            context,
+            payload_bytes=nfse_with_retention(retention_element(competing_code)),
+            summary=None,
+        )
+        assert competing is not None
+        with tenant_context(context.tenant_id):
+            competing.register(context.receipt_ref)
+        return prepared
+
+    with patch.object(
+        fiscal_ingest, "prepare_fiscal_document", side_effect=add_competing_original
+    ):
+        try:
+            result = _ingest_iss(setup, incoming)
+        except fiscal_ingest.StaleISSOriginalsError as error:
+            message = "Direct ingestion failed to refresh its original snapshot."
+            raise AssertionError(message) from error
+    assert _iss_projection(result) == ("desconhecido", None, None)
+    with tenant_context(result.tenant_id):
+        assert FiscalRevision.objects.filter(document=result).count() == 1
+        assert (
+            RevisionArtifact.objects.filter(
+                revision_id=result.current_revision_id, role="xml_original"
+            ).count()
+            == 2
+        )
 
 
 def test_client_upload_keeps_visible_portal_row_separate_from_capture(

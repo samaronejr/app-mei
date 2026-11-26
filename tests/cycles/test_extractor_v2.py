@@ -11,7 +11,8 @@ from apps.cycles.extraction import EXTRACTOR_VERSION
 from apps.cycles.extraction.v2 import EXTRACTOR_VERSION as V2
 from apps.cycles.extraction.v2 import KNOWN_VERSIONS, extract
 from apps.cycles.parsing import UnsafeDocument
-from apps.obligations.fiscal_ingest import FiscalSource, _payload
+from apps.obligations.fiscal_ingest import FiscalSource, _payload, _set_iss_projection
+from apps.obligations.models import FiscalDocument
 from tests.obligations.fiscal_fixtures import (
     ALPHANUMERIC,
     CLIENT,
@@ -402,9 +403,13 @@ def test_retention_projection_preserves_unknown_indicator(
             FieldValue("iss_withheld_flag", indicator, "xml"),
         ),
     )
-    projection = _projection(extraction)
-    assert projection["iss_withheld_flag"] is expected
-    assert projection["iss_withheld_amount"] == (Decimal("12.34") if expected else None)
+    fiscal = FiscalDocument(**_projection(extraction))
+    assert fiscal.iss_retention_party == "desconhecido"
+    assert fiscal.iss_withheld_flag is None
+    assert fiscal.iss_withheld_amount is None
+    _set_iss_projection(fiscal, indicator, new_projection=True)
+    assert fiscal.iss_withheld_flag is expected
+    assert fiscal.iss_withheld_amount == (Decimal("12.34") if expected else None)
 
 
 def test_overlong_party_identity_is_refused_before_typed_register_storage() -> None:
@@ -593,9 +598,10 @@ def test_projection_preserves_every_typed_national_field() -> None:
         "competence": date(2026, 9, 1),
         "total": Decimal("800.00"),
         "iss_stated": Decimal("12.34"),
+        "iss_retention_party": "desconhecido",
         "municipality_incidence": "3303302",
-        "iss_withheld_flag": True,
-        "iss_withheld_amount": Decimal("12.34"),
+        "iss_withheld_flag": None,
+        "iss_withheld_amount": None,
     }
 
 

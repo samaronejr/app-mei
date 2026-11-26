@@ -28,7 +28,7 @@ from apps.integrations.models import (
 from apps.obligations.fiscal_ingest import ingest_fiscal_document
 from apps.obligations.models import FiscalDocument
 from tests.fakes.provider import Reply
-from tests.obligations.fiscal_fixtures import CLIENT, COUNTERPART, KEY, nfe
+from tests.obligations.fiscal_fixtures import CLIENT, COUNTERPART, KEY, nfe, nfse
 from tests.obligations.ingest_fixtures import ingest_setup
 
 if TYPE_CHECKING:
@@ -165,6 +165,15 @@ def page(
 
 def xml(index: int = 1, *, recipient: str = CLIENT) -> bytes:
     return nfe(recipient=recipient).replace(KEY.encode(), key(index).encode())
+
+
+def national_item(index: int = 1, version: int = 8) -> tuple[dict[str, object], bytes]:
+    return {
+        "chave_nfse": key(index),
+        "versao": version,
+        "situacao": "autorizado",
+        "data_emissao": "2026-09-15T12:30:00-03:00",
+    }, nfse().replace(KEY.encode(), key(index).encode())
 
 
 @dataclass
