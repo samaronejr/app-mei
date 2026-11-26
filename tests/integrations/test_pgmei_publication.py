@@ -282,7 +282,9 @@ def test_firm_admin_and_sql_cannot_reclassify_internal_request(
             )
         cause = refused.value.__cause__
         assert isinstance(cause, CheckViolation)
-        assert cause.diag.constraint_name == "evidencerequest_internal_lifetime"
+        # A DAS guide has a purpose: its row check rejects the state change
+        # before the AFTER UPDATE lifetime trigger can run.
+        assert cause.diag.constraint_name == "evidencerequest_internal_purpose_check"
         assert_hidden_link(guide.link)
     with tenant_context(world.tenant_id):
         request = EvidenceRequest.objects.get(pk=guide.link.request_id)

@@ -208,7 +208,17 @@ def test_bulk_notice_only_sends_the_draft_request() -> None:
 def test_admin_reparent_and_delete_cannot_release_retained_internal_evidence() -> None:
     setup = portal_setup("internal-request-reparent")
     link = internal_request_link(setup.graph, setup.cycle)
+    # With no purpose, the state change reaches the lifetime trigger itself.
+    states = {*RequestState.values, "future_state"} - {RequestState.INTERNAL}
     cases = (
+        *(
+            (
+                "UPDATE cycles_evidencerequest SET state = %s WHERE id = %s",
+                [state, link.request_id],
+                "evidencerequest_internal_lifetime",
+            )
+            for state in sorted(states)
+        ),
         (
             "UPDATE cycles_evidencelink SET request_id = %s WHERE id = %s",
             [setup.request.pk, link.pk],
