@@ -16,6 +16,8 @@ class Migration(migrations.Migration):
     dependencies = [
         ("audit", "0008_fiscal_event_order"),
         ("cycles", "0011_actionproposal_redacted_at_and_more"),
+        # A retained-read incident with no open cycle is owned in IntegrationIssue.
+        ("integrations", "0002_authority_records"),
         ("obligations", "0030_iss_retention_party"),
     ]
     operations = [migrations.RunPython(backfill, migrations.RunPython.noop)]

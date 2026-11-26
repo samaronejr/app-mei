@@ -41,6 +41,7 @@ _ORIGINALS: Final = """
                NULL::text AS incoming_code
         FROM obligations_fiscaldocument
         WHERE %(tenant)s::uuid IS NULL
+          AND family = 'nfse_nacional'
           AND (%(after)s::uuid IS NULL OR id > %(after)s::uuid)
         ORDER BY id LIMIT %(limit)s
     ), targets AS (
@@ -190,7 +191,7 @@ def revision_iss_originals(
 def current_iss_originals_page(
     db: BaseDatabaseWrapper, after: UUID | None, limit: int
 ) -> list[ISSOriginalRow]:
-    """Read one page of current heads and their original witnesses."""
+    """Page the same national family that live ISS recovery handles."""
     return _originals(db, page=(after, limit))
 
 

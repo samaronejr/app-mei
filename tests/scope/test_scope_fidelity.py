@@ -290,7 +290,7 @@ ISS_INCIDENT_LINES = Counter(
         ): 1,
         (
             ISS_BACKFILL_FILE,
-            "updated += _reconcile_incident(db, first, decision, key)",
+            "updated += _reconcile_incident(db, first, decision, key, witnesses)",
         ): 1,
     }
 )
@@ -579,6 +579,20 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         + FISCAL_RECEIPT_ONLY,
     ),
     # AXRM-046 records the reported ISS retention party as a municipal fact.
+    (
+        "apps/obligations/iss_retention_evidence_v1.py",
+        "AND family = 'nfse_nacional'",
+        1,
+        "Pages only the national receipt family for historical ISS projection."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/iss_retention_readiness.py",
+        'fiscal.family == "nfse_nacional"',
+        1,
+        "Restricts completed ISS labels to the national receipt family."
+        + FISCAL_RECEIPT_ONLY,
+    ),
     (
         "apps/obligations/models/fiscal.py",
         '"""Party reported by the NFS-e; unknown is not a negative assertion."""',
