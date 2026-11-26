@@ -203,6 +203,11 @@ def _page_key(query: PaymentQuery, index: int) -> str:
     return _digest("pagtoweb-pagina", query.request_key, str(index))
 
 
+def page_numbers(query: PaymentQuery) -> dict[str, int]:
+    """Each page call's request key, mapped to its 1-based page number."""
+    return {_page_key(query, index): index + 1 for index in range(MAX_PAGES)}
+
+
 def _transport(environment: Environment) -> ProviderTransport:
     if environment == "fake":
         return ProviderTransport(
@@ -445,7 +450,7 @@ def _release_unused(query: PaymentQuery) -> None:
     once the consultation is final; its reservation goes back to the firm's cap in
     this same transaction. A claimed page is left alone: it is the protocol's.
     """
-    keys = [_page_key(query, index) for index in range(MAX_PAGES)]
+    keys = list(page_numbers(query))
     for call in ProviderCall.objects.select_for_update().filter(
         client_id=query.client_id, request_key__in=keys, state=CallState.RESERVED
     ):

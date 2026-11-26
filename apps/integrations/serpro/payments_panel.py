@@ -35,6 +35,7 @@ from apps.integrations.serpro.payments import (
     CHECKS,
     FIRM_REFUSALS,
     FLAG,
+    page_numbers,
     receipt_request_key,
 )
 from apps.integrations.serpro.work import (
@@ -154,16 +155,120 @@ def _client_refusal_text(query: PaymentQuery) -> str:
     )
 
 
-def query_detail(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
-    """Explain one consultation without inferring anything about non-payment.
+PageCall = tuple[int, ProviderCall]
 
-    It names the recorded code only; which pages were sent and billed is stated
-    from the recorded page calls in the history wording (AXRM-045).
+# The budget's own refusal reasons, each stated exactly (AXRM-045).
+QUOTA_REASONS: Final = {
+    "cota_esgotada": "o limite mensal de consultas do escritório acabou",
+    "cota_ausente": "não há limite mensal de consultas configurado para o escritório",
+    "tarifa_ausente": "não há tarifa cadastrada para esta consulta",
+    "tarifa_invalida": "a tarifa cadastrada para esta consulta é inválida",
+    "reserva_ausente": "a reserva de custo da página não foi encontrada",
+    "reserva_vencida": "a reserva de custo da página venceu antes do envio",
+}
+# Recorded by older releases without the budget's reason.
+LEGACY_QUOTA: Final = "cota_esgotada_parcial"
+
+
+def page_calls(queries: list[PaymentQuery]) -> dict[object, list[PageCall]]:
+    """Each consultation's recorded page calls by page number, in one lookup."""
+    owners = {
+        key: (query.pk, number)
+        for query in queries
+        for key, number in page_numbers(query).items()
+    }
+    found: dict[object, list[PageCall]] = {query.pk: [] for query in queries}
+    for call in ProviderCall.objects.filter(
+        client_id__in={query.client_id for query in queries},
+        request_key__in=list(owners),
+    ):
+        owner, number = owners[call.request_key]
+        found[owner].append((number, call))
+    for calls in found.values():
+        calls.sort(key=lambda page: page[0])
+    return found
+
+
+def _pages(numbers: list[int]) -> str:
+    if len(numbers) == 1:
+        return f"a página {numbers[0]}"
+    if numbers == list(range(numbers[0], numbers[-1] + 1)):
+        joined = f"{numbers[0]} a {numbers[-1]}"
+        if len(numbers) == 2:  # noqa: PLR2004 - a pair reads "1 e 2"
+            joined = f"{numbers[0]} e {numbers[1]}"
+    else:
+        joined = ", ".join(map(str, numbers[:-1])) + f" e {numbers[-1]}"
+    return f"as páginas {joined}"
+
+
+def page_facts(calls: list[PageCall]) -> str:
+    """State which pages were sent and billed, from the recorded page calls only.
+
+    A page is sent once its dispatch started, and billed only when its call
+    records a charge: a 204 is sent without one (AXRM-045).
     """
+    sent = [number for number, call in calls if call.dispatch_started_at]
+    if not sent:
+        return "Nenhuma página foi enviada."
+    billing = {number: call.billed for number, call in calls if number in sent}
+    billed = [number for number in sent if billing[number] == "sim"]
+    unknown = [number for number in sent if billing[number] == "desconhecido"]
+    free = [number for number in sent if number not in billed + unknown]
+    one = len(sent) == 1
+    text = f"{_pages(sent)} {'foi enviada' if one else 'foram enviadas'}"
+    text = f"{text[0].upper()}{text[1:]}"
+    if billed == sent:
+        return f"{text} e {'cobrada' if one else 'cobradas'}."
+    if not billed and not unknown:
+        return f"{text}, sem cobrança."
+    parts = []
+    if billed:
+        verb = "foi cobrada" if len(billed) == 1 else "foram cobradas"
+        parts.append(f"{_pages(billed)} {verb}")
+    if unknown:
+        parts.append(f"a cobrança não é conhecida para {_pages(unknown)}")
+    if free:
+        parts.append(f"{_pages(free)} sem cobrança")
+    return f"{text}: {'; '.join(parts)}."
+
+
+def quota_refusal(query: PaymentQuery) -> bool:
+    """Whether the consultation ended on the budget's refusal."""
+    code = query.failure_code
+    return query.state == PaymentQueryState.COTA_ESGOTADA or (
+        query.state == PaymentQueryState.FALHA
+        and (code in QUOTA_REASONS or code == LEGACY_QUOTA)
+    )
+
+
+def _quota_text(query: PaymentQuery, calls: list[PageCall]) -> str:
+    """Name the budget's own recorded reason, and the page it refused."""
+    refused = [number for number, call in calls if call.state == CallState.QUOTA]
+    which = _pages(refused[-1:]) if refused else "a consulta"
+    code = query.failure_code
+    refusal = f"O controle de custos recusou {which} antes do envio"
+    if code in QUOTA_REASONS:
+        return f"{refusal}: {QUOTA_REASONS[code]}."
+    return f"{refusal} (registro {code})."
+
+
+def query_detail(query: PaymentQuery, calls: list[PageCall]) -> str:
+    """Explain one ended consultation, then which of its pages were sent and billed.
+
+    The page facts come from the consultation's recorded page calls, never from
+    its page counter (AXRM-045).
+    """
+    if query.state in ACTIVE_QUERY_STATES:
+        return "Consulta em andamento. A página é atualizada ao recarregar."
+    if quota_refusal(query):
+        return f"{_quota_text(query, calls)} {page_facts(calls)}"
+    return f"{_outcome(query)} {page_facts(calls)}"
+
+
+def _outcome(query: PaymentQuery) -> str:  # noqa: PLR0911 - one per state
+    """Explain one consultation without inferring anything about non-payment."""
     code = query.failure_code
     match query.state:
-        case PaymentQueryState.NA_FILA | PaymentQueryState.EM_ANDAMENTO:
-            return "Consulta em andamento. A página é atualizada ao recarregar."
         case PaymentQueryState.ENCONTRADO:
             found = _plural(
                 query.payments_found, "pagamento encontrado", "pagamentos encontrados"
@@ -332,6 +437,7 @@ def federal_payments_panel(
             )
         )
     running = bool(queries) and queries[0].state in ACTIVE_QUERY_STATES
+    calls_by_query = page_calls(queries)
     return FederalPaymentsPanel(
         period=period,
         queries=[
@@ -339,7 +445,7 @@ def federal_payments_panel(
                 query=query,
                 label=PaymentQueryState(query.state).label,
                 badge=QUERY_BADGES.get(query.state, ""),
-                detail=query_detail(query),
+                detail=query_detail(query, calls_by_query[query.pk]),
                 environment_label=_environment_label(query.environment),
             )
             for query in queries
