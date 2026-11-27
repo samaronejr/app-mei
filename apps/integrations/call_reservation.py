@@ -43,6 +43,15 @@ def reserve(tenant_id: UUID, link_id: UUID, request: CallRequest) -> ProviderCal
                 raise IntentConflictError
             if existing.state != CallState.QUEUED:
                 return existing
+            # AXRM-022 (deliberate, kept): promote a queued row only under the terms
+            # its operation and the locked connection register now; never rewrite it.
+            if (
+                existing.provider != link.connection.provider
+                or existing.environment != link.connection.environment
+                or existing.operation_class != operation.operation_class
+                or existing.billing_class != operation.billing_class
+            ):
+                raise IntentConflictError
         if existing is None:
             call = ProviderCall(
                 tenant_id=tenant_id,

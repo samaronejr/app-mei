@@ -9,10 +9,15 @@ from django.db.migrations.exceptions import IrreversibleError
 def refuse_reverse_with_batches(
     apps: app_registry.Apps, _editor: BaseDatabaseSchemaEditor | None
 ) -> None:
-    """Preserve frozen client approvals once Ciencia proposals exist."""
+    """Preserve frozen client approvals once Ciencia proposals or executions exist."""
     # CROSS_TENANT_OK: any firm's immutable fiscal proposal forbids this rollback.
+    # AXRM-022 (deliberate, kept): an execution can carry the kind against a legacy
+    # proposal (the exact FK omits it), and the old CHECK would then fail raw.
     if (
         apps.get_model("cycles", "ActionProposal")
+        ._base_manager.filter(action_kind="fiscal_manifestation")
+        .exists()
+        or apps.get_model("cycles", "ActionExecution")
         ._base_manager.filter(action_kind="fiscal_manifestation")
         .exists()
     ):

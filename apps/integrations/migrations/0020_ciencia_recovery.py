@@ -32,6 +32,30 @@ def refuse_reverse_with_records(
         raise IrreversibleError(message)
 
 
+ISSUE_RETAINED = """
+CREATE FUNCTION cienciarecord_issue_retained() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM integrations_cienciarecord WHERE issue_id = OLD.id
+    ) THEN
+        RAISE EXCEPTION 'a Ciencia recovery duty still references this issue'
+            USING ERRCODE = '23503';
+    END IF;
+    RETURN OLD;
+END;
+$$;
+CREATE TRIGGER cienciarecord_issue_retained
+BEFORE DELETE ON integrations_integrationissue
+FOR EACH ROW EXECUTE FUNCTION cienciarecord_issue_retained();
+"""
+
+ISSUE_RETAINED_REVERSE = """
+DROP TRIGGER cienciarecord_issue_retained ON integrations_integrationissue;
+DROP FUNCTION cienciarecord_issue_retained();
+"""
+
+
 def parent(target: str, *, nullable: bool = False) -> models.Field[Any, Any]:
     return models.ForeignKey(
         to=target,
@@ -203,5 +227,8 @@ class Migration(migrations.Migration):
             "REVOKE DELETE ON integrations_cienciarecord FROM app_runtime;",
             "REVOKE ALL ON integrations_cienciarecord FROM app_runtime;",
         ),
+        # AXRM-022 (deliberate, kept): the composite issue FK cascades; a referenced
+        # issue cannot be deleted from under its recovery duty.
+        migrations.RunSQL(ISSUE_RETAINED, ISSUE_RETAINED_REVERSE),
         migrations.RunPython(migrations.RunPython.noop, refuse_reverse_with_records),
     ]
