@@ -98,6 +98,7 @@ def _refused(outcome: object, message: str, node: tuple[str, str]) -> None:
 
 
 def test_0024_refuses_any_frozen_fiscal_proposal(world: StorageWorld) -> None:
+    assert _applied(CYCLES_0024), CYCLES_0024  # catalog first
     row = fiscal_proposal(world)
     with _as_migrator():
         outcome = _reverse(CYCLES_0024, ("cycles", "0023_fiscal_document_review"))
@@ -113,6 +114,7 @@ def test_0024_refuses_any_frozen_fiscal_proposal(world: StorageWorld) -> None:
 def test_0024_refuses_a_fiscal_kind_execution_on_a_legacy_proposal(
     world: StorageWorld,
 ) -> None:
+    assert _applied(CYCLES_0024), CYCLES_0024  # catalog first
     row = fiscal_execution(world)
     with _as_migrator():
         outcome = _reverse(CYCLES_0024, ("cycles", "0023_fiscal_document_review"))
@@ -126,6 +128,7 @@ def test_0024_refuses_a_fiscal_kind_execution_on_a_legacy_proposal(
 
 
 def test_0025_refuses_a_recorded_manifestation_followup(world: StorageWorld) -> None:
+    assert _applied(CYCLES_0025), CYCLES_0025  # catalog first
     documents: list[object] = [{"chave": "35" + "0" * 42, "resolved": False}]
     row = followup(world, documents)
     with _as_migrator():
@@ -137,6 +140,7 @@ def test_0025_refuses_a_recorded_manifestation_followup(world: StorageWorld) -> 
 
 
 def test_0025_an_empty_followup_list_does_not_block(world: StorageWorld) -> None:
+    assert _applied(CYCLES_0025), CYCLES_0025  # catalog first
     row = followup(world, [])
     with _as_migrator():
         outcome = _reverse(CYCLES_0025, CYCLES_0024)
@@ -154,6 +158,7 @@ def test_0025_an_empty_followup_list_does_not_block(world: StorageWorld) -> None
 def test_0017_refuses_any_ciencia_call(
     world: StorageWorld, operation: str, paired: bool
 ) -> None:
+    assert _applied(INTEGRATIONS_0017), INTEGRATIONS_0017  # catalog first
     row = (
         paired_call(world, operation)
         if paired
@@ -174,6 +179,7 @@ def test_0017_refuses_any_ciencia_call(
 def test_0017_an_unrelated_call_without_references_does_not_block(
     world: StorageWorld,
 ) -> None:
+    assert _applied(INTEGRATIONS_0017), INTEGRATIONS_0017  # catalog first
     row = provider_call(world, "FC-NFE", label="control")
     with _as_migrator():
         outcome = _reverse(INTEGRATIONS_0017, ("integrations", "0016_capture_sync"))
@@ -189,6 +195,7 @@ def test_0017_an_unrelated_call_without_references_does_not_block(
 def test_0018_refuses_a_recorded_professional_note(
     world: StorageWorld, annex_ii: bool
 ) -> None:
+    assert _applied(INTEGRATIONS_0018), INTEGRATIONS_0018  # catalog first
     row = assessment(world, annex_ii=annex_ii, note="recorded note")
     with _as_migrator():
         outcome = _reverse(INTEGRATIONS_0018, INTEGRATIONS_0017)
@@ -202,6 +209,7 @@ def test_0018_refuses_a_recorded_professional_note(
 
 
 def test_0018_a_record_without_assessment_does_not_block(world: StorageWorld) -> None:
+    assert _applied(INTEGRATIONS_0018), INTEGRATIONS_0018  # catalog first
     row = assessment(world, annex_ii=False, note="")
     with _as_migrator():
         outcome = _reverse(INTEGRATIONS_0018, INTEGRATIONS_0017)
@@ -212,6 +220,7 @@ def test_0018_a_record_without_assessment_does_not_block(world: StorageWorld) ->
 
 
 def test_0020_refuses_any_recovery_record(world: StorageWorld) -> None:
+    assert _applied(INTEGRATIONS_0020), INTEGRATIONS_0020  # catalog first
     row = ciencia_record(world)
     with _as_migrator():
         outcome = _reverse(
@@ -240,6 +249,7 @@ def test_0020_refuses_any_recovery_record(world: StorageWorld) -> None:
 def test_an_empty_storage_round_trip_keeps_an_unrelated_exception(
     world: StorageWorld,
 ) -> None:
+    assert _applied(CYCLES_0024), CYCLES_0024  # catalog first
     row = followup(world, [])
     with _as_migrator():
         outcome = _reverse(CYCLES_0024, ("cycles", "0023_fiscal_document_review"))
