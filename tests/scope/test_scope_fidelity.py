@@ -300,6 +300,20 @@ FISCAL_RECEIPT_ONLY = (
     " Only receives/registers fiscal documents; no issuance or invoice workflow."
 )
 FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
+    # AXRM-022: exact received-key selection and authorization-date provenance.
+    # These lines permit no invoice issuance, automatic event or bank import.
+    (
+        "apps/cycles/effects/inputs.py",
+        'msg = "Selecione de 1 a 100 NF-e recebidas e o vínculo Focus."',
+        1,
+        "Rejects an empty or unbounded received-key selection." + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/cycles/effects/manifest.py",
+        '"""One received NF-e revision, never a query that expands at execution."""',
+        1,
+        "Declares a frozen received-key revision." + FISCAL_RECEIPT_ONLY,
+    ),
     # AXRM-021: exact received stream storage and period/review projections.
     (
         "apps/integrations/sync_models.py",
