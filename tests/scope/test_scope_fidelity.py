@@ -326,24 +326,6 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
         + FISCAL_RECEIPT_ONLY,
     ),
     (
-        "apps/cycles/fiscal_queries.py",
-        'family="nfe",',
-        1,
-        "Projects received NF-e by emission month." + FISCAL_RECEIPT_ONLY,
-    ),
-    (
-        "apps/cycles/fiscal_queries.py",
-        'family__in=("nfse_nacional", "nfse_municipal"),',
-        1,
-        "Projects received/imported service XML by competence." + FISCAL_RECEIPT_ONLY,
-    ),
-    (
-        "apps/cycles/fiscal_views.py",
-        'period = fiscal.issue_date if fiscal.family == "nfe" else fiscal.competence',
-        1,
-        "Selects existing cycles for a received document review." + FISCAL_RECEIPT_ONLY,
-    ),
-    (
         "apps/cycles/fiscal_material.py",
         'When(family="nfe", then=F("issue_date")),',
         1,

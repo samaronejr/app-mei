@@ -8,11 +8,9 @@ from django.contrib.postgres.expressions import ArraySubquery
 from django.contrib.postgres.fields import ArrayField
 from django.db.models import (
     Case,
-    Exists,
     F,
     JSONField,
     OuterRef,
-    Q,
     Subquery,
     Value,
     When,
@@ -21,7 +19,6 @@ from django.db.models.functions import JSONObject
 
 from apps.authz.portfolio import visible_clients
 from apps.cycles.fiscal_material import snapshot_rows
-from apps.cycles.fiscal_records import FiscalDocumentReview
 from apps.cycles.fiscal_scope import (
     projected_pending_cycles,
     review_head,
@@ -55,22 +52,6 @@ class PeriodDocumentRow(TypedDict):
     review_decision: str | None
 
 
-def pending_documents(actor: User) -> QuerySet[FiscalDocument]:
-    """Return a successor head to the queue without changing the old decision."""
-    reviewed = FiscalDocumentReview.objects.filter(
-        revision_id=OuterRef("current_revision_id")
-    )
-    return (
-        FiscalDocument.objects.filter(
-            client_id__in=visible_clients(actor, tenant_id=tenant_id()).values("pk"),
-            current_revision__isnull=False,
-        )
-        .filter(~Exists(reviewed))
-        .select_related("client", "current_revision")
-        .order_by("created_at", "pk")
-    )
-
-
 def projected_pending_documents(
     actor: User,
 ) -> QuerySet[WithAnnotations[FiscalDocument, PendingReview]]:
@@ -84,33 +65,6 @@ def projected_pending_documents(
         .select_related("client", "current_revision")
         .order_by("created_at", "pk")
     )
-
-
-def period_document_rows(*, enabled: bool) -> ArraySubquery | Value:
-    """Join monthly fiscal facts into the cycle read without a separate query."""
-    if not enabled:
-        return Value([], output_field=ArrayField(JSONField()))
-    reviews = FiscalDocumentReview.objects.filter(
-        cycle_id=OuterRef(OuterRef("pk")),
-        revision_id=OuterRef("current_revision_id"),
-    )
-    rows = (
-        FiscalDocument.objects.filter(
-            Q(
-                family="nfe",
-                issue_date__range=(OuterRef("period_start"), OuterRef("period_end")),
-            )
-            | Q(
-                family__in=("nfse_nacional", "nfse_municipal"),
-                competence__range=(OuterRef("period_start"), OuterRef("period_end")),
-            ),
-            client_id=OuterRef("client_id"),
-            current_revision__isnull=False,
-        )
-        .exclude(role_verification="divergent")
-        .order_by("issue_date", "pk")
-    )
-    return _period_rows(rows, Subquery(reviews.values("decision")[:1]))
 
 
 def projected_period_document_rows(*, enabled: bool) -> ArraySubquery | Value:

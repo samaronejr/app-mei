@@ -27,7 +27,7 @@ from apps.cycles.display_completion import display_valid_waivers
 from apps.cycles.display_index import display_source_digest
 from apps.cycles.display_recipients import RecipientPreview, display_recipients
 from apps.cycles.display_requests import display_requests
-from apps.cycles.fiscal_queries import PeriodDocumentRow, period_document_rows
+from apps.cycles.fiscal_queries import PeriodDocumentRow, projected_period_document_rows
 from apps.cycles.models import (
     ActionExecution,
     ActionProposal,
@@ -153,7 +153,7 @@ def _cycle(
             display_has_exceptions=Exists(
                 CycleException.objects.filter(cycle_id=OuterRef("pk"))
             ),
-            display_fiscal_documents=period_document_rows(
+            display_fiscal_documents=projected_period_document_rows(
                 enabled=tenant_has(tenant, "document_capture")
             ),
         )

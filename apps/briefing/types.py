@@ -48,11 +48,14 @@ class BriefingItem:
     service_kind: str
     work_state: str
     freshness: str
+    review_cycle_id: UUID | None = None
 
     @property
     def id(self) -> str:
         """Keep a total order even when two providers refer to the same UUID."""
-        return f"{self.kind}:{self.subject_ref}"
+        subject = f"{self.kind}:{self.subject_ref}"
+        cycle = self.review_cycle_id
+        return f"{subject}:{cycle}" if cycle is not None else subject
 
     @property
     def priority(self) -> int:

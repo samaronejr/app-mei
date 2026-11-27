@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from django.db.models import (
     Case,
-    CharField,
     DateField,
-    Exists,
     F,
     OuterRef,
     QuerySet,
@@ -14,38 +12,15 @@ from django.db.models import (
     Value,
     When,
 )
-from django.db.models.functions import Cast, Coalesce, Concat, JSONArray, TruncMonth
+from django.db.models.functions import Cast, Coalesce, JSONArray, TruncMonth
 
 from apps.briefing.source_rows import SourceContext, SourceQuery, project
 from apps.clients.models import AssignmentRole, ClientAssignment
 from apps.core.flags import tenant_has
 from apps.cycles.fiscal_material import sha256_hex
-from apps.cycles.fiscal_records import FiscalDocumentReview
 from apps.cycles.fiscal_scope import projected_pending_cycles, review_head
 from apps.cycles.services.cycle import tenant_id
 from apps.obligations.models import FiscalDocument
-
-
-def fiscal_documents(context: SourceContext) -> SourceQuery:
-    """Project a private source in the existing scoped briefing UNION."""
-    reviewed = FiscalDocumentReview.objects.filter(
-        revision_id=OuterRef("current_revision_id")
-    )
-    rows = FiscalDocument.objects.filter(
-        client_id__in=context.clients.values("pk"),
-        source="captura",
-        current_revision__isnull=False,
-    ).filter(~Exists(reviewed))
-    return _project_fiscal(
-        rows.annotate(
-            brief_version=Concat(
-                Cast("version", CharField()),
-                Value(":"),
-                Cast("current_revision_id", CharField()),
-            ),
-            brief_target=F("pk"),
-        )
-    )
 
 
 def projected_fiscal_documents(context: SourceContext) -> SourceQuery:

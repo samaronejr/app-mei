@@ -159,7 +159,7 @@ def test_private_writer_binds_material_and_preserves_the_original(
     assert third.supersedes_id == successor.pk
 
 
-def test_first_only_http_cannot_pass_a_successor_to_the_private_writer(
+def test_a_legacy_form_without_a_head_cannot_correct_an_existing_review(
     world: CaptureWorld,
 ) -> None:
     fiscal = world.ingest()
@@ -169,13 +169,12 @@ def test_first_only_http_cannot_pass_a_successor_to_the_private_writer(
     visible = browser.get(path)
     fields = HiddenInputs(visible.content.decode()).values
     fields.update(decision="rejeitado", note="Synthetic reason")
-    assert "expected_head_id" not in fields
+    fields.pop("expected_head_id", None)
     assert browser.post(path, fields).status_code == 302
     with tenant_context(world.tenant_id):
         root = FiscalDocumentReview.objects.get()
         cycle.refresh_from_db()
         fields["expected_version"] = str(cycle.version)
-        fields["expected_head_id"] = str(root.pk)
     assert browser.post(path, fields).status_code == 409
     with tenant_context(world.tenant_id):
         assert list(FiscalDocumentReview.objects.values_list("pk", flat=True)) == [

@@ -18,11 +18,14 @@ from apps.briefing.providers import source_items
 from apps.briefing.source_rows import SourceContext
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
+from apps.cycles import fiscal_views, review_views
 from apps.cycles.errors import VersionConflict
 from apps.cycles.models import ServiceCycle
 from apps.cycles.records import CycleEvent
 from apps.cycles.scanning import FakeScanner
+from apps.cycles.services.fiscal_review import record_fiscal_document_review
 from apps.obligations.models import RevisionArtifact
+from tests.cycles.fiscal_read_assertions import FiscalReads
 from tests.cycles.test_playbook_http_conflicts import HiddenInputs
 from tests.integrations.capture_fixtures import (
     MONTH,
@@ -269,6 +272,47 @@ def test_review_workspace_get_and_post_use_the_existing_document_route(
         assert review.decision == "aceito"
 
 
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_workspace_reads_form_facts_in_one_statement(
+    world: CaptureWorld, method: str
+) -> None:
+    fiscal, cycle = world.ingest(), world.setup.cycle
+    client = world.setup.firm()
+    path = f"{reverse('document-review', args=[fiscal.pk])}?ciclo={cycle.pk}"
+    fields: dict[str, str] = {}
+    if method == "POST":
+        form = client.get(path)
+        assert form.status_code == 200
+        fields = HiddenInputs(form.content.decode()).values
+        assert fields["cycle_id"] == str(cycle.pk)
+        assert fields["revision_id"] == str(fiscal.current_revision_id)
+        fields.update(decision="rejeitado", note="Synthetic first decision")
+
+    reads = FiscalReads()
+    # Start after dispatch; keep the actual writer and exclude only its locked reads.
+    with (
+        patch.object(
+            review_views,
+            "fiscal_document_review",
+            reads.capture()(fiscal_views.fiscal_document_review),
+        ),
+        patch.object(
+            fiscal_views,
+            "record_fiscal_document_review",
+            reads.writer()(record_fiscal_document_review),
+        ),
+    ):
+        response = client.get(path) if method == "GET" else client.post(path, fields)
+    assert response.status_code == (200 if method == "GET" else 302)
+    assert bool(reads.writer_queries) == (method == "POST")
+    if method == "GET":
+        assert HiddenInputs(response.content.decode()).values["revision_id"] == str(
+            fiscal.current_revision_id
+        )
+
+    reads.assert_snapshot()
+
+
 def test_review_preview_binds_one_snapshot_during_capture(world: CaptureWorld) -> None:
     fiscal = world.ingest()
     with tenant_context(world.tenant_id):
@@ -353,7 +397,8 @@ def test_briefing_surfaces_captured_documents_pending_review(
     assert captured[0].period == MONTH
     assert captured[0].subject_ref == fiscal.pk
     assert "capturado" in captured[0].title.lower()
-    assert captured[0].url == reverse("document-review", args=[fiscal.pk])
+    path = reverse("document-review", args=[fiscal.pk])
+    assert captured[0].url == f"{path}?ciclo={world.setup.cycle.pk}"
 
 
 def test_captured_queue_and_cycle_section_are_inert_when_the_flag_is_off(

@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from apps.briefing.coverage_source import coverage_items
 from apps.briefing.cycle_sources import approvals, exceptions, requests
-from apps.briefing.fiscal_source import fiscal_documents
+from apps.briefing.fiscal_source import projected_fiscal_documents
 from apps.briefing.operation_sources import (
     deliveries,
     documents,
@@ -36,7 +36,7 @@ PROVIDERS: Final[dict[str, Callable[[SourceContext], SourceQuery]]] = {
     "delivery": deliveries,
     "document": documents,
     "integration": integrations,
-    "fiscal_document": fiscal_documents,
+    "fiscal_document": projected_fiscal_documents,
 }
 COVERAGE_PROVIDER: Final = coverage_items
 PROVIDER_LABELS: Final = {
@@ -100,6 +100,7 @@ def _item(
 ) -> BriefingItem:
     path = path or _Paths()
     title = row.title
+    review_cycle_id = None
     match row.kind:
         case "obligation":
             facts = PriorityFacts(statutory_due_on=row.due_on)
@@ -140,7 +141,9 @@ def _item(
             url = path("client-detail", row.client_id)
         case "fiscal_document":
             facts = PriorityFacts()
-            url = path("document-review", row.target_id)
+            review_cycle_id = row.target_id
+            url = path("document-review", row.subject_ref)
+            url += f"?ciclo={review_cycle_id}" if review_cycle_id is not None else ""
         case _:
             # Only the registered SQL projections can produce this internal code.
             raise LookupError(row.kind)
@@ -163,6 +166,7 @@ def _item(
         service_kind=row.service_kind,
         work_state=row.work_state,
         freshness=CoverageState.UNKNOWN,
+        review_cycle_id=review_cycle_id,
     )
 
 
