@@ -3,7 +3,9 @@
 from dataclasses import replace
 from datetime import timedelta
 from hashlib import sha256
+from importlib import import_module
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -30,6 +32,7 @@ from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import begin_io, claim, finalize, reserve
 from apps.integrations.call_state import current_epoch
 from apps.integrations.models import ClientProviderLink, ProviderConnection
+from apps.integrations.serpro.reauthentication import COMPLETE_401
 from apps.tenants.models import Membership, Tenant, TenantRole
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -202,3 +205,44 @@ def test_response_codes_cannot_carry_untrusted_text_or_secrets(code: str) -> Non
     with pytest.raises(ValueError, match="Invalid minimized"):
         CallResult(CallState.SUCCESS, 200, code, "sim")
     # Then none of it can reach a DB attempt, journal object or success log.
+
+
+class _Complete401:
+    """A wire that answers every send with one complete, unbilled 401."""
+
+    def __init__(self) -> None:
+        self.sends = 0
+
+    def send(self, dispatch: object) -> CallResult:
+        self.sends += 1
+        return CallResult(CallState.FAILED, 401, COMPLETE_401, "nao")
+
+
+def test_a_pause_at_the_retry_claim_reaches_the_caller(
+    provider_link: ClientProviderLink,
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a claimed call whose first send gets a definitive, unbilled 401...
+    row = reserve(provider_link.tenant_id, provider_link.pk, request())
+    ticket = claim(provider_link.tenant_id, row.pk)
+    assert ticket is not None
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.PROVIDERS_PAUSED = True
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(protocol, "claim", pause_then_claim)
+    wire = _Complete401()
+    # ...when its retry claim meets a pause.
+    try:
+        protocol.perform(ticket, wire)
+    except AdmissionDeniedError as error:
+        outcome = f"raised {error}"
+    else:
+        outcome = "returned"
+    # Then the pause leaves perform, after one send, with the call still a retry.
+    assert (outcome, wire.sends) == (f"raised {CallState.PAUSED}", 1)
+    assert reload_call(provider_link, row.pk).state == CallState.RETRY

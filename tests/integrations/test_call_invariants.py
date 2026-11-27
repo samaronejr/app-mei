@@ -7,9 +7,11 @@ from uuid import UUID
 
 import pytest
 from django.db import connection, connections
+from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
 from apps.integrations import call_contracts, call_protocol
+from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_contracts import (
     AdmissionDeniedError,
     CallResult,
@@ -133,7 +135,7 @@ def test_late_reply_is_recorded_without_regressing_a_terminal_call(
         assert ProviderCallAttempt.objects.filter(call=row, observation="late").exists()
 
 
-@pytest.mark.parametrize("reread", ["raises", "names-nothing"])
+@pytest.mark.parametrize("reread", ["raises", "names-nothing", "writes-and-returns"])
 def test_a_moved_version_is_refused_whatever_the_reread_does(
     provider_link: ClientProviderLink, monkeypatch: pytest.MonkeyPatch, reread: str
 ) -> None:
@@ -146,8 +148,16 @@ def test_a_moved_version_is_refused_whatever_the_reread_does(
         message = "the re-read failed"
         raise RuntimeError(message)
 
+    def writes(_call: object) -> bool:
+        ClientProviderLink.objects.filter(pk=provider_link.pk).update(
+            provider_company_ref="probe-wrote"
+        )
+        return True
+
     if reread == "raises":
         monkeypatch.setattr(SyntheticPolicy, "authority", property(lambda _: failing))
+    if reread == "writes-and-returns":
+        monkeypatch.setattr(SyntheticPolicy, "authority", property(lambda _: writes))
     with tenant_context(provider_link.tenant_id):
         ProviderConnection.objects.filter(pk=provider_link.connection_id).update(
             version=2
@@ -163,6 +173,10 @@ def test_a_moved_version_is_refused_whatever_the_reread_does(
     )
     assert peer.requests == []
     assert reload_call(provider_link, row.pk).state == CallState.AUTHORITY
+    # And the re-read only named a cause: none of its writes outlived it.
+    with tenant_context(provider_link.tenant_id):
+        kept = ClientProviderLink.objects.get(pk=provider_link.pk).provider_company_ref
+    assert kept == "synthetic-company"
 
 
 def test_a_version_moved_before_claim_is_recorded_and_released_at_claim(
@@ -179,3 +193,30 @@ def test_a_version_moved_before_claim_is_recorded_and_released_at_claim(
         call_protocol.claim(provider_link.tenant_id, row.pk)
     # ...and the call is a recorded refusal, never left reserved (AXRM-045).
     assert reload_call(provider_link, row.pk).state == CallState.AUTHORITY
+
+
+def test_a_pause_at_claim_rolls_back_and_holds_nothing(
+    provider_link: ClientProviderLink, settings: SettingsWrapper
+) -> None:
+    # Given a reserved call and the budget's state before its claim.
+    row = call_protocol.reserve(provider_link.tenant_id, provider_link.pk, request())
+
+    def held() -> tuple[list[tuple[int, str]], list[int]]:
+        with tenant_context(provider_link.tenant_id):
+            slots = ProviderReservation.objects.filter(call_id=row.pk)
+            budgets = ProviderBudget.objects.order_by("pk")
+            return (
+                sorted(slots.values_list("attempt_number", "state")),
+                list(budgets.values_list("reserved", flat=True)),
+            )
+
+    before = held()
+    # When the provider is paused and the call is claimed.
+    settings.PROVIDERS_PAUSED = True
+    with pytest.raises(AdmissionDeniedError) as refused:
+        call_protocol.claim(provider_link.tenant_id, row.pk)
+    # Then the pause reaches the caller and nothing changed: a pause is never
+    # recorded at claim, only a permanent refusal is (AXRM-045).
+    assert str(refused.value) == CallState.PAUSED
+    assert reload_call(provider_link, row.pk).state == CallState.RESERVED
+    assert held() == before

@@ -6,9 +6,9 @@ from dataclasses import replace
 from apps.integrations.budget_settlement import billing_result
 from apps.integrations.call_contracts import (
     MAX_ATTEMPTS,
-    AdmissionDeniedError,
     CallResult,
     Claim,
+    VersionMovedError,
 )
 from apps.integrations.call_dispatch import (
     Adapter,
@@ -20,7 +20,6 @@ from apps.integrations.call_dispatch import (
 from apps.integrations.call_finalization import finalize
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_reservation import claim, reserve
-from apps.integrations.call_state import refusal_recorded
 from apps.integrations.serpro.reauthentication import schedule_client_retry
 
 __all__ = [
@@ -63,12 +62,8 @@ def perform(ticket: Claim, adapter: Adapter, *, keep: Keep | None = None) -> Cal
     if schedule_client_retry(ticket, result):
         try:
             retry = claim(ticket.tenant_id, ticket.call_id)
-        except AdmissionDeniedError:
-            # Only a refusal the claim recorded on the call ends the retry here;
-            # an unrecorded one (a pause) reaches the caller (AXRM-045).
-            if not refusal_recorded(ticket.tenant_id, ticket.call_id):
-                raise
-            retry = None
+        except VersionMovedError:
+            retry = None  # The claim recorded the refusal and released it (AXRM-045).
         if retry is not None:
             result = _perform_once(retry, adapter, keep)
     from apps.integrations.serpro.work import own_client_result  # noqa: PLC0415

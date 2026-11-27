@@ -6,13 +6,10 @@ from collections.abc import Callable
 from datetime import timedelta
 from importlib import import_module
 from typing import Any
-from uuid import UUID
 
 import pytest
 from django.db import OperationalError, connection, connections, transaction
 from django.db.models import F
-from django.utils import timezone
-from pytest_django.fixtures import SettingsWrapper
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
@@ -607,168 +604,84 @@ def test_a_locked_refused_call_defers_its_report_and_never_closes_it_blank(
     assert (settled.state, receipt.provider_ref) == ("falha", str(refused.pk))
 
 
-def test_a_paused_retry_closes_the_report_with_its_call_ref(
-    world: World, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
-) -> None:
-    mod = sitfis()
-    report, first = _ready(world)
-    # Given the emission gets a complete 401 and its retry claim meets a pause...
-    protocol = import_module("apps.integrations.call_protocol")
-    real_claim = protocol.claim
-
-    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        settings.SERPRO_PAUSED = True
-        return real_claim(*args, **kwargs)
-
-    world.script(Reply(status=401))
-    with monkeypatch.context() as patch:
-        patch.setattr(protocol, "claim", pause_then_claim)
-        mod._run(world.tenant_id, report.pk, first)
-    # ...when the next pass meets that held retry while still paused.
-    settled = world.advance(report)
-    # Then the report's receipt names the call that was sent (AXRM-045).
-    [held] = world.calls(first.operation)
-    with tenant_context(world.tenant_id):
-        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
-    assert (held.state, held.attempts) == ("aguardar_nova_tentativa", 1)
-    assert receipt.provider_ref == str(held.pk)
-    assert len(world.sent("/Emitir")) == 1
-
-
-def test_a_held_retry_whose_link_is_gone_closes_with_its_call(
-    world: World, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
-) -> None:
-    mod = sitfis()
-    report, first = _ready(world)
-    # Given the emission gets a complete 401 and its retry claim meets a pause...
-    protocol = import_module("apps.integrations.call_protocol")
-    real_claim = protocol.claim
-
-    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        settings.SERPRO_PAUSED = True
-        return real_claim(*args, **kwargs)
-
-    world.script(Reply(status=401))
-    with monkeypatch.context() as patch:
-        patch.setattr(protocol, "claim", pause_then_claim)
-        mod._run(world.tenant_id, report.pk, first)
-    # ...when the pause lifts but the link is revoked before the next pass.
-    settings.SERPRO_PAUSED = False
-    with tenant_context(world.tenant_id):
-        ClientProviderLink.objects.filter(pk=first.link_id).update(status="revogada")
-    settled = world.advance(report)
-    # Then the held call is ended, and the report's receipt names it (AXRM-045).
-    [held] = world.calls(first.operation)
-    with tenant_context(world.tenant_id):
-        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
-    assert (settled.state, held.state, receipt.provider_ref) == (
-        "falha",
-        "bloqueada_autoridade",
-        str(held.pk),
-    )
-    assert len(world.sent("/Emitir")) == 1
-
-
-def _held_due_retry(
-    world: World, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
-) -> tuple[FiscalSituationReport, Any, ProviderCall]:
-    """The emission's complete 401 leaves a retry, held by a pause, now due."""
-    mod = sitfis()
-    report, first = _ready(world)
-    protocol = import_module("apps.integrations.call_protocol")
-    real_claim = protocol.claim
-
-    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        settings.SERPRO_PAUSED = True
-        return real_claim(*args, **kwargs)
-
-    world.script(Reply(status=401))
-    with monkeypatch.context() as patch:
-        patch.setattr(protocol, "claim", pause_then_claim)
-        mod._run(world.tenant_id, report.pk, first)
-    settings.SERPRO_PAUSED = False
-    [held] = world.calls(first.operation)
-    with tenant_context(world.tenant_id):
-        ProviderCall.objects.filter(pk=held.pk).update(next_attempt_at=timezone.now())
-    return report, first, held
-
-
-def _locks_in_crossed_order(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[threading.Event, threading.Event]:
-    """A's admission waits for B's report lock; B ends the call holding it."""
-    mod = sitfis()
-    a_holds_call, b_holds_report = threading.Event(), threading.Event()
-    real_admit, real_end = mod.admit_emission, mod.end_held
-    real_parties = mod.termo_parties
-
-    def admit_once_b_holds_the_report(call: Any) -> Any:  # noqa: ANN401
-        if threading.current_thread() is not threading.main_thread():
-            a_holds_call.set()
-            assert b_holds_report.wait(timeout=15)
-        return real_admit(call)
-
-    def end_while_holding_the_report(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        b_holds_report.set()
-        return real_end(*args, **kwargs)
-
-    def parties_gone_for_b(*args: Any) -> Any:  # noqa: ANN401
-        on_b = threading.current_thread() is threading.main_thread()
-        return None if on_b else real_parties(*args)
-
-    monkeypatch.setattr(mod, "admit_emission", admit_once_b_holds_the_report)
-    monkeypatch.setattr(mod, "end_held", end_while_holding_the_report)
-    monkeypatch.setattr(mod, "termo_parties", parties_gone_for_b)
-    return a_holds_call, b_holds_report
-
-
-def _claim_on_own_connection(
+def _hold_the_budget_lock(
     world: World,
-    call_id: UUID,
-    blocked: list[str],
-) -> threading.Thread:
-    """Runner A: claim the call on its own connection, recording lock failures."""
-    protocol = import_module("apps.integrations.call_protocol")
+) -> tuple[threading.Thread, threading.Event, threading.Event, list[str]]:
+    """One connection holds the cross-firm budget lock until released."""
+    holding, done = threading.Event(), threading.Event()
+    failures: list[str] = []
 
-    def run() -> None:
+    def hold() -> None:
+        try:
+            with tenant_context(world.tenant_id), transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '10s'")
+                    cursor.execute("SELECT pg_advisory_xact_lock(%s)", [240110])
+                holding.set()
+                assert done.wait(timeout=30)
+        except OperationalError as error:
+            failures.append(f"holder: {error}")
+        finally:
+            connections.close_all()
+
+    return threading.Thread(target=hold), holding, done, failures
+
+
+def test_a_moved_claims_reread_holds_no_report_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, first = _ready(world)
+    # Given a reserved emission whose connection version then moves...
+    row = reserve(world.tenant_id, first.link_id, _request(first))
+    with tenant_context(world.tenant_id):
+        link = ClientProviderLink.objects.get(pk=first.link_id)
+        ProviderConnection.objects.filter(pk=link.connection_id).update(
+            version=F("version") + 1
+        )
+    # ...and the budget lock is held elsewhere, so the moved claim's refusal
+    # stops in `release` after its re-read named the cause.
+    holder, holding, done, failures = _hold_the_budget_lock(world)
+    holder.start()
+    assert holding.wait(timeout=15)
+    state_module = import_module("apps.integrations.call_state")
+    real_release = state_module.release
+    releasing = threading.Event()
+
+    def release_after_signal(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if threading.current_thread() is not threading.main_thread():
+            releasing.set()
+        return real_release(*args, **kwargs)
+
+    monkeypatch.setattr(state_module, "release", release_after_signal)
+
+    def claim_it() -> None:
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SET lock_timeout = '10s'")
-            protocol.claim(world.tenant_id, call_id)
+            claim(world.tenant_id, row.pk)
         except OperationalError as error:
-            blocked.append(f"claim: {error}")
-        except Exception:  # noqa: BLE001, S110 - a domain veto is not a lock failure
+            failures.append(f"claimer: {error}")
+        except Exception:  # noqa: BLE001, S110 - the refusal itself is expected
             pass
         finally:
             connections.close_all()
 
-    return threading.Thread(target=run)
-
-
-def test_a_closing_pass_never_deadlocks_with_a_concurrent_claim(
-    world: World, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
-) -> None:
-    # Given a due retry the emission's 401 left behind.
-    report, _first, held = _held_due_retry(world, monkeypatch, settings)
-    # When runner A claims it (call lock, then admission locks the report) while
-    # runner B's pass holds the report and, the termo gone, ends the held call.
-    a_holds_call, _b_holds_report = _locks_in_crossed_order(monkeypatch)
-    blocked: list[str] = []
-    claimer = _claim_on_own_connection(world, held.pk, blocked)
+    claimer = threading.Thread(target=claim_it)
     claimer.start()
-    assert a_holds_call.wait(timeout=15)
-    with connection.cursor() as cursor:
-        cursor.execute("SET lock_timeout = '10s'")
+    assert releasing.wait(timeout=15)
+    # When this runner locks the report while that claim is still in flight.
     try:
-        sitfis()._decide(world.tenant_id, report.pk)
+        with tenant_context(world.tenant_id), transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = '5s'")
+            FiscalSituationReport.objects.select_for_update().get(pk=report.pk)
+        locked = "locked"
     except OperationalError as error:
-        blocked.append(f"close: {error}")
+        locked = f"waited: {error}"
     finally:
-        with connection.cursor() as cursor:
-            cursor.execute("RESET lock_timeout")
-    claimer.join(timeout=30)
-    # Then neither runner waits on the other: no deadlock, no lock timeout.
-    assert not claimer.is_alive()
-    assert blocked == [], "the closing pass and a claim deadlocked"
-    # And the contended pass deferred: it never closed the report without its call.
-    assert world.reload(report).state not in sitfis().FINAL_STATES
+        done.set()
+        holder.join(timeout=30)
+        claimer.join(timeout=30)
+    # Then the re-read kept no report lock: it only named a cause (AXRM-045).
+    assert locked == "locked"
+    assert failures == []

@@ -49,6 +49,14 @@ class AdmissionDeniedError(Exception):
         self.reason = reason or self.reason or (str(args[0]) if args else "")
 
 
+class VersionMovedError(AdmissionDeniedError):
+    """A version or credential moved after reservation: never admissible again.
+
+    The one refusal claim records on the call; every other refusal rolls the
+    claim back and reaches its caller unchanged (AXRM-045).
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class CallRequest:
     """Only canonical identities and digests cross into persisted workflow state."""

@@ -7,9 +7,7 @@ code opens the firm issue, which refuses that firm's next calls; a provider
 failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 """
 
-import base64
 import json
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
@@ -18,16 +16,9 @@ from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
-from django.db import (
-    IntegrityError,
-    OperationalError,
-    connection,
-    connections,
-    transaction,
-)
 from django.db.models import F
 from django.test import override_settings
 from pytest_django.fixtures import SettingsWrapper
@@ -1720,224 +1711,41 @@ def test_a_metered_late_reply_reads_billed_whatever_the_row_order(
 
 
 @DB
-def test_a_paused_receipt_retry_is_resumed_by_a_later_delivery(
+def test_a_pause_at_the_receipt_first_claim_reaches_the_task(
     world: World,
     monkeypatch: pytest.MonkeyPatch,
     settings: Any,  # noqa: ANN401
 ) -> None:
-    # Given one DAS payment, and its SP-COMP gets a complete 401 whose retry
-    # claim meets a pause.
+    # Given one DAS payment found by a successful consultation.
     world.script(page([support.item("DAS000000000045")]))
     world.consult()
     with tenant_context(world.termo.tenant.pk):
         das = FederalPayment.objects.get()
-    protocol = import_module("apps.integrations.call_protocol")
-    real_claim = protocol.claim
+    # When its SP-COMP is reserved, then a pause meets its first claim.
+    real_claim = import_module("apps.integrations.call_protocol").claim
 
     def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         settings.SERPRO_PAUSED = True
         return real_claim(*args, **kwargs)
 
-    monkeypatch.setattr(protocol, "claim", pause_then_claim)
-    world.script(Reply(status=401))
+    monkeypatch.setattr(payments, "claim", pause_then_claim)
     tasks = import_module("apps.integrations.serpro.tasks")
-    later: list[tuple[str, ...]] = []
-
-    def schedule(args: tuple[str, ...], **_kwargs: Any) -> None:  # noqa: ANN401
-        later.append(args)
-
-    monkeypatch.setattr(tasks.emit_payment_receipt_task, "apply_async", schedule)
     args = (str(world.termo.tenant.pk), str(das.pk), str(world.termo.actor.pk))
-    outcomes: list[str] = []
-    # When the task is delivered, then redelivered while still paused.
-    for _ in range(2):
-        try:
-            outcomes.append(tasks.emit_payment_receipt_task(*args))
-        except AdmissionDeniedError as error:
-            outcomes.append(f"raised {error}")
-    # Then each delivery hands the same call to a later one; nothing is re-sent.
-    assert (outcomes, later) == (
-        ["aguardar_nova_tentativa", "aguardar_nova_tentativa"],
-        [args, args],
-    )
-    with tenant_context(world.termo.tenant.pk):
-        call = ProviderCall.objects.get(operation="SP-COMP")
-    assert (call.state, call.attempts) == ("aguardar_nova_tentativa", 1)
-    assert len(world.sent("/Emitir")) == 1
-
-
-def _receipt_task(
-    world: World, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Any, tuple[str, ...], list[tuple[str, ...]]]:
-    """One found DAS payment, its receipt task, and the deliveries it schedules."""
-    world.script(page([support.item("DAS000000000045")]))
-    world.consult()
-    with tenant_context(world.termo.tenant.pk):
-        das = FederalPayment.objects.get()
-    tasks = import_module("apps.integrations.serpro.tasks")
-    later: list[tuple[str, ...]] = []
-
-    def schedule(args: tuple[str, ...], **_kwargs: Any) -> None:  # noqa: ANN401
-        later.append(args)
-
-    monkeypatch.setattr(tasks.emit_payment_receipt_task, "apply_async", schedule)
-    args = (str(world.termo.tenant.pk), str(das.pk), str(world.termo.actor.pk))
-    return tasks.emit_payment_receipt_task, args, later
-
-
-@DB
-def test_a_dispatch_paused_receipt_resumes_exactly_once_after_unpause(
-    world: World,
-    monkeypatch: pytest.MonkeyPatch,
-    settings: Any,  # noqa: ANN401
-) -> None:
-    task, args, later = _receipt_task(world, monkeypatch)
-    # Given a complete 401, a successful retry claim, and a pause at its dispatch.
-    protocol = import_module("apps.integrations.call_protocol")
-    real_claim = protocol.claim
-
-    def claim_then_pause(*claim_args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        ticket = real_claim(*claim_args, **kwargs)
-        settings.SERPRO_PAUSED = True
-        return ticket
-
-    pdf = import_module("tests.integrations.test_pagtoweb").PDF
-    issued = json.dumps({"pdf": base64.b64encode(pdf).decode()})
-    world.script(Reply(status=401), Reply(body=support.receipt_body(issued)))
-    with monkeypatch.context() as patch:
-        patch.setattr(protocol, "claim", claim_then_pause)
-        first = task(*args)
-    # When the pause lifts and the scheduled delivery runs.
-    settings.SERPRO_PAUSED = False
-    [resumed] = later
     try:
-        second = task(*resumed)
-    except IntegrityError as error:
-        second = f"raised {type(error).__name__}"
-    # Then the same retry is admitted once: one more send, nothing left held.
-    assert (first, second) == ("aguardar_nova_tentativa", "sucesso")
-    assert len(world.sent("/Emitir")) == 2
-    assert world.budget().reserved == 0
-
-
-@DB
-def test_a_held_receipt_whose_link_is_gone_ends_owned(
-    world: World,
-    monkeypatch: pytest.MonkeyPatch,
-    settings: Any,  # noqa: ANN401
-) -> None:
-    task, args, later = _receipt_task(world, monkeypatch)
-    # Given a complete 401 whose retry claim meets a pause...
-    protocol = import_module("apps.integrations.call_protocol")
-    real_claim = protocol.claim
-
-    def pause_then_claim(*claim_args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        settings.SERPRO_PAUSED = True
-        return real_claim(*claim_args, **kwargs)
-
-    world.script(Reply(status=401))
-    with monkeypatch.context() as patch:
-        patch.setattr(protocol, "claim", pause_then_claim)
-        first = task(*args)
-    # ...when the pause lifts but the client's link is revoked before redelivery.
-    settings.SERPRO_PAUSED = False
-    with tenant_context(world.termo.tenant.pk):
-        ClientProviderLink.objects.filter(client=world.termo.client).update(
-            status="revogada"
-        )
-    [resumed] = later
-    second = task(*resumed)
-    # Then the held call is ended and owned, never stranded; nothing is re-sent.
+        outcome = tasks.emit_payment_receipt_task(*args)
+    except AdmissionDeniedError as error:
+        outcome = f"raised {error}"
+    # Then the pause reaches the task, and the call stays reserved with its slot.
     with tenant_context(world.termo.tenant.pk):
         call = ProviderCall.objects.get(operation="SP-COMP")
-    assert (first, second, call.state) == (
-        "aguardar_nova_tentativa",
-        "bloqueada_autoridade",
-        "bloqueada_autoridade",
-    )
-    assert later == [args]
-    assert len(world.sent("/Emitir")) == 1
-
-
-def _hold_call_on_own_connection(
-    tenant_id: UUID, call_id: UUID
-) -> tuple[threading.Thread, threading.Event, threading.Event, list[str]]:
-    """Another runner: hold one call's row lock on its own connection until released."""
-    holding, release = threading.Event(), threading.Event()
-    blocked: list[str] = []
-
-    def hold_the_call() -> None:
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute("SET lock_timeout = '10s'")
-            with tenant_context(tenant_id), transaction.atomic():
-                list(ProviderCall.objects.select_for_update().filter(pk=call_id))
-                holding.set()
-                assert release.wait(timeout=30)
-        except OperationalError as error:
-            blocked.append(f"holder: {error}")
-        finally:
-            connections.close_all()
-
-    return threading.Thread(target=hold_the_call), holding, release, blocked
-
-
-@DB
-def test_a_receipt_preflight_never_waits_on_a_call_another_runner_holds(
-    world: World,
-    monkeypatch: pytest.MonkeyPatch,
-    settings: Any,  # noqa: ANN401
-) -> None:
-    task, args, later = _receipt_task(world, monkeypatch)
-    # Given a complete 401 whose retry claim met a pause; then the pause lifts
-    # and the link is revoked, so the next delivery must end the held call.
-    protocol = import_module("apps.integrations.call_protocol")
-    real_claim = protocol.claim
-
-    def pause_then_claim(*claim_args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
-        settings.SERPRO_PAUSED = True
-        return real_claim(*claim_args, **kwargs)
-
-    world.script(Reply(status=401))
-    with monkeypatch.context() as patch:
-        patch.setattr(protocol, "claim", pause_then_claim)
-        task(*args)
-    settings.SERPRO_PAUSED = False
-    with tenant_context(world.termo.tenant.pk):
-        ClientProviderLink.objects.filter(client=world.termo.client).update(
-            status="revogada"
+        slots = list(
+            ProviderReservation.objects.filter(call=call).values_list(
+                "state", flat=True
+            )
         )
-        call = ProviderCall.objects.get(operation="SP-COMP")
-    # When another runner holds that call's lock on its own connection...
-    holder, holding, release, blocked = _hold_call_on_own_connection(
-        world.termo.tenant.pk, call.pk
+    assert (outcome, call.state, slots) == (
+        "raised pausada",
+        "reservada",
+        ["reserved"],
     )
-    holder.start()
-    assert holding.wait(timeout=15)
-    with connection.cursor() as cursor:
-        cursor.execute("SET lock_timeout = '10s'")
-    try:
-        busy = task(*later[0])
-    except OperationalError as error:
-        busy = f"blocked: {error}"
-    finally:
-        with connection.cursor() as cursor:
-            cursor.execute("RESET lock_timeout")
-        release.set()
-        holder.join(timeout=30)
-    # ...then that delivery neither waits nor reports the call stored or ended:
-    # it hands the same call to a later delivery, still held.
-    with tenant_context(world.termo.tenant.pk):
-        still = ProviderCall.objects.get(pk=call.pk)
-    assert blocked == []
-    assert (busy, still.state, len(later)) == (
-        "aguardar_nova_tentativa",
-        "aguardar_nova_tentativa",
-        2,
-    )
-    # And once released, that later delivery settles it, with no new send.
-    settled = task(*later[1])
-    with tenant_context(world.termo.tenant.pk):
-        ended = ProviderCall.objects.get(pk=call.pk)
-    assert (settled, ended.state) == ("bloqueada_autoridade", "bloqueada_autoridade")
-    assert len(world.sent("/Emitir")) == 1
+    assert world.sent("/Emitir") == []
