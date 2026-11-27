@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from html import unescape
 from http import HTTPStatus
-from typing import assert_never
+from typing import Literal, assert_never
 
 import pytest
 from django.test import Client
@@ -241,7 +241,14 @@ def test_http_disclosure_reads_preserve_frozen_bytes_and_record_no_decision(
     ],
 )
 def test_http_other_frozen_actions_never_disclose_reopening(
-    desk: Desk, kind: ActionKind, state: str
+    desk: Desk,
+    kind: Literal[
+        ActionKind.EMAIL_NOTICE,
+        ActionKind.CLIENT_PUBLICATION,
+        ActionKind.REQUEST_WAIVER,
+        ActionKind.CYCLE_COMPLETION,
+    ],
+    state: str,
 ) -> None:
     # Given a real awaiting proposal for each other supported frozen effect.
     setup, graph = desk.setup, desk.setup.graph

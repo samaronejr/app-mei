@@ -306,6 +306,7 @@ class ExceptionInternal(ClientRecord):
     )
     next_action = models.CharField(max_length=255)
     evidence_refs = models.JSONField(default=list)
+    manifestation_documents = models.JSONField(default=list)
 
     class Meta(ClientRecord.Meta):
         """One private companion per scoped exception, like RequestInternal."""

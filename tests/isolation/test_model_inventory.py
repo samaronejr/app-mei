@@ -66,6 +66,8 @@ SWEEP_LABELS: Final = frozenset(
         "integrations.AuthorityRecord",
         "integrations.ClientProviderLink",
         "integrations.CaptureAcquisition",
+        # AXRM-022: client-paired recovery identity, swept with the provider records.
+        "integrations.CienciaRecord",
         "integrations.SyncStream",
         "integrations.SyncRun",
         "integrations.FirmAuthorization",

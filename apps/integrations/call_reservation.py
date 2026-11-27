@@ -41,24 +41,38 @@ def reserve(tenant_id: UUID, link_id: UUID, request: CallRequest) -> ProviderCal
                 or existing.operation_revision != operation.revision
             ):
                 raise IntentConflictError
-            return existing
-        call = ProviderCall(
-            tenant_id=tenant_id,
-            client_id=link.client_id,
-            link=link,
-            operation=operation.code,
-            operation_revision=operation.revision,
-            operation_class=operation.operation_class,
-            provider=link.connection.provider,
-            environment=link.connection.environment,
-            request_key=request.request_key,
-            request_digest=request.request_digest,
-            business_effect_key=request.business_effect_key,
-            billing_class=operation.billing_class,
-            connection_version=link.connection.version,
-            link_version=link.version,
-            credential_generation=link.credential_generation,
-        )
+            if existing.state != CallState.QUEUED:
+                return existing
+            # AXRM-022 (deliberate, kept): promote a queued row only under the terms
+            # its operation and the locked connection register now; never rewrite it.
+            if (
+                existing.provider != link.connection.provider
+                or existing.environment != link.connection.environment
+                or existing.operation_class != operation.operation_class
+                or existing.billing_class != operation.billing_class
+            ):
+                raise IntentConflictError
+        if existing is None:
+            call = ProviderCall(
+                tenant_id=tenant_id,
+                client_id=link.client_id,
+                link=link,
+                operation=operation.code,
+                operation_revision=operation.revision,
+                operation_class=operation.operation_class,
+                provider=link.connection.provider,
+                environment=link.connection.environment,
+                request_key=request.request_key,
+                request_digest=request.request_digest,
+                business_effect_key=request.business_effect_key,
+                billing_class=operation.billing_class,
+                connection_version=link.connection.version,
+                link_version=link.version,
+                credential_generation=link.credential_generation,
+            )
+        else:
+            call = existing
+            call.link = link
         admit(call, tenant, operation)
         call.save()
         denial = None

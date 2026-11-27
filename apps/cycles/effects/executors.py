@@ -2,9 +2,10 @@
 
 import json
 from dataclasses import dataclass
-from typing import assert_never
+from typing import Literal, assert_never
 from uuid import UUID
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.http import Http404
 from django.utils import timezone
@@ -183,6 +184,25 @@ def _queue(proposal: ActionProposal, actor: User) -> None:
         record(message, message.state, actor=actor, code="enqueued")
 
 
+ExecutableKind = Literal[
+    ActionKind.CLIENT_PUBLICATION,
+    ActionKind.EMAIL_NOTICE,
+    ActionKind.REQUEST_WAIVER,
+    ActionKind.CYCLE_COMPLETION,
+]
+
+
+def _executable_kind(kind: ActionKind) -> ExecutableKind:
+    """AXRM-022-SCAFFOLD: refuse the fiscal kind before any execution marker.
+
+    Replaced in 22-07 by the registered Ciencia executor.
+    """
+    if kind == ActionKind.FISCAL_MANIFESTATION:
+        msg = "A ciência da operação ainda não pode ser executada."
+        raise ValidationError(msg, code="fiscal_manifestation_unavailable")
+    return kind
+
+
 @transaction.atomic
 def execute(
     actor: User, proposal_id: UUID, *, expected_version: int
@@ -211,6 +231,7 @@ def execute(
         return ExecutionResult(proposal, executed=False)
     if _existing(proposal):
         return ExecutionResult(proposal, executed=True, replayed=True)
+    kind = _executable_kind(spec.action_kind)
     ActionExecution.objects.create(
         tenant_id=proposal.tenant_id,
         client_id=proposal.client_id,
@@ -219,10 +240,10 @@ def execute(
         proposal_revision=proposal.revision,
         digest=proposal.digest,
         business_intent_key=proposal.business_intent_key,
-        action_kind=spec.action_kind,
+        action_kind=kind,
         executed_by=fresh_actor,
     )
-    match spec.action_kind:
+    match kind:
         case ActionKind.CLIENT_PUBLICATION:
             _publish(proposal)
             _queue(proposal, fresh_actor)

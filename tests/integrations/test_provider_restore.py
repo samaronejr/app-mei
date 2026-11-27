@@ -204,6 +204,7 @@ def restore_before_call() -> None:
                 # Kept PAGTOWEB pages and AXRM-021 acquisitions reference their
                 # calls, so the pre-call horizon has none of either.
                 "TRUNCATE integrations_captureacquisition, "
+                "integrations_cienciarecord, "
                 "integrations_paymentpage, "
                 "integrations_providerreservation, "
                 "integrations_providereffectbarrier, "

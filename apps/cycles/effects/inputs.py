@@ -11,6 +11,7 @@ from apps.cycles.effects.manifest import ActionKind, JSONValue
 CURRENCY_CODE_LENGTH = 3
 MAX_COMPLETION_ITEMS = 500
 MAX_REASON_LENGTH = 2000
+MAX_FISCAL_BATCH = 100
 
 
 def _text(value: JSONValue) -> str:
@@ -94,6 +95,8 @@ class ProposalInput:
     reopen: bool = False
     generation_id: UUID | None = None
     affected_scope: tuple[UUID, ...] = ()
+    fiscal_document_ids: tuple[UUID, ...] = ()
+    provider_link_id: UUID | None = None
 
     def validate(self) -> None:
         """Validate at the proposal boundary, before any persistent write."""
@@ -101,6 +104,7 @@ class ProposalInput:
             msg = "Informe a etapa e uma ocorrência positiva."
             raise ValidationError(msg)
         self._validate_completion()
+        self._validate_fiscal()
         if self.supersedes_publication_id is not None and (
             self.action_kind is not ActionKind.CLIENT_PUBLICATION
             or self.withdraw_publication_id is not None
@@ -155,6 +159,22 @@ class ProposalInput:
             for item in self.money
         ):
             msg = "Selecione um valor extraído e sua moeda."
+            raise ValidationError(msg)
+
+    def _validate_fiscal(self) -> None:
+        if self.action_kind is ActionKind.FISCAL_MANIFESTATION:
+            if not 1 <= len(self.fiscal_document_ids) <= MAX_FISCAL_BATCH or (
+                self.provider_link_id is None
+                or self.recipient_ids
+                or self.document_link_ids
+                or self.evidence_request_ids
+                or self.observation_ids
+                or self.money
+            ):
+                msg = "Selecione de 1 a 100 NF-e recebidas e o vínculo Focus."
+                raise ValidationError(msg)
+        elif self.fiscal_document_ids or self.provider_link_id is not None:
+            msg = "A seleção fiscal pertence apenas ao lote de ciência."
             raise ValidationError(msg)
 
     def _validate_completion(self) -> None:

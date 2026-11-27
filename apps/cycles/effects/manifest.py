@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import MAX_EMAX, MIN_EMIN, Context, Decimal, InvalidOperation
 from enum import StrEnum
-from typing import Final, Literal, Never, TypedDict, assert_never
+from typing import Final, Literal, Never, NotRequired, TypedDict, assert_never, cast
 from uuid import UUID
 
 type JSONValue = (
@@ -120,12 +120,13 @@ def decimal_string(value: Decimal, *, scale: int, rounding: str) -> str:
 
 
 class ActionKind(StrEnum):
-    """The four consequential effects in S7.4; execution belongs to T16."""
+    """The consequential effects carried by the exact V1 approval contract."""
 
     CLIENT_PUBLICATION = "client_publication"
     EMAIL_NOTICE = "email_notice"
     CYCLE_COMPLETION = "cycle_completion"
     REQUEST_WAIVER = "request_waiver"
+    FISCAL_MANIFESTATION = "fiscal_manifestation"
 
 
 BOUND_COLLECTIONS: Final[dict[ActionKind, frozenset[str]]] = {
@@ -139,6 +140,7 @@ BOUND_COLLECTIONS: Final[dict[ActionKind, frozenset[str]]] = {
         {"money", "documents", "evidence", "observations"}
     ),
     ActionKind.REQUEST_WAIVER: frozenset({"evidence"}),
+    ActionKind.FISCAL_MANIFESTATION: frozenset({"documents", "authorization"}),
 }
 MESSAGE_ACTIONS: Final = frozenset(
     {ActionKind.CLIENT_PUBLICATION, ActionKind.EMAIL_NOTICE}
@@ -190,6 +192,23 @@ class DocumentEffect(TypedDict):
     review_state: str
 
 
+class FiscalDocumentEffect(TypedDict):
+    """One received NF-e revision, never a query that expands at execution."""
+
+    chave: str
+    fiscal_revision_id: str
+    semantic_digest: str
+    environment: str
+
+
+class ClientAuthoritySnapshot(TypedDict):
+    """The client's append-only Ciencia authority and its private evidence."""
+
+    id: str
+    version: int
+    evidence_document_id: str
+
+
 class EvidenceEffect(TypedDict):
     """The evidence request revision and latest decision included in the effect."""
 
@@ -231,6 +250,7 @@ class AuthorizationSnapshot(TypedDict):
     membership_version: int
     portfolio_assignment_id: str | None
     grants: tuple[GrantSnapshot, ...]
+    client_authority: NotRequired[ClientAuthoritySnapshot]
 
 
 class ApprovalRule(TypedDict):
@@ -317,7 +337,7 @@ class EffectManifestV1:
     payload: dict[str, JSONValue]
     recipients: tuple[Recipient, ...]
     money: tuple[MonetaryEffect, ...]
-    documents: tuple[DocumentEffect, ...]
+    documents: tuple[DocumentEffect | FiscalDocumentEffect, ...]
     evidence: tuple[EvidenceEffect, ...]
     observations: tuple[ObservationEffect, ...]
     tax_profile_versions: tuple[str, ...]
@@ -344,6 +364,51 @@ class EffectManifestV1:
         profiles: list[JSONValue] = [
             _uuid(value) for value in self.tax_profile_versions
         ]
+        documents: list[JSONValue] = []
+        # The action selects effects; it does not change a supplied document's type.
+        for document in self.documents:
+            if "fiscal_revision_id" in document:
+                fiscal_document = cast("FiscalDocumentEffect", document)
+                documents.append(
+                    {
+                        "chave": fiscal_document["chave"],
+                        "fiscal_revision_id": _uuid(
+                            fiscal_document["fiscal_revision_id"]
+                        ),
+                        "semantic_digest": _hash(fiscal_document["semantic_digest"]),
+                        "environment": fiscal_document["environment"],
+                    }
+                )
+            else:
+                documents.append(
+                    {
+                        "document_id": _uuid(document["document_id"]),
+                        "sha256": _hash(document["sha256"]),
+                        "size": document["size"],
+                        "intake_state": document["intake_state"],
+                        "scan_id": document["scan_id"].lower(),
+                        "link_id": _uuid(document["link_id"]),
+                        "link_revision": document["link_revision"],
+                        "review_state": document["review_state"],
+                    }
+                )
+        authorization: dict[str, JSONValue] = {
+            "membership_id": _uuid(self.authorization["membership_id"]),
+            "membership_version": self.authorization["membership_version"],
+            "portfolio_assignment_id": (
+                _uuid(self.authorization["portfolio_assignment_id"])
+                if self.authorization["portfolio_assignment_id"] is not None
+                else None
+            ),
+            "grants": sorted(grants, key=canonicalize),
+        }
+        if "client_authority" in self.authorization:
+            authority = self.authorization["client_authority"]
+            authorization["client_authority"] = {
+                "id": _uuid(authority["id"]),
+                "version": authority["version"],
+                "evidence_document_id": _uuid(authority["evidence_document_id"]),
+            }
         collections: dict[str, list[JSONValue]] = {
             "recipients": [
                 {
@@ -369,19 +434,7 @@ class EffectManifestV1:
                 }
                 for amount in self.money
             ],
-            "documents": [
-                {
-                    "document_id": _uuid(document["document_id"]),
-                    "sha256": _hash(document["sha256"]),
-                    "size": document["size"],
-                    "intake_state": document["intake_state"],
-                    "scan_id": document["scan_id"].lower(),
-                    "link_id": _uuid(document["link_id"]),
-                    "link_revision": document["link_revision"],
-                    "review_state": document["review_state"],
-                }
-                for document in self.documents
-            ],
+            "documents": documents,
             "evidence": [
                 {
                     "request_id": _uuid(item["request_id"]),
@@ -445,16 +498,7 @@ class EffectManifestV1:
                 "version": self.policy["version"],
                 "hash": _hash(self.policy["hash"]),
             },
-            "authorization": {
-                "membership_id": _uuid(self.authorization["membership_id"]),
-                "membership_version": self.authorization["membership_version"],
-                "portfolio_assignment_id": (
-                    _uuid(self.authorization["portfolio_assignment_id"])
-                    if self.authorization["portfolio_assignment_id"] is not None
-                    else None
-                ),
-                "grants": sorted(grants, key=canonicalize),
-            },
+            "authorization": authorization,
             "approval_rule": {
                 "required_capability": self.approval_rule["required_capability"],
                 "quorum": self.approval_rule["quorum"],

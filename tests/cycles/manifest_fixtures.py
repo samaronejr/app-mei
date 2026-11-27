@@ -3,7 +3,12 @@
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_EVEN, Decimal
 
-from apps.cycles.effects.manifest import ActionKind, EffectManifestV1, MonetaryEffect
+from apps.cycles.effects.manifest import (
+    ActionKind,
+    DocumentEffect,
+    EffectManifestV1,
+    MonetaryEffect,
+)
 
 FIRST = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 SECOND = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -53,16 +58,16 @@ def manifest_example() -> EffectManifestV1:
         ),
         money=(MonetaryEffect("total", Decimal("123.455"), "brl", 2, ROUND_HALF_EVEN),),
         documents=(
-            {
-                "document_id": FIRST.upper(),
-                "sha256": HASH.upper(),
-                "size": 1234,
-                "intake_state": "vinculado",
-                "scan_id": SECOND.upper() + ":3",
-                "link_id": THIRD.upper(),
-                "link_revision": 2,
-                "review_state": "aceito",
-            },
+            DocumentEffect(
+                document_id=FIRST.upper(),
+                sha256=HASH.upper(),
+                size=1234,
+                intake_state="vinculado",
+                scan_id=SECOND.upper() + ":3",
+                link_id=THIRD.upper(),
+                link_revision=2,
+                review_state="aceito",
+            ),
         ),
         evidence=({"request_id": FIRST, "revision": 4, "decision_id": SECOND},),
         observations=(

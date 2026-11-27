@@ -456,6 +456,16 @@ def _completion_inputs(
     return spec
 
 
+def _refuse_fiscal(kind: str) -> None:
+    """AXRM-022-SCAFFOLD: no fiscal effect is proposable yet, before any lock or write.
+
+    By value: a bare string counts. Cycles 0026 closes the stored rows.
+    """
+    if kind == ActionKind.FISCAL_MANIFESTATION:
+        msg = "A ciência da operação ainda não pode ser proposta nem decidida."
+        raise ValidationError(msg, code="fiscal_manifestation_unavailable")
+
+
 @transaction.atomic
 def propose(
     actor: User,
@@ -466,6 +476,7 @@ def propose(
 ) -> ActionProposal:
     """Freeze selected effects; revision is a new row under one natural intent."""
     spec = draft.inputs
+    _refuse_fiscal(spec.action_kind)
     expires_at, not_before = draft.expires_at, draft.not_before
     spec.validate()
     scope = _lock_scope(actor, _cycle(cycle_id), {actor.pk} | _recipient_users(spec))

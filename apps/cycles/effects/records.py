@@ -54,6 +54,7 @@ class ActionProposal(ClientRecord):
             (ActionKind.EMAIL_NOTICE, "Enviar e-mail"),
             (ActionKind.CYCLE_COMPLETION, "Concluir ciclo"),
             (ActionKind.REQUEST_WAIVER, "Dispensar solicita\u00e7\u00e3o"),
+            (ActionKind.FISCAL_MANIFESTATION, "Registrar ciencia (lote)"),
         ],
     )
     input_spec = models.JSONField()
@@ -97,6 +98,11 @@ class ActionProposal(ClientRecord):
             models.CheckConstraint(
                 condition=models.Q(state__in=ProposalState.values),
                 name="actionproposal_known_state",
+            ),
+            # AXRM-022-SCAFFOLD: no fiscal proposal is stored yet; 22-06 removes it.
+            models.CheckConstraint(
+                condition=~models.Q(action_kind=ActionKind.FISCAL_MANIFESTATION),
+                name="actionproposal_fiscal_closed",
             ),
         ]
         indexes: ClassVar[list[models.Index]] = [
