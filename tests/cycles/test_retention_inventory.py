@@ -78,6 +78,14 @@ def _inventory(world: World, *extra: str) -> list[str]:
     return out.getvalue().splitlines()
 
 
+def _listing(world: World) -> list[str]:
+    """Return the listing, or the escape itself as its one line."""
+    try:
+        return _inventory(world)
+    except Exception as error:  # noqa: BLE001 - an escape is itself the failure
+        return [f"raised {error!r}"]
+
+
 def _with(lines: list[str], *parts: str) -> list[str]:
     return [line for line in lines if all(part in line for part in parts)]
 
@@ -194,8 +202,9 @@ class FakeClient:
 class FakeBucket(S3Storage):
     """An S3 backend whose boto3 client is a FakeClient; it sends nothing."""
 
-    def __init__(self, client: FakeClient) -> None:
+    def __init__(self, client: FakeClient, location: str = "") -> None:
         super().__init__(
+            location=location,
             bucket_name="axrm051-synthetic",
             endpoint_url="https://storage.invalid",
             access_key="synthetic-access",
@@ -238,6 +247,44 @@ def _version(key: str, version: str, *, latest: bool, at: datetime) -> dict[str,
                         "Status": "Enabled",
                         "Filter": {"Tag": {"Key": "k", "Value": "v"}},
                         "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+                    }
+                ]
+            },
+            "unknown",
+        ),
+        (
+            # An action this module does not read may remove versions.
+            {
+                "Rules": [
+                    {
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+                        "FutureVersionRemoval": {"Days": 1},
+                    }
+                ]
+            },
+            "unknown",
+        ),
+        (
+            {
+                "Rules": [
+                    {
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "Expiration": {"Days": 365, "Unread": True},
+                    }
+                ]
+            },
+            "unknown",
+        ),
+        (
+            {
+                "Rules": [
+                    {
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": ""},
+                        "Expiration": {"Date": "2027-01-01T00:00:00Z"},
                     }
                 ]
             },
@@ -303,6 +350,111 @@ def test_a_verified_rule_dates_each_noncurrent_version_from_its_successor() -> N
         "2032-01-01",
         *(f"eligible-from:{timezone.localtime(at).isoformat()}" for at in eligible),
     ]
+
+
+@pytest.mark.parametrize(
+    "expiration", [{"Days": 365}, {"Date": datetime(2027, 1, 1, tzinfo=UTC)}]
+)
+def test_a_rule_that_expires_live_versions_dates_them_by_it(
+    expiration: dict[str, Any],
+) -> None:
+    key = "originals/a.pdf"
+    rules = {
+        "Rules": [
+            {"Status": "Enabled", "Filter": {"Prefix": ""}, "Expiration": expiration}
+        ]
+    }
+    bucket = FakeBucket(
+        FakeClient(rules, [{"Versions": [_version(key, "v1", latest=True, at=T0)]}])
+    )
+    state = retention_inventory.lifecycle(bucket)
+    assert state.state == "verified"
+    (listed,) = retention_inventory.versions(bucket, key, state, "2032-01-01")
+    # The bucket removes the live version then, whatever its fiscal date.
+    removed = expiration.get("Date") or T0 + timedelta(days=365)
+    assert listed.expires == f"lifecycle-from:{timezone.localtime(removed).isoformat()}"
+
+
+def test_actions_that_remove_no_dated_version_leave_the_rule_verified() -> None:
+    key = "originals/a.pdf"
+    rules = {
+        "Rules": [
+            {
+                "ID": "storage-class",
+                "Status": "Enabled",
+                "Filter": {"Prefix": ""},
+                "Transitions": [{"Days": 30, "StorageClass": "GLACIER"}],
+                "Expiration": {"ExpiredObjectDeleteMarker": True},
+                "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7},
+            }
+        ]
+    }
+    bucket = FakeBucket(
+        FakeClient(rules, [{"Versions": [_version(key, "v1", latest=True, at=T0)]}])
+    )
+    state = retention_inventory.lifecycle(bucket)
+    assert state.state == "verified"
+    (listed,) = retention_inventory.versions(bucket, key, state, "2032-01-01")
+    assert listed.expires == "2032-01-01"
+
+
+@pytest.mark.parametrize(
+    ("location", "spelled", "resolved", "prefix"),
+    [
+        ("", "/originals/a.pdf", "originals/a.pdf", "originals/"),
+        ("media", "originals/a.pdf", "media/originals/a.pdf", "media/originals/"),
+    ],
+)
+def test_a_rule_matches_the_key_the_backend_resolves(
+    location: str, spelled: str, resolved: str, prefix: str
+) -> None:
+    rules = {
+        "Rules": [
+            {
+                "Status": "Enabled",
+                "Filter": {"Prefix": prefix},
+                "NoncurrentVersionExpiration": {"NoncurrentDays": 30},
+            }
+        ]
+    }
+    pages = [
+        {
+            "Versions": [
+                _version(resolved, "v2", latest=True, at=T0),
+                _version(resolved, "v1", latest=False, at=T0 - timedelta(days=9)),
+            ]
+        }
+    ]
+    bucket = FakeBucket(FakeClient(rules, pages), location=location)
+    state = retention_inventory.lifecycle(bucket)
+    listed = retention_inventory.versions(bucket, spelled, state, "2032-01-01")
+    eligible = timezone.localtime(T0 + timedelta(days=30)).isoformat()
+    assert [v.expires for v in listed] == ["2032-01-01", f"eligible-from:{eligible}"]
+
+
+def test_a_delete_marker_above_older_versions_is_a_missing_original(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = _original(world, _emit(world))
+    with tenant_context(world.tenant_id):
+        intake = DocumentIntake.objects.get(document=original)
+    # A restore that predates the disposal, on a versioned bucket: each key's
+    # latest version is a delete marker above the older bytes.
+    pages = [
+        {
+            "Versions": [_version(key, "v1", latest=False, at=T0)],
+            "DeleteMarkers": [
+                _version(key, "d1", latest=True, at=T0 + timedelta(days=1))
+            ],
+        }
+        for key in (original.storage_key, intake.quarantine_key)
+    ]
+    monkeypatch.setattr(
+        retention_inventory, "default_storage", FakeBucket(FakeClient(None, pages))
+    )
+    lines = _inventory(world)
+    assert _with(lines, "MISSING kind=document", f"id={original.pk}", "proof=none")
+    assert "missing-without-proof" in lines[-1]
 
 
 def test_an_unverified_bucket_leaves_the_inventory_incomplete(
@@ -461,7 +613,7 @@ def test_a_file_the_purge_cannot_prove_is_listed_with_the_purges_reason(
         (root / "sealed").mkdir()
         (root / "sealed").chmod(0o300)
     try:
-        item = _one(_inventory(world), "ITEM kind=document", f"id={original.pk}")
+        item = _one(_listing(world), "ITEM kind=document", f"id={original.pk}")
     finally:
         if layout == "sealed-directory":
             (root / "sealed").chmod(0o700)

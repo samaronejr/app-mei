@@ -81,18 +81,37 @@ FIELD_CLASSES: Final[Mapping[str, str]] = {
 # read: the inventory's own vocabulary, not a model status.
 UNKNOWN: Final = "unknown"
 
+# A rule's own fields, not actions.
+RULE_FIELDS: Final = frozenset({"ID", "Status", "Filter", "Prefix"})
+# The actions this inventory dates, and those that remove no version it dates: a
+# transition moves storage class, an aborted upload was never an object, and an
+# expired delete marker holds no bytes. Any other action leaves a rule unknown.
+DATED_ACTIONS: Final = frozenset({"Expiration", "NoncurrentVersionExpiration"})
+INERT_ACTIONS: Final = frozenset(
+    {
+        "Transitions",
+        "Transition",
+        "NoncurrentVersionTransitions",
+        "NoncurrentVersionTransition",
+        "AbortIncompleteMultipartUpload",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Lifecycle:
-    """What the bucket's noncurrent-version expiry is known to be.
+    """What the bucket's version expiry is known to be.
 
     `state` is `single-copy` (a delete removes the only copy), `verified` (rules
     read back and understood), `unverified` (no rule could be read back) or
-    `unknown` (a rule this inventory does not interpret).
+    `unknown` (a rule this inventory does not interpret). `rules` are the
+    noncurrent-version expiries (prefix, days); `current` the live-version ones
+    (prefix, days or None, date or None).
     """
 
     state: str
     rules: tuple[tuple[str, int], ...] = ()
+    current: tuple[tuple[str, int | None, datetime | None], ...] = ()
 
 
 def _s3(storage: S3Storage) -> tuple[Any, str]:
@@ -103,7 +122,7 @@ def _s3(storage: S3Storage) -> tuple[Any, str]:
 
 
 def lifecycle(storage: Storage) -> Lifecycle:
-    """Read back the bucket's noncurrent-version rules, never inferring absence."""
+    """Read back the bucket's version-removing rules, never inferring absence."""
     if single_copy_storage(storage):
         return Lifecycle("single-copy")
     if not isinstance(storage, S3Storage):
@@ -118,18 +137,50 @@ def lifecycle(storage: Storage) -> Lifecycle:
             "unverified" if code == "NoSuchLifecycleConfiguration" else UNKNOWN
         )
     rules: list[tuple[str, int]] = []
+    current: list[tuple[str, int | None, datetime | None]] = []
     for rule in config.get("Rules", []):
         if rule.get("Status") != "Enabled":
             continue
-        expiry = rule.get("NoncurrentVersionExpiration", {})
-        selector = rule.get("Filter", {"Prefix": rule.get("Prefix", "")})
-        if "NewerNoncurrentVersions" in expiry or set(selector) - {"Prefix"}:
+        read = _read_rule(rule)
+        if read is None:
             return Lifecycle(UNKNOWN)
-        if expiry.get("NoncurrentDays"):
-            rules.append(
-                (str(selector.get("Prefix", "")), int(expiry["NoncurrentDays"]))
-            )
-    return Lifecycle("verified", tuple(rules))
+        prefix, noncurrent, live = read
+        if noncurrent is not None:
+            rules.append((prefix, noncurrent))
+        if live is not None:
+            current.append((prefix, *live))
+    return Lifecycle("verified", tuple(rules), tuple(current))
+
+
+def _read_rule(
+    rule: Mapping[str, Any],
+) -> tuple[str, int | None, tuple[int | None, datetime | None] | None] | None:
+    """Return one enabled rule's prefix, noncurrent days and live expiry.
+
+    None when any part of it is not understood: a filter beyond a prefix, an
+    action that may remove versions this module does not read, or a field of a
+    dated action it does not interpret.
+    """
+    selector = rule.get("Filter", {"Prefix": rule.get("Prefix", "")})
+    if set(selector) - {"Prefix"}:
+        return None
+    if set(rule) - RULE_FIELDS - DATED_ACTIONS - INERT_ACTIONS:
+        return None  # an action that may remove versions, unread
+    noncurrent = rule.get("NoncurrentVersionExpiration", {})
+    live = rule.get("Expiration", {})
+    date = live.get("Date")
+    if (
+        set(noncurrent) - {"NoncurrentDays"}
+        or set(live) - {"Days", "Date", "ExpiredObjectDeleteMarker"}
+        or (date is not None and not isinstance(date, datetime))
+    ):
+        return None
+    days = int(live["Days"]) if live.get("Days") else None
+    return (
+        str(selector.get("Prefix", "")),
+        int(noncurrent["NoncurrentDays"]) if noncurrent.get("NoncurrentDays") else None,
+        None if days is None and date is None else (days, date),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,13 +221,26 @@ def _listed(storage: Storage, key: str) -> list[tuple[str, bool, bool, datetime]
 def versions(
     storage: Storage, key: str, rules: Lifecycle, current_expiry: str
 ) -> list[Version]:
-    """Every version of `key`, each with its fiscal expiry or lifecycle eligibility."""
-    days = min((d for prefix, d in rules.rules if key.startswith(prefix)), default=None)
+    """Every version of `key`, each with its fiscal expiry or lifecycle eligibility.
+
+    Rules are matched against the bucket key the backend resolves, location
+    included, as versions are listed. A live version a rule expires is dated by
+    that rule: on such a bucket it is the lifecycle, not the purge, that removes it.
+    """
+    name = _remote_name(key, storage) if isinstance(storage, S3Storage) else key
+    days = min(
+        (d for prefix, d in rules.rules if name.startswith(prefix)), default=None
+    )
     listed = _listed(storage, key)
     found: list[Version] = []
     for index, (version, latest, marker, modified) in enumerate(listed):
         if latest and not marker:
-            expires = current_expiry
+            removed = _live_expiry(rules, name, modified)
+            expires = (
+                current_expiry
+                if removed is None
+                else f"lifecycle-from:{_when(removed)}"
+            )
         elif marker:
             expires = "-"
         elif rules.state != "verified":
@@ -189,6 +253,16 @@ def versions(
             expires = f"eligible-from:{_when(eligible)}"
         found.append(Version(version, latest, marker, modified, expires))
     return found
+
+
+def _live_expiry(rules: Lifecycle, name: str, modified: datetime) -> datetime | None:
+    """Return the earliest time a rule expires a live version written at `modified`."""
+    times = [
+        modified + timedelta(days=days) if days is not None else date
+        for prefix, days, date in rules.current
+        if name.startswith(prefix)
+    ]
+    return min((at for at in times if at is not None), default=None)
 
 
 def _version_lines(
@@ -296,11 +370,16 @@ def _page_condition(page: PaymentPage) -> str:
 
 
 def _stored(key: str) -> bool:
-    """Whether a current, non-deleted version of `key` exists."""
-    return any(
-        latest and not marker
-        for _version, latest, marker, _modified in _listed(default_storage, key)
-    )
+    """Whether a current, non-deleted version of `key` exists.
+
+    A delete marker above older versions is not a stored object, and a key the
+    backend refuses to address names nothing it stores.
+    """
+    try:
+        listed = _listed(default_storage, key)
+    except SuspiciousOperation:
+        return False
+    return any(latest and not marker for _version, latest, marker, _modified in listed)
 
 
 def _unfinished_lines(
@@ -418,12 +497,11 @@ def inventory_lines(
         expiry = _when(candidate.expires_at)
         listed = list(_version_lines(head, candidate.keys, rules, expiry))
         lines += listed
-        if (
-            candidate.kind == "document"
-            and claim_state == "none"
-            and all(line.endswith("version=none") for line in listed)
-        ):
+        # Every key is examined: no key's order decides whether it is looked at.
+        stored = [_stored(key) for key in candidate.keys]
+        if candidate.kind == "document" and claim_state == "none" and not any(stored):
             # The row says the original exists; no disposal accounts for its absence.
+            # A delete marker above older versions is absence too (AXRM-051).
             lines.append(f"MISSING {head} proof=none")
             incomplete.add("missing-without-proof")
     for claim in snap.disposed:
