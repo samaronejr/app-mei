@@ -7,10 +7,12 @@ from uuid import UUID
 
 import pytest
 from django.db import connection, connections
+from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
 from apps.integrations import call_contracts, call_protocol
+from apps.integrations.budget import BudgetPolicy
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_contracts import (
     AdmissionDeniedError,
@@ -198,7 +200,21 @@ def test_a_version_moved_before_claim_is_recorded_and_released_at_claim(
 def test_a_pause_at_claim_rolls_back_and_holds_nothing(
     provider_link: ClientProviderLink, settings: SettingsWrapper
 ) -> None:
-    # Given a reserved call and the budget's state before its claim.
+    # Given a call reserved under the real budget policy, so its slot and the
+    # budget's reserved balance exist before the claim...
+    settings.USAGE_UNIT_PRICES_BRL = {"serpro_emissao": "0.32"}
+    settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "10.00"}
+    call_contracts._OPERATIONS["SP-DAS"] = replace(
+        call_contracts.operation_for("SP-DAS"), policy=BudgetPolicy(lambda _call: True)
+    )
+    with tenant_context(provider_link.tenant_id):
+        ProviderBudget.objects.create(
+            tenant_id=provider_link.tenant_id,
+            provider="serpro",
+            window_start=timezone.now().date().replace(day=1),
+            cap_microbrl=2_000_000,
+            tariff_revision="synthetic-tariff-v1",
+        )
     row = call_protocol.reserve(provider_link.tenant_id, provider_link.pk, request())
 
     def held() -> tuple[list[tuple[int, str]], list[int]]:
@@ -211,6 +227,7 @@ def test_a_pause_at_claim_rolls_back_and_holds_nothing(
             )
 
     before = held()
+    assert before == ([(1, "reserved")], [320_000])
     # When the provider is paused and the call is claimed.
     settings.PROVIDERS_PAUSED = True
     with pytest.raises(AdmissionDeniedError) as refused:
