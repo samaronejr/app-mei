@@ -32,27 +32,18 @@ def refuse_reverse_with_records(
         raise IrreversibleError(message)
 
 
-ISSUE_RETAINED = """
-CREATE FUNCTION cienciarecord_issue_retained() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM integrations_cienciarecord WHERE issue_id = OLD.id
-    ) THEN
-        RAISE EXCEPTION 'a Ciencia recovery duty still references this issue'
-            USING ERRCODE = '23503';
-    END IF;
-    RETURN OLD;
-END;
-$$;
-CREATE TRIGGER cienciarecord_issue_retained
-BEFORE DELETE ON integrations_integrationissue
-FOR EACH ROW EXECUTE FUNCTION cienciarecord_issue_retained();
+# AXRM-022 (deliberate, kept): every composite parent key of a recovery record cascades
+# (client, primary call, read call, cycle exception, issue). The house reject function
+# on the child refuses that cascade, and a direct delete, for every role. TRUNCATE stays
+# available to the restore helpers; no row is skipped by returning NULL.
+NO_DELETE = """
+CREATE TRIGGER integrations_cienciarecord_no_delete
+BEFORE DELETE ON integrations_cienciarecord
+FOR EACH ROW EXECUTE FUNCTION audit_reject_mutation();
 """
 
-ISSUE_RETAINED_REVERSE = """
-DROP TRIGGER cienciarecord_issue_retained ON integrations_integrationissue;
-DROP FUNCTION cienciarecord_issue_retained();
+NO_DELETE_REVERSE = """
+DROP TRIGGER integrations_cienciarecord_no_delete ON integrations_cienciarecord;
 """
 
 
@@ -227,8 +218,7 @@ class Migration(migrations.Migration):
             "REVOKE DELETE ON integrations_cienciarecord FROM app_runtime;",
             "REVOKE ALL ON integrations_cienciarecord FROM app_runtime;",
         ),
-        # AXRM-022 (deliberate, kept): the composite issue FK cascades; a referenced
-        # issue cannot be deleted from under its recovery duty.
-        migrations.RunSQL(ISSUE_RETAINED, ISSUE_RETAINED_REVERSE),
+        # AXRM-022 (deliberate, kept): no parent delete cascades a recovery duty away.
+        migrations.RunSQL(NO_DELETE, NO_DELETE_REVERSE),
         migrations.RunPython(migrations.RunPython.noop, refuse_reverse_with_records),
     ]
