@@ -24,6 +24,7 @@ from apps.cycles.services.fiscal_review import (
     input_digest,
     record_fiscal_document_review,
 )
+from apps.obligations.iss_retention_readiness import iss_party_is_ready
 from apps.obligations.models import FiscalDocument, FiscalRevision, RevisionArtifact
 
 
@@ -131,6 +132,7 @@ def fiscal_document_review(request: AuthenticatedRequest, pk: UUID) -> HttpRespo
             "input_digest": input_digest(fiscal),
             "decisions": DECISIONS,
             "error": error,
+            "iss_party_ready": iss_party_is_ready(fiscal),
         },
         status=status,
     )

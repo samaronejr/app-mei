@@ -260,6 +260,7 @@ PROVIDER_RECOVERY_FILES = frozenset(
 # head. Pin the exact vocabulary for that bookkeeping, not its entire module.
 ISS_INCIDENT_FILE = "apps/obligations/iss_retention_incidents.py"
 ISS_INGEST_FILE = "apps/obligations/fiscal_ingest.py"
+ISS_BACKFILL_FILE = "apps/obligations/iss_retention_backfill_v1.py"
 ISS_INCIDENT_LINES = Counter(
     {
         (
@@ -280,6 +281,17 @@ ISS_INCIDENT_LINES = Counter(
         (ISS_INCIDENT_FILE, "def reconcile_iss_incident("): 1,
         (ISS_INGEST_FILE, "reconcile_iss_incident,"): 1,
         (ISS_INGEST_FILE, "return reconcile_iss_incident("): 1,
+        (ISS_BACKFILL_FILE, "reconcile_iss_incident,"): 1,
+        (ISS_BACKFILL_FILE, "def _reconcile_incident("): 1,
+        (ISS_BACKFILL_FILE, "resolution = reconcile_iss_incident("): 1,
+        (
+            ISS_BACKFILL_FILE,
+            '"""Reconcile party and finish only owned ISS projections."""',
+        ): 1,
+        (
+            ISS_BACKFILL_FILE,
+            "updated += _reconcile_incident(db, first, decision, key, witnesses)",
+        ): 1,
     }
 )
 
@@ -568,6 +580,20 @@ FISCAL_RECEIPT_SCOPE_LINES: tuple[tuple[str, str, int, str], ...] = (
     ),
     # AXRM-046 records the reported ISS retention party as a municipal fact.
     (
+        "apps/obligations/iss_retention_evidence_v1.py",
+        "AND family = 'nfse_nacional'",
+        1,
+        "Pages only the national receipt family for historical ISS projection."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
+        "apps/obligations/iss_retention_readiness.py",
+        'fiscal.family == "nfse_nacional"',
+        1,
+        "Restricts completed ISS labels to the national receipt family."
+        + FISCAL_RECEIPT_ONLY,
+    ),
+    (
         "apps/obligations/models/fiscal.py",
         '"""Party reported by the NFS-e; unknown is not a negative assertion."""',
         1,
@@ -843,7 +869,9 @@ def test_row_6_no_bank_import() -> None:
     assert bank_hits == [], _report("bank-import reference", bank_hits)
     other_hits, iss_incident_hits = _pinned(hits, ISS_INCIDENT_FILE)
     other_hits, iss_ingest_hits = _pinned(other_hits, ISS_INGEST_FILE)
+    other_hits, iss_backfill_hits = _pinned(other_hits, ISS_BACKFILL_FILE)
     iss_incident_hits.update(iss_ingest_hits)
+    iss_incident_hits.update(iss_backfill_hits)
     assert iss_incident_hits == ISS_INCIDENT_LINES, _report(
         "ISS incident references differ from the evidence recovery pins",
         _pin_difference(iss_incident_hits, ISS_INCIDENT_LINES),

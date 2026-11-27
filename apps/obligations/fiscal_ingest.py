@@ -65,6 +65,7 @@ from apps.obligations.iss_retention_incidents import (
     iss_evidence_key,
     reconcile_iss_incident,
 )
+from apps.obligations.iss_retention_readiness import record_iss_party_ready
 from apps.obligations.iss_retention_v1 import project_iss_retention
 from apps.obligations.models import (
     AcquisitionOrigin,
@@ -302,6 +303,7 @@ def _refresh_current_iss(
         if changed:
             fiscal.version += 1
             fiscal.save(update_fields=[*changed, "version"])
+        record_iss_party_ready(fiscal, decision, prepared)
 
 
 def iss_old_fields_may_change(
@@ -788,6 +790,7 @@ def _register(
     fiscal.summary_only = extraction.summary_only
     fiscal.version += 1
     fiscal.save()
+    record_iss_party_ready(fiscal, iss, iss_originals)
     return fiscal
 
 
