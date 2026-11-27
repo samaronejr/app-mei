@@ -125,6 +125,27 @@ def record_refusal(call: ProviderCall, error: AdmissionDeniedError) -> None:
     call.save()
 
 
+def end_held(
+    tenant_id: UUID, client_id: UUID, request_key: str, reason: str
+) -> ProviderCall | None:
+    """End a call already made that the live controls no longer admit.
+
+    A held call (reserved, or a sent one waiting to retry) is recorded refused,
+    so it is terminal and owned, never stranded; nothing is sent (AXRM-045).
+    """
+    with tenant_context(tenant_id), transaction.atomic():
+        call = (
+            ProviderCall.objects.select_for_update()
+            .filter(client_id=client_id, request_key=request_key)
+            .first()
+        )
+        if call is not None and call.state in {CallState.RESERVED, CallState.RETRY}:
+            record_refusal(
+                call, AdmissionDeniedError(CallState.AUTHORITY, reason=reason)
+            )
+        return call
+
+
 def _moved_cause(policy: AdmissionPolicy, call: ProviderCall) -> str:
     """Name the blocker a call meets now, once its versions moved after reservation.
 
