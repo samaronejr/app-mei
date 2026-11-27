@@ -121,17 +121,16 @@ def _refused_without_writes(outcome: object, statements: list[str]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("kind", "documents"),
-    [
-        (ActionKind.FISCAL_MANIFESTATION, 1),
-        (ActionKind.FISCAL_MANIFESTATION, 2),
-        ("fiscal_manifestation", 0),
-    ],
+    ("form", "documents"),
+    [("enum", 1), ("enum", 2), ("string", 0)],
     ids=["one-document", "same-document-twice", "bare-string-no-selection"],
 )
 def test_propose_refuses_every_fiscal_selection_without_writing(
-    closed: Closed, kind: object, documents: int
+    closed: Closed, form: str, documents: int
 ) -> None:
+    # Resolved here, not at collection, so a parent without the kind fails on its
+    # contract (manifestation_kind's assertion) rather than at import.
+    kind: object = manifestation_kind() if form == "enum" else "fiscal_manifestation"
     before = closed.counts()
     cycle = closed.cycle
     outcome, statements = _attempt(
