@@ -83,7 +83,25 @@ def single_copy_storage(storage: Storage | None = None) -> bool:
     return chosen.__class__ in SINGLE_COPY_STORAGES
 
 
-def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) -> str:
+def local_root_refusal(storage: Storage | None = None) -> str | None:
+    """Walk a local storage root once: why it proves nothing, `` if it may.
+
+    None on any backend that is not a local filesystem. A caller judging many keys
+    takes this once and hands it to `local_layout_refusal` (AXRM-051).
+    """
+    chosen = default_storage if storage is None else storage
+    if not isinstance(chosen, FileSystemStorage):
+        return None
+    root = real_root(chosen)
+    return _mount_refusal(root) or _walk_refusal(root)
+
+
+def local_layout_refusal(
+    keys: Iterable[str],
+    storage: Storage | None = None,
+    *,
+    root_refusal: str | None = None,
+) -> str:
     """On local storage, why these keys are not proved to name files of their own.
 
     A key string cannot capture the physical file. The root, taken at its real
@@ -98,10 +116,11 @@ def local_layout_refusal(keys: Iterable[str], storage: Storage | None = None) ->
     chosen = default_storage if storage is None else storage
     if not isinstance(chosen, FileSystemStorage):
         return ""
-    root = real_root(chosen)
-    refusal = _mount_refusal(root) or _walk_refusal(root)
+    # The root is walked now unless the caller hands over its own one walk.
+    refusal = local_root_refusal(chosen) if root_refusal is None else root_refusal
     if refusal:
         return refusal
+    root = real_root(chosen)
     return next(
         (refusal for key in keys if (refusal := _key_refusal(chosen, root, key))), ""
     )
@@ -491,13 +510,24 @@ def foreign_storage_keys(
     read in its own context: an original's final key, an intake's quarantine copy
     or an evidence archive there keeps the key here.
     """
+    # PLATFORM_QUERY_OK: storage keys are global, so every other tenant is checked.
+    others = Tenant.objects.exclude(pk=tenant_id).values_list("pk", flat=True)
+    return keys_named_by_rows(others, keys, storage)
+
+
+def keys_named_by_rows(
+    tenant_ids: Iterable[UUID], keys: Iterable[str], storage: Storage | None = None
+) -> set[str]:
+    """Return which keys a row of these tenants names, under any spelling.
+
+    Each tenant is read in its own context; a key matches a row when both resolve
+    to the same physical object, and an unknown identity matches (AXRM-051).
+    """
     named = sorted({key for key in keys if key})
     found: set[str] = set()
     if not named:
         return set()
-    # PLATFORM_QUERY_OK: storage keys are global, so every other tenant is checked.
-    others = Tenant.objects.exclude(pk=tenant_id).values_list("pk", flat=True)
-    for other in list(others):
+    for other in list(tenant_ids):
         with tenant_context(other):
             for model, field in (
                 (Document, "storage_key"),
@@ -519,13 +549,14 @@ def foreign_storage_keys(
     }
 
 
-def ownership_refusal(
+def ownership_refusal(  # noqa: PLR0913 - one row's keys, storage and root walk
     tenant_id: UUID,
     keys: Iterable[str],
     *,
     document_id: UUID | None = None,
     export_id: UUID | None = None,
     storage: Storage | None = None,
+    root_refusal: str | None = None,
 ) -> str:
     """Why these keys may not be deleted for this row, or ``: the one ownership check.
 
@@ -547,7 +578,7 @@ def ownership_refusal(
         )
     if shared or foreign_storage_keys(tenant_id, named, storage):
         return "chave_compartilhada"
-    return local_layout_refusal(named, storage)
+    return local_layout_refusal(named, storage, root_refusal=root_refusal)
 
 
 def _key_lock_id(key: str, storage: Storage | None = None) -> int | None:

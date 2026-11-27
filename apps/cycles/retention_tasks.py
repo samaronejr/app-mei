@@ -503,12 +503,14 @@ def _locked_stop(tid: UUID, claim_id: UUID, keys: tuple[str, ...]) -> str:
         )
         if not current or set(current[0].keys) != set(keys):
             return "chaves_divergentes"
-        own = (
-            {"document_id": claim.content_id}
-            if claim.content_kind == "document"
-            else {"export_id": claim.content_id}
-        )
-    return ownership_refusal(tid, keys, **own, storage=default_storage)
+        document = claim.content_kind == "document"
+    return ownership_refusal(
+        tid,
+        keys,
+        document_id=claim.content_id if document else None,
+        export_id=None if document else claim.content_id,
+        storage=default_storage,
+    )
 
 
 def _dispose(  # noqa: PLR0913 - one claim's identity, keys and clock

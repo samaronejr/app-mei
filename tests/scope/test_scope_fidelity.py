@@ -114,6 +114,11 @@ PROVIDER_RECOVERY_FILES = frozenset(
     }
 )
 
+# AXRM-051 (B-2): the retention inventory reports a disposal that removed some of
+# its keys and stopped, for the operator to reconcile; disposal bookkeeping, not
+# bank reconciliation. Its exact module only; OFX remains forbidden here too.
+DISPOSAL_RECONCILIATION_FILES = frozenset({"apps/cycles/retention_inventory.py"})
+
 # Row 10. The single `esocial` occurrence is a COMMENT above `has_employee`, saying why
 # the field is a boolean rather than a payroll model. Pinned by location so that a
 # future *field* named `esocial_*` cannot slip in under the same allowance.
@@ -324,9 +329,13 @@ def test_row_6_no_bank_import() -> None:
     # Then bank import stays excluded. The regional plan's provider recovery is
     # registered by exact file, never by app-wide or banking-vocabulary exemption.
     assert bank_hits == [], _report("bank-import reference", bank_hits)
-    strays = _outside(hits, PROVIDER_RECOVERY_FILES)
+    registered = PROVIDER_RECOVERY_FILES | DISPOSAL_RECONCILIATION_FILES
+    strays = _outside(hits, registered)
     assert strays == [], _report("reconciliation outside provider recovery", strays)
-    assert {hit.split(":", 1)[0] for hit in hits} == PROVIDER_RECOVERY_FILES
+    matched = {hit.split(":", 1)[0] for hit in hits}
+    assert matched == registered, _report(
+        "registered without reconciliation wording", sorted(registered - matched)
+    )
 
 
 def test_row_7_no_reports_v1_and_no_audit_ui() -> None:

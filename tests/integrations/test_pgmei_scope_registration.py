@@ -18,8 +18,14 @@ if TYPE_CHECKING:
         ("", None),
         ("ofx", "bank-import reference"),
         ("foreign", "reconciliation outside provider recovery"),
+        ("stale", "registered without reconciliation wording"),
     ],
-    ids=["registered-provider-state", "ofx-in-provider-file", "unregistered-file"],
+    ids=[
+        "registered-provider-state",
+        "ofx-in-provider-file",
+        "unregistered-file",
+        "stale-registration",
+    ],
 )
 def test_provider_recovery_registration_keeps_bank_import_excluded(
     tmp_path: Path,
@@ -32,7 +38,11 @@ def test_provider_recovery_registration_keeps_bank_import_excluded(
         decoy = tmp_path / "apps" / f"sample_{index}.py"
         decoy.parent.mkdir(parents=True, exist_ok=True)
         decoy.write_text("", encoding="utf-8")
-    for filename in scope_fidelity.PROVIDER_RECOVERY_FILES:
+    # The inventory's path is written literally: dropping its registration from
+    # the guard then fails the positive case instead of passing with it.
+    for filename in scope_fidelity.PROVIDER_RECOVERY_FILES | {
+        "apps/cycles/retention_inventory.py"
+    }:
         source = tmp_path / filename
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_text("# reconcil\n", encoding="utf-8")
@@ -42,6 +52,10 @@ def test_provider_recovery_registration_keeps_bank_import_excluded(
     elif injection == "foreign":
         source = tmp_path / "apps/unregistered.py"
         source.write_text("# reconcil\n", encoding="utf-8")
+    elif injection == "stale":
+        # A registered file that no longer carries the word: exact registration.
+        source = tmp_path / "apps/cycles/retention_inventory.py"
+        source.write_text("# nothing to register\n", encoding="utf-8")
     monkeypatch.setattr(scope_fidelity, "PROJECT_ROOT", tmp_path)
     if refusal is None:
         scope_fidelity.test_row_6_no_bank_import()
