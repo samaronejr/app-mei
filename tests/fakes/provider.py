@@ -61,6 +61,8 @@ class Reply:
     hold_open: bool = False
     # When a framing test needs the exact HTTP status line and field bytes.
     raw_response: bytes | None = None
+    # Send an authenticated TLS close after the raw reply instead of a TCP FIN.
+    tls_close_notify: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +93,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         self._respond()
 
+    def _write_raw(self, data: bytes, *, close_notify: bool) -> None:
+        self.wfile.write(data)
+        if close_notify:
+            assert isinstance(self.connection, ssl.SSLSocket)
+            self.connection.unwrap()
+
     def _respond(self) -> None:
         # One exchange per connection, including close-delimited raw replies.
         self.close_connection = True
@@ -108,7 +116,7 @@ class _Handler(BaseHTTPRequestHandler):
             peer.release.wait(timeout=5)
         try:
             if reply.raw_response is not None:
-                self.wfile.write(reply.raw_response)
+                self._write_raw(reply.raw_response, close_notify=reply.tls_close_notify)
                 return
             self.send_response(reply.status)
             self.send_header("Connection", "close")

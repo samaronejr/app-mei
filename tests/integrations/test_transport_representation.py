@@ -35,6 +35,79 @@ def wire_outcome(
 
 
 @pytest.mark.parametrize("body", [REGISTERED, REFUSED], ids=["registered", "refused"])
+@pytest.mark.parametrize(
+    ("prefix", "suffix"),
+    [
+        (b"{size}\r\n", b"\r\n0\r\n"),
+        (b"{size}\r\n", b"\r\n0"),
+        (b"{size}\n", b"\r\n0\r\n\r\n"),
+        (b"{size}\r\n", b"\r\n0\r\n\n"),
+        (b"{size}\r\n", b"\r\n0\r\nX-Note: value\r\n"),
+        (b"{size}\r\n", b"\r\n0\r\nX-Note: value"),
+        (b"{size}\r\n", b"\r\n0\r\nnot-a-field\r\n\r\n"),
+        (b"{size}\r\n", b"\r\n0\r\n X-Note: value\r\n\r\n"),
+        (b"{size}\r\n", b"\r\n0\r\nX-Note: \x00\r\n\r\n"),
+        (b"{size}\r\n", b"\r\n0\r\nX-Note: " + b"x" * 65536 + b"\r\n\r\n"),
+        (b"{size};\r\n", b"\r\n0\r\n\r\n"),
+        (b'{size};note="unfinished\r\n', b"\r\n0\r\n\r\n"),
+        (b"{size};bad name=value\r\n", b"\r\n0\r\n\r\n"),
+        (b"{size};note=\r\n", b"\r\n0\r\n\r\n"),
+        (b"{size};note=\x00\r\n", b"\r\n0\r\n\r\n"),
+        (b"+{size}\r\n", b"\r\n0\r\n\r\n"),
+        (b" {size}\r\n", b"\r\n0\r\n\r\n"),
+        (b"0x{size}\r\n", b"\r\n0\r\n\r\n"),
+        (b"GG\r\n", b"\r\n0\r\n\r\n"),
+        (b"f" * 4301 + b"\r\n", b"\r\n0\r\n\r\n"),
+        (b"0" * 65536 + b"{size}\r\n", b"\r\n0\r\n\r\n"),
+        (b"{size}\r\n", b"XX0\r\n\r\n"),
+        (b"{size}\r\n", b"\n0\r\n\r\n"),
+    ],
+    ids=[
+        "reviewer-missing-final-empty-line",
+        "unterminated-zero-chunk",
+        "bare-lf-size",
+        "bare-lf-trailer-terminator",
+        "trailer-eof-after-field",
+        "trailer-eof-inside-field",
+        "trailer-without-colon",
+        "folded-trailer",
+        "control-in-trailer",
+        "oversized-trailer",
+        "empty-extension",
+        "unterminated-quoted-extension",
+        "invalid-extension-name",
+        "missing-extension-value",
+        "control-in-extension",
+        "signed-size",
+        "whitespace-size",
+        "prefixed-size",
+        "non-hex-size",
+        "oversized-size",
+        "oversized-size-line",
+        "wrong-data-crlf",
+        "missing-data-crlf",
+    ],
+)
+def test_malformed_chunk_framing_never_delivers_a_body(
+    body: bytes, prefix: bytes, suffix: bytes
+) -> None:
+    reply = Reply(
+        body=prefix.replace(b"{size}", f"{len(body):x}".encode()) + body + suffix,
+        headers=(("Transfer-Encoding", "chunked"),),
+        declared_length=False,
+    )
+    with FakeFocus((reply,)) as peer:
+        outcome = wire_outcome(peer)
+        assert isinstance(outcome, TransportFailure), outcome
+        assert outcome.code in {
+            "resposta_invalida",
+            "resposta_excede_limite",
+            "conexao_interrompida",
+        }
+        assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize("body", [REGISTERED, REFUSED], ids=["registered", "refused"])
 @pytest.mark.parametrize("coding", ["chunked ", "chunked\t", " chunked "])
 def test_claimed_chunk_coding_cannot_deliver_unframed_json(
     body: bytes, coding: str
@@ -45,6 +118,41 @@ def test_claimed_chunk_coding_cannot_deliver_unframed_json(
     with FakeFocus((reply,)) as peer:
         outcome = wire_outcome(peer)
         assert isinstance(outcome, TransportFailure), outcome
+        assert len(peer.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "state"),
+    [(REGISTERED, CallState.SUCCESS), (REFUSED, CallState.FAILED)],
+    ids=["registered", "refused"],
+)
+@pytest.mark.parametrize(
+    ("extension", "ending"),
+    [
+        (b"", b"0\r\n\r\n"),
+        (b";flag", b"0;done\r\n\r\n"),
+        (b";name=value", b"000\r\nX-Note: ignored\r\n\r\n"),
+        (b';note="a; b\\"c";flag', b"0\r\nX-A: one\r\nX-B: two\r\n\r\n"),
+        (b" \t; name = value", b"0\r\n\r\n"),
+    ],
+    ids=["plain", "flag-extension", "token-and-trailer", "quoted-and-trailers", "bws"],
+)
+def test_complete_chunks_extensions_and_trailers_preserve_terminal_controls(
+    body: bytes, state: str, extension: bytes, ending: bytes
+) -> None:
+    reply = Reply(
+        body=f"{len(body):x}".encode() + extension + b"\r\n" + body + b"\r\n" + ending,
+        headers=(("Transfer-Encoding", "chunked"),),
+        declared_length=False,
+    )
+    with FakeFocus((reply,)) as peer:
+        response = permitted_send(
+            ProviderTransport("focus", "fake", peer.origin),
+            "FC-NFE",
+            ProviderRequest(),
+        )
+        assert response.body == body
+        assert _registration_result(response).state == state
         assert len(peer.requests) == 1
 
 
