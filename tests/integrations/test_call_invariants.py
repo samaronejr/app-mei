@@ -1,8 +1,10 @@
 """Concurrency, changed admission and effect identity witnesses for AXRM-009."""
 
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
+from typing import Final
 from uuid import UUID
 
 import pytest
@@ -19,8 +21,9 @@ from apps.integrations.call_contracts import (
     CallResult,
     StaleClaimError,
 )
-from apps.integrations.call_models import CallState, ProviderCallAttempt
+from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
 from apps.integrations.models import ClientProviderLink, ProviderConnection
+from apps.integrations.serpro.work import CLIENT_ABSENT
 from apps.tenants.models import Tenant
 from tests.integrations.provider_peer import ProviderPeer
 from tests.integrations.test_call_protocol import (
@@ -181,31 +184,16 @@ def test_a_moved_version_is_refused_whatever_the_reread_does(
     assert kept == "synthetic-company"
 
 
-def test_a_version_moved_before_claim_is_recorded_and_released_at_claim(
+def _priced(
     provider_link: ClientProviderLink,
+    settings: SettingsWrapper,
+    authority: Callable[[ProviderCall], bool],
 ) -> None:
-    # Given a reserved call, then its connection version moves before the claim.
-    row = call_protocol.reserve(provider_link.tenant_id, provider_link.pk, request())
-    with tenant_context(provider_link.tenant_id):
-        ProviderConnection.objects.filter(pk=provider_link.connection_id).update(
-            version=2
-        )
-    # When it is claimed, the refusal still reaches the caller...
-    with pytest.raises(AdmissionDeniedError):
-        call_protocol.claim(provider_link.tenant_id, row.pk)
-    # ...and the call is a recorded refusal, never left reserved (AXRM-045).
-    assert reload_call(provider_link, row.pk).state == CallState.AUTHORITY
-
-
-def test_a_pause_at_claim_rolls_back_and_holds_nothing(
-    provider_link: ClientProviderLink, settings: SettingsWrapper
-) -> None:
-    # Given a call reserved under the real budget policy, so its slot and the
-    # budget's reserved balance exist before the claim...
+    """Admit SP-DAS under the real budget policy, so a reservation holds money."""
     settings.USAGE_UNIT_PRICES_BRL = {"serpro_emissao": "0.32"}
     settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = {"serpro": "10.00"}
     call_contracts._OPERATIONS["SP-DAS"] = replace(
-        call_contracts.operation_for("SP-DAS"), policy=BudgetPolicy(lambda _call: True)
+        call_contracts.operation_for("SP-DAS"), policy=BudgetPolicy(authority)
     )
     with tenant_context(provider_link.tenant_id):
         ProviderBudget.objects.create(
@@ -215,25 +203,100 @@ def test_a_pause_at_claim_rolls_back_and_holds_nothing(
             cap_microbrl=2_000_000,
             tariff_revision="synthetic-tariff-v1",
         )
+
+
+def _held(
+    provider_link: ClientProviderLink, call_id: UUID
+) -> tuple[list[tuple[int, str]], list[tuple[int, int, int]]]:
+    """The call's slots, and every budget's reserved, known and uncertain money."""
+    with tenant_context(provider_link.tenant_id):
+        slots = ProviderReservation.objects.filter(call_id=call_id)
+        budgets = ProviderBudget.objects.order_by("pk")
+        return (
+            sorted(slots.values_list("attempt_number", "state")),
+            list(
+                budgets.values_list("reserved", "known_liability", "uncertain_exposure")
+            ),
+        )
+
+
+def test_a_version_moved_before_claim_is_recorded_and_released_at_claim(
+    provider_link: ClientProviderLink, settings: SettingsWrapper
+) -> None:
+    # Given a call reserved under the real budget policy, its priced slot held...
+    _priced(provider_link, settings, lambda _call: True)
     row = call_protocol.reserve(provider_link.tenant_id, provider_link.pk, request())
-
-    def held() -> tuple[list[tuple[int, str]], list[int]]:
-        with tenant_context(provider_link.tenant_id):
-            slots = ProviderReservation.objects.filter(call_id=row.pk)
-            budgets = ProviderBudget.objects.order_by("pk")
-            return (
-                sorted(slots.values_list("attempt_number", "state")),
-                list(budgets.values_list("reserved", flat=True)),
-            )
-
-    before = held()
-    assert before == ([(1, "reserved")], [320_000])
-    # When the provider is paused and the call is claimed.
-    settings.PROVIDERS_PAUSED = True
+    assert _held(provider_link, row.pk) == ([(1, "reserved")], [(320_000, 0, 0)])
+    # ...then its connection version moves before the claim.
+    with tenant_context(provider_link.tenant_id):
+        ProviderConnection.objects.filter(pk=provider_link.connection_id).update(
+            version=2
+        )
+    # When it is claimed, the refusal still reaches the caller...
     with pytest.raises(AdmissionDeniedError) as refused:
         call_protocol.claim(provider_link.tenant_id, row.pk)
-    # Then the pause reaches the caller and nothing changed: a pause is never
-    # recorded at claim, only a permanent refusal is (AXRM-045).
-    assert str(refused.value) == CallState.PAUSED
+    # ...and the call is a recorded refusal, never left reserved (AXRM-045).
+    call = reload_call(provider_link, row.pk)
+    assert call.state == CallState.AUTHORITY
+    # It is the typed moved refusal, naming no cause since the authority holds,
+    # recorded with nothing sent and its one slot released.
+    assert (type(refused.value).__name__, str(refused.value), refused.value.reason) == (
+        "VersionMovedError",
+        CallState.AUTHORITY,
+        CallState.AUTHORITY,
+    )
+    assert (call.provider_code, call.attempts) == (CallState.AUTHORITY, 0)
+    assert _held(provider_link, row.pk) == ([(1, "released")], [(0, 0, 0)])
+
+
+# Each ordinary claim veto: the refusal it raises, and the reason it carries.
+VETOES: Final = {
+    "pause": (CallState.PAUSED, CallState.PAUSED),
+    "authority": (CallState.AUTHORITY, CallState.AUTHORITY),
+    "authority-named": (CallState.AUTHORITY, CLIENT_ABSENT),
+    "link-disabled": (CallState.PAUSED, CallState.PAUSED),
+    # The pause check runs before the version check (`call_state.py:57-81`).
+    "moved-and-paused": (CallState.PAUSED, CallState.PAUSED),
+}
+
+
+@pytest.mark.parametrize("veto", list(VETOES))
+def test_a_pause_at_claim_rolls_back_and_holds_nothing(
+    provider_link: ClientProviderLink, settings: SettingsWrapper, veto: str
+) -> None:
+    # Given a call reserved under the real budget policy, so its slot and the
+    # budget's reserved balance exist before the claim...
+    vetoed: list[bool] = []
+
+    def authority(_call: ProviderCall) -> bool:
+        if vetoed and veto == "authority-named":
+            raise AdmissionDeniedError(CallState.AUTHORITY, reason=CLIENT_ABSENT)
+        return not (vetoed and veto == "authority")
+
+    _priced(provider_link, settings, authority)
+    row = call_protocol.reserve(provider_link.tenant_id, provider_link.pk, request())
+    before = _held(provider_link, row.pk)
+    assert before == ([(1, "reserved")], [(320_000, 0, 0)])
+    # When an ordinary veto, never a version move alone, meets the claim.
+    vetoed.append(True)
+    with tenant_context(provider_link.tenant_id):
+        if veto == "link-disabled":
+            ClientProviderLink.objects.filter(pk=provider_link.pk).update(
+                status="revogada"
+            )
+        if veto == "moved-and-paused":
+            ProviderConnection.objects.filter(pk=provider_link.connection_id).update(
+                version=2
+            )
+    if veto in {"pause", "moved-and-paused"}:
+        settings.PROVIDERS_PAUSED = True
+    with pytest.raises(AdmissionDeniedError) as refused:
+        call_protocol.claim(provider_link.tenant_id, row.pk)
+    # Then that plain refusal reaches the caller and nothing changed: only a
+    # permanent refusal is recorded at claim (AXRM-045).
     assert reload_call(provider_link, row.pk).state == CallState.RESERVED
-    assert held() == before
+    assert (type(refused.value).__name__, str(refused.value), refused.value.reason) == (
+        "AdmissionDeniedError",
+        *VETOES[veto],
+    )
+    assert _held(provider_link, row.pk) == before
