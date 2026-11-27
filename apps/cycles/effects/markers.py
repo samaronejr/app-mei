@@ -1,66 +1,110 @@
-"""An execution marker is exact, absent or conflicting (AXRM-022, deliberate, kept).
+"""One proposal-relative classification of execution markers (AXRM-022, kept).
 
-The exact foreign key binds a marker to its proposal, revision and digest only. A marker
-proves its proposal's effect only when all eight fields agree: tenant, client, cycle,
-proposal, revision, digest, business intent and kind. Any other marker attached to the
-proposal, or occupying its scoped intent, is a conflict: neither proof of execution nor
-permission to run the effect again. No marker is ever deleted or rewritten here.
+The exact foreign key binds a marker to its proposal, revision and digest only, so every
+marker is compared with the TARGET proposal on all eight fields: tenant, client, cycle,
+proposal, revision, digest, business intent and kind. Reviewer ruling 1 fixes the
+order:
+
+- CONFLICT: a marker attached to the proposal disagrees with it (even beside an exact
+  one);
+- EXACT: a marker attached to the proposal agrees with it;
+- OCCUPIED: none is attached, but a marker holds its (tenant, client, business intent);
+- ABSENT: otherwise.
+
+Only EXACT proves an effect, and only for the proposal's own kind. Readers use this one
+SQL expression; no marker is ever deleted or rewritten here.
 """
 
 from enum import StrEnum
-from typing import Final
+from typing import TYPE_CHECKING, Final, TypedDict
 
-from django.db.models import Exists, F, OuterRef, Q, QuerySet
+from django.db.models import Case, CharField, Exists, OuterRef, Q, Value, When
 
 from apps.cycles.models import ActionExecution, ActionProposal
 
-EXACT: Final = Q(
-    tenant_id=F("proposal__tenant_id"),
-    client_id=F("proposal__client_id"),
-    cycle_id=F("proposal__cycle_id"),
-    proposal_revision=F("proposal__revision"),
-    digest=F("proposal__digest"),
-    business_intent_key=F("proposal__business_intent_key"),
-    action_kind=F("proposal__action_kind"),
-)
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+    from django_stubs_ext import WithAnnotations
 
 
 class MarkerState(StrEnum):
-    """What the markers around one proposal prove."""
+    """What the markers around one proposal prove (reviewer ruling 1)."""
 
     ABSENT = "absent"
     EXACT = "exact"
     CONFLICT = "conflict"
+    OCCUPIED = "occupied"
 
 
-def exact_markers() -> QuerySet[ActionExecution]:
-    """Markers whose eight fields agree with their own proposal (one join)."""
-    return ActionExecution.objects.filter(EXACT)
+class MarkerFacts(TypedDict):
+    """The annotation `with_marker_state` adds to each proposal row."""
+
+    marker_state: str
 
 
-def exactly_executed() -> Exists:
-    """For an ActionProposal queryset: the outer row has an exact marker."""
-    return Exists(exact_markers().filter(proposal_id=OuterRef("pk")))
+# A marker equals the OUTER (target) proposal on all eight fields.
+MATCHES_TARGET: Final = Q(
+    tenant_id=OuterRef("tenant_id"),
+    client_id=OuterRef("client_id"),
+    cycle_id=OuterRef("cycle_id"),
+    proposal_id=OuterRef("pk"),
+    proposal_revision=OuterRef("revision"),
+    digest=OuterRef("digest"),
+    business_intent_key=OuterRef("business_intent_key"),
+    action_kind=OuterRef("action_kind"),
+)
+
+
+def marker_state_expression() -> Case:
+    """For an ActionProposal queryset: classify each row against itself, in SQL."""
+    attached = ActionExecution.objects.filter(proposal_id=OuterRef("pk"))
+    holders = ActionExecution.objects.filter(
+        tenant_id=OuterRef("tenant_id"),
+        client_id=OuterRef("client_id"),
+        business_intent_key=OuterRef("business_intent_key"),
+    )
+    return Case(
+        When(
+            Exists(attached.exclude(MATCHES_TARGET)), then=Value(MarkerState.CONFLICT)
+        ),
+        When(Exists(attached.filter(MATCHES_TARGET)), then=Value(MarkerState.EXACT)),
+        When(Exists(holders), then=Value(MarkerState.OCCUPIED)),
+        default=Value(MarkerState.ABSENT),
+        output_field=CharField(),
+    )
+
+
+def with_marker_state(
+    queryset: "QuerySet[ActionProposal]",
+) -> "QuerySet[WithAnnotations[ActionProposal, MarkerFacts]]":
+    """Annotate `marker_state` on every proposal row, in the same single query."""
+    return queryset.annotate(marker_state=marker_state_expression())
 
 
 def marker_state(
     proposal: ActionProposal,
 ) -> tuple[MarkerState, ActionExecution | None]:
-    """Classify every marker attached to the proposal or occupying its intent."""
-    candidates = list(
-        ActionExecution.objects.filter(
-            Q(proposal_id=proposal.pk)
-            | Q(
-                client_id=proposal.client_id,
-                business_intent_key=proposal.business_intent_key,
-            )
-        ).order_by("pk")
+    """Classify one proposal with the same expression; a receipt only for EXACT."""
+    value = (
+        with_marker_state(ActionProposal.objects.filter(pk=proposal.pk))
+        .values_list("marker_state", flat=True)
+        .first()
     )
-    if not candidates:
-        return MarkerState.ABSENT, None
-    receipt = candidates[0]
-    exact = (
-        len(candidates) == 1
-        and exact_markers().filter(pk=receipt.pk, proposal_id=proposal.pk).exists()
+    state = MarkerState(value) if value is not None else MarkerState.ABSENT
+    if state is not MarkerState.EXACT:
+        return state, None
+    return state, ActionExecution.objects.filter(proposal_id=proposal.pk).first()
+
+
+def proves(proposal: ActionProposal, kind: str) -> bool:
+    """EXACT and of this kind: the only state that proves the proposal's effect."""
+    return (
+        proposal.action_kind == kind and marker_state(proposal)[0] is MarkerState.EXACT
     )
-    return (MarkerState.EXACT, receipt) if exact else (MarkerState.CONFLICT, None)
+
+
+def proving(kind: str) -> "QuerySet[WithAnnotations[ActionProposal, MarkerFacts]]":
+    """Proposals of this kind whose state is EXACT (one correlated expression)."""
+    return with_marker_state(ActionProposal.objects.filter(action_kind=kind)).filter(
+        marker_state=MarkerState.EXACT
+    )

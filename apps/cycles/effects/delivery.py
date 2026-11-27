@@ -6,24 +6,41 @@ import json
 from datetime import timedelta
 from uuid import UUID
 
-from apps.cycles.effects.inputs import ProposalInput
+from django.core.exceptions import ValidationError
+from django.http import Http404
+
+from apps.cycles.effects.manifest import ActionKind
 from apps.cycles.effects.markers import MarkerState, marker_state
+from apps.cycles.effects.stored import stored_input
+from apps.cycles.errors import ProposalIntegrityError
 from apps.cycles.models import (
     ActionProposal,
     ClientPublication,
     PublicationState,
 )
-from apps.cycles.services.approvals import revalidate
+from apps.cycles.services.approvals import _locked_proposal, revalidate
+from apps.delivery.errors import IntentConflict
 from apps.delivery.models import OutboundMessage
 from apps.delivery.policy import BusinessIntent, MessageKind, register_kind
 from apps.delivery.retries import root_intent
 
-APPROVED_KINDS = frozenset({"approved_email", "approved_publication_notice"})
+# Each approved envelope carries exactly one operation's effect.
+OPERATIONS: dict[str, ActionKind] = {
+    "approved_email": ActionKind.EMAIL_NOTICE,
+    "approved_publication_notice": ActionKind.CLIENT_PUBLICATION,
+}
+APPROVED_KINDS = frozenset(OPERATIONS)
+# Only an exact receipt authorizes a send (reviewer ruling 1).
+STATE_REFUSALS: dict[MarkerState, str] = {
+    MarkerState.CONFLICT: "execution_conflict",
+    MarkerState.OCCUPIED: "execution_conflict",
+    MarkerState.ABSENT: "execution_missing",
+}
 
 
 def message_intent(proposal: ActionProposal, contact_id: UUID) -> str:
     """One envelope per selected contact, without a regenerated proposal UUID."""
-    spec = ProposalInput.from_data(proposal.input_spec)
+    spec = stored_input(proposal)
     cycle = proposal.cycle
     return BusinessIntent(
         cycle.engagement_id,
@@ -38,9 +55,41 @@ def message_intent(proposal: ActionProposal, contact_id: UUID) -> str:
 
 
 def _valid(message: OutboundMessage) -> tuple[bool, str]:
+    """Known refusals become stable pre-start codes, so the outbox cancels the claim.
+
+    A VersionConflict is transient and still escapes; nothing else is caught.
+    """
     if message.proposal_id is None:
         return False, "proposal_missing"
-    result = revalidate(None, message.proposal_id)
+    try:
+        return _checked(message, message.proposal_id)
+    except IntentConflict:
+        code = "execution_conflict"
+    except ProposalIntegrityError:
+        code = "proposal_integrity"
+    except Http404:
+        code = "proposal_missing"
+    except ValidationError as error:
+        if getattr(error, "code", None) != "fiscal_manifestation_unavailable":
+            raise
+        code = "effect_unavailable"
+    return False, code
+
+
+def _checked(message: OutboundMessage, proposal_id: UUID) -> tuple[bool, str]:
+    # Before revalidation (which may write an invalidation) and before any payload:
+    # the envelope's operation against the stored, immutable row kind...
+    stored = ActionProposal.objects.filter(pk=proposal_id).first()
+    if stored is None:
+        return False, "proposal_missing"
+    if OPERATIONS.get(message.kind) != stored.action_kind:
+        return False, "effect_kind_mismatch"
+    # ...then, under the proposal fences, its stored identity and its marker state.
+    _scope, locked, _spec, _decisions = _locked_proposal(None, proposal_id, None)
+    refusal = STATE_REFUSALS.get(marker_state(locked)[0])
+    if refusal is not None:
+        return False, refusal
+    result = revalidate(None, proposal_id)
     proposal = result.proposal
     if not result.executable:
         reason = next(
@@ -48,11 +97,6 @@ def _valid(message: OutboundMessage) -> tuple[bool, str]:
             "approval_required",
         )
         return False, reason
-    marker, _receipt = marker_state(proposal)
-    if marker is MarkerState.CONFLICT:
-        return False, "execution_conflict"
-    if marker is MarkerState.ABSENT:
-        return False, "execution_missing"
     data = json.loads(bytes(proposal.manifest_bytes))
     payload = data["payload"]
     if message.kind == "approved_publication_notice":

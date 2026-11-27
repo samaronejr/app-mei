@@ -29,7 +29,7 @@ from apps.cycles.effects.manifest import (
     canonicalize,
     normalize_email,
 )
-from apps.cycles.effects.markers import exact_markers
+from apps.cycles.effects.markers import proves
 from apps.cycles.evidence import PORTAL_SERVABLE_STATES, ReviewDecision
 from apps.cycles.models import (
     ActionProposal,
@@ -445,8 +445,8 @@ def _publication_payload(
     if spec.withdraw_publication_id is not None:
         target = ClientPublication.objects.get(pk=spec.withdraw_publication_id)
         version = target.version
-        if target.state == PublicationState.WITHDRAWN and (
-            exact_markers().filter(proposal=proposal).exists()
+        if target.state == PublicationState.WITHDRAWN and proves(
+            proposal, ActionKind.CLIENT_PUBLICATION
         ):
             # This exact committed effect advanced the target once. Rebuild
             # its approved precondition while still rechecking every live

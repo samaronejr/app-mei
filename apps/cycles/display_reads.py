@@ -27,7 +27,7 @@ from apps.cycles.display_completion import display_valid_waivers
 from apps.cycles.display_index import display_source_digest
 from apps.cycles.display_recipients import RecipientPreview, display_recipients
 from apps.cycles.display_requests import display_requests
-from apps.cycles.effects.markers import exactly_executed
+from apps.cycles.effects.markers import marker_state_expression
 from apps.cycles.fiscal_queries import PeriodDocumentRow, period_document_rows
 from apps.cycles.models import (
     ActionProposal,
@@ -77,9 +77,9 @@ class CycleFacts(TypedDict):
 
 
 class ProposalFacts(TypedDict):
-    """Execution existence without a second proposal or receipt collection read."""
+    """The marker state, without a second proposal or receipt collection read."""
 
-    display_executed: bool
+    display_marker: str
 
 
 class LinkFacts(TypedDict):
@@ -212,7 +212,7 @@ def load_cycle_detail(actor: "User", cycle_id: UUID) -> CycleDetailReads:
     )
     requests = display_requests(cycle)
     proposals: QuerySet[WithAnnotations[ActionProposal, ProposalFacts]] = (
-        cycle.proposals.annotate(display_executed=exactly_executed()).order_by(
+        cycle.proposals.annotate(display_marker=marker_state_expression()).order_by(
             "-created_at", "-pk"
         )
     )

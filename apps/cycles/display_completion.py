@@ -1,18 +1,11 @@
 """Display-only closure reads; completion_checks remains the locked authority."""
 
-import json
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from django.db.models import Exists, OuterRef
-
-from apps.cycles.completion_checks import CompletionItem
-from apps.cycles.effects.manifest import ActionKind
-from apps.cycles.effects.markers import exact_markers
+from apps.cycles.completion_checks import CompletionItem, waiver_proofs
+from apps.cycles.effects.markers import MarkerState
 from apps.cycles.models import (
-    ActionExecution,
-    Approval,
-    ApprovalDecision,
     ExceptionState,
     ProposalState,
     RequestState,
@@ -22,86 +15,26 @@ from apps.cycles.models import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from django.db.models import QuerySet
     from django_stubs_ext import WithAnnotations
 
     from apps.cycles.display_reads import CycleDetailReads
     from apps.cycles.display_requests import RequestFacts
-    from apps.cycles.effects.manifest import EvidenceEffect
     from apps.cycles.models import EvidenceRequest, ServiceCycle
-
-
-class ReceiptApproval(TypedDict):
-    """An approval matching the exact receipt and its execution time."""
-
-    display_approved: bool
-
-
-class WaiverPayload(TypedDict):
-    """The reason read from the already frozen, trusted waiver manifest."""
-
-    reason: str
-
-
-class WaiverManifest(TypedDict):
-    """Only the frozen fields the authoritative waiver predicate consumes."""
-
-    payload: WaiverPayload
-    evidence: "list[EvidenceEffect]"
 
 
 def display_valid_waivers(
     cycle: "ServiceCycle",
     requests: "Sequence[WithAnnotations[EvidenceRequest, RequestFacts]]",
 ) -> frozenset[UUID]:
-    """Match batched receipts to the same reason, prior revision and approval."""
-    candidates = {
-        str(row.pk): row
-        for row in requests
-        if row.required and row.state == RequestState.WAIVED
-    }
-    if not candidates:
-        return frozenset()
-    approvals = Approval.objects.filter(
-        proposal_id=OuterRef("proposal_id"),
-        decision=ApprovalDecision.APPROVE,
-        digest=OuterRef("digest"),
-        proposal_revision=OuterRef("proposal_revision"),
-        expires_at__gt=OuterRef("executed_at"),
+    """Return the locked waiver proof, fed the reasons this read cut annotated."""
+    return waiver_proofs(
+        cycle,
+        {
+            row.pk: (row.version, row.display_waiver_reason)
+            for row in requests
+            if row.required and row.state == RequestState.WAIVED
+        },
     )
-    receipts: QuerySet[WithAnnotations[ActionExecution, ReceiptApproval]] = (
-        exact_markers()
-        .filter(
-            client_id=cycle.client_id,
-            cycle=cycle,
-            action_kind=ActionKind.REQUEST_WAIVER,
-        )
-        .select_related("proposal")
-        .annotate(display_approved=Exists(approvals))
-    )
-    valid: set[UUID] = set()
-    for receipt in receipts:
-        if not receipt.display_approved:
-            continue
-        manifest: WaiverManifest = json.loads(bytes(receipt.proposal.manifest_bytes))
-        for evidence in manifest["evidence"]:
-            row = candidates.get(evidence["request_id"])
-            if (
-                row is not None
-                and evidence["request_id"]
-                in receipt.proposal.input_spec["evidence_requests"]
-                and evidence["revision"] == row.version - 1
-                and _waiver_reason(row) == manifest["payload"]["reason"]
-            ):
-                valid.add(row.pk)
-    return frozenset(valid)
-
-
-def _waiver_reason(
-    request: "WithAnnotations[EvidenceRequest, RequestFacts]",
-) -> str | None:
-    reason = request.display_waiver_reason
-    return reason if reason.strip() else None
 
 
 def display_completion_items(reads: "CycleDetailReads") -> list[CompletionItem]:
@@ -163,7 +96,7 @@ def _action_items(reads: "CycleDetailReads") -> list[CompletionItem]:
             f"/acoes/{row.pk}/",
         )
         for row in sorted(reads.proposals, key=lambda row: row.pk)
-        if not row.display_executed
+        if row.display_marker != MarkerState.EXACT
         and row.state
         not in {
             ProposalState.REJECTED,

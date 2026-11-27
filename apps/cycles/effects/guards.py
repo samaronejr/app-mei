@@ -1,7 +1,7 @@
 """Cycle guards for the consequential effects and their unresolved outbound work."""
 
 from apps.cycles.effects.manifest import ActionKind
-from apps.cycles.effects.markers import exact_markers, exactly_executed
+from apps.cycles.effects.markers import MarkerState, with_marker_state
 from apps.cycles.models import (
     ActionProposal,
     ProposalState,
@@ -13,7 +13,7 @@ from apps.delivery.models import MessageState, OutboundMessage
 def actions_terminal(cycle: ServiceCycle) -> bool:
     """Require every proposal to be decided/executed and every send resolved."""
     undecided = (
-        ActionProposal.objects.filter(cycle=cycle)
+        with_marker_state(ActionProposal.objects.filter(cycle=cycle))
         .exclude(
             state__in=[
                 ProposalState.REJECTED,
@@ -21,7 +21,7 @@ def actions_terminal(cycle: ServiceCycle) -> bool:
                 ProposalState.INVALIDATED,
             ]
         )
-        .filter(~exactly_executed())
+        .exclude(marker_state=MarkerState.EXACT)
         .exists()
     )
     unresolved = OutboundMessage.objects.filter(
@@ -37,10 +37,13 @@ def actions_terminal(cycle: ServiceCycle) -> bool:
 
 
 def effects_started(cycle: ServiceCycle) -> bool:
-    """Treat an applied DB effect or durable SMTP start as irreversible history."""
+    """Return whether a proved non-email effect or an SMTP start exists (ruling 3).
+
+    Mixed or conflicting history alone proves nothing: it does not block cancellation.
+    """
     return (
-        exact_markers()
-        .filter(cycle=cycle)
+        with_marker_state(ActionProposal.objects.filter(cycle=cycle))
+        .filter(marker_state=MarkerState.EXACT)
         .exclude(action_kind=ActionKind.EMAIL_NOTICE)
         .exists()
         or OutboundMessage.objects.filter(

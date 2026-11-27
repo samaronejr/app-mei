@@ -1,12 +1,18 @@
 """One authoritative checklist shared by presentation and locked completion."""
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from uuid import UUID
+
+from django.db.models import Exists, OuterRef
 
 from apps.cycles.effects.manifest import ActionKind
-from apps.cycles.effects.markers import exact_markers, exactly_executed
+from apps.cycles.effects.markers import MarkerState, proving, with_marker_state
 from apps.cycles.models import (
+    ActionExecution,
     ActionProposal,
+    Approval,
     ApprovalDecision,
     CycleState,
     CycleTask,
@@ -32,40 +38,57 @@ class CompletionItem:
     href: str
 
 
-def valid_waiver(request: EvidenceRequest) -> bool:
-    """Require the exact executed approval that produced this waiver revision."""
-    internal = RequestInternal.objects.filter(request=request).first()
-    if internal is None or not internal.waiver_reason.strip():
-        return False
+def waiver_proofs(
+    cycle: ServiceCycle, waived: Mapping[UUID, tuple[int, str]]
+) -> frozenset[UUID]:
+    """Which waived requests the exact executed approval of their revision proves.
+
+    `waived` maps each waived request to (current version, private waiver reason).
+    One query reads every proving waiver receipt with its approval; the match is in
+    memory: nonblank equal reason, the request selected and frozen at version - 1,
+    and an approval of the same revision and digest still valid when it executed.
+    """
+    candidates = {pk: row for pk, row in waived.items() if row[1].strip()}
+    if not candidates:
+        return frozenset()
+    approvals = Approval.objects.filter(
+        proposal_id=OuterRef("proposal_id"),
+        decision=ApprovalDecision.APPROVE,
+        digest=OuterRef("digest"),
+        proposal_revision=OuterRef("proposal_revision"),
+        expires_at__gt=OuterRef("executed_at"),
+    )
     receipts = (
-        exact_markers()
-        .filter(
-            client_id=request.client_id,
-            cycle_id=request.cycle_id,
+        ActionExecution.objects.filter(
+            client_id=cycle.client_id,
+            cycle_id=cycle.pk,
             action_kind=ActionKind.REQUEST_WAIVER,
-            proposal__input_spec__evidence_requests__contains=[str(request.pk)],
+            proposal_id__in=proving(ActionKind.REQUEST_WAIVER)
+            .filter(cycle_id=cycle.pk)
+            .values("pk"),
         )
         .select_related("proposal")
+        .annotate(proof_approved=Exists(approvals))
     )
+    valid: set[UUID] = set()
     for receipt in receipts:
+        if not receipt.proof_approved:
+            continue
         proposal = receipt.proposal
         manifest = json.loads(bytes(proposal.manifest_bytes))
-        if (
-            manifest["payload"]["reason"] == internal.waiver_reason
-            and any(
-                item["request_id"] == str(request.pk)
-                and item["revision"] == request.version - 1
-                for item in manifest["evidence"]
-            )
-            and proposal.approvals.filter(
-                decision=ApprovalDecision.APPROVE,
-                digest=receipt.digest,
-                proposal_revision=receipt.proposal_revision,
-                expires_at__gt=receipt.executed_at,
-            ).exists()
-        ):
-            return True
-    return False
+        spec = proposal.input_spec
+        selected = spec.get("evidence_requests", []) if isinstance(spec, dict) else []
+        for evidence in manifest["evidence"]:
+            key = UUID(evidence["request_id"])
+            row = candidates.get(key)
+            if (
+                row is not None
+                and evidence["request_id"] in selected
+                and evidence["revision"] == row[0] - 1
+                and manifest["payload"]["reason"] == row[1]
+            ):
+                valid.add(key)
+    return frozenset(valid)
 
 
 def completion_items(cycle: ServiceCycle) -> list[CompletionItem]:
@@ -85,12 +108,26 @@ def completion_items(cycle: ServiceCycle) -> list[CompletionItem]:
         .exclude(state__in=[TaskState.ACCEPTED, TaskState.WAIVED])
         .order_by("pk")
     )
-    for request in (
+    unmet = list(
         EvidenceRequest.objects.filter(cycle=cycle, required=True)
         .exclude(state=RequestState.ACCEPTED)
         .order_by("pk")
-    ):
-        if request.state == RequestState.WAIVED and valid_waiver(request):
+    )
+    reasons = dict(
+        RequestInternal.objects.filter(
+            request__cycle=cycle, request__state=RequestState.WAIVED
+        ).values_list("request_id", "waiver_reason")
+    )
+    proofs = waiver_proofs(
+        cycle,
+        {
+            row.pk: (row.version, reasons.get(row.pk, ""))
+            for row in unmet
+            if row.state == RequestState.WAIVED
+        },
+    )
+    for request in unmet:
+        if request.pk in proofs:
             continue
         items.append(
             CompletionItem(
@@ -120,8 +157,8 @@ def completion_items(cycle: ServiceCycle) -> list[CompletionItem]:
             "Efeito ainda não encerrado",
             f"/acoes/{proposal.pk}/",
         )
-        for proposal in ActionProposal.objects.filter(cycle=cycle)
-        .filter(~exactly_executed())
+        for proposal in with_marker_state(ActionProposal.objects.filter(cycle=cycle))
+        .exclude(marker_state=MarkerState.EXACT)
         .exclude(
             state__in=[
                 ProposalState.REJECTED,

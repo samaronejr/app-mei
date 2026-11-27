@@ -42,18 +42,11 @@ from apps.cycles.effects.invalidation import (
     RevalidationContext,
     compare_manifests,
 )
-from apps.cycles.effects.manifest import (
-    ActionKind,
-    EffectManifestV1,
-    kind_unavailable,
-)
-from apps.cycles.errors import (
-    IllegalTransition,
-    ProposalIntegrityError,
-    VersionConflict,
-)
+from apps.cycles.effects.manifest import ActionKind, EffectManifestV1
+from apps.cycles.effects.markers import MarkerState, marker_state
+from apps.cycles.effects.stored import refuse_unavailable, stored_input
+from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.models import (
-    ActionExecution,
     ActionProposal,
     Approval,
     ApprovalDecision,
@@ -68,6 +61,7 @@ from apps.cycles.services.cycle import (
     tenant_id,
 )
 from apps.cycles.services.exceptions import open_exception
+from apps.delivery.errors import IntentConflict
 from apps.delivery.models import OutboundMessage
 from apps.delivery.policy import BusinessIntent
 from apps.obligations.models import SourceObservation
@@ -208,11 +202,13 @@ def _locked_proposal(
     candidate = ActionProposal.objects.filter(pk=proposal_id).first()
     if candidate is None:
         raise Http404
-    # Refused from the stored kind before any blob is decoded or lock is taken.
-    _refuse_unregistered_kind(candidate.action_kind)
+    if actor is not None:
+        # Authorization before disclosure: a missing, foreign or unassigned row is one
+        # 404, before its stored kind or input is read. None is the trusted system path.
+        load_client(actor, tenant_id(), candidate.client_id)
     reader = actor if actor is not None else candidate.initiator
     # The candidate's input only discovers lock participants; the locked row decides.
-    discovered = ProposalInput.from_data(candidate.input_spec)
+    discovered = stored_input(candidate)
     previous_ids = set(
         Approval.objects.filter(proposal=candidate).values_list("pk", flat=True)
     )
@@ -231,7 +227,12 @@ def _locked_proposal(
     proposal = ActionProposal.objects.select_for_update(no_key=True).get(pk=proposal_id)
     if expected_version is not None:
         check_version(proposal.version, expected_version)
-    spec = _stored_spec(proposal)
+    spec = stored_input(proposal)
+    if marker_state(proposal)[0] is MarkerState.CONFLICT:
+        # Reviewer ruling 1: an attached mismatch refuses every command, before any
+        # decision, invalidation, cancellation, supersession, replay or effect.
+        msg = "Há um registro de execução que não corresponde a esta proposta."
+        raise IntentConflict(msg)
     decisions = tuple(Approval.objects.filter(proposal=proposal).order_by("pk"))
     if {row.pk for row in decisions} != previous_ids or not _recipient_users(
         spec
@@ -383,11 +384,17 @@ def _intent(cycle: ServiceCycle, spec: ProposalInput) -> str:
 
 
 def _unstarted(proposal: ActionProposal) -> None:
-    """Read under proposal/authority fences, never invert message -> cycle locks."""
+    """Read under proposal/authority fences, never invert message -> cycle locks.
+
+    A conflict is never withdrawn or superseded; a proved non-email effect or a
+    started send cannot be undone. An exact queued email may still be withdrawn.
+    """
+    state, _receipt = marker_state(proposal)
+    if state is MarkerState.CONFLICT:
+        msg = "Há um registro de execução que não corresponde a esta proposta."
+        raise IntentConflict(msg)
     internal_effect = (
-        ActionExecution.objects.filter(proposal=proposal)
-        .exclude(action_kind=ActionKind.EMAIL_NOTICE)
-        .exists()
+        state is MarkerState.EXACT and proposal.action_kind != ActionKind.EMAIL_NOTICE
     )
     dispatch_started = OutboundMessage.objects.filter(
         proposal_id=proposal.pk, send_started_at__isnull=False
@@ -468,26 +475,6 @@ def _completion_inputs(
     return spec
 
 
-def _refuse_unregistered_kind(kind: str) -> None:
-    """AXRM-022-SCAFFOLD: no fiscal effect is proposable or decidable yet.
-
-    22-06 keeps this refusal keyed on the ROW kind; removed in 22-14. By value: a bare
-    string counts.
-    """
-    if kind_unavailable(kind):
-        msg = "A ciência da operação ainda não pode ser proposta nem decidida."
-        raise ValidationError(msg, code="fiscal_manifestation_unavailable")
-
-
-def _stored_spec(proposal: ActionProposal) -> ProposalInput:
-    """Decode the LOCKED row; its blob must name the kind its column and bytes bind."""
-    spec = ProposalInput.from_data(proposal.input_spec)
-    if spec.action_kind != proposal.action_kind:
-        msg = "Os dados desta proposta não correspondem ao efeito registrado."
-        raise ProposalIntegrityError(msg)
-    return spec
-
-
 @transaction.atomic
 def propose(
     actor: User,
@@ -498,7 +485,7 @@ def propose(
 ) -> ActionProposal:
     """Freeze selected effects; revision is a new row under one natural intent."""
     spec = draft.inputs
-    _refuse_unregistered_kind(spec.action_kind)
+    refuse_unavailable(spec.action_kind)
     expires_at, not_before = draft.expires_at, draft.not_before
     spec.validate()
     scope = _lock_scope(actor, _cycle(cycle_id), {actor.pk} | _recipient_users(spec))
@@ -523,17 +510,20 @@ def propose(
         .first()
     )
     if previous is not None:
-        # A predecessor is superseded only under its own stored kind.
-        _refuse_unregistered_kind(previous.action_kind)
+        # Authorized first: nothing about the predecessor is disclosed to someone
+        # who may not revise it.
+        if previous.initiator_id != actor.pk and not is_policy_owner(
+            scope.authorities[actor.pk]
+        ):
+            raise PermissionDenied
+        # A predecessor is superseded only under its own stored kind, and only when
+        # its LOCKED row has no conflict, proved effect or started send.
+        refuse_unavailable(previous.action_kind)
         if draft.previous_id != previous.pk or draft.previous_version is None:
             msg = "Revise a proposta existente antes de criar outra versão."
             raise VersionConflict(msg)
         check_version(previous.version, draft.previous_version)
         _unstarted(previous)
-        if previous.initiator_id != actor.pk and not is_policy_owner(
-            scope.authorities[actor.pk]
-        ):
-            raise PermissionDenied
     elif draft.previous_id is not None:
         raise Http404
     spec = _completion_inputs(scope, spec, previous)

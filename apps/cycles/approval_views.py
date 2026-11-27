@@ -33,10 +33,14 @@ from apps.cycles.approval_forms import (
 )
 from apps.cycles.effects.build import BuildError, initiation_capability
 from apps.cycles.effects.executors import ExecutionResult, execute
-from apps.cycles.effects.inputs import ProposalInput
-from apps.cycles.effects.manifest import ActionKind, kind_unavailable
+from apps.cycles.effects.manifest import kind_unavailable
 from apps.cycles.effects.markers import MarkerState, marker_state
-from apps.cycles.errors import IllegalTransition, VersionConflict
+from apps.cycles.effects.stored import known_kind, stored_input
+from apps.cycles.errors import (
+    IllegalTransition,
+    ProposalIntegrityError,
+    VersionConflict,
+)
 from apps.cycles.models import ActionProposal, ProposalState
 from apps.cycles.services.approvals import (
     DecisionResult,
@@ -226,7 +230,7 @@ def _card(
     controls = proposal_controls(
         request.user,
         tenant_id(),
-        initiation_capability(ActionKind(proposal.action_kind)),
+        initiation_capability(known_kind(proposal)),
     )
     frozen = json.loads(bytes(proposal.manifest_bytes))
     if in_support_mode():
@@ -294,6 +298,9 @@ def _card(
             "execution": execution,
             "effect_unavailable": unavailable,
             "marker_conflict": conflict,
+            # Ruling 1: another revision's marker holds this intent; the decisions stay
+            # available, but this proposal is never executed.
+            "marker_occupied": marker is MarkerState.OCCUPIED,
             "may_execute": (
                 not unavailable
                 and controls.propose
@@ -355,12 +362,27 @@ def approval_card(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     # _proposal's load_client enforces live view_assigned plus portfolio access.
     # Controls and commands each resolve their own separate authorization question.
     proposal = _proposal(request, pk)
-    if request.method == "POST":
-        refused = _decision(request, proposal)
-        if refused is not None:
-            return refused
-        return redirect("approval-card", pk=pk)
-    return _card(request, proposal)
+    try:
+        if request.method == "POST":
+            refused = _decision(request, proposal)
+            if refused is not None:
+                return refused
+            return redirect("approval-card", pk=pk)
+        return _card(request, proposal)
+    except ProposalIntegrityError as error:
+        # A stored row that contradicts itself is shown as a handled refusal only.
+        return HttpResponse(sentences(error), status=HTTPStatus.UNPROCESSABLE_CONTENT)
+
+
+def _revision_refused(cycle_id: UUID, reason: str) -> HttpResponse:
+    return HttpResponse(
+        format_html(
+            '<p>{}</p><p><a href="{}">Voltar ao ciclo</a></p>',
+            reason,
+            reverse("cycle-detail", args=[cycle_id]),
+        ),
+        status=HTTPStatus.UNPROCESSABLE_CONTENT,
+    )
 
 
 @require_http_methods(["GET", "POST"])
@@ -398,14 +420,23 @@ def proposal_create(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
                 ),
                 status=HTTPStatus.UNPROCESSABLE_CONTENT,
             )
+        # Nothing of a contradicting or conflicted predecessor is copied.
+        try:
+            selected = stored_input(previous)
+        except ProposalIntegrityError as error:
+            return _revision_refused(cycle.pk, sentences(error))
+        if marker_state(previous)[0] is MarkerState.CONFLICT:
+            return _revision_refused(
+                cycle.pk,
+                "Há um registro de execução que não corresponde a esta proposta.",
+            )
         initial.update(previous.input_spec)
         initial.update(
             {
                 "previous_id": previous.pk,
                 "previous_version": previous.version,
                 "money": [
-                    f"{item.link_id}:{item.field_name}"
-                    for item in ProposalInput.from_data(previous.input_spec).money
+                    f"{item.link_id}:{item.field_name}" for item in selected.money
                 ],
             }
         )
@@ -426,7 +457,12 @@ def proposal_create(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
         except VersionConflict as error:
             form.add_error(None, str(error))
             status = HTTPStatus.CONFLICT
-        except (ValidationError, IllegalTransition, BuildError) as error:
+        except (
+            ValidationError,
+            IllegalTransition,
+            BuildError,
+            IntentConflict,
+        ) as error:
             # REASON_LABELS is keyed by machine code, which is what a BuildError's
             # text is; a ValidationError is looked up by its joined messages and
             # otherwise shown as those sentences, never as its list repr.

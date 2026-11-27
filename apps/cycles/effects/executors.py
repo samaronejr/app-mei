@@ -17,6 +17,7 @@ from apps.cycles.effects.delivery import message_intent
 from apps.cycles.effects.inputs import ProposalInput
 from apps.cycles.effects.manifest import ActionKind
 from apps.cycles.effects.markers import MarkerState, marker_state
+from apps.cycles.effects.stored import stored_input
 from apps.cycles.models import (
     ActionExecution,
     ActionProposal,
@@ -24,9 +25,15 @@ from apps.cycles.models import (
     CycleEvent,
     EvidenceRequest,
     PublicationState,
+    ServiceCycle,
 )
 from apps.cycles.services.approvals import _locked_proposal, revalidate
-from apps.cycles.services.completion import apply_completion, freeze_completion
+from apps.cycles.services.completion import (
+    apply_completion,
+    freeze_completion,
+    refuse_unavailable_siblings,
+    reopen_preflight,
+)
 from apps.cycles.services.cycle import (
     check_version,
     require_actor,
@@ -50,9 +57,9 @@ class ExecutionResult:
 
 
 def _existing(proposal: ActionProposal) -> bool:
-    """Replay only an exact marker; any other candidate is a conflict, never absence."""
+    """Replay only an exact marker; a conflict or an occupied intent is never run."""
     state, _receipt = marker_state(proposal)
-    if state is MarkerState.CONFLICT:
+    if state in {MarkerState.CONFLICT, MarkerState.OCCUPIED}:
         msg = "A mesma intenção já tem efeitos diferentes registrados."
         raise IntentConflict(msg)
     return state is MarkerState.EXACT
@@ -140,7 +147,7 @@ def _publish(proposal: ActionProposal) -> None:
 def _queue(proposal: ActionProposal, actor: User) -> None:
     """Create new message rows only; never lock an existing message under a cycle."""
     data = json.loads(bytes(proposal.manifest_bytes))
-    spec = ProposalInput.from_data(proposal.input_spec)
+    spec = stored_input(proposal)
     cycle = proposal.cycle
     publication = spec.action_kind is ActionKind.CLIENT_PUBLICATION
     payload = data["payload"]["notice"] if publication else data["payload"]
@@ -203,6 +210,17 @@ def _executable_kind(kind: ActionKind) -> ExecutableKind:
     return kind
 
 
+def _before_marker(proposal: ActionProposal, spec: ProposalInput) -> None:
+    """Run the write-free reopening preflight before the execution marker exists.
+
+    The cycle row is already locked by revalidate's fence; nothing is written yet.
+    """
+    if spec.action_kind is ActionKind.CYCLE_COMPLETION and spec.reopen:
+        cycle = ServiceCycle.objects.get(pk=proposal.cycle_id)
+        reopen_preflight(proposal, cycle, spec)
+        refuse_unavailable_siblings(cycle, exclude=proposal.pk)
+
+
 @transaction.atomic
 def execute(
     actor: User, proposal_id: UUID, *, expected_version: int
@@ -221,7 +239,7 @@ def execute(
 
     decision = revalidate(actor, proposal_id, expected_version=expected_version)
     proposal = decision.proposal
-    spec = ProposalInput.from_data(proposal.input_spec)
+    spec = stored_input(proposal)
     fresh_actor = User.objects.get(pk=actor.pk)
     require_actor(fresh_actor, initiation_capability(spec.action_kind))
     if not decision.executable:
@@ -229,6 +247,7 @@ def execute(
     if _existing(proposal):
         return ExecutionResult(proposal, executed=True, replayed=True)
     kind = _executable_kind(spec.action_kind)
+    _before_marker(proposal, spec)
     ActionExecution.objects.create(
         tenant_id=proposal.tenant_id,
         client_id=proposal.client_id,

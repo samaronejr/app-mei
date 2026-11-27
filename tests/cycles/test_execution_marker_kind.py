@@ -25,7 +25,7 @@ from apps.accounts.models import User
 from apps.authz.models import Role
 from apps.clients.models import ClientContact
 from apps.core.tenancy import tenant_context
-from apps.cycles.completion_checks import completion_items, valid_waiver
+from apps.cycles.completion_checks import completion_items
 from apps.cycles.display_completion import display_completion_items
 from apps.cycles.display_reads import load_cycle_detail
 from apps.cycles.effects.executors import _queue, execute
@@ -373,7 +373,10 @@ def test_only_an_exact_receipt_validates_a_waiver(
     request = _waived(world, exact=exact)
     with tenant_context(world.tenant_id):
         if view == "locked":
-            valid = valid_waiver(request)
+            cycle = ServiceCycle.objects.get(pk=request.cycle_id)
+            valid = f"requests:{request.pk}:{request.version}" not in {
+                item.key for item in completion_items(cycle)
+            }
         else:
             reads = load_cycle_detail(world.graph.actor, request.cycle_id)
             valid = request.pk in reads.valid_waivers
@@ -561,9 +564,18 @@ def test_a_withdrawal_is_rebuilt_as_applied_only_from_its_exact_marker(
             version=target.version + 1,
         )
     marker(proposal, **({} if exact else {"action_kind": ActionKind.EMAIL_NOTICE}))
-    with tenant_context(world.graph.tenant.pk):
-        result = revalidate(None, proposal.pk)
-    assert result.executable is exact
+    if exact:
+        with tenant_context(world.graph.tenant.pk):
+            assert revalidate(None, proposal.pk).executable
+        return
+    # Reviewer ruling 2: a wrong receipt is a conflict, refused before any write.
+    before = _markers(proposal)
+    outcome, statements = _attempt(
+        world.graph.tenant.pk, lambda: revalidate(None, proposal.pk)
+    )
+    assert isinstance(outcome, IntentConflict), outcome
+    _no_writes(statements)
+    assert _markers(proposal) == before
 
 
 @pytest.mark.parametrize("exact", [False, True], ids=["wrong-kind", "exact"])
