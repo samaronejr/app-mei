@@ -9,6 +9,7 @@ failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 
 import base64
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import timedelta
@@ -17,9 +18,16 @@ from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
+from uuid import UUID
 
 import pytest
-from django.db import IntegrityError
+from django.db import (
+    IntegrityError,
+    OperationalError,
+    connection,
+    connections,
+    transaction,
+)
 from django.db.models import F
 from pytest_django.fixtures import SettingsWrapper
 
@@ -1483,4 +1491,88 @@ def test_a_held_receipt_whose_link_is_gone_ends_owned(
         "bloqueada_autoridade",
     )
     assert later == [args]
+    assert len(world.sent("/Emitir")) == 1
+
+
+def _hold_call_on_own_connection(
+    tenant_id: UUID, call_id: UUID
+) -> tuple[threading.Thread, threading.Event, threading.Event, list[str]]:
+    """Another runner: hold one call's row lock on its own connection until released."""
+    holding, release = threading.Event(), threading.Event()
+    blocked: list[str] = []
+
+    def hold_the_call() -> None:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '10s'")
+            with tenant_context(tenant_id), transaction.atomic():
+                list(ProviderCall.objects.select_for_update().filter(pk=call_id))
+                holding.set()
+                assert release.wait(timeout=30)
+        except OperationalError as error:
+            blocked.append(f"holder: {error}")
+        finally:
+            connections.close_all()
+
+    return threading.Thread(target=hold_the_call), holding, release, blocked
+
+
+@DB
+def test_a_receipt_preflight_never_waits_on_a_call_another_runner_holds(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    task, args, later = _receipt_task(world, monkeypatch)
+    # Given a complete 401 whose retry claim met a pause; then the pause lifts
+    # and the link is revoked, so the next delivery must end the held call.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def pause_then_claim(*claim_args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*claim_args, **kwargs)
+
+    world.script(Reply(status=401))
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "claim", pause_then_claim)
+        task(*args)
+    settings.SERPRO_PAUSED = False
+    with tenant_context(world.termo.tenant.pk):
+        ClientProviderLink.objects.filter(client=world.termo.client).update(
+            status="revogada"
+        )
+        call = ProviderCall.objects.get(operation="SP-COMP")
+    # When another runner holds that call's lock on its own connection...
+    holder, holding, release, blocked = _hold_call_on_own_connection(
+        world.termo.tenant.pk, call.pk
+    )
+    holder.start()
+    assert holding.wait(timeout=15)
+    with connection.cursor() as cursor:
+        cursor.execute("SET lock_timeout = '10s'")
+    try:
+        busy = task(*later[0])
+    except OperationalError as error:
+        busy = f"blocked: {error}"
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("RESET lock_timeout")
+        release.set()
+        holder.join(timeout=30)
+    # ...then that delivery neither waits nor reports the call stored or ended:
+    # it hands the same call to a later delivery, still held.
+    with tenant_context(world.termo.tenant.pk):
+        still = ProviderCall.objects.get(pk=call.pk)
+    assert blocked == []
+    assert (busy, still.state, len(later)) == (
+        "aguardar_nova_tentativa",
+        "aguardar_nova_tentativa",
+        2,
+    )
+    # And once released, that later delivery settles it, with no new send.
+    settled = task(*later[1])
+    with tenant_context(world.termo.tenant.pk):
+        ended = ProviderCall.objects.get(pk=call.pk)
+    assert (settled, ended.state) == ("bloqueada_autoridade", "bloqueada_autoridade")
     assert len(world.sent("/Emitir")) == 1
