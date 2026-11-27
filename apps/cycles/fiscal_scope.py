@@ -8,7 +8,7 @@ from django.db.models import Exists, F, OuterRef, Q, Subquery, Value
 from django.db.models.lookups import Exact, GreaterThanOrEqual, IsNull, LessThanOrEqual
 from django.http import Http404
 
-from apps.cycles.fiscal_material import material_digest, working_date
+from apps.cycles.fiscal_material import material_digest, snapshot_rows, working_date
 from apps.cycles.fiscal_records import FiscalDocumentReview
 from apps.cycles.records import ServiceCycle
 from apps.cycles.services.cycle import OPEN_STATES
@@ -66,6 +66,27 @@ def awaiting_cycle_review(
     rows: QuerySet[FiscalDocument],
 ) -> QuerySet[WithAnnotations[FiscalDocument, PendingReview]]:
     """Keep documents with a pending open cycle or no matching cycle yet."""
+    return _pending_cycles(
+        rows.filter(current_revision__isnull=False).alias(
+            review_working_date=working_date(), review_material=material_digest()
+        )
+    )
+
+
+def projected_pending_cycles(
+    rows: QuerySet[FiscalDocument],
+) -> QuerySet[WithAnnotations[FiscalDocument, PendingReview]]:
+    """Expose the same material used to select the pending cycle in its result."""
+    return _pending_cycles(
+        snapshot_rows(rows.filter(current_revision__isnull=False)).alias(
+            review_working_date=working_date()
+        )
+    )
+
+
+def _pending_cycles(
+    rows: QuerySet[FiscalDocument],
+) -> QuerySet[WithAnnotations[FiscalDocument, PendingReview]]:
     eligible = ServiceCycle.objects.filter(
         cycle_eligibility(
             OuterRef,
@@ -85,12 +106,9 @@ def awaiting_cycle_review(
         )
         .order_by("period_start", "pk")
     )
-    return (
-        rows.filter(current_revision__isnull=False)
-        .alias(review_working_date=working_date(), review_material=material_digest())
-        .annotate(pending_cycle_id=Subquery(pending_cycles.values("pk")[:1]))
-        .filter(Q(pending_cycle_id__isnull=False) | ~Exists(eligible))
-    )
+    return rows.annotate(
+        pending_cycle_id=Subquery(pending_cycles.values("pk")[:1])
+    ).filter(Q(pending_cycle_id__isnull=False) | ~Exists(eligible))
 
 
 class CycleEligibility(TypedDict):
