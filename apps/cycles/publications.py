@@ -138,4 +138,10 @@ class ActionExecution(ClientRecord):
                 condition=models.Q(action_kind__in=[kind.value for kind in ActionKind]),
                 name="execution_known_kind",
             ),
+            # AXRM-022-SCAFFOLD: no fiscal execution marker is stored yet; 22-07
+            # removes it.
+            models.CheckConstraint(
+                condition=~models.Q(action_kind=ActionKind.FISCAL_MANIFESTATION),
+                name="actionexecution_fiscal_closed",
+            ),
         ]

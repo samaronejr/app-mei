@@ -59,7 +59,6 @@ REASONS = {
     "not_newer_version": "Selecione uma versão posterior à atual.",
     "proposal_not_awaiting": "A proposta já recebeu uma decisão.",
     "proposal_expired": "A proposta expirou.",
-    "effect_unavailable": "A ciência da operação ainda não pode ser aprovada.",
     "individual_self_approval": (
         "A autoaprovação exige confirmação no cartão individual."
     ),

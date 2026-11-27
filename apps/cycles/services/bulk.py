@@ -36,9 +36,8 @@ from apps.cycles.bulk_contracts import (
     snapshot_items,
 )
 from apps.cycles.bulk_effects import preview_item
-from apps.cycles.effects.manifest import JSONValue, kind_unavailable, utc_timestamp
+from apps.cycles.effects.manifest import JSONValue, utc_timestamp
 from apps.cycles.errors import VersionConflict
-from apps.cycles.models import ActionProposal
 from apps.cycles.services.cycle import check_version, require_enabled, tenant_id
 
 PREVIEW_LIFETIME: Final = timedelta(minutes=15)
@@ -168,19 +167,6 @@ def preview_bulk(actor: User, op: BulkKind, selection: Selection) -> BulkOperati
     return operation
 
 
-def _refuse_stale_unavailable(op: str, items: tuple[SnapshotItem, ...]) -> None:
-    """AXRM-022-SCAFFOLD: an older preview may have marked a fiscal row eligible."""
-    if op != BulkKind.APPROVE_ITEMS:
-        return
-    eligible = [item.subject_ref for item in items if item.eligible]
-    kinds = ActionProposal.objects.filter(pk__in=eligible).values_list(
-        "action_kind", flat=True
-    )
-    if any(kind_unavailable(kind) for kind in kinds):
-        msg = "A prévia inclui um efeito que ainda não pode ser aprovado. Gere outra."
-        raise VersionConflict(msg)
-
-
 @transaction.atomic
 def run_bulk(
     actor: User,
@@ -203,7 +189,6 @@ def run_bulk(
         msg = "Esta prévia expirou ou já foi confirmada. Gere outra para continuar."
         raise VersionConflict(msg)
     items = checked_items(operation)
-    _refuse_stale_unavailable(operation.kind, items)
     known = {str(item.subject_ref) for item in items}
     excluded = set(exclusions)
     if len(excluded) != len(exclusions) or not excluded.issubset(known):

@@ -11,9 +11,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse
 from django.utils import timezone
-from django.utils.html import format_html
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.views import AuthenticatedRequest
@@ -33,15 +31,10 @@ from apps.cycles.approval_forms import (
 )
 from apps.cycles.effects.build import BuildError, initiation_capability
 from apps.cycles.effects.executors import ExecutionResult, execute
-from apps.cycles.effects.manifest import kind_unavailable
-from apps.cycles.effects.markers import MarkerState, marker_state
-from apps.cycles.effects.stored import known_kind, stored_input
-from apps.cycles.errors import (
-    IllegalTransition,
-    ProposalIntegrityError,
-    VersionConflict,
-)
-from apps.cycles.models import ActionProposal, ProposalState
+from apps.cycles.effects.inputs import ProposalInput
+from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.errors import IllegalTransition, VersionConflict
+from apps.cycles.models import ActionExecution, ActionProposal, ProposalState
 from apps.cycles.services.approvals import (
     DecisionResult,
     approve,
@@ -230,7 +223,7 @@ def _card(
     controls = proposal_controls(
         request.user,
         tenant_id(),
-        initiation_capability(known_kind(proposal)),
+        initiation_capability(ActionKind(proposal.action_kind)),
     )
     frozen = json.loads(bytes(proposal.manifest_bytes))
     if in_support_mode():
@@ -278,12 +271,7 @@ def _card(
         {**row, "name": names.get(row["contact_id"], "")}
         for row in frozen["recipients"]
     ]
-    marker, execution = marker_state(proposal)
-    # AXRM-022: a stored kind with no registered effect, or a conflicting marker, is
-    # read-only history: no decision, execution, cancellation or revision control.
-    unavailable = kind_unavailable(proposal.action_kind)
-    conflict = marker is MarkerState.CONFLICT
-    live = not (unavailable or conflict)
+    execution = ActionExecution.objects.filter(proposal=proposal).first()
     action_label = (
         "Reabrir ciclo"
         if frozen["payload"].get("reopen")
@@ -296,16 +284,10 @@ def _card(
             "proposal": proposal,
             "action_label": action_label,
             "execution": execution,
-            "effect_unavailable": unavailable,
-            "marker_conflict": conflict,
-            # Ruling 1: another revision's marker holds this intent; the decisions stay
-            # available, but this proposal is never executed.
-            "marker_occupied": marker is MarkerState.OCCUPIED,
             "may_execute": (
-                not unavailable
-                and controls.propose
+                controls.propose
                 and proposal.state == ProposalState.APPROVED
-                and marker is MarkerState.ABSENT
+                and execution is None
                 and expires_at > now
             ),
             "frozen": frozen,
@@ -329,17 +311,15 @@ def _card(
             "decisions": proposal.approvals.select_related("approver").order_by(
                 "decided_at"
             ),
-            "may_approve": live and controls.approve,
+            "may_approve": controls.approve,
             "may_cancel": (
-                live
-                and controls.propose
+                controls.propose
                 and (proposal.initiator_id == request.user.pk or controls.cancel_others)
             ),
-            "may_propose": live and controls.propose,
+            "may_propose": controls.propose,
             "self_approval": proposal.initiator_id == request.user.pk,
-            "awaiting": live and proposal.state == ProposalState.AWAITING,
-            "open": live
-            and proposal.state in {ProposalState.AWAITING, ProposalState.APPROVED},
+            "awaiting": proposal.state == ProposalState.AWAITING,
+            "open": proposal.state in {ProposalState.AWAITING, ProposalState.APPROVED},
             "effects": [
                 {
                     "label": action_label,
@@ -362,27 +342,12 @@ def approval_card(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
     # _proposal's load_client enforces live view_assigned plus portfolio access.
     # Controls and commands each resolve their own separate authorization question.
     proposal = _proposal(request, pk)
-    try:
-        if request.method == "POST":
-            refused = _decision(request, proposal)
-            if refused is not None:
-                return refused
-            return redirect("approval-card", pk=pk)
-        return _card(request, proposal)
-    except ProposalIntegrityError as error:
-        # A stored row that contradicts itself is shown as a handled refusal only.
-        return HttpResponse(sentences(error), status=HTTPStatus.UNPROCESSABLE_CONTENT)
-
-
-def _revision_refused(cycle_id: UUID, reason: str) -> HttpResponse:
-    return HttpResponse(
-        format_html(
-            '<p>{}</p><p><a href="{}">Voltar ao ciclo</a></p>',
-            reason,
-            reverse("cycle-detail", args=[cycle_id]),
-        ),
-        status=HTTPStatus.UNPROCESSABLE_CONTENT,
-    )
+    if request.method == "POST":
+        refused = _decision(request, proposal)
+        if refused is not None:
+            return refused
+        return redirect("approval-card", pk=pk)
+    return _card(request, proposal)
 
 
 @require_http_methods(["GET", "POST"])
@@ -410,33 +375,14 @@ def proposal_create(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
         previous = get_object_or_404(
             ActionProposal.objects, pk=previous_key, cycle=cycle
         )
-        if kind_unavailable(previous.action_kind):
-            # AXRM-022-SCAFFOLD: nothing of this predecessor is copied or decoded.
-            return HttpResponse(
-                format_html(
-                    "<p>Esta ciência da operação ainda não pode ser revisada.</p>"
-                    '<p><a href="{}">Voltar ao ciclo</a></p>',
-                    reverse("cycle-detail", args=[cycle.pk]),
-                ),
-                status=HTTPStatus.UNPROCESSABLE_CONTENT,
-            )
-        # Nothing of a contradicting or conflicted predecessor is copied.
-        try:
-            selected = stored_input(previous)
-        except ProposalIntegrityError as error:
-            return _revision_refused(cycle.pk, sentences(error))
-        if marker_state(previous)[0] is MarkerState.CONFLICT:
-            return _revision_refused(
-                cycle.pk,
-                "Há um registro de execução que não corresponde a esta proposta.",
-            )
         initial.update(previous.input_spec)
         initial.update(
             {
                 "previous_id": previous.pk,
                 "previous_version": previous.version,
                 "money": [
-                    f"{item.link_id}:{item.field_name}" for item in selected.money
+                    f"{item.link_id}:{item.field_name}"
+                    for item in ProposalInput.from_data(previous.input_spec).money
                 ],
             }
         )
@@ -457,12 +403,7 @@ def proposal_create(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
         except VersionConflict as error:
             form.add_error(None, str(error))
             status = HTTPStatus.CONFLICT
-        except (
-            ValidationError,
-            IllegalTransition,
-            BuildError,
-            IntentConflict,
-        ) as error:
+        except (ValidationError, IllegalTransition, BuildError) as error:
             # REASON_LABELS is keyed by machine code, which is what a BuildError's
             # text is; a ValidationError is looked up by its joined messages and
             # otherwise shown as those sentences, never as its list repr.

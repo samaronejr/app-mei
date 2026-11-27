@@ -81,12 +81,3 @@ class UnscannedReviewRefused(IllegalTransition):
     `verificacao_indisponivel` or missing, before any row is written. A subclass of
     `IllegalTransition`, so every caller already answers it as a 409.
     """
-
-
-class ProposalIntegrityError(IllegalTransition):
-    """A stored proposal's input blob names another kind than its row and frozen bytes.
-
-    AXRM-022 (kept). The database binds the row kind to its frozen manifest but not to
-    the input JSON, so the locked row's decoded input must agree with its own column.
-    A contradiction is an integrity refusal, never an invalidation of the effects.
-    """

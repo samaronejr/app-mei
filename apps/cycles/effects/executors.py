@@ -16,8 +16,6 @@ from apps.cycles.effects.build import initiation_capability
 from apps.cycles.effects.delivery import message_intent
 from apps.cycles.effects.inputs import ProposalInput
 from apps.cycles.effects.manifest import ActionKind
-from apps.cycles.effects.markers import MarkerState, marker_state
-from apps.cycles.effects.stored import stored_input
 from apps.cycles.models import (
     ActionExecution,
     ActionProposal,
@@ -25,15 +23,9 @@ from apps.cycles.models import (
     CycleEvent,
     EvidenceRequest,
     PublicationState,
-    ServiceCycle,
 )
 from apps.cycles.services.approvals import _locked_proposal, revalidate
-from apps.cycles.services.completion import (
-    apply_completion,
-    freeze_completion,
-    refuse_unavailable_siblings,
-    reopen_preflight,
-)
+from apps.cycles.services.completion import apply_completion, freeze_completion
 from apps.cycles.services.cycle import (
     check_version,
     require_actor,
@@ -57,12 +49,13 @@ class ExecutionResult:
 
 
 def _existing(proposal: ActionProposal) -> bool:
-    """Replay only an exact marker; a conflict or an occupied intent is never run."""
-    state, _receipt = marker_state(proposal)
-    if state in {MarkerState.CONFLICT, MarkerState.OCCUPIED}:
+    previous = ActionExecution.objects.filter(
+        client_id=proposal.client_id, business_intent_key=proposal.business_intent_key
+    ).first()
+    if previous is not None and previous.digest != proposal.digest:
         msg = "A mesma intenção já tem efeitos diferentes registrados."
         raise IntentConflict(msg)
-    return state is MarkerState.EXACT
+    return previous is not None
 
 
 def _release_documents(
@@ -147,7 +140,7 @@ def _publish(proposal: ActionProposal) -> None:
 def _queue(proposal: ActionProposal, actor: User) -> None:
     """Create new message rows only; never lock an existing message under a cycle."""
     data = json.loads(bytes(proposal.manifest_bytes))
-    spec = stored_input(proposal)
+    spec = ProposalInput.from_data(proposal.input_spec)
     cycle = proposal.cycle
     publication = spec.action_kind is ActionKind.CLIENT_PUBLICATION
     payload = data["payload"]["notice"] if publication else data["payload"]
@@ -210,17 +203,6 @@ def _executable_kind(kind: ActionKind) -> ExecutableKind:
     return kind
 
 
-def _before_marker(proposal: ActionProposal, spec: ProposalInput) -> None:
-    """Run the write-free reopening preflight before the execution marker exists.
-
-    The cycle row is already locked by revalidate's fence; nothing is written yet.
-    """
-    if spec.action_kind is ActionKind.CYCLE_COMPLETION and spec.reopen:
-        cycle = ServiceCycle.objects.get(pk=proposal.cycle_id)
-        reopen_preflight(proposal, cycle, spec)
-        refuse_unavailable_siblings(cycle, exclude=proposal.pk)
-
-
 @transaction.atomic
 def execute(
     actor: User, proposal_id: UUID, *, expected_version: int
@@ -230,7 +212,10 @@ def execute(
     if candidate is None:
         raise Http404
     load_client(actor, tenant_id(), candidate.client_id)
-    if marker_state(candidate)[0] is not MarkerState.ABSENT:
+    if ActionExecution.objects.filter(
+        client_id=candidate.client_id,
+        business_intent_key=candidate.business_intent_key,
+    ).exists():
         scope, proposal, spec, _decisions = _locked_proposal(
             actor, proposal_id, expected_version
         )
@@ -239,7 +224,7 @@ def execute(
 
     decision = revalidate(actor, proposal_id, expected_version=expected_version)
     proposal = decision.proposal
-    spec = stored_input(proposal)
+    spec = ProposalInput.from_data(proposal.input_spec)
     fresh_actor = User.objects.get(pk=actor.pk)
     require_actor(fresh_actor, initiation_capability(spec.action_kind))
     if not decision.executable:
@@ -247,7 +232,6 @@ def execute(
     if _existing(proposal):
         return ExecutionResult(proposal, executed=True, replayed=True)
     kind = _executable_kind(spec.action_kind)
-    _before_marker(proposal, spec)
     ActionExecution.objects.create(
         tenant_id=proposal.tenant_id,
         client_id=proposal.client_id,

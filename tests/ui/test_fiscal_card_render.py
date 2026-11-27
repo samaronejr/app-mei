@@ -1,4 +1,7 @@
-"""A frozen received-NF-e effect renders on both approval cards without a link."""
+"""A frozen received-NF-e effect renders on the bulk card without a review link.
+
+The individual card returns with the reference card in 22-14.
+"""
 
 import re
 from uuid import UUID
@@ -38,11 +41,7 @@ def _review_links(rendered: str) -> list[str]:
     return found
 
 
-@pytest.mark.parametrize(
-    "template",
-    ["cycles/approval_card.html", "cycles/_bulk_effect.html"],
-    ids=["approval-card", "bulk-effect"],
-)
+@pytest.mark.parametrize("template", ["cycles/_bulk_effect.html"], ids=["bulk-effect"])
 def test_a_fiscal_vector_renders_its_keys_and_label_without_a_review_link(
     template: str,
 ) -> None:

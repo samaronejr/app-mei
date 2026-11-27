@@ -8,7 +8,7 @@ from django.utils import timezone
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.core.tenancy import tenant_context
-from apps.cycles.completion_checks import completion_items
+from apps.cycles.completion_checks import completion_items, valid_waiver
 from apps.cycles.evidence_index import capture_index
 from apps.cycles.models import (
     ActionExecution,
@@ -19,20 +19,11 @@ from apps.cycles.models import (
     InternalNote,
     RequestInternal,
     RequestState,
-    ServiceCycle,
 )
 from apps.cycles.services.requests import waive_request
 from tests.cycles.display_fixtures import populated_detail
 
 pytestmark = pytest.mark.django_db(transaction=True)
-
-
-def _waiver_proven(request: EvidenceRequest) -> bool:
-    """The locked checklist accepts this waived revision (no blocker names it)."""
-    cycle = ServiceCycle.objects.get(pk=request.cycle_id)
-    return f"requests:{request.pk}:{request.version}" not in {
-        row.key for row in completion_items(cycle)
-    }
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +57,7 @@ def test_displayed_checklist_and_blockers_equal_authoritative_populated_cycle(
         waived = EvidenceRequest.objects.get(
             cycle=world.cycle, state=RequestState.WAIVED
         )
-        assert _waiver_proven(waived)
+        assert valid_waiver(waived)
         assert f"requests:{waived.pk}:{waived.version}" not in {
             row.key for row in expected
         }
@@ -130,7 +121,7 @@ def test_displayed_waiver_validity_equals_authority_with_negative_controls(
         waived = EvidenceRequest.objects.get(
             cycle=world.cycle, state=RequestState.WAIVED
         )
-        assert _waiver_proven(waived)
+        assert valid_waiver(waived)
         if control == "reason":
             RequestInternal.objects.filter(request=waived).update(
                 waiver_reason="A different reason from the approved bytes."
@@ -161,7 +152,7 @@ def test_displayed_waiver_validity_equals_authority_with_negative_controls(
             assert Approval.objects.filter(expires_at__gte=later).count() == 0
             monkeypatch.setattr(timezone, "now", lambda: later)
         waived.refresh_from_db()
-        validity = _waiver_proven(waived)
+        validity = valid_waiver(waived)
         assert validity is (control in {"exact", "expired_now"})
         world.cycle.refresh_from_db()
         expected = completion_items(world.cycle)

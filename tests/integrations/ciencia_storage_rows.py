@@ -159,7 +159,10 @@ def fiscal_proposal(
     intent: str | None = None,
     kind: ActionKind | None = None,
 ) -> ActionProposal:
-    """A stored row for this world's document (fiscal unless another kind is given)."""
+    """A stored row for this world's document (fiscal unless another kind is given).
+
+    A fiscal row is storable only with cycles 0026 unapplied (the 0024 guard tests).
+    """
     return stored_row(
         world.graph,
         world.capture.setup.cycle,
@@ -241,8 +244,12 @@ def provider_call(
 
 
 def paired_call(world: StorageWorld, operation: str = "FC-CIE") -> ProviderCall:
-    """A call bound to an exact fiscal proposal and the document's current revision."""
-    proposal = fiscal_proposal(world)
+    """A call bound to an exact proposal and the document's current revision.
+
+    The pair constraint binds the operation to both references, never the proposal's
+    kind; cycles 0026 refuses a stored fiscal proposal, so a legacy waiver stands in.
+    """
+    proposal = legacy_proposal(world)
     return provider_call(
         world,
         operation,
@@ -349,7 +356,10 @@ def assessment(
 
 
 def fiscal_execution(world: StorageWorld) -> ActionExecution:
-    """A fiscal-kind execution on a legacy proposal (the exact FK omits the kind)."""
+    """A fiscal-kind execution on a legacy proposal (the exact FK omits the kind).
+
+    Storable only with cycles 0026 unapplied (the 0024 reverse-guard tests).
+    """
     proposal = legacy_proposal(world)
     graph = world.graph
     with tenant_context(world.tenant_id):

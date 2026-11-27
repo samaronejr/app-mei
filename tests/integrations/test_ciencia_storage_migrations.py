@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.django_db(transaction=True)
 
 CYCLES_0024 = ("cycles", "0024_fiscal_manifestation")
+CYCLES_0026 = ("cycles", "0026_fiscal_kind_closed")
 CYCLES_0025 = ("cycles", "0025_manifestation_followup")
 INTEGRATIONS_0017 = ("integrations", "0017_ciencia_call_refs")
 INTEGRATIONS_0018 = ("integrations", "0018_ciencia_professional_note")
@@ -80,6 +81,25 @@ def _as_migrator() -> Iterator[None]:
             cursor.execute("SET ROLE app_runtime")
 
 
+@contextmanager
+def _without_closure() -> Iterator[None]:
+    """As migrator, unapply cycles 0026 so a fiscal row can be stored at all.
+
+    The 0024 guard must still see such a row: 0026 is unapplied first (its real
+    reverse order), and in `finally` the rows are truncated (frozen proposals refuse a
+    row DELETE) so the leaves re-apply 0026 over an empty fiscal set.
+    """
+    with _as_migrator():
+        MigrationExecutor(connection).migrate([CYCLES_0025])
+        try:
+            yield
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "TRUNCATE cycles_actionexecution, cycles_actionproposal CASCADE"
+                )
+
+
 def _reverse(node: tuple[str, str], target: tuple[str, str]) -> object:
     """Catalog first, then the real backward executor; the outcome is returned."""
     assert _applied(node), node
@@ -99,8 +119,8 @@ def _refused(outcome: object, message: str, node: tuple[str, str]) -> None:
 
 def test_0024_refuses_any_frozen_fiscal_proposal(world: StorageWorld) -> None:
     assert _applied(CYCLES_0024), CYCLES_0024  # catalog first
-    row = fiscal_proposal(world)
-    with _as_migrator():
+    with _without_closure():
+        row = fiscal_proposal(world)
         outcome = _reverse(CYCLES_0024, ("cycles", "0023_fiscal_document_review"))
         _refused(outcome, BATCHES, CYCLES_0024)
         with tenant_context(world.tenant_id):
@@ -115,8 +135,8 @@ def test_0024_refuses_a_fiscal_kind_execution_on_a_legacy_proposal(
     world: StorageWorld,
 ) -> None:
     assert _applied(CYCLES_0024), CYCLES_0024  # catalog first
-    row = fiscal_execution(world)
-    with _as_migrator():
+    with _without_closure():
+        row = fiscal_execution(world)
         outcome = _reverse(CYCLES_0024, ("cycles", "0023_fiscal_document_review"))
         _refused(outcome, BATCHES, CYCLES_0024)
         with tenant_context(world.tenant_id):

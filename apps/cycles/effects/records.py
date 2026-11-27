@@ -99,6 +99,11 @@ class ActionProposal(ClientRecord):
                 condition=models.Q(state__in=ProposalState.values),
                 name="actionproposal_known_state",
             ),
+            # AXRM-022-SCAFFOLD: no fiscal proposal is stored yet; 22-06 removes it.
+            models.CheckConstraint(
+                condition=~models.Q(action_kind=ActionKind.FISCAL_MANIFESTATION),
+                name="actionproposal_fiscal_closed",
+            ),
         ]
         indexes: ClassVar[list[models.Index]] = [
             *ClientRecord.Meta.indexes,

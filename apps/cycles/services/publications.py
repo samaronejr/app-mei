@@ -11,8 +11,6 @@ from apps.accounts.models import User
 from apps.clients.maintenance import load_client
 from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
 from apps.cycles.effects.manifest import ActionKind
-from apps.cycles.effects.stored import INTEGRITY_MESSAGE, stored_input
-from apps.cycles.errors import ProposalIntegrityError
 from apps.cycles.models import ActionProposal, ClientPublication
 from apps.cycles.services.approvals import propose
 from apps.cycles.services.cycle import check_version, tenant_id
@@ -31,10 +29,7 @@ def propose_withdrawal(
     # checked again after propose has acquired the target lock.
     check_version(publication.version, expected_version)
     original = publication.proposal
-    # The publication row binds its proposal: it must be the publication effect.
-    if original.action_kind != ActionKind.CLIENT_PUBLICATION:
-        raise ProposalIntegrityError(INTEGRITY_MESSAGE)
-    selected = stored_input(original)
+    selected = ProposalInput.from_data(original.input_spec)
     proposal = propose(
         actor,
         publication.cycle_id,

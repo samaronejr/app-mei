@@ -82,13 +82,9 @@ Empty collections share one compact line, and the technical identity of this ver
       {% if frozen.documents %}<section class="ui-panel" aria-labelledby="frozen-documents">
         <h2 id="frozen-documents" class="ui-panel-heading">Documentos e revisão · {{ frozen.documents|length }}</h2>
         <ul class="grid gap-3 px-4 py-3">{% for document in frozen.documents %}<li class="min-w-0 border-t border-ink-200 pt-3 first:border-t-0 first:pt-0" data-frozen-document>
-          {# AXRM-022-SCAFFOLD: a frozen received NF-e has no review link; 22-14 brings the reference card. #}
-          {% if document.fiscal_revision_id %}<p class="break-all font-semibold">NF-e {{ document.chave }}</p>
-          <p class="mt-1 break-all text-sm">Revisão fiscal {{ document.fiscal_revision_id }}</p>
-          <code class="block break-all text-xs">{{ document.semantic_digest }}</code>
-          {% else %}<a class="ui-link break-all" href="{% url 'document-review' document.link_id %}">Conferir documento {{ document.document_id }}</a>
+          <a class="ui-link break-all" href="{% url 'document-review' document.link_id %}">Conferir documento {{ document.document_id }}</a>
           <p class="mt-1 text-sm">Revisão: {{ document.review_state }} · vínculo {{ document.link_revision }} · {{ document.size }} bytes</p>
-          <p class="text-sm">Verificação do arquivo: {{ document.intake_state }}</p>{% endif %}
+          <p class="text-sm">Verificação do arquivo: {{ document.intake_state }}</p>
         </li>{% endfor %}</ul>
       </section>{% endif %}
       {% if frozen.evidence %}<section class="ui-panel" aria-labelledby="frozen-evidence">
@@ -128,7 +124,7 @@ Empty collections share one compact line, and the technical identity of this ver
           <div class="min-w-0"><dt class="font-semibold">Política</dt><dd><code class="block break-all text-xs">{{ frozen.policy.hash }}</code></dd></div>
           <div class="min-w-0"><dt class="font-semibold">Conta de destino</dt><dd><code class="block break-all text-xs">{{ frozen.destination.account_id }}</code></dd></div>
           {% for recipient in recipients %}<div class="min-w-0"><dt class="break-all font-semibold">Contato · {{ recipient.name|default:recipient.address }}</dt><dd><code class="block break-all text-xs">{{ recipient.contact_id }}</code></dd></div>{% endfor %}
-          {% for document in frozen.documents %}<div class="min-w-0">{% if document.fiscal_revision_id %}<dt class="break-all font-semibold">NF-e {{ document.chave }}</dt><dd><span class="text-xs text-ink-600">Revisão fiscal {{ document.fiscal_revision_id }}</span><code class="block break-all text-xs">{{ document.semantic_digest }}</code></dd>{% else %}<dt class="break-all font-semibold">Documento {{ document.document_id }}</dt><dd><span class="text-xs text-ink-600">SHA-256</span><code class="block break-all text-xs">{{ document.sha256 }}</code><span class="block break-all text-xs text-ink-600">Registro de verificação {{ document.scan_id }}</span></dd>{% endif %}</div>{% endfor %}
+          {% for document in frozen.documents %}<div class="min-w-0"><dt class="break-all font-semibold">Documento {{ document.document_id }}</dt><dd><span class="text-xs text-ink-600">SHA-256</span><code class="block break-all text-xs">{{ document.sha256 }}</code><span class="block break-all text-xs text-ink-600">Registro de verificação {{ document.scan_id }}</span></dd></div>{% endfor %}
           {% for source in observations %}<div class="min-w-0"><dt class="font-semibold">Observação · {{ source.source_label }}</dt><dd><code class="block break-all text-xs">{{ source.id }}</code></dd></div>{% endfor %}
         </dl>
       </details>
@@ -144,7 +140,6 @@ Empty collections share one compact line, and the technical identity of this ver
       <section class="ui-panel" aria-labelledby="approval-decision" data-decision-controls>
         <h2 id="approval-decision" class="ui-panel-heading">Decidir sobre estes efeitos</h2>
         <div class="grid gap-4 px-4 py-3">
-        {% if effect_unavailable %}<p data-effect-unavailable>A ciência da operação ainda não pode ser decidida nem executada; este cartão é apenas histórico.</p>{% elif marker_conflict %}<p role="alert" data-marker-conflict>Há um registro de execução que não corresponde a esta proposta; nenhum controle está disponível.</p>{% elif marker_occupied %}<p data-marker-occupied>Outra versão desta mesma intenção já foi executada; esta versão pode ser decidida, mas não executada.</p>{% endif %}
         {% if execution %}<p>Efeito registrado em {{ execution.executed_at|data_hora }}.{% if proposal.action_kind == 'email_notice' %} O aviso foi colocado na fila; o resultado do servidor de e-mail está em Comunicação.{% endif %}</p>
         {% elif may_execute %}<form method="post">{% csrf_token %}
           <input type="hidden" name="expected_version" value="{{ proposal.version }}">

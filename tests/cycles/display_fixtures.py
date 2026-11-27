@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from apps.clients.models import ClientAssignment, ClientContact
 from apps.core.tenancy import tenant_context
-from apps.cycles.completion_checks import completion_items
+from apps.cycles.completion_checks import valid_waiver
 from apps.cycles.effects.executors import execute
 from apps.cycles.models import CycleState, CycleTask, RequestState, TaskState
 from apps.cycles.openers import REQUEST_OVERDUE
@@ -50,10 +50,7 @@ def add_waivers(world: "PortalSetup", start: int, count: int) -> set[UUID]:
         request.refresh_from_db()
         assert request.state == RequestState.WAIVED
         assert request.required
-        world.cycle.refresh_from_db()
-        assert f"requests:{request.pk}:{request.version}" not in {
-            item.key for item in completion_items(world.cycle)
-        }
+        assert valid_waiver(request)
         added.add(request.pk)
     return added
 

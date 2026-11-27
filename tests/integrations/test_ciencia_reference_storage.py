@@ -16,8 +16,8 @@ from tests.integrations.ciencia_storage_rows import (
     bare_client,
     bare_exception,
     call_fields,
-    fiscal_proposal,
     issue,
+    legacy_proposal,
     paired_call,
     provider_call,
     recovery_row,
@@ -115,7 +115,7 @@ def test_an_unpaired_or_unrelated_reference_cannot_be_inserted(
     world: StorageWorld, operation: str, with_proposal: bool, with_revision: bool
 ) -> None:
     _trigger_installed()
-    proposal = fiscal_proposal(world)
+    proposal = legacy_proposal(world)
     fields = call_fields(
         world,
         operation,

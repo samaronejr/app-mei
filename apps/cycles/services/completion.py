@@ -2,7 +2,6 @@
 
 import hashlib
 from datetime import timedelta
-from typing import TYPE_CHECKING
 from uuid import UUID
 
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -13,13 +12,12 @@ from apps.accounts.models import User
 from apps.cycles.completion_checks import completion_items, require_open_completion
 from apps.cycles.completion_records import CompletionGeneration, CompletionJustification
 from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
-from apps.cycles.effects.manifest import ActionKind, kind_unavailable
-from apps.cycles.effects.markers import MarkerState, marker_state, with_marker_state
-from apps.cycles.effects.stored import stored_input
-from apps.cycles.errors import IllegalTransition, ProposalIntegrityError
+from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.errors import IllegalTransition
 from apps.cycles.evidence_index import freeze_index
 from apps.cycles.index_projection import digest_data
 from apps.cycles.models import (
+    ActionExecution,
     ActionProposal,
     Approval,
     ApprovalDecision,
@@ -31,30 +29,17 @@ from apps.cycles.models import (
 )
 from apps.cycles.services.cycle import check_version, emit, load_cycle, require_actor
 
-if TYPE_CHECKING:
-    from django.db.models import QuerySet
-
-
-def _bound(actor: User, proposal: ActionProposal) -> tuple[ServiceCycle, ProposalInput]:
-    """Bind to an authorized, stored completion row proved by its own receipt.
-
-    The actor's cycle is loaded before the input is read; any other operation, a
-    contradicting input or a missing proof is an integrity refusal before any write.
-    """
-    cycle = load_cycle(actor, proposal.cycle_id, lock=True)
-    msg = "Execute a proposta aprovada de encerramento para alterar o ciclo."
-    if proposal.action_kind != ActionKind.CYCLE_COMPLETION:
-        raise ProposalIntegrityError(msg)
-    spec = stored_input(proposal)
-    require_actor(actor, "cycles.reopen" if spec.reopen else "cycles.complete")
-    if marker_state(proposal)[0] is not MarkerState.EXACT:
-        raise ProposalIntegrityError(msg)
-    return cycle, spec
-
 
 def apply_completion(actor: User, proposal: ActionProposal) -> None:
     """Executor-only domain operation; its exact durable receipt is mandatory."""
-    cycle, spec = _bound(actor, proposal)
+    spec = ProposalInput.from_data(proposal.input_spec)
+    cycle = load_cycle(actor, proposal.cycle_id, lock=True)
+    require_actor(actor, "cycles.reopen" if spec.reopen else "cycles.complete")
+    if not ActionExecution.objects.filter(
+        proposal=proposal, digest=proposal.digest, proposal_revision=proposal.revision
+    ).exists():
+        msg = "Execute a proposta aprovada para alterar o encerramento."
+        raise IllegalTransition(msg)
     if spec.reopen:
         _reopen(actor, proposal, cycle, spec)
         return
@@ -101,9 +86,10 @@ def apply_completion(actor: User, proposal: ActionProposal) -> None:
 
 def freeze_completion(actor: User, proposal: ActionProposal) -> None:
     """Run after the execution event so the immutable cut includes its own proof."""
-    cycle, spec = _bound(actor, proposal)
+    spec = ProposalInput.from_data(proposal.input_spec)
     if spec.reopen:
         return
+    cycle = ServiceCycle.objects.get(pk=proposal.cycle_id)
     index = freeze_index(actor, cycle)
     generation = CompletionGeneration.objects.create(
         tenant_id=cycle.tenant_id,
@@ -180,40 +166,9 @@ def propose_reopen(
     )
 
 
-def _pending(cycle: ServiceCycle) -> "QuerySet[ActionProposal]":
-    """Undecided siblings without an exact receipt (conflicted ones included)."""
-    return with_marker_state(
-        ActionProposal.objects.filter(
-            cycle=cycle, state__in=[ProposalState.AWAITING, ProposalState.APPROVED]
-        )
-    ).exclude(marker_state=MarkerState.EXACT)
-
-
-def refuse_unavailable_siblings(
-    cycle: ServiceCycle, *, exclude: UUID | None = None
+def _reopen(
+    actor: User, proposal: ActionProposal, cycle: ServiceCycle, spec: ProposalInput
 ) -> None:
-    """Read-only: a pending sibling with no registered effect stops the reopening.
-
-    AXRM-022-SCAFFOLD: such a sibling is never silently invalidated or skipped.
-    """
-    pending = _pending(cycle)
-    if exclude is not None:
-        pending = pending.exclude(pk=exclude)
-    if any(
-        kind_unavailable(kind) for kind in pending.values_list("action_kind", flat=True)
-    ):
-        msg = "Há uma ciência da operação pendente; a emenda não pode alterá-la ainda."
-        raise ValidationError(msg, code="fiscal_manifestation_unavailable")
-
-
-def reopen_preflight(
-    proposal: ActionProposal, cycle: ServiceCycle, spec: ProposalInput
-) -> tuple[CompletionGeneration, Approval]:
-    """Check the reopening's cycle, generation and decision; write nothing.
-
-    The executor runs it, and the sibling refusal, before the execution marker
-    exists; `_reopen` repeats both defensively.
-    """
     if cycle.state not in {CycleState.COMPLETED, CycleState.WITH_PENDING}:
         msg = "Somente uma conclusão pode receber uma emenda."
         raise IllegalTransition(msg)
@@ -233,15 +188,6 @@ def reopen_preflight(
     )
     if decision is None:
         raise PermissionDenied
-    return generation, decision
-
-
-def _reopen(
-    actor: User, proposal: ActionProposal, cycle: ServiceCycle, spec: ProposalInput
-) -> None:
-    generation, decision = reopen_preflight(proposal, cycle, spec)
-    refuse_unavailable_siblings(cycle, exclude=proposal.pk)
-    pending = _pending(cycle).order_by("pk")
     cycle.amendment += 1
     CycleAmendment.objects.create(
         tenant_id=cycle.tenant_id,
@@ -254,11 +200,15 @@ def _reopen(
         completed_snapshot=generation.snapshot,
         approved_by_id=decision.approver_id,
     )
-    for sibling in pending:
-        sibling.state = ProposalState.INVALIDATED
-        sibling.version += 1
-        sibling.invalidation_reasons = ["cycle_amended"]
-        sibling.save(update_fields=["state", "version", "invalidation_reasons"])
+    for pending in ActionProposal.objects.filter(
+        cycle=cycle,
+        executions__isnull=True,
+        state__in=[ProposalState.AWAITING, ProposalState.APPROVED],
+    ):
+        pending.state = ProposalState.INVALIDATED
+        pending.version += 1
+        pending.invalidation_reasons = ["cycle_amended"]
+        pending.save(update_fields=["state", "version", "invalidation_reasons"])
     cycle.state = CycleState.ACTIVE
     cycle.version += 1
     cycle.save(update_fields=["state", "version", "amendment"])
