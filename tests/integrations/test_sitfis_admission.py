@@ -17,7 +17,7 @@ from apps.cycles.models import CycleEvent, CycleState, ServiceCycle
 from apps.cycles.models import Exception as CycleException
 from apps.integrations.authority import head_record, revoke_authority
 from apps.integrations.budget_models import ProviderReservation
-from apps.integrations.call_contracts import CallRequest
+from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
 from apps.integrations.call_dispatch import begin_io
 from apps.integrations.call_models import ProviderCall, ProviderEffectBarrier
 from apps.integrations.call_protocol import claim, reserve
@@ -453,6 +453,69 @@ def test_a_stale_claim_meeting_a_late_wait_is_refused_and_released(
         "bloqueada_autoridade",
     )
     assert world.budget().reserved == 0
+    assert len(world.sent("/Emitir")) == 1
+
+
+def test_a_moved_retry_claim_hands_the_report_to_its_next_advance(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one due emission whose first attempt gets a complete 401...
+    mod = sitfis()
+    report, first = _ready(world)
+    world.script(Reply(status=401))
+    protocol = import_module("apps.integrations.call_protocol")
+    real = protocol.claim
+    refused: list[tuple[Any, str]] = []
+
+    def move_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        # ...and the connection version moves at its retry's claim.
+        with tenant_context(world.tenant_id):
+            link = ClientProviderLink.objects.get(pk=first.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        try:
+            return real(*args, **kwargs)
+        except AdmissionDeniedError as error:
+            refused.append((args[1], type(error).__name__))
+            raise
+
+    monkeypatch.setattr(protocol, "claim", move_then_claim)
+    pinned = world.reload(report).consultation_id
+    mod._run(world.tenant_id, report.pk, first)
+    monkeypatch.setattr(protocol, "claim", real)
+
+    def consultation() -> tuple[object, str, str]:
+        with tenant_context(world.tenant_id):
+            row = FederalConsultation.objects.get(pk=pinned)
+        return row.pk, row.outcome, row.provider_ref
+
+    # Then that retry claim recorded the refusal on the same call, typed as moved
+    # (named by string: the class is absent on the red trees)...
+    [target] = world.calls(first.operation)
+    assert (target.state, target.provider_code, target.attempts) == (
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+        1,
+    )
+    assert refused == [(target.pk, "VersionMovedError")]
+    # ...the pass that ran it ends with the report still emitting and its own
+    # original consultation still incerto with a blank ref (gate review :730)...
+    after = world.reload(report)
+    assert (after.state, after.consultation_id) == ("emitindo", pinned)
+    assert consultation() == (pinned, "incerto", "")
+    assert len(world.sent("/Emitir")) == 1
+    # ...and one advance of that report settles that same consultation falha,
+    # naming the exact target from the stored refusal, never the earlier 401,
+    # with no second emission.
+    settled = world.advance(after)
+    assert (settled.pk, settled.state, settled.consultation_id) == (
+        report.pk,
+        "falha",
+        pinned,
+    )
+    assert consultation() == (pinned, "falha", str(target.pk))
+    assert [call.pk for call in world.calls(first.operation)] == [target.pk]
     assert len(world.sent("/Emitir")) == 1
 
 

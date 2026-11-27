@@ -6,10 +6,14 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
+from django.db.models import F
 
 from apps.core.tenancy import tenant_context
+from apps.cycles.models import Exception as CycleException
 from apps.integrations import call_protocol
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
+from apps.integrations.call_contracts import AdmissionDeniedError
+from apps.integrations.models import ProviderConnection
 from apps.integrations.serpro import pgmei
 from tests.fakes.provider import Reply
 from tests.fakes.serpro import FakeSerpro
@@ -30,6 +34,7 @@ from tests.integrations.test_pgmei_recovery import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from uuid import UUID
 
     from pytest_django.fixtures import SettingsWrapper
@@ -137,6 +142,68 @@ def test_previous_day_reserved_runner_blocks_a_new_paid_click(
         assert len(peer.requests) == 1, (
             "overlapping consolidation-day runners bought two guides"
         )
+
+
+@pytest.mark.parametrize("site", ["claim", "retry-claim"])
+def test_a_moved_guide_claim_is_refused_and_owned_for_its_cycle(
+    guide_world: GuideWorld, monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    # Given one guide click for the cycle, its version moving at the chosen
+    # claim: the first, or the retry after a complete 401.
+    world = guide_world
+    module = pgmei if site == "claim" else call_protocol
+    real: Callable[[UUID, UUID], Claim | None] = module.claim
+    refused: list[tuple[UUID, str]] = []
+
+    def move_then_claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
+        with tenant_context(world.tenant_id):
+            ProviderConnection.objects.filter(pk=world.link.connection_id).update(
+                version=F("version") + 1
+            )
+        try:
+            return real(tenant_id, call_id)
+        except AdmissionDeniedError as error:
+            refused.append((call_id, type(error).__name__))
+            raise
+
+    replies = (das_reply(),) if site == "claim" else (Reply(status=401), das_reply())
+    with FakeSerpro(replies) as peer:
+        with monkeypatch.context() as patcher:
+            patcher.setattr(module, "claim", move_then_claim)
+            # When the click is made, it is refused as without authorization.
+            with pytest.raises(pgmei.GuideRefused) as refusal:
+                obtain(world, peer.origin)
+        sends = len(peer.requests)
+    assert str(refusal.value) == "sem_autorizacao"
+    # Then that one call holds the typed refusal, after no or one emission...
+    [call] = guide_calls(world)
+    attempts = 0 if site == "claim" else 1
+    assert (call.state, call.provider_code, call.attempts, sends) == (
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+        attempts,
+        attempts,
+    )
+    # (The refusal's class is named by string: it is absent on the red trees.)
+    assert refused == [(call.pk, "VersionMovedError")]
+    assert pgmei._guide_document(call) is None
+    # ...and its work is one open exception bound to that call, that cycle and
+    # the cycle's responsible owner, with no other owned row citing it.
+    with tenant_context(world.tenant_id):
+        work = list(
+            CycleException.objects.filter(subject_ref=call.pk).values_list(
+                "reason_code", "state", "cycle_id", "owner_id"
+            )
+        )
+    assert work == [
+        (
+            "guia_das_nao_obtida",
+            "aberta",
+            world.cycle.pk,
+            world.engagement.responsible_id,
+        )
+    ]
+    assert ownership(world, call) == ["exception:guia_das_nao_obtida"]
 
 
 @pytest.mark.parametrize("interruption", ["death", "pause"])
