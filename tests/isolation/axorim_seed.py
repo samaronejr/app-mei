@@ -1207,6 +1207,37 @@ REQUIRED_TENANT_PAIRED_PARENTS: Final = frozenset(
         ),
         ("integrations_providercall", "link_id", "providercall_link_fk"),
         (
+            "integrations_cienciarecord",
+            "call_id",
+            "cienciarecord_call_id_scope_fk",
+        ),
+        (
+            "integrations_cienciarecord",
+            "read_call_id",
+            "cienciarecord_read_call_id_scope_fk",
+        ),
+        (
+            "integrations_cienciarecord",
+            "cycle_exception_id",
+            "cienciarecord_cycle_exception_id_scope_fk",
+        ),
+        (
+            "integrations_cienciarecord",
+            "issue_id",
+            "cienciarecord_issue_id_scope_fk",
+        ),
+        # AXRM-022: each approved event names its own client's proposal and revision.
+        (
+            "integrations_providercall",
+            "proposal_id",
+            "providercall_proposal_id_scope_fk",
+        ),
+        (
+            "integrations_providercall",
+            "fiscal_revision_id",
+            "providercall_fiscal_revision_id_scope_fk",
+        ),
+        (
             "integrations_providerreservation",
             "budget_id",
             "providerreservation_budget_fk",

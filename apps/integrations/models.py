@@ -29,6 +29,7 @@ from apps.integrations.call_models import (
     ProviderEffectBarrier,
     ProviderExecutionEpoch,
 )
+from apps.integrations.ciencia_models import CienciaRecord
 from apps.integrations.serpro.models import (
     FirmIntegrationIssue,
     FirmProviderReservation,
@@ -49,6 +50,7 @@ __all__ = [
     "AuthorityStatus",
     "CaptureAcquisition",
     "CaptureStream",
+    "CienciaRecord",
     "ClientProviderLink",
     "ConnectionStatus",
     "CredentialState",
@@ -419,6 +421,8 @@ class AuthorityRecord(TenantScopedModel):
         blank=True,
     )
     source_call_ref = models.CharField(max_length=64, blank=True, default="")
+    conclusive_manifestation_annex_ii = models.BooleanField(default=False)
+    conclusive_manifestation_note = models.TextField(blank=True, max_length=2000)
     supersedes = models.ForeignKey(
         "self",
         on_delete=models.PROTECT,
@@ -489,6 +493,14 @@ class AuthorityRecord(TenantScopedModel):
             models.CheckConstraint(
                 condition=Q(declared_by__isnull=False) | ~Q(source_call_ref=""),
                 name="authorityrecord_person_or_call",
+            ),
+            models.CheckConstraint(
+                condition=Q(conclusive_manifestation_annex_ii=False)
+                | (
+                    Q(service=AuthorityService.CIENCIA)
+                    & ~Q(conclusive_manifestation_note="")
+                ),
+                name="authorityrecord_conclusive_note",
             ),
         ]
 
@@ -602,6 +614,10 @@ class IssueReason(models.TextChoices):
         "Relatório de situação fiscal não obtido",
     )
     FALHA_NA_CAPTURA = "falha_na_captura", "Falha na captura de documentos fiscais"
+    MANIFESTACAO_CONCLUSIVA_PENDENTE = (
+        "manifestacao_conclusiva_pendente",
+        "Manifestação conclusiva pendente",
+    )
 
 
 class ProviderOperationCode(models.TextChoices):

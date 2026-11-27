@@ -202,6 +202,7 @@ $$;
 -- PORTAL_NONE: integrations_providercall
 -- PORTAL_NONE: integrations_providercallattempt
 -- PORTAL_NONE: integrations_providereffectbarrier
+-- PORTAL_NONE: integrations_cienciarecord
 -- PORTAL_NONE: integrations_providerexecutionepoch
 -- PORTAL_NONE: integrations_firmprovidercall
 -- PORTAL_NONE: integrations_firmprovidercallattempt
@@ -271,6 +272,10 @@ BEGIN
     IF to_regclass('public.tenants_supportgrant') IS NOT NULL THEN
         REVOKE ALL ON tenants_supportgrant FROM app_runtime;
         GRANT SELECT, INSERT, UPDATE ON tenants_supportgrant TO app_runtime;
+    END IF;
+    IF to_regclass('public.integrations_cienciarecord') IS NOT NULL THEN
+        REVOKE ALL ON integrations_cienciarecord FROM app_runtime;
+        GRANT SELECT, INSERT, UPDATE ON integrations_cienciarecord TO app_runtime;
     END IF;
 END
 $$;

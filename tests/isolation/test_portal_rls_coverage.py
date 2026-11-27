@@ -86,7 +86,8 @@ RUNTIME_ROLE = "app_runtime"
 # AXRM-016 adds the client-paired private SITFIS review (both policies): 86 + 1.
 # AXRM-020 adds the private fiscal identity, revision and artifact tables: 87 + 3.
 # AXRM-021 adds three capture records and one exact-revision review.
-EXPECTED_TENANT_TABLE_COUNT = 94
+# AXRM-022 adds the client-paired, independently portal-denied recovery identity.
+EXPECTED_TENANT_TABLE_COUNT = 95
 EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
     {
         "cycles_actionproposal",
@@ -131,6 +132,8 @@ EXACT_EFFECT_PRIVATE_TABLES: Final = frozenset(
         "integrations_syncstream",
         "integrations_syncrun",
         "integrations_captureacquisition",
+        # AXRM-022: the private recovered identity and its owned follow-up duty.
+        "integrations_cienciarecord",
     }
 )
 
@@ -651,6 +654,8 @@ STATIC_ONLY_TABLES: Final[frozenset[str]] = frozenset(
         "integrations_syncrun",
         "integrations_captureacquisition",
         "cycles_fiscaldocumentreview",
+        # AXRM-022: recovered targets and duties are firm-private, portal NONE.
+        "integrations_cienciarecord",
     },
 )
 

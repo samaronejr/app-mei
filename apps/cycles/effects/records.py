@@ -54,6 +54,7 @@ class ActionProposal(ClientRecord):
             (ActionKind.EMAIL_NOTICE, "Enviar e-mail"),
             (ActionKind.CYCLE_COMPLETION, "Concluir ciclo"),
             (ActionKind.REQUEST_WAIVER, "Dispensar solicita\u00e7\u00e3o"),
+            (ActionKind.FISCAL_MANIFESTATION, "Registrar ciencia (lote)"),
         ],
     )
     input_spec = models.JSONField()

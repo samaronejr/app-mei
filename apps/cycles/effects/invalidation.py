@@ -76,19 +76,19 @@ class RevalidationContext:
 _I: Final = Impact.INVALIDATE
 _N: Final = Impact.IGNORE
 _W: Final = Impact.WARN
-# Columns: client_publication, email_notice, cycle_completion, request_waiver.
+# Columns follow ActionKind, ending with fiscal_manifestation.
 # The email document cell applies to documents actually linked into that effect.
-_MATRIX: Final[dict[Change, tuple[Impact, Impact, Impact, Impact]]] = {
-    Change.RECIPIENTS: (_I, _I, _N, _N),
-    Change.DOCUMENTS: (_I, _I, _I, _N),
-    Change.EVIDENCE: (_I, _N, _I, _I),
-    Change.AMOUNT: (_I, _I, _I, _N),
-    Change.POLICY: (_I, _I, _I, _I),
-    Change.APPROVER: (_I, _I, _I, _I),
-    Change.ACCESS_EXPIRED: (_I, _I, _I, _I),
-    Change.SOURCE_STALE: (_I, _W, _I, _N),
-    Change.EXPIRY: (_I, _I, _I, _I),
-    Change.BODY: (_I, _I, _N, _N),
+_MATRIX: Final[dict[Change, tuple[Impact, Impact, Impact, Impact, Impact]]] = {
+    Change.RECIPIENTS: (_I, _I, _N, _N, _N),
+    Change.DOCUMENTS: (_I, _I, _I, _N, _I),
+    Change.EVIDENCE: (_I, _N, _I, _I, _N),
+    Change.AMOUNT: (_I, _I, _I, _N, _N),
+    Change.POLICY: (_I, _I, _I, _I, _I),
+    Change.APPROVER: (_I, _I, _I, _I, _I),
+    Change.ACCESS_EXPIRED: (_I, _I, _I, _I, _I),
+    Change.SOURCE_STALE: (_I, _W, _I, _N, _N),
+    Change.EXPIRY: (_I, _I, _I, _I, _I),
+    Change.BODY: (_I, _I, _N, _N, _N),
 }
 _COLUMNS: Final = {kind: index for index, kind in enumerate(ActionKind)}
 _FIELDS: Final = frozenset(field.name for field in fields(EffectManifestV1))

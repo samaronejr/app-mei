@@ -90,6 +90,7 @@ PORTAL_DENIED_TABLES = (
     "integrations_providercall",
     "integrations_providercallattempt",
     "integrations_providereffectbarrier",
+    "integrations_cienciarecord",
     "integrations_providerexecutionepoch",
     # AXRM-009: the client-less SP-TERMO submission and its attempt receipts.
     "integrations_firmprovidercall",
@@ -172,7 +173,7 @@ APPEND_ONLY_COLUMN_UPDATE: dict[str, tuple[str, ...]] = {
 # AXR1-023: writable-but-undeletable tables — UPDATE stays (revocation sets
 # revoked_at) while DELETE is refused, because the row is the audit trail. The
 # same REVOKE+GRANT pair lives in ops/sql/roles.sql and tenants.0012.
-NO_DELETE_TABLES = ("tenants_supportgrant",)
+NO_DELETE_TABLES = ("tenants_supportgrant", "integrations_cienciarecord")
 
 # app_portal's allow-list, mirroring ops/sql/roles.sql. SELECT only, and enumerated
 # rather than blanket so every other table — accounts_user, mfa_authenticator,

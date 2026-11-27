@@ -3,7 +3,7 @@
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
-from typing import assert_never
+from typing import assert_never, cast
 
 import pytest
 
@@ -14,7 +14,7 @@ from apps.cycles.effects.invalidation import (
     assess_changes,
     compare_manifests,
 )
-from apps.cycles.effects.manifest import ActionKind, EffectManifestV1
+from apps.cycles.effects.manifest import ActionKind, DocumentEffect, EffectManifestV1
 from tests.cycles.manifest_fixtures import FIRST, NOW, THIRD, manifest_example
 
 KINDS = [
@@ -88,7 +88,11 @@ def _change(
             after = replace(
                 before,
                 documents=(
-                    {**before.documents[0], "sha256": "ef" * 32, "link_revision": 3},
+                    {
+                        **cast("DocumentEffect", before.documents[0]),
+                        "sha256": "ef" * 32,
+                        "link_revision": 3,
+                    },
                 ),
             )
         case Change.EVIDENCE:

@@ -35,6 +35,18 @@ class ProviderCall(ClientRecord):
     link = models.ForeignKey(
         "integrations.ClientProviderLink", on_delete=models.PROTECT, related_name="+"
     )
+    proposal = models.ForeignKey(
+        "cycles.ActionProposal",
+        on_delete=models.PROTECT,
+        null=True,
+        related_name="+",
+    )
+    fiscal_revision = models.ForeignKey(
+        "obligations.FiscalRevision",
+        on_delete=models.PROTECT,
+        null=True,
+        related_name="+",
+    )
     operation = models.CharField(max_length=24)
     operation_revision = models.CharField(max_length=32)
     operation_class = models.CharField(max_length=16)
@@ -94,6 +106,8 @@ class ProviderCall(ClientRecord):
                 condition=models.Q(billed__in=("sim", "nao", "desconhecido")),
                 name="providercall_known_billed",
             ),
+            # 0019 enforces the reference pair with a nondeferrable constraint
+            # trigger, after the native tenant/client foreign keys have fired.
         ]
 
 
