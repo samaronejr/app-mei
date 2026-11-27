@@ -11,6 +11,7 @@ from django.utils.timezone import now as wall_clock
 from apps.core.tasks import PhasedTenantTask, PlatformTask
 from apps.integrations.call_contracts import AdmissionDeniedError
 from apps.integrations.call_models import CallState
+from apps.integrations.call_state import CallBusyError
 from apps.integrations.serpro import sweeps
 from apps.integrations.serpro.models import ACTIVE_QUERY_STATES
 from apps.integrations.serpro.pagtoweb import PaymentRange
@@ -66,21 +67,29 @@ def purge_payment_pages(self: PlatformTask) -> int:
 def emit_payment_receipt_task(tenant_id: str, payment_id: str, actor_id: str) -> str:
     """Issue one payment's receipt; the payment's call identity makes it idempotent.
 
-    A pause holding the receipt's sent call is handed to a later delivery of the
-    same payment, which resumes that call: it never starts a new one (AXRM-045).
+    A pause holding the receipt's sent call, or another runner holding its lock,
+    is handed to a later delivery of the same payment, which settles that same
+    call: it never starts a new one, and never reports it settled (AXRM-045).
     """
     try:
         call = emit_payment_receipt(UUID(tenant_id), UUID(payment_id), UUID(actor_id))
+    except CallBusyError:
+        return _resume_later(tenant_id, payment_id, actor_id)
     except AdmissionDeniedError as error:
         if str(error) != CallState.PAUSED:
             raise
-        emit_payment_receipt_task.apply_async(
-            (tenant_id, payment_id, actor_id),
-            eta=wall_clock() + PAUSE_RESUME,
-            ignore_result=True,
-        )
-        return CallState.RETRY
+        return _resume_later(tenant_id, payment_id, actor_id)
     return call.state if call is not None else "recusada"
+
+
+def _resume_later(tenant_id: str, payment_id: str, actor_id: str) -> str:
+    """Schedule the same payment's receipt again; its call is still held."""
+    emit_payment_receipt_task.apply_async(
+        (tenant_id, payment_id, actor_id),
+        eta=wall_clock() + PAUSE_RESUME,
+        ignore_result=True,
+    )
+    return CallState.RETRY
 
 
 def scheduled_window(today: date) -> PaymentRange | None:
