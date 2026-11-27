@@ -75,7 +75,7 @@ from apps.integrations.call_contracts import (
 from apps.integrations.call_dispatch import abort_unopened
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
-from apps.integrations.call_state import current_epoch, end_held
+from apps.integrations.call_state import CallBusyError, current_epoch, end_held
 from apps.integrations.models import (
     ACTIVE_ISSUE_STATES,
     ClientProviderLink,
@@ -987,7 +987,10 @@ def _step(
         # No link or no termo in force at run time is never the client's authority.
         # A call already made under this key is ended, owned and named (AXRM-045).
         reason = "termo_ausente" if link else "sem_vinculo_ativo"
-        made = end_held(report.tenant_id, report.client_id, key, reason)
+        try:
+            made = end_held(report.tenant_id, report.client_id, key, reason)
+        except CallBusyError:
+            return None  # Another runner holds the call: the next pass closes it.
         _finish(report, FiscalReportState.FALHA, operation, made)
         return None
     if operation == EMISSION_OPERATION and _scanner_off(report.tenant_id):
