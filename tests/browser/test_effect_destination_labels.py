@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import timedelta
-from typing import assert_never
+from typing import Literal, assert_never
 
 import pytest
 from django.template.loader import render_to_string
@@ -36,9 +36,23 @@ from tests.support import enrol_totp
 from tests.ui.factories import Firm
 
 OpenPage = Callable[[LiveFirm, User | None], BrowserPage]
+# AXRM-022-SCAFFOLD: the fiscal kind has no proposable scenario until its builder
+# and chooser land; the reference file returns in 22-14.
+LegacyKind = Literal[
+    ActionKind.EMAIL_NOTICE,
+    ActionKind.CLIENT_PUBLICATION,
+    ActionKind.CYCLE_COMPLETION,
+    ActionKind.REQUEST_WAIVER,
+]
+LEGACY_KINDS: tuple[LegacyKind, ...] = (
+    ActionKind.EMAIL_NOTICE,
+    ActionKind.CLIENT_PUBLICATION,
+    ActionKind.CYCLE_COMPLETION,
+    ActionKind.REQUEST_WAIVER,
+)
 
 
-def _scenario(kind: ActionKind) -> tuple[CycleSetup, ActionProposal]:
+def _scenario(kind: LegacyKind) -> tuple[CycleSetup, ActionProposal]:
     """Build an awaiting proposal through the real service for each effect."""
     match kind:
         case ActionKind.EMAIL_NOTICE:
@@ -101,9 +115,14 @@ def _scenario(kind: ActionKind) -> tuple[CycleSetup, ActionProposal]:
             assert_never(kind)
 
 
-@pytest.mark.parametrize("kind", list(ActionKind))
+def test_fiscal_alone_has_no_proposable_scenario_yet() -> None:
+    # AXRM-022-SCAFFOLD: propose refuses the fiscal kind until its builder lands.
+    assert set(ActionKind) - set(LEGACY_KINDS) == {ActionKind.FISCAL_MANIFESTATION}
+
+
+@pytest.mark.parametrize("kind", LEGACY_KINDS)
 def test_real_cards_show_destinations_without_changing_frozen_effects(
-    kind: ActionKind,
+    kind: LegacyKind,
     browser_server: LiveServer,
     open_page: OpenPage,
 ) -> None:
