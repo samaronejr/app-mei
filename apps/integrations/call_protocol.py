@@ -6,9 +6,9 @@ from dataclasses import replace
 from apps.integrations.budget_settlement import billing_result
 from apps.integrations.call_contracts import (
     MAX_ATTEMPTS,
-    AdmissionDeniedError,
     CallResult,
     Claim,
+    VersionMovedError,
 )
 from apps.integrations.call_dispatch import (
     Adapter,
@@ -62,7 +62,7 @@ def perform(ticket: Claim, adapter: Adapter, *, keep: Keep | None = None) -> Cal
     if schedule_client_retry(ticket, result):
         try:
             retry = claim(ticket.tenant_id, ticket.call_id)
-        except AdmissionDeniedError:
+        except VersionMovedError:
             retry = None  # The claim recorded the refusal and released it (AXRM-045).
         if retry is not None:
             result = _perform_once(retry, adapter, keep)

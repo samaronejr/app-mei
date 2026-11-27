@@ -16,6 +16,7 @@ from apps.integrations.call_contracts import (
     AdmissionDeniedError,
     AdmissionPolicy,
     Operation,
+    VersionMovedError,
 )
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.models import (
@@ -77,7 +78,7 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
         )
     ):
         reason = _moved_cause(operation.policy, call)
-        raise AdmissionDeniedError(CallState.AUTHORITY, reason=reason)
+        raise VersionMovedError(CallState.AUTHORITY, reason=reason)
     if not operation.policy.authorize(call):
         raise AdmissionDeniedError(CallState.AUTHORITY)
 
@@ -108,15 +109,25 @@ def _moved_cause(policy: AdmissionPolicy, call: ProviderCall) -> str:
 
     A moved version is no cause in itself, and the call is refused with its
     reservation released whatever the re-read does: it may only choose the cause.
-    A wait, a deferral or an error names none; its writes are rolled back.
+    The re-read's savepoint is always rolled back, so it keeps no write and no
+    lock; a wait, a deferral or an error names none.
     """
     try:
         with transaction.atomic():
-            policy.authority(call)
-    except AdmissionDeniedError as refused:
-        return refused.reason if str(refused) == CallState.AUTHORITY else ""
+            cause = _probe(policy, call)
+            # Whatever the re-read wrote or locked, its savepoint never survives.
+            transaction.set_rollback(True)
     except Exception:  # noqa: BLE001 - the refusal stands whatever the re-read does
         return ""
+    return cause
+
+
+def _probe(policy: AdmissionPolicy, call: ProviderCall) -> str:
+    """Name the authority cause the policy reports now, or none."""
+    try:
+        policy.authority(call)
+    except AdmissionDeniedError as refused:
+        return refused.reason if str(refused) == CallState.AUTHORITY else ""
     return ""
 
 

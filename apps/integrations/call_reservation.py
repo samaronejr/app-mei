@@ -12,10 +12,10 @@ from apps.integrations.budget_pricing import BudgetDeniedError
 from apps.integrations.budget_settlement import release
 from apps.integrations.call_contracts import (
     MAX_ATTEMPTS,
-    AdmissionDeniedError,
     CallRequest,
     Claim,
     IntentConflictError,
+    VersionMovedError,
     operation_for,
 )
 from apps.integrations.call_models import CallState, ProviderCall
@@ -126,9 +126,10 @@ def claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
             call.save()
             refused(call)
             return None
-        except AdmissionDeniedError as error:
-            # Recorded and released here as dispatch does, then raised once this
-            # commits: a refused call is never left reserved (AXRM-045).
+        except VersionMovedError as error:
+            # Only a call that can never be admitted again is recorded and
+            # released here, then raised once this commits; every other refusal
+            # rolls this claim back and reaches the caller unchanged (AXRM-045).
             record_refusal(call, error)
             refusal = error
         else:

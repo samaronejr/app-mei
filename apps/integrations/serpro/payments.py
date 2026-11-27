@@ -77,7 +77,11 @@ from apps.integrations.authority import (
 )
 from apps.integrations.budget_pricing import BudgetDeniedError
 from apps.integrations.budget_settlement import release
-from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
+from apps.integrations.call_contracts import (
+    AdmissionDeniedError,
+    CallRequest,
+    VersionMovedError,
+)
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
 from apps.integrations.models import (
@@ -1038,7 +1042,7 @@ def emit_payment_receipt(
         return None
     try:
         ticket = claim(tenant_id, row.pk)
-    except AdmissionDeniedError:
+    except VersionMovedError:
         ticket = None  # The claim recorded the refusal and released the reservation.
     if ticket is None:
         # Report the call as stored now, never the row as it was reserved.
