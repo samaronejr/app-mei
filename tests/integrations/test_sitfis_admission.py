@@ -619,9 +619,10 @@ def _hold_the_budget_lock(
                     cursor.execute("SET LOCAL lock_timeout = '10s'")
                     cursor.execute("SELECT pg_advisory_xact_lock(%s)", [240110])
                 holding.set()
-                assert done.wait(timeout=30)
-        except OperationalError as error:
-            failures.append(f"holder: {error}")
+                if not done.wait(timeout=30):
+                    failures.append("holder: never released")
+        except Exception as error:  # noqa: BLE001 - every holder failure is recorded
+            failures.append(f"holder: {type(error).__name__}: {error}")
         finally:
             connections.close_all()
 
@@ -664,6 +665,28 @@ def _signal_the_claim(
     return probed, releasing, released, lock_free_at_release
 
 
+def _take_the_report(
+    world: World,
+    report: FiscalSituationReport,
+    events: dict[str, threading.Event],
+    claimer: threading.Thread,
+) -> tuple[str, dict[str, bool]]:
+    """Lock the report, noting where the claim stands while it is held."""
+    try:
+        with tenant_context(world.tenant_id), transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = '5s'")
+            FiscalSituationReport.objects.select_for_update().get(pk=report.pk)
+            window = {
+                "probed": events["probed"].is_set(),
+                "claiming": claimer.is_alive(),
+                "released": events["released"].is_set(),
+            }
+    except OperationalError as error:
+        return f"waited: {error}", {}
+    return "locked", window
+
+
 def test_a_moved_claims_reread_holds_no_report_lock(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -679,8 +702,6 @@ def test_a_moved_claims_reread_holds_no_report_lock(
     # ...and the budget lock is held elsewhere, so the moved claim's refusal
     # stops in `release` after its re-read reached the report.
     holder, holding, done, failures = _hold_the_budget_lock(world)
-    holder.start()
-    assert holding.wait(timeout=15)
     probed, releasing, released, lock_free_at_release = _signal_the_claim(monkeypatch)
     refusals: list[str] = []
 
@@ -695,34 +716,36 @@ def test_a_moved_claims_reread_holds_no_report_lock(
             connections.close_all()
 
     claimer = threading.Thread(target=claim_it)
-    claimer.start()
-    assert releasing.wait(timeout=15)
-    # When this runner locks the report while that claim is still in release.
+    started: list[threading.Thread] = []
+    ready = {"holding": False, "releasing": False}
     window: dict[str, bool] = {}
+    locked = "not tried"
+    # One cleanup path: every started worker is released and joined on any exit.
     try:
-        with tenant_context(world.tenant_id), transaction.atomic():
-            with connection.cursor() as cursor:
-                cursor.execute("SET LOCAL lock_timeout = '5s'")
-            FiscalSituationReport.objects.select_for_update().get(pk=report.pk)
-            window = {
-                "probed": probed.is_set(),
-                "claiming": claimer.is_alive(),
-                "released": released.is_set(),
-            }
-        locked = "locked"
-    except OperationalError as error:
-        locked = f"waited: {error}"
+        holder.start()
+        started.append(holder)
+        ready["holding"] = holding.wait(timeout=15)
+        if ready["holding"]:
+            claimer.start()
+            started.append(claimer)
+            ready["releasing"] = releasing.wait(timeout=15)
+        if ready["releasing"]:
+            # When this runner locks the report while that claim is in release.
+            locked, window = _take_the_report(
+                world, report, {"probed": probed, "released": released}, claimer
+            )
     finally:
         done.set()
-        holder.join(timeout=30)
-        claimer.join(timeout=30)
+        for worker in started:
+            worker.join(timeout=30)
+    assert [worker.name for worker in started if worker.is_alive()] == []
+    assert ready == {"holding": True, "releasing": True}
     # Then the re-read kept no new lock: it only named a cause (AXRM-045).
     assert locked == "locked"
     # The probe had reached the report and the release was waiting on the budget
     # lock held elsewhere: this session took the report before that lock went.
     assert window == {"probed": True, "claiming": True, "released": False}
     assert lock_free_at_release == [False]
-    assert (holder.is_alive(), claimer.is_alive()) == (False, False)
     assert failures == []
     assert refusals == ["VersionMovedError: bloqueada_autoridade"]
     _assert_refused_and_released(world, first.operation, row.pk, reserved_before)

@@ -9,7 +9,7 @@ This part claims only what its edits change:
 - TRANSIENT, red on 85ca1f5 (the 3440c9a tree) by design, because that tree
   recorded every claim refusal: a pause, an ordinary authority veto, a disabled
   link or a lapsed termo at claim, without a version move, leaves no call
-  `bloqueada_autoridade` or `pausada` (oracle T1).
+  `bloqueada_autoridade` or `pausada` (oracle T1, judged at that claim's exit).
 - Boundary pins, holding on every tree: a move after the claim ends the target
   `bloqueada_autoridade` with its slots released; a pause and a move before
   dispatch end it `pausada`, because the pause guard runs first
@@ -24,10 +24,15 @@ preflight (all 45-call-lifecycle), and `page[moved-claim-skips-held-call]`, the
 known PAGTOWEB skipped-claim defect (`payments.py:453-460,819-832`) owned there.
 
 Each node binds its target `(tenant, client, operation, request key, call,
-effect key)` when the caller first claims, snapshots once after the cut and once
-after an unpaused settle pass (the caller's real delivery of the same intent; a
-guide click is a new intent only past a refusal that sent nothing,
-`pgmei.py:418-433`), and records both under aliases as its `tuple`.
+effect key)` when the caller first claims and records evidence at every boundary
+that occurs: seeded; every claim's entry and exit, at both claim sites; every
+public pass, the first one inside the holder's lifetime where a call is held; and
+the final settle. Rows are compared raw and field by field within a run, and
+across trees under first-appearance aliases with instants reduced to set or
+unset. This proves state at those boundaries, not the absence of a
+write-and-restore between them. A guide click is a new intent only past a
+refusal that sent nothing (`pgmei.py:418-433`), so the guide's M5 is that a new
+click leaves the target untouched.
 
 Cuts per caller (page, receipt, guide, SITFIS): x exercised here, o exercised
 outside the matrix, - not applicable, d deferred to 45-call-lifecycle.
@@ -73,22 +78,27 @@ A recorded node may record a bad inherited result without certifying it.
 
 from __future__ import annotations
 
+import collections
+import hashlib
 import json
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from importlib import import_module
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
+from uuid import UUID, uuid4
 
 import pytest
-from django.db import connection, connections, transaction
+from django.db import OperationalError, connection, connections, transaction
 from django.db.models import F
 from django.utils import timezone
 
 from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import EvidenceLink
 from apps.cycles.models import Exception as CycleException
+from apps.integrations import call_contracts
 from apps.integrations.authority import head_record, revoke_authority
 from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
@@ -99,6 +109,8 @@ from apps.integrations.models import (
 )
 from apps.integrations.serpro import payments
 from apps.integrations.serpro.models import FirmIntegrationIssue, PaymentQuery
+from apps.integrations.serpro.reauthentication import COMPLETE_401
+from apps.integrations.serpro.work import CLIENT_ABSENT, TERMO_PREFIX
 from apps.obligations.models import Document, FederalConsultation, FederalPayment
 from apps.tenants.models import Membership, TenantRole
 from tests.fakes.provider import Reply
@@ -112,7 +124,6 @@ from tests.integrations.test_pagtoweb_ownership import lease_runs_out
 if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
-    from uuid import UUID
 
     from pytest_django.fixtures import SettingsWrapper
 
@@ -162,6 +173,19 @@ COMMON: Final = [cut for cut in CUTS if cut not in {*ACTOR_CUTS, *SCANNER_CUTS}]
 LIVE: Final = frozenset(
     {CallState.RESERVED, CallState.CLAIMED, CallState.STARTED, CallState.RETRY}
 )
+RECORDED_AT_CLAIM: Final = frozenset({CallState.AUTHORITY, CallState.PAUSED})
+PAUSE_VETO: Final = f"raised AdmissionDeniedError: {CallState.PAUSED}"
+AUTHORITY_VETO: Final = f"raised AdmissionDeniedError: {CallState.AUTHORITY}"
+ANY_TERMO: Final = "any lapsed-termo block"
+# The veto each transient cut must meet at its own claim: site, outcome, reason.
+VETO: Final[dict[str, tuple[str, str, str]]] = {
+    "pause-claim": ("claim", PAUSE_VETO, CallState.PAUSED),
+    "pause-retry-claim": ("retry-claim", PAUSE_VETO, CallState.PAUSED),
+    "moved-paused-claim": ("claim", PAUSE_VETO, CallState.PAUSED),
+    "link-disabled-at-claim": ("claim", PAUSE_VETO, CallState.PAUSED),
+    "authority-revoked-at-claim": ("claim", AUTHORITY_VETO, CLIENT_ABSENT),
+    "termo-lost-at-claim": ("claim", AUTHORITY_VETO, ANY_TERMO),
+}
 # What each caller returns or raises once a moved claim is refused, and what its
 # first pass returns while another runner holds the call through the claim.
 REFUSED: Final = {
@@ -175,8 +199,91 @@ SKIPPED: Final = {
     "guide": "returned em_andamento",
     "sitfis": "returned emitindo",
 }
-# The target's own record of the definitive 401 that precedes a retry claim.
-UNBILLED_401: Final = ["target", 1, "result", 401, "nao"]
+# The definitive 401 a retry claim follows (`serpro/reauthentication.py:27-50`).
+DEFINITIVE_401: Final = {
+    "attempt_number": 1,
+    "observation": "result",
+    "outcome": CallState.FAILED,
+    "http_status": 401,
+    "provider_code": COMPLETE_401,
+    "billed": "nao",
+    "settled_microbrl": 0,
+}
+GUIDE_WORK: Final = "guia_das_nao_obtida"
+REPORT_WORK: Final = "situacao_fiscal_nao_obtida"
+FINAL_REPORT: Final = frozenset({"falha", "negado", "protocolo_expirado", "emitido"})
+
+# Every concrete column of the three compared rows: nothing is left out by hand.
+CALL_FIELDS: Final = tuple(f.attname for f in ProviderCall._meta.concrete_fields)
+ATTEMPT_FIELDS: Final = tuple(
+    f.attname for f in ProviderCallAttempt._meta.concrete_fields
+)
+SLOT_FIELDS: Final = tuple(f.attname for f in ProviderReservation._meta.concrete_fields)
+BUDGET_FIELDS: Final = ("id", "tenant_id", "provider", "window_start")
+MONEY: Final = ("reserved", "known_liability", "uncertain_exposure")
+BUCKETS: Final = {"reserved": 0, "known": 1, "uncertain": 2}
+OWNED: Final[dict[str, tuple[Any, tuple[str, ...]]]] = {
+    "exception": (
+        CycleException,
+        (
+            "id",
+            "tenant_id",
+            "client_id",
+            "cycle_id",
+            "subject_ref",
+            "reason_code",
+            "state",
+            "owner_id",
+            "review_on",
+            "due_on",
+            "version",
+        ),
+    ),
+    "issue": (
+        IntegrationIssue,
+        (
+            "id",
+            "tenant_id",
+            "client_id",
+            "link_id",
+            "service",
+            "reason",
+            "state",
+            "owner_id",
+            "review_on",
+            "due_on",
+            "evidence_refs",
+            "version",
+        ),
+    ),
+    "firm": (
+        FirmIntegrationIssue,
+        (
+            "id",
+            "tenant_id",
+            "connection_id",
+            "call_id",
+            "reason",
+            "state",
+            "owner_id",
+            "review_on",
+            "evidence_refs",
+            "version",
+        ),
+    ),
+}
+TOKEN_PATHS: Final = frozenset({"/authenticate", "/token"})
+CONTROLS_PATH: Final = Path(__file__).with_name("call_admission_controls.json")
+CONTROL_NODES: Final = (
+    ("receipt", SKIP),
+    ("receipt", "moved-before-retry-claim"),
+    ("guide", "moved-then-redelivery"),
+    ("page", "moved-before-claim"),
+    ("receipt", "pause-retry-claim"),
+)
+
+Rows = dict[str, dict[str, Any]]
+Changes = list[tuple[str, str, str]]
 
 
 @dataclass
@@ -193,181 +300,143 @@ class Caller:
     gateway: FakeSerpro
     run: Callable[[], object]
     redeliver: Callable[[], object]
-    sends: Callable[[], int]
-    aggregate: Callable[[dict[str, Any]], dict[str, object]]
-    named: Callable[[], dict[str, str]]
+    aggregate: Callable[[Caller], dict[str, object]]
+    named: Callable[[Caller], dict[str, str]]
     script_ok: Callable[[], None]
     script_401: Callable[[], None]
     authority_service: str = ""
-    ordinal: Callable[[ProviderCall], tuple[object, ...]] = lambda call: (
-        call.created_at,
-        str(call.pk),
+    ordinal: Callable[[dict[str, Any]], tuple[object, ...]] = lambda row: (
+        row["created_at"],
+        str(row["id"]),
     )
+    result_ids: Callable[[Caller, object], dict[str, object]] = lambda _c, _r: {}
+    before_settle: Callable[[Caller], None] | None = None
     target: dict[str, object] | None = None
-    retried: list[UUID] = field(default_factory=list)
-    passes: list[list[str]] = field(default_factory=list)
+    pinned: dict[str, str] = field(default_factory=dict)
+    decoys: set[str] = field(default_factory=set)
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    passes: list[dict[str, Any]] = field(default_factory=list)
+    stages: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     performs: list[str] = field(default_factory=list)
-    queued: list[tuple[str, tuple[object, ...], bool]] = field(default_factory=list)
+    queued: list[dict[str, Any]] = field(default_factory=list)
+    issued: list[tuple[str, str, int]] = field(default_factory=list)
     unscripted: list[str] = field(default_factory=list)
-    skip: dict[str, object] | None = None
-    baseline: dict[str, Any] = field(default_factory=dict)
+    reserved: list[str] = field(default_factory=list)
+    returned: list[str] = field(default_factory=list)
+    skip: dict[str, Any] | None = None
+    seed: dict[str, Any] = field(default_factory=dict)
+    pass_index: int = -1
+    hooks: dict[
+        str, tuple[Callable[[], None] | None, Callable[[object], None] | None]
+    ] = field(default_factory=dict)
+    fired: set[str] = field(default_factory=set)
 
 
-def _outcome(action: Callable[[], object]) -> str:
-    try:
-        result = action()
-    except SystemExit:
-        return "died"
-    except Exception as error:  # noqa: BLE001 - the outcome is what is recorded
-        return f"raised {type(error).__name__}: {error}"
-    state = getattr(result, "state", None) or getattr(result, "code", None) or result
-    return f"returned {state}"
+# Pure helpers: each is exercised against counterfactuals below.
 
 
-def _budget() -> list[int]:
-    rows = ProviderBudget.objects.values_list(
-        "reserved", "known_liability", "uncertain_exposure"
-    )
-    return [sum(row[index] for row in rows) for index in range(3)]
+def _changed(before: Rows, after: Rows, prefix: str) -> Changes:
+    """Every added, removed or differing field between two keyed row sets."""
+    changes: Changes = []
+    for key in sorted(set(before) | set(after)):
+        old, new = before.get(key), after.get(key)
+        if old is None or new is None:
+            changes.append((prefix, key, "added" if old is None else "removed"))
+            continue
+        changes += [
+            (prefix, key, name)
+            for name in sorted(set(old) | set(new))
+            if old.get(name) != new.get(name)
+        ]
+    return changes
 
 
-OWNED_MODELS: Final = (
-    ("issue", IntegrationIssue, "reason", "evidence_refs"),
-    ("exception", CycleException, "reason_code", "subject_ref"),
-    ("firm", FirmIntegrationIssue, "reason", "evidence_refs"),
-)
+def _target_changed(before: dict[str, Any], after: dict[str, Any]) -> Changes:
+    return [
+        change
+        for part in ("calls", "attempts", "slots")
+        for change in _changed(before[part], after[part], part)
+    ]
 
 
-def _observe(caller: Caller, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Count unscripted sends and queued continuations; take the node's baseline."""
-    gateway = caller.gateway
-    real_reply = gateway.reply_for
-
-    def counted(request: Any) -> Reply:  # noqa: ANN401 - the fake's own type
-        if not gateway.replies:
-            caller.unscripted.append(request.path)
-        return real_reply(request)
-
-    monkeypatch.setattr(gateway, "reply_for", counted)
-    tasks = import_module("apps.integrations.serpro.tasks")
-    sitfis_tasks = import_module("apps.integrations.serpro.sitfis_tasks")
-    for task in (
-        tasks.run_payment_query_task,
-        tasks.emit_payment_receipt_task,
-        sitfis_tasks.advance_situation_report_task,
-    ):
-        name = task.name.rsplit(".", 1)[-1]
-
-        def queue(
-            args: tuple[object, ...] = (),
-            _kwargs: object = None,
-            *,
-            name: str = name,
-            **options: object,
-        ) -> None:
-            timed = "eta" in options or "countdown" in options
-            caller.queued.append((name, tuple(args), timed))
-
-        monkeypatch.setattr(task, "apply_async", queue)
-    with tenant_context(caller.tenant_id):
-        caller.baseline = {
-            "budget": _budget(),
-            "sends": caller.sends(),
-            "consultations": set(
-                FederalConsultation.objects.values_list("pk", flat=True)
-            ),
-            **{
-                kind: dict(model.objects.values_list("pk", "version"))
-                for kind, model, *_ in OWNED_MODELS
-            },
-        }
-
-
-def _owned(baseline: dict[str, Any]) -> list[tuple[str, str, str, list[object]]]:
-    """Owned work opened or changed during the node, with what it is bound to."""
-    rows = []
-    for kind, model, reason, refs in OWNED_MODELS:
-        for pk, version, why, state, bound in model.objects.values_list(
-            "pk", "version", reason, "state", refs
-        ):
-            if baseline[kind].get(pk) != version:
-                rows.append(
-                    (kind, why, state, bound if isinstance(bound, list) else [bound])
-                )
-    return sorted(rows, key=lambda row: (row[0], row[1], row[2], len(row[3])))
-
-
-def _snapshot(caller: Caller) -> dict[str, Any]:
-    """Everything a node compares, as raw rows; `_Aliases` names the identities."""
-    with tenant_context(caller.tenant_id):
-        calls = sorted(
-            ProviderCall.objects.filter(operation=caller.operation),
-            key=caller.ordinal,
-        )
-        ids = [call.pk for call in calls]
-        attempts = list(
-            ProviderCallAttempt.objects.filter(call_id__in=ids).values_list(
-                "call_id", "attempt_number", "observation", "http_status", "billed"
-            )
-        )
-        slots = list(
-            ProviderReservation.objects.filter(call_id__in=ids).values_list(
-                "call_id", "attempt_number", "state"
-            )
-        )
-        budget = _budget()
-        owned = _owned(caller.baseline)
-        aggregate = caller.aggregate(caller.baseline)
+def _attribute(
+    issued: list[tuple[str, str, int]], tags: list[tuple[str, str | None]]
+) -> dict[str, Any]:
+    """Attribute each send the peer saw to the attempt that issued its tag."""
+    owner: dict[str, tuple[str, int]] = {}
+    conflicting = 0
+    for tag, call, number in issued:
+        if tag in owner and owner[tag] != (call, number):
+            conflicting += 1
+        owner[tag] = (call, number)
+    attributed: dict[str, list[str]] = {}
+    unattributed = 0
+    for _path, sent in tags:
+        if sent is not None and sent in owner:
+            attributed.setdefault(owner[sent][0], []).append(sent)
+        else:
+            unattributed += 1
+    seen = collections.Counter(tag for _path, tag in tags if tag is not None)
+    duplicates = sum(count - 1 for count in seen.values()) + conflicting
     return {
-        "calls": calls,
-        "attempts": attempts,
-        "slots": slots,
-        "budget": [
-            now - before
-            for now, before in zip(budget, caller.baseline["budget"], strict=True)
-        ],
-        "sends": caller.sends() - caller.baseline["sends"],
-        "unscripted": len(caller.unscripted),
-        "aggregate": aggregate,
-        "owned": owned,
-        "queued": list(caller.queued),
+        "attributed": attributed,
+        "unattributed": unattributed,
+        "duplicates": duplicates,
     }
+
+
+def _ledger(slots: Rows) -> dict[str, dict[str, list[int]]]:
+    """Each call's outstanding money per budget row, by bucket."""
+    ledger: dict[str, dict[str, list[int]]] = {}
+    for row in slots.values():
+        if row["state"] in BUCKETS:
+            entry = ledger.setdefault(str(row["budget_id"]), {}).setdefault(
+                str(row["call_id"]), [0, 0, 0]
+            )
+            entry[BUCKETS[row["state"]]] += row["microbrl"]
+    return ledger
+
+
+def _queue_record(
+    name: str,
+    args: object,
+    kwargs: object,
+    options: dict[str, object],
+    now: datetime,
+) -> dict[str, Any]:
+    """A queued continuation with its arguments, options and due time."""
+    eta, countdown = options.get("eta"), options.get("countdown")
+    due = round((eta - now).total_seconds()) if isinstance(eta, datetime) else countdown
+    return {
+        "task": name,
+        "args": list(cast("tuple[object, ...]", args or ())),
+        "kwargs": dict(cast("dict[str, object]", kwargs or {})),
+        "options": {
+            key: value
+            for key, value in sorted(options.items())
+            if key not in {"eta", "countdown"}
+        },
+        "due_in_s": due,
+    }
+
+
+def _recorder(sink: list[dict[str, Any]], name: str) -> Callable[..., None]:
+    """Stand in for `apply_async`, recording each continuation in full."""
+
+    def queue(args: object = (), kwargs: object = None, **options: object) -> None:
+        sink.append(_queue_record(name, args, kwargs, options, timezone.now()))
+
+    return queue
 
 
 class _Aliases:
     """Name every within-run identity by its role or by its first appearance."""
 
-    def __init__(self, caller: Caller, snapshots: list[dict[str, Any]]) -> None:
-        self.caller = caller
+    def __init__(self, names: dict[str, str]) -> None:
+        self.names = dict(names)
         self.counts: dict[str, int] = {}
-        with tenant_context(caller.tenant_id):
-            client_id = ClientProviderLink.objects.get(pk=caller.link_id).client_id
-            budgets = list(ProviderBudget.objects.values_list("pk", flat=True))
-        self.names: dict[str, str] = {
-            str(caller.tenant_id): "tenant",
-            str(client_id): "client",
-            str(caller.link_id): "link",
-            **{str(pk): f"budget#{n}" for n, pk in enumerate(budgets, 1)},
-            **caller.named(),
-        }
-        if caller.actor is not None:
-            self.names[str(caller.actor.pk)] = "actor"
-        bound = caller.target["call"] if caller.target is not None else None
-        if bound is not None:
-            self.names[str(bound)] = "target"
-        seen: list[str] = []
-        for snapshot in snapshots:
-            seen += [
-                str(call.pk) for call in snapshot["calls"] if str(call.pk) not in seen
-            ]
-        others = [raw for raw in seen if raw != str(bound)]
-        for n, raw in enumerate(others, 1):
-            if bound is None:
-                self.names[raw] = f"call#{n}"
-            else:
-                self.names[raw] = "successor" if n == 1 else f"successor#{n}"
 
-    def of(self, value: object, kind: str = "ref") -> object:
+    def of(self, value: object, kind: str = "id") -> object:
         if value is None or value == "":
             return value
         raw = str(value)
@@ -376,252 +445,101 @@ class _Aliases:
             self.names[raw] = f"{kind}#{self.counts[kind]}"
         return self.names[raw]
 
-    def call(self, call: ProviderCall) -> dict[str, object]:
-        return {
-            "id": self.of(call.pk),
-            "state": call.state,
-            "code": call.provider_code,
-            "attempts": call.attempts,
-            "billed": call.billed,
-            "settled": call.settled_microbrl,
-            "version": call.version,
-            "fence": call.fence,
-            "owner": self.of(call.lease_owner, "owner"),
-            "lease": self.of(call.lease_until, "time"),
-            "started": self.of(call.dispatch_started_at, "time"),
-            "finalized": self.of(call.finalized_at, "time"),
-            "retry_of": self.of(call.retry_of_id),
-        }
+    def value(self, value: object) -> object:  # noqa: PLR0911 - one return per kind
+        if isinstance(value, UUID):
+            return self.of(value)
+        if isinstance(value, (datetime, date)):
+            return "set"
+        if isinstance(value, str) and len(value) == 64 and _hexadecimal(value):
+            return self.of(value, "hash")
+        if isinstance(value, str) and len(value) == 36 and _uuid(value):
+            return self.of(value)
+        if isinstance(value, dict):
+            return {key: self.value(item) for key, item in sorted(value.items())}
+        if isinstance(value, (list, tuple)):
+            return [self.value(item) for item in value]
+        return value
 
-    def aggregate(self, raw: dict[str, object]) -> dict[str, object]:
-        ref = raw["ref"]
-        named = (
-            [[outcome, self.of(value)] for outcome, value in ref]
-            if isinstance(ref, list)
-            else self.of(ref)
-        )
-        return {**raw, "ref": named}
+    def keyed(
+        self, rows: list[dict[str, Any]], key: Callable[[dict[str, Any]], str]
+    ) -> Rows:
+        return {key(row): cast("dict[str, Any]", self.value(row)) for row in rows}
 
-    def snapshot(self, raw: dict[str, Any]) -> dict[str, object]:
-        calls: list[ProviderCall] = raw["calls"]
-        target = self.caller.target
-        binding = None
-        if target is not None:
-            row = next((call for call in calls if call.pk == target["call"]), None)
-            binding = (
-                row is not None
-                and {
-                    "tenant": row.tenant_id,
-                    "client": row.client_id,
-                    "operation": row.operation,
-                    "request_key": row.request_key,
-                    "call": row.pk,
-                    "effect": row.business_effect_key,
-                }
-                == target
-            )
-        terminal = {call.pk for call in calls if call.state not in LIVE}
-
-        def ordered(rows: list[list[object]]) -> list[list[object]]:
-            return sorted(rows, key=lambda row: json.dumps(row, default=str))
-
-        return {
-            "calls": [self.call(call) for call in calls],
-            "attempts": ordered(
-                [[self.of(row[0]), *row[1:]] for row in raw["attempts"]]
-            ),
-            "slots": ordered([[self.of(row[0]), *row[1:]] for row in raw["slots"]]),
-            "budget": raw["budget"],
-            "sends": raw["sends"],
-            "unscripted": raw["unscripted"],
-            "aggregate": self.aggregate(raw["aggregate"]),
-            "owned": ordered(
-                [
-                    [kind, why, state, sorted(str(self.of(ref)) for ref in refs)]
-                    for kind, why, state, refs in raw["owned"]
-                ]
-            ),
-            "queued": [
-                [name, [self.of(arg) for arg in args], timed]
-                for name, args, timed in raw["queued"]
-            ],
-            "keys_unique": len({call.request_key for call in calls}) == len(calls),
-            "held_on_terminal": sorted(
-                str(self.of(call))
-                for call, _attempt, state in raw["slots"]
-                if state == "reserved" and call in terminal
-            ),
-            "target_binding": binding,
-        }
+    def changes(self, changes: Changes) -> list[str]:
+        return [f"{part}.{self.of(key)}.{name}" for part, key, name in changes]
 
 
-def _facts(
-    caller: Caller, cut: str, after_cut: dict[str, Any], after_settle: dict[str, Any]
-) -> dict[str, Any]:
-    aliases = _Aliases(caller, [after_cut, after_settle])
+def _identity(value: object) -> bool:
+    if isinstance(value, UUID):
+        return True
+    if isinstance(value, list):
+        return any(_identity(item) for item in value)
+    return isinstance(value, str) and len(value) == 36 and _uuid(value)
+
+
+def _hexadecimal(value: str) -> bool:
+    return all(char in "0123456789abcdef" for char in value)
+
+
+def _uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+# Recording: a claim's entry and exit, every pass, and every snapshot.
+
+
+def _rows(model: Any, fields: tuple[str, ...], **filters: object) -> Rows:  # noqa: ANN401
     return {
-        "caller": caller.name,
-        "cut": cut,
-        "bound": caller.target is not None,
-        "retried": [aliases.of(call) for call in caller.retried],
-        "passes": caller.passes,
-        "performs": caller.performs,
-        "skip": caller.skip,
-        "after_cut": aliases.snapshot(after_cut),
-        "after_settle": aliases.snapshot(after_settle),
+        str(row["id"]): row for row in model.objects.filter(**filters).values(*fields)
     }
 
 
-def _target(snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    return next((call for call in snapshot["calls"] if call["id"] == "target"), None)
+def _budgets() -> Rows:
+    return _rows(ProviderBudget, (*BUDGET_FIELDS, *MONEY))
 
 
-def _refs(aggregate: dict[str, Any]) -> list[object]:
-    ref = aggregate["ref"]
-    return [value for _outcome, value in ref] if isinstance(ref, list) else [ref]
+def _target_raw(caller: Caller, call_id: object) -> dict[str, Any]:
+    with tenant_context(caller.tenant_id):
+        return {
+            "calls": _rows(ProviderCall, CALL_FIELDS, pk=call_id),
+            "attempts": _rows(ProviderCallAttempt, ATTEMPT_FIELDS, call_id=call_id),
+            "slots": _rows(ProviderReservation, SLOT_FIELDS, call_id=call_id),
+            "budgets": _budgets(),
+            "aggregate": caller.aggregate(caller),
+        }
 
 
-def _new_intent(caller: str, cut: str) -> bool:
-    """A guide click opens a new intent only past a refusal that sent nothing."""
-    return caller == "guide" and "retry" not in cut
+def _tag(headers: tuple[tuple[str, str], ...]) -> str | None:
+    value = next((v for k, v in headers if k.lower() == "x-request-tag"), None)
+    return str(UUID(value)) if value else None
 
 
-def _handoff(caller: str, cut: str) -> list[list[str]]:
-    """The exact passes of a moved cell: first, any redelivery, then the settle."""
-    refused = REFUSED[caller]
-    new_intent = _new_intent(caller, cut)
-    if cut == SKIP:
-        first = SKIPPED[caller]
-    elif caller == "sitfis" and "retry" in cut:
-        first = "returned emitindo"  # `_run` ends there; the next advance projects it.
-    else:
-        first = refused
-    passes = [["first", first]]
-    if cut in {"moved-then-redelivery", SKIP}:
-        # The skipped guide call is still today's open intent when redelivered.
-        new = new_intent and cut != SKIP
-        passes.append(["redeliver", "returned guia_obtida" if new else refused])
-    if new_intent:
-        obtained = passes[-1][1] == "returned guia_obtida"
-        passes.append(
-            ["settle", f"returned guia_{'existente' if obtained else 'obtida'}"]
-        )
-    else:
-        passes.append(["settle", refused])
-    return passes
-
-
-def _moved(facts: dict[str, Any]) -> list[str]:  # noqa: C901, PLR0912 - one block per oracle
-    caller, cut = facts["caller"], facts["cut"]
-    after_cut, after_settle = facts["after_cut"], facts["after_settle"]
-    first, last = _target(after_cut), _target(after_settle)
-    if not facts["bound"] or first is None or last is None:
-        return ["no target call was bound before the cut"]
-    retry = "retry" in cut
-    snapshots = (("after_cut", after_cut), ("after_settle", after_settle))
-    problems = []
-    # M1: the bound target is the recorded moved refusal with its frozen cause.
-    want = [CallState.AUTHORITY, CallState.AUTHORITY, 1 if retry else 0]
-    for name, snapshot in snapshots:
-        row = _target(snapshot) or {}
-        if [row.get("state"), row.get("code"), row.get("attempts")] != want:
-            problems.append(f"M1 {name}: target {row}")
-        if snapshot["target_binding"] is not True:
-            problems.append(f"M1 {name}: the target row left its binding")
-    observed = [row for row in after_cut["attempts"] if row[0] == "target"]
-    if observed != ([UNBILLED_401] if retry else []):
-        problems.append(f"M1: target observations {observed}")
-    if retry and facts["retried"] != ["target"]:
-        problems.append(f"M1: the retry claim was for {facts['retried']}")
-    # M2: exactly its one unsent slot, released, and no budget moved.
-    for name, snapshot in snapshots:
-        slots = [row for row in snapshot["slots"] if row[0] == "target"]
-        if slots != [["target", 1, "released"]]:
-            problems.append(f"M2 {name}: target slots {slots}")
-    alone = [call["id"] for call in after_cut["calls"]] == ["target"]
-    if alone and after_cut["budget"] != [0, 0, 0]:
-        problems.append(f"M2: budget moved {after_cut['budget']}")
-    if first["settled"] not in {None, 0}:
-        problems.append(f"M2: target settled {first['settled']}")
-    # M3: every send is an attempt; nothing was sent unscripted.
-    for name, snapshot in snapshots:
-        attempts = sum(call["attempts"] for call in snapshot["calls"])
-        if snapshot["sends"] != attempts or snapshot["unscripted"]:
-            problems.append(
-                f"M3 {name}: {snapshot['sends']} sends for {attempts} attempts, "
-                f"{snapshot['unscripted']} unscripted"
-            )
-    # M4: the caller's exact handoff, observed at every layer it has.
-    if facts["passes"] != _handoff(caller, cut):
-        problems.append(f"M4: passes {facts['passes']}")
-    if caller == "receipt":
-        # The retry refusal ends inside perform, which returns the 401's result.
-        expected = ["returned falhou"] if retry else []
-        if facts["performs"] != expected:
-            problems.append(f"M4: perform {facts['performs']}")
-    if caller in {"page", "sitfis"} and _refs(after_settle["aggregate"]) != ["target"]:
-        problems.append(f"M4: the settled record names {after_settle['aggregate']}")
-    # M5: the target is never rewritten; a guide click past an unsent refusal
-    # is a new intent on another call, every other delivery repeats the refusal.
-    if first != last:
-        problems.append(f"M5: target {first} became {last}")
-    others = [call for call in after_settle["calls"] if call["id"] != "target"]
-    if _new_intent(caller, cut):
-        if [call["state"] for call in others] != [CallState.SUCCESS]:
-            problems.append(f"M5: the new guide intent ended {others}")
-    elif others:
-        problems.append(f"M5: the redelivery made new calls {others}")
-    if cut == SKIP and facts["skip"] != {
-        "claim": "skipped",
-        "errors": [],
-        "unchanged": True,
-        "released": True,
-    }:
-        problems.append(f"skip: {facts['skip']}")
-    return problems
-
-
-def _transient(facts: dict[str, Any]) -> list[str]:
-    # T1: nothing recorded a refusal at claim; the next step is recorded only.
-    recorded = [
-        call
-        for call in facts["after_cut"]["calls"]
-        if call["state"] in {CallState.AUTHORITY, CallState.PAUSED}
-    ]
-    return [f"T1: claim recorded {recorded}"] if recorded else []
-
-
-def _pinned(kind: str, facts: dict[str, Any]) -> list[str]:
-    target = _target(facts["after_cut"])
-    want = CallState.AUTHORITY if kind == PIN_AUTHORITY else CallState.PAUSED
-    if target is None or target["state"] != want:
-        return [f"pin: target {target}, expected {want}"]
-    slots = [row for row in facts["after_cut"]["slots"] if row[0] == "target"]
-    if kind == PIN_AUTHORITY and (
-        not slots or {row[2] for row in slots} != {"released"}
-    ):
-        return [f"pin: target slots {slots}"]
-    return []
-
-
-def _judge(kind: str, facts: dict[str, Any]) -> None:
-    """Judge one node's recorded facts by its class; pure, so the oracle is tested."""
-    problems = []
-    for name in ("after_cut", "after_settle"):
-        snapshot = facts[name]
-        if not snapshot["keys_unique"]:
-            problems.append(f"{name}: a request key repeats")
-        if snapshot["held_on_terminal"]:
-            problems.append(f"{name}: reserved slot on {snapshot['held_on_terminal']}")
-        if kind != RECORDED and snapshot["unscripted"]:
-            problems.append(f"{name}: {snapshot['unscripted']} unscripted sends")
-    if kind == MOVED:
-        problems += _moved(facts)
-    elif kind == TRANSIENT:
-        problems += _transient(facts)
-    elif kind in {PIN_AUTHORITY, PIN_PAUSED}:
-        problems += _pinned(kind, facts)
-    assert problems == [], f"{facts['caller']}[{facts['cut']}] {kind}: {problems}"
+def _raw(caller: Caller) -> dict[str, Any]:
+    """The whole compared world at one boundary, as raw rows."""
+    with tenant_context(caller.tenant_id):
+        calls = _rows(ProviderCall, CALL_FIELDS, operation=caller.operation)
+        return {
+            "calls": calls,
+            "attempts": _rows(
+                ProviderCallAttempt, ATTEMPT_FIELDS, call_id__in=list(calls)
+            ),
+            "slots": _rows(ProviderReservation, SLOT_FIELDS, call_id__in=list(calls)),
+            "budgets": _budgets(),
+            "owned": {kind: _rows(model, f) for kind, (model, f) in OWNED.items()},
+            "aggregate": caller.aggregate(caller),
+            "tags": [
+                (request.path, _tag(request.headers))
+                for request in caller.gateway.requests[caller.seed["requests"] :]
+                if request.path not in TOKEN_PATHS
+            ],
+            "issued": list(caller.issued),
+            "queued": deepcopy(caller.queued),
+            "unscripted": len(caller.unscripted),
+        }
 
 
 def _bind(caller: Caller, call_id: UUID) -> dict[str, object]:
@@ -638,32 +556,151 @@ def _bind(caller: Caller, call_id: UUID) -> dict[str, object]:
 
 
 def _wrap(
-    caller: Caller,
-    target: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    before: Callable[[], None] | None = None,
-    after: Callable[[object], None] | None = None,
+    caller: Caller, module: ModuleType, site: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Bind the first claimed call; cut around this module's first claim."""
-    real = target.claim
-    fired: list[bool] = []
+    """Record every claim at this site; cut around its first one, if hooked."""
+    real = module.claim
 
     def claim_with_cut(tenant_id: UUID, call_id: UUID) -> object:
         if caller.target is None:
             caller.target = _bind(caller, call_id)
-        elif target is not caller.module:
-            caller.retried.append(call_id)
-        if fired:
-            return real(tenant_id, call_id)
-        fired.append(True)
-        if before is not None:
-            before()
-        ticket = real(tenant_id, call_id)
-        if after is not None:
+        before, after = caller.hooks.get(site, (None, None))
+        cut = (before is not None or after is not None) and site not in caller.fired
+        if cut:
+            caller.fired.add(site)
+            if before is not None:
+                before()
+        record: dict[str, Any] = {
+            "site": site,
+            "pass": caller.pass_index,
+            "call": str(call_id),
+            "cut": cut,
+            "pre": _target_raw(caller, call_id),
+        }
+        caller.claims.append(record)
+        try:
+            ticket = real(tenant_id, call_id)
+        except Exception as error:
+            record.update(
+                outcome=f"raised {type(error).__name__}: {error}",
+                reason=getattr(error, "reason", ""),
+                post=_target_raw(caller, call_id),
+            )
+            raise
+        record.update(
+            outcome="returned None" if ticket is None else "returned ticket",
+            reason="",
+            post=_target_raw(caller, call_id),
+        )
+        if cut and after is not None:
             after(ticket)
         return ticket
 
-    monkeypatch.setattr(target, "claim", claim_with_cut)
+    monkeypatch.setattr(module, "claim", claim_with_cut)
+
+
+def _describe(result: object) -> str:
+    state = getattr(result, "state", None) or getattr(result, "code", None) or result
+    return f"returned {state}"
+
+
+def _pass(caller: Caller, kind: str, action: Callable[[], object]) -> None:
+    """Run one public pass, then snapshot the world at its return."""
+    caller.pass_index += 1
+    with tenant_context(caller.tenant_id):
+        before = {
+            str(pk)
+            for pk in ProviderCall.objects.filter(
+                operation=caller.operation
+            ).values_list("pk", flat=True)
+        }
+    caller.reserved.clear()
+    caller.returned.clear()
+    result: object = None
+    try:
+        result = action()
+        outcome = _describe(result)
+    except SystemExit:
+        outcome = "died"
+    except Exception as error:  # noqa: BLE001 - the outcome is what is recorded
+        outcome = f"raised {type(error).__name__}: {error}"
+    reserved = caller.reserved[-1] if caller.reserved else None
+    target = str(caller.target["call"]) if caller.target is not None else None
+    intent = (
+        None
+        if reserved is None
+        else "target"
+        if reserved == target
+        else "new-click"
+        if reserved not in before
+        else "successor"
+    )
+    caller.passes.append(
+        {
+            "kind": kind,
+            "outcome": outcome,
+            "reserved": reserved,
+            "intent": intent,
+            "ids": caller.result_ids(caller, result),
+        }
+    )
+    caller.stages.append((kind, _raw(caller)))
+
+
+def _observe(caller: Caller, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Record reservations, issued attempts, sends and continuations; seed."""
+    gateway = caller.gateway
+    real_reply = gateway.reply_for
+
+    def counted(request: Any) -> Reply:  # noqa: ANN401 - the fake's own type
+        if not gateway.replies:
+            caller.unscripted.append(request.path)
+        return real_reply(request)
+
+    monkeypatch.setattr(gateway, "reply_for", counted)
+    real_reserve = caller.module.reserve
+
+    def reserved(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real_reserve(*args, **kwargs)
+        caller.reserved.append(str(row.pk))
+        return row
+
+    monkeypatch.setattr(caller.module, "reserve", reserved)
+    protocol = import_module("apps.integrations.call_protocol")
+    real_transmit = protocol.transmit
+
+    def transmitted(dispatch: Any, adapter: Any) -> Any:  # noqa: ANN401
+        receipt = dispatch.receipt
+        caller.issued.append(
+            (str(receipt.attempt_id), str(receipt.call_id), receipt.attempt_number)
+        )
+        return real_transmit(dispatch, adapter)
+
+    monkeypatch.setattr(protocol, "transmit", transmitted)
+    tasks = import_module("apps.integrations.serpro.tasks")
+    sitfis_tasks = import_module("apps.integrations.serpro.sitfis_tasks")
+    for task in (
+        tasks.run_payment_query_task,
+        tasks.emit_payment_receipt_task,
+        sitfis_tasks.advance_situation_report_task,
+    ):
+        monkeypatch.setattr(
+            task, "apply_async", _recorder(caller.queued, task.name.rsplit(".", 1)[-1])
+        )
+    _wrap(caller, caller.module, "claim", monkeypatch)
+    _wrap(caller, protocol, "retry-claim", monkeypatch)
+    caller.seed = {"requests": len(gateway.requests)}
+    with tenant_context(caller.tenant_id):
+        caller.seed["queries"] = {
+            str(pk) for pk in PaymentQuery.objects.values_list("pk", flat=True)
+        }
+        caller.seed["consultations"] = {
+            str(pk) for pk in FederalConsultation.objects.values_list("pk", flat=True)
+        }
+    caller.stages.append(("seeded", _raw(caller)))
+
+
+# Cuts.
 
 
 def _move(caller: Caller) -> None:
@@ -707,18 +744,6 @@ def _demote(caller: Caller) -> None:
     )
 
 
-def _target_rows(caller: Caller) -> tuple[object, ...]:
-    assert caller.target is not None
-    with tenant_context(caller.tenant_id):
-        call = ProviderCall.objects.get(pk=cast("UUID", caller.target["call"]))
-        slots = sorted(
-            ProviderReservation.objects.filter(call=call).values_list(
-                "attempt_number", "state"
-            )
-        )
-    return (call.state, call.version, call.fence, call.lease_owner, slots)
-
-
 class _Holder:
     """Another connection holds the target call row until it is released."""
 
@@ -749,56 +774,84 @@ class _Holder:
         if not self.holding.wait(timeout=15):
             self.errors.append("holder: never held the call")
 
+    def status(self) -> dict[str, object]:
+        return {
+            "ready": self.holding.is_set(),
+            "alive": self.thread.is_alive(),
+            "released": self.done.is_set(),
+            "errors": list(self.errors),
+        }
+
     def release(self) -> bool:
         self.done.set()
         self.thread.join(timeout=30)
         return not self.thread.is_alive()
 
 
-def _skip(caller: Caller, monkeypatch: pytest.MonkeyPatch) -> Callable[[], None]:
-    """Move the version and hold the call through the first claim, which skips it.
+def _probe(caller: Caller) -> str:
+    """Whether another session still holds the target row, without waiting."""
+    assert caller.target is not None
+    try:
+        with tenant_context(caller.tenant_id), transaction.atomic():
+            list(
+                ProviderCall.objects.select_for_update(nowait=True).filter(
+                    pk=cast("UUID", caller.target["call"])
+                )
+            )
+    except OperationalError:
+        return "held"
+    return "free"
 
-    The first pass must return its exact outcome while the call is held, with no
-    wait and no write; the guide's holder ends at the claim's return, because its
-    settle locks the call. Returns the step that ends the hold after that pass.
-    """
-    held: dict[str, Any] = {}
 
-    def release() -> None:
-        holder: _Holder | None = held.pop("holder", None)
-        if holder is not None:
-            released = holder.release()
-            # A claim that raised never reached `skipped`: that is recorded too.
-            caller.skip = {
-                **(caller.skip or {"claim": "never returned"}),
-                "errors": holder.errors,
-                "released": released,
-            }
+def _held_changes(before: dict[str, Any], after: dict[str, Any]) -> Changes:
+    changes = _target_changed(before, after)
+    if before["aggregate"] != after["aggregate"]:
+        changes.append(("aggregate", "-", "projection"))
+    return changes
 
-    def move_and_hold() -> None:
-        _move(caller)
-        holder = _Holder(caller)
-        held["holder"] = holder
-        holder.start()
-        held["rows"] = _target_rows(caller)
 
-    def skipped(ticket: object) -> None:
+class _Held:
+    """The held-call cut: the version moves and another runner holds the call."""
+
+    def __init__(self, caller: Caller) -> None:
+        self.caller = caller
+        self.holder: _Holder | None = None
+        self.in_cut: dict[str, Any] = {}
+
+    def hold(self) -> None:
+        _move(self.caller)
+        self.holder = _Holder(self.caller)
+        self.holder.start()
+        assert self.caller.target is not None
+        self.in_cut = _target_raw(self.caller, self.caller.target["call"])
+
+    def check(self, through: str, first: str | None) -> None:
+        """Record, while the call is still held, what the held pass left."""
+        caller, holder = self.caller, self.holder
+        assert caller.target is not None
+        assert holder is not None
+        claim = next(record for record in caller.claims if record["cut"])
+        changes = _held_changes(self.in_cut, _target_raw(caller, caller.target["call"]))
         caller.skip = {
-            "claim": "skipped" if ticket is None else "claimed",
-            "unchanged": _target_rows(caller) == held["rows"],
+            "held_through": through,
+            "claim": "skipped"
+            if claim.get("outcome") == "returned None"
+            else claim.get("outcome"),
+            "first": first,
+            "changed": changes,
+            "probe": _probe(caller),
+            "holder": holder.status(),
         }
-        if caller.name == "guide":
-            release()
 
-    _wrap(caller, caller.module, monkeypatch, move_and_hold, skipped)
-    return release
+    def release(self) -> None:
+        if self.holder is not None and not self.holder.done.is_set():
+            joined = self.holder.release()
+            if self.caller.skip is not None:
+                self.caller.skip["joined"] = joined
 
 
-def _cut(  # noqa: C901 - one branch per cut
-    caller: Caller, cut: str, monkeypatch: pytest.MonkeyPatch
-) -> Callable[[], None]:
-    """Install the cut; return the step that ends it after the first pass."""
-    protocol = import_module("apps.integrations.call_protocol")
+def _cut(caller: Caller, cut: str, monkeypatch: pytest.MonkeyPatch) -> _Held | None:  # noqa: C901 - one branch per cut
+    """Install the cut at its claim site; return the held cut, if any."""
     if "retry" in cut:
         caller.script_401()
     caller.script_ok()
@@ -817,7 +870,15 @@ def _cut(  # noqa: C901 - one branch per cut
         raise SystemExit
 
     if cut == SKIP:
-        return _skip(caller, monkeypatch)
+        held = _Held(caller)
+
+        def at_return(_ticket: object) -> None:
+            if caller.name == "guide":
+                held.check("claim", None)
+                held.release()
+
+        caller.hooks["claim"] = (held.hold, at_return)
+        return held
     at_claim: dict[str, Callable[[], None]] = {
         "moved-before-claim": move,
         "moved-then-redelivery": move,
@@ -837,20 +898,15 @@ def _cut(  # noqa: C901 - one branch per cut
     at_retry = {"moved-before-retry-claim": move, "pause-retry-claim": pause}
     after_retry = {"moved-after-retry-claim": move, "pause-retry-dispatch": pause}
     base = cut.removeprefix("unpause-after-")
-    later = after_claim.get(base)
-    _wrap(
-        caller,
-        caller.module,
-        monkeypatch,
-        at_claim.get(base),
-        None if later is None else lambda _ticket: later(),
-    )
+    if base in at_claim or base in after_claim:
+        later = after_claim.get(base)
+        caller.hooks["claim"] = (
+            at_claim.get(base),
+            None if later is None else lambda _ticket: later(),
+        )
     if base in at_retry or base in after_retry:
         late = after_retry.get(base)
-        _wrap(
-            caller,
-            protocol,
-            monkeypatch,
+        caller.hooks["retry-claim"] = (
             at_retry.get(base),
             None if late is None else lambda _ticket: late(),
         )
@@ -863,25 +919,27 @@ def _cut(  # noqa: C901 - one branch per cut
         scanning = import_module("apps.cycles.scanning")
         assert scanning.scan_required(caller.tenant_id)
         caller.settings.CLAMAV_ENABLED = False
-    return lambda: None
+    return None
 
 
-def _drive(caller: Caller, cut: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Cut, run the first pass, snapshot; then settle unpaused and snapshot again."""
-    ended = _cut(caller, cut, monkeypatch)
-    if cut == SKIP:
+def _drive(caller: Caller, cut: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cut, then run each pass with its own snapshot; environment steps between."""
+    held = _cut(caller, cut, monkeypatch)
+    if held is not None and caller.name != "guide":
         with connection.cursor() as cursor:
             cursor.execute("SET lock_timeout = '10s'")
-    try:
-        caller.passes.append(["first", _outcome(caller.run)])
-    finally:
-        ended()
-        if cut == SKIP:
+        try:
+            _pass(caller, "first", caller.run)
+            held.check("first-pass", caller.passes[0]["outcome"])
+        finally:
+            held.release()
             with connection.cursor() as cursor:
                 cursor.execute("RESET lock_timeout")
+    else:
+        _pass(caller, "first", caller.run)
     if cut.startswith("unpause-after-"):
         caller.settings.SERPRO_PAUSED = False
-        caller.passes.append(["redeliver", _outcome(caller.redeliver)])
+        _pass(caller, "repeat", caller.redeliver)
     if cut == "lease-expiry":
         with tenant_context(caller.tenant_id):
             ProviderCall.objects.filter(operation=caller.operation).update(
@@ -890,11 +948,620 @@ def _drive(caller: Caller, cut: str, monkeypatch: pytest.MonkeyPatch) -> dict[st
     if cut == "actor-lost-between-deliveries":
         _demote(caller)
     if cut in {"moved-then-redelivery", SKIP, "actor-lost-between-deliveries"}:
-        caller.passes.append(["redeliver", _outcome(caller.redeliver)])
-    after_cut = _snapshot(caller)
+        _pass(caller, "repeat", caller.redeliver)
     caller.settings.SERPRO_PAUSED = False
-    caller.passes.append(["settle", _outcome(caller.redeliver)])
-    return _facts(caller, cut, after_cut, _snapshot(caller))
+    if caller.before_settle is not None:
+        caller.before_settle(caller)
+    _pass(caller, "settle", caller.redeliver)
+
+
+# Facts: the recorded evidence, aliased for comparison across trees.
+
+
+def _stage_target(raw: dict[str, Any], call: str) -> dict[str, Any]:
+    return {
+        "calls": {k: v for k, v in raw["calls"].items() if k == call},
+        "attempts": {
+            k: v for k, v in raw["attempts"].items() if str(v["call_id"]) == call
+        },
+        "slots": {k: v for k, v in raw["slots"].items() if str(v["call_id"]) == call},
+    }
+
+
+def _refusal(caller: Caller) -> int | None:
+    target = str(caller.target["call"]) if caller.target is not None else None
+    for index, record in enumerate(caller.claims):
+        post = record.get("post", {}).get("calls", {}).get(record["call"], {})
+        if (
+            record["call"] == target
+            and record.get("outcome", "").startswith("raised ")
+            and record.get("outcome", "").endswith(f": {CallState.AUTHORITY}")
+            and post.get("state") == CallState.AUTHORITY
+        ):
+            return index
+    return None
+
+
+class _Facts:
+    """Normalize one node's raw records, in a fixed order, under aliases."""
+
+    def __init__(self, caller: Caller) -> None:
+        self.caller = caller
+        names = {
+            str(caller.tenant_id): "tenant",
+            str(caller.link_id): "link",
+            **caller.named(caller),
+        }
+        with tenant_context(caller.tenant_id):
+            names[str(ClientProviderLink.objects.get(pk=caller.link_id).client_id)] = (
+                "client"
+            )
+            budgets = ProviderBudget.objects.order_by("window_start", "pk")
+            for n, pk in enumerate(budgets.values_list("pk", flat=True), 1):
+                names[str(pk)] = f"budget#{n}"
+        if caller.actor is not None:
+            names[str(caller.actor.pk)] = "actor"
+        target = str(caller.target["call"]) if caller.target is not None else None
+        if target is not None:
+            names[target] = "target"
+        seen: list[str] = []
+        for _kind, raw in caller.stages:
+            for row in sorted(raw["calls"].values(), key=caller.ordinal):
+                if str(row["id"]) not in seen:
+                    seen.append(str(row["id"]))
+        others = [key for key in seen if key != target]
+        for n, key in enumerate(others, 1):
+            stem = "call" if target is None else "successor"
+            names[key] = stem if n == 1 and target is not None else f"{stem}#{n}"
+        self.aliases = _Aliases(names)
+        self.seed = caller.stages[0][1]["budgets"]
+
+    def rows(self, raw: dict[str, Any]) -> dict[str, Any]:
+        a, ordinal = self.aliases, self.caller.ordinal
+        calls = sorted(raw["calls"].values(), key=ordinal)
+        order = {str(row["id"]): n for n, row in enumerate(calls)}
+        attempts = sorted(
+            raw["attempts"].values(),
+            key=lambda r: (
+                order.get(str(r["call_id"]), 99),
+                r["attempt_number"],
+                r["observation"],
+            ),
+        )
+        slots = sorted(
+            raw["slots"].values(),
+            key=lambda r: (order.get(str(r["call_id"]), 99), r["attempt_number"]),
+        )
+        return {
+            "calls": {str(a.of(row["id"])): a.value(row) for row in calls},
+            "attempts": a.keyed(
+                attempts,
+                lambda r: (
+                    f"{a.of(r['call_id'])}/{r['attempt_number']}/{r['observation']}"
+                ),
+            ),
+            "slots": a.keyed(
+                slots, lambda r: f"{a.of(r['call_id'])}/{r['attempt_number']}"
+            ),
+            "budgets": {
+                str(a.of(pk)): [row[m] - self.seed.get(pk, {}).get(m, 0) for m in MONEY]
+                for pk, row in sorted(
+                    raw["budgets"].items(), key=lambda i: (i[1]["window_start"], i[0])
+                )
+            },
+        }
+
+    def content(self, row: dict[str, Any]) -> str:
+        """A row's order key without its own random id: known names, else '?'."""
+        names = self.aliases.names
+        return json.dumps(
+            {
+                key: names.get(str(value), "?") if _identity(value) else str(value)
+                for key, value in row.items()
+                if key != "id"
+            },
+            sort_keys=True,
+        )
+
+    def stage(self, raw: dict[str, Any]) -> dict[str, Any]:
+        a = self.aliases
+        rows = self.rows(raw)
+        sends = _attribute(raw["issued"], raw["tags"])
+        terminal = {
+            key for key, row in rows["calls"].items() if row["state"] not in LIVE
+        }
+        owned = {}
+        for kind, table in raw["owned"].items():
+            for row in sorted(table.values(), key=self.content):
+                owned[f"{kind}:{a.of(row['id'])}"] = a.value(row)
+        return {
+            **rows,
+            "owned": owned,
+            "aggregate": a.value(raw["aggregate"]),
+            "sends": {
+                "attributed": {
+                    str(a.of(call)): a.value(tags)
+                    for call, tags in sorted(
+                        sends["attributed"].items(), key=lambda i: str(a.of(i[0]))
+                    )
+                },
+                "unattributed": sends["unattributed"],
+                "duplicates": sends["duplicates"],
+                "unscripted": raw["unscripted"],
+            },
+            "queued": a.value(raw["queued"]),
+            "keys_unique": len({row["request_key"] for row in rows["calls"].values()})
+            == len(rows["calls"]),
+            "held_on_terminal": sorted(
+                key
+                for key, row in rows["slots"].items()
+                if row["state"] == "reserved" and str(row["call_id"]) in terminal
+            ),
+        }
+
+    def facts(self, cut: str) -> dict[str, Any]:
+        caller, a = self.caller, self.aliases
+        stages = {
+            f"{n}:{kind}": self.stage(raw)
+            for n, (kind, raw) in enumerate(caller.stages)
+        }
+        claims = [
+            {
+                "site": record["site"],
+                "pass": record["pass"],
+                "call": a.of(record["call"]),
+                "cut": record["cut"],
+                "outcome": record.get("outcome", "never returned"),
+                "reason": record.get("reason", ""),
+                "changed": a.changes(_target_changed(record["pre"], record["post"]))
+                if "post" in record
+                else ["never returned"],
+                "pre": self.rows(record["pre"]),
+                "post": self.rows(record["post"]) if "post" in record else None,
+            }
+            for record in caller.claims
+        ]
+        refusal = _refusal(caller)
+        since: dict[str, list[str]] = {}
+        if refusal is not None:
+            record = caller.claims[refusal]
+            baseline = record["post"]
+            for n, (kind, raw) in enumerate(caller.stages):
+                if n - 1 >= record["pass"]:
+                    since[f"{n}:{kind}"] = a.changes(
+                        _target_changed(baseline, _stage_target(raw, record["call"]))
+                    )
+        skip = None
+        if caller.skip is not None:
+            skip = {
+                **caller.skip,
+                "changed": [
+                    f"{part}.{a.of(key) if key != '-' else '-'}.{name}"
+                    for part, key, name in caller.skip["changed"]
+                ],
+            }
+        return {
+            "caller": caller.name,
+            "cut": cut,
+            "kind": CUTS[cut],
+            "bound": caller.target is not None,
+            "claims": claims,
+            "refusal": refusal,
+            "since_refusal": since,
+            "passes": [
+                {
+                    **record,
+                    "reserved": a.of(record["reserved"]),
+                    "ids": a.value(record["ids"]),
+                }
+                for record in caller.passes
+            ],
+            "performs": caller.performs,
+            "stages": stages,
+            "skip": skip,
+        }
+
+
+# The pure judge: what each class must show, read only from the facts.
+
+
+def _stage_list(
+    facts: dict[str, Any], from_pass: int
+) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (name, stage)
+        for name, stage in facts["stages"].items()
+        if int(name.split(":")[0]) - 1 >= from_pass
+    ]
+
+
+def _target_work(stage: dict[str, Any], subject: str) -> dict[str, Any]:
+    return {
+        key: row
+        for key, row in stage["owned"].items()
+        if row.get("subject_ref") == subject
+        or subject in (row.get("evidence_refs") or [])
+        or row.get("call_id") == subject
+    }
+
+
+def _successors(facts: dict[str, Any]) -> set[str]:
+    return {p["reserved"] for p in facts["passes"] if p["intent"] == "new-click"}
+
+
+def _handoff(caller: str, cut: str) -> list[list[object]]:
+    """The exact passes of a moved cell: kind, outcome and intent."""
+    refused = REFUSED[caller]
+    no_send_guide = caller == "guide" and "retry" not in cut
+    if cut == SKIP:
+        first = SKIPPED[caller]
+    elif caller == "sitfis" and "retry" in cut:
+        first = "returned emitindo"  # `_run` ends there; the next advance projects it.
+    else:
+        first = refused
+    # Page and SITFIS redeliveries of a finished record reserve nothing; a
+    # receipt delivery and a guide click always reserve their intent.
+    later = "target" if caller in {"receipt", "guide"} else None
+    passes: list[list[object]] = [["first", first, "target"]]
+    if cut == "moved-then-redelivery":
+        passes.append(
+            ["repeat", "returned guia_obtida", "new-click"]
+            if no_send_guide
+            else ["repeat", refused, later]
+        )
+    if cut == SKIP:
+        # The skipped call is still open, so its redelivery claims and refuses it.
+        passes.append(["repeat", refused, "target"])
+    if no_send_guide:
+        obtained = passes[-1][2] == "new-click"
+        passes.append(
+            ["settle", "returned guia_existente", "successor"]
+            if obtained
+            else ["settle", "returned guia_obtida", "new-click"]
+        )
+    else:
+        passes.append(["settle", refused, later])
+    return passes
+
+
+def _m1(
+    facts: dict[str, Any], snapshots: list[tuple[str, dict[str, Any]]]
+) -> list[str]:
+    retry = "retry" in facts["cut"]
+    problems = []
+    for name, stage in snapshots:
+        row = stage["calls"].get("target") or {}
+        observed = [v for k, v in stage["attempts"].items() if k.startswith("target/")]
+        if (row.get("state"), row.get("provider_code"), row.get("attempts")) != (
+            CallState.AUTHORITY,
+            CallState.AUTHORITY,
+            1 if retry else 0,
+        ):
+            problems.append(f"M1: {name} target {row}")
+        if retry:
+            exact = len(observed) == 1 and all(
+                observed[0].get(k) == v for k, v in DEFINITIVE_401.items()
+            )
+            if not exact or observed[0].get("attempt_id") != row.get("x_request_tag"):
+                problems.append(f"M1: {name} 401 observations {observed}")
+            if (row.get("http_status"), row.get("billed")) != (401, "nao"):
+                problems.append(f"M1: {name} target http/billed")
+        elif observed or (row.get("http_status"), row.get("billed")) != (
+            None,
+            "desconhecido",
+        ):
+            problems.append(f"M1: {name} unsent target observed {observed}")
+    return problems
+
+
+def _m2(  # noqa: C901 - one block per check
+    facts: dict[str, Any],
+    claim: dict[str, Any],
+    later: list[tuple[str, dict[str, Any]]],
+) -> list[str]:
+    retry = "retry" in facts["cut"]
+    problems = []
+    pre = list(claim["pre"]["slots"].values())
+    post = list(claim["post"]["slots"].values())
+    want_pre = "released" if retry else "reserved"
+    if [(s["attempt_number"], s["state"]) for s in pre] != [(1, want_pre)]:
+        problems.append(f"M2: slots at refusing claim entry {pre}")
+    elif not retry and (
+        pre[0]["microbrl"] <= 0
+        or claim["pre"]["budgets"].get(pre[0]["budget_id"])
+        != [pre[0]["microbrl"], 0, 0]
+    ):
+        problems.append(f"M2: claim entry budget {claim['pre']['budgets']}")
+    if [(s["id"], s["attempt_number"], s["state"]) for s in post] != [
+        (pre[0]["id"] if pre else None, 1, "released")
+    ]:
+        problems.append(f"M2: slots at refusal {post}")
+    successors = _successors(facts) if facts["caller"] == "guide" else set()
+    for name, stage in later:
+        ledger = _ledger(stage["slots"])
+        for budget, delta in stage["budgets"].items():
+            entries = ledger.get(budget, {})
+            total = [sum(v[i] for v in entries.values()) for i in range(3)]
+            if delta != total:
+                problems.append(f"M2: {name} {budget} moved {delta}, ledger {entries}")
+            for call, money in entries.items():
+                if call == "target":
+                    if money != [0, 0, 0]:
+                        problems.append(f"M2: {name} target holds {money}")
+                    continue
+                slots = [
+                    s for k, s in stage["slots"].items() if k.startswith(f"{call}/")
+                ]
+                priced = (
+                    call in successors
+                    and len(slots) == 1
+                    and slots[0]["state"] == "known"
+                    and money == [0, slots[0]["microbrl"], 0]
+                )
+                if not priced and money != [0, 0, 0]:
+                    problems.append(f"M2: {name} unexplained {call} {money}")
+    return problems
+
+
+def _m3(facts: dict[str, Any], later: list[tuple[str, dict[str, Any]]]) -> list[str]:
+    retry = "retry" in facts["cut"]
+    successors = _successors(facts) if facts["caller"] == "guide" else set()
+    problems = []
+    for name, stage in later:
+        sends = stage["sends"]
+        if sends["unattributed"] or sends["duplicates"] or sends["unscripted"]:
+            problems.append(f"M3: {name} sends {sends}")
+        tags = sends["attributed"].get("target", [])
+        observed = [v for k, v in stage["attempts"].items() if k.startswith("target/")]
+        want = [observed[0]["attempt_id"]] if retry and observed else []
+        if tags != want:
+            problems.append(f"M3: {name} target exchanges {tags}, expected {want}")
+        for call, sent in sends["attributed"].items():
+            row = stage["calls"].get(call) or {}
+            if call != "target" and (
+                call not in successors or len(sent) != row.get("attempts")
+            ):
+                problems.append(f"M3: {name} sends attributed to {call}: {sent}")
+    return problems
+
+
+def _m4(facts: dict[str, Any], later: list[tuple[str, dict[str, Any]]]) -> list[str]:  # noqa: C901, PLR0912 - one block per caller
+    caller, cut = facts["caller"], facts["cut"]
+    problems = []
+    actual = [[p["kind"], p["outcome"], p["intent"]] for p in facts["passes"]]
+    if actual != _handoff(caller, cut):
+        problems.append(f"M4: passes {actual}")
+    if any(stage["queued"] for stage in facts["stages"].values()):
+        problems.append("M4: a continuation was queued")
+    settle = facts["stages"][list(facts["stages"])[-1]]
+    aggregate = settle["aggregate"]
+    if caller == "receipt":
+        if facts["performs"] != (["returned falhou"] if "retry" in cut else []):
+            problems.append(f"M4: perform {facts['performs']}")
+        if any(p["ids"].get("call") != "target" for p in facts["passes"]):
+            problems.append("M4: a pass returned another stored call")
+        for name, stage in later:
+            got = stage["aggregate"]
+            if (
+                got.get("payment"),
+                got.get("call"),
+                got.get("document"),
+                got.get("key_is_payment"),
+            ) != (
+                "payment",
+                "target",
+                None,
+                True,
+            ):
+                problems.append(f"M4: {name} receipt record {got}")
+    if caller == "page":
+        consulted = aggregate.get("consultations")
+        target = settle["calls"].get("target") or {}
+        want = [
+            {
+                "client_id": "client",
+                "kind": aggregate.get("kind"),
+                "outcome": "falha",
+                "provider_ref": "target",
+                "scope_digest": target.get("request_digest"),
+            }
+        ]
+        if (
+            aggregate.get("query"),
+            aggregate.get("state"),
+            aggregate.get("queries"),
+        ) != (
+            "query",
+            "falha",
+            1,
+        ) or aggregate.get("page_key_is_target") is not True:
+            problems.append(f"M4: page record {aggregate}")
+        if consulted != want:
+            problems.append(f"M4: page consultation {consulted}")
+    if caller == "sitfis" and (aggregate.get("state"), aggregate.get("ref")) != (
+        "falha",
+        "target",
+    ):
+        problems.append(f"M4: the settled report names {aggregate}")
+    if caller == "guide":
+        for record in facts["passes"]:
+            if record["intent"] != "new-click":
+                continue
+            ids = record["ids"]
+            if (
+                ids.get("call") != record["reserved"]
+                or ids.get("document_call") != record["reserved"]
+                or ids.get("private") is not True
+                or ids.get("document") is None
+                or ids.get("link_document") != ids.get("document")
+                or ids.get("link_cycle") != "cycle"
+            ):
+                problems.append(f"M4: the new guide {ids}")
+    return problems
+
+
+def _m5(facts: dict[str, Any], later: list[tuple[str, dict[str, Any]]]) -> list[str]:  # noqa: C901 - one block per caller
+    caller = facts["caller"]
+    problems = [
+        f"M5: {name} rewrote {paths}"
+        for name, paths in facts["since_refusal"].items()
+        if paths
+    ]
+    if caller == "guide":
+        first = _target_work(later[0][1], "target") if later else {}
+        rows = list(first.values())
+        if len(rows) != 1 or (rows[0]["reason_code"], rows[0]["state"]) != (
+            GUIDE_WORK,
+            "aberta",
+        ):
+            problems.append(f"M5: guide work {first}")
+        for name, stage in later:
+            if _target_work(stage, "target") != first:
+                problems.append(f"M5: {name} guide work changed")
+    elif caller == "sitfis":
+        final = [
+            (n, s) for n, s in later if s["aggregate"].get("state") in FINAL_REPORT
+        ]
+        first = _target_work(final[0][1], "report") if final else {}
+        rows = list(first.values())
+        if len(rows) != 1 or (rows[0]["reason_code"], rows[0]["state"]) != (
+            REPORT_WORK,
+            "aberta",
+        ):
+            problems.append(f"M5: report work {first}")
+        for name, stage in final:
+            if _target_work(stage, "report") != first:
+                problems.append(f"M5: {name} report work changed")
+    for name, stage in later:
+        if caller != "guide" and _target_work(stage, "target"):
+            problems.append(f"M5: {name} work bound to the target")
+    return problems
+
+
+def _moved(facts: dict[str, Any]) -> list[str]:
+    cut = facts["cut"]
+    refusal = facts["refusal"]
+    if not facts["bound"] or refusal is None:
+        return ["M1: no committed moved refusal of the bound target"]
+    claim = facts["claims"][refusal]
+    site = "retry-claim" if "retry" in cut else "claim"
+    problems = []
+    if (claim["site"], claim["call"], claim["pass"]) != (
+        site,
+        "target",
+        1 if cut == SKIP else 0,
+    ):
+        problems.append(f"M1: refusal at {claim['site']} pass {claim['pass']}")
+    later = _stage_list(facts, claim["pass"])
+    problems += _m1(facts, [("refusal", claim["post"]), *later])
+    if "retry" in cut:
+        # At retry-claim entry the definitive 401 is already the one observation.
+        entry = [
+            v for k, v in claim["pre"]["attempts"].items() if k.startswith("target/")
+        ]
+        row = claim["pre"]["calls"].get("target") or {}
+        exact = len(entry) == 1 and all(
+            entry[0].get(k) == v for k, v in DEFINITIVE_401.items()
+        )
+        if not exact or entry[0].get("attempt_id") != row.get("x_request_tag"):
+            problems.append(f"M1: retry entry observations {entry}")
+    problems += _m2(facts, claim, later)
+    problems += _m3(facts, later)
+    problems += _m4(facts, later)
+    problems += _m5(facts, later)
+    if cut == SKIP:
+        want: dict[str, object] = {
+            "held_through": "claim" if facts["caller"] == "guide" else "first-pass",
+            "claim": "skipped",
+            "first": None if facts["caller"] == "guide" else SKIPPED[facts["caller"]],
+            "changed": [],
+            "probe": "held",
+            "holder": {"ready": True, "alive": True, "released": False, "errors": []},
+            "joined": True,
+        }
+        if facts["skip"] != want:
+            problems.append(f"Mskip: {facts['skip']}")
+    return problems
+
+
+def _transient(facts: dict[str, Any]) -> list[str]:
+    site, outcome, reason = VETO[facts["cut"].removeprefix("unpause-after-")]
+    vetoes = [record for record in facts["claims"] if record["cut"]]
+    if not facts["bound"] or len(vetoes) != 1:
+        return [f"T1: the cut's veto was not observed once: {vetoes}"]
+    veto = vetoes[0]
+    reason_ok = (
+        veto["reason"].startswith(TERMO_PREFIX)
+        if reason == ANY_TERMO
+        else veto["reason"] == reason
+    )
+    problems = []
+    if (veto["site"], veto["call"], veto["outcome"]) != (
+        site,
+        "target",
+        outcome,
+    ) or not reason_ok:
+        problems.append(
+            f"T1: veto {veto['site']} {veto['call']} {veto['outcome']} {veto['reason']}"
+        )
+    if veto["changed"]:
+        problems.append(f"T1: the vetoed claim changed {veto['changed']}")
+    post = (veto["post"] or {}).get("calls", {}).get("target") or {}
+    if post.get("state") in RECORDED_AT_CLAIM:
+        problems.append(f"T1: the claim recorded {post.get('state')}")
+    first = facts["stages"].get("1:first") or {"calls": {}}
+    recorded = [
+        k for k, row in first["calls"].items() if row["state"] in RECORDED_AT_CLAIM
+    ]
+    if recorded:
+        problems.append(f"T1: first return holds recorded refusals {recorded}")
+    return problems
+
+
+def _pinned(kind: str, facts: dict[str, Any]) -> list[str]:
+    first = facts["stages"].get("1:first") or {"calls": {}, "slots": {}}
+    target = first["calls"].get("target")
+    want = CallState.AUTHORITY if kind == PIN_AUTHORITY else CallState.PAUSED
+    if target is None or target["state"] != want:
+        return [f"pin: target {target}, expected {want}"]
+    slots = [row for key, row in first["slots"].items() if key.startswith("target/")]
+    if kind == PIN_AUTHORITY and (
+        not slots or {row["state"] for row in slots} != {"released"}
+    ):
+        return [f"pin: target slots {slots}"]
+    return []
+
+
+def _judge(kind: str, facts: dict[str, Any]) -> None:
+    """Judge one node's recorded facts by its class; pure, so the oracle is tested."""
+    problems = []
+    for name, stage in facts["stages"].items():
+        if not stage["keys_unique"]:
+            problems.append(f"H: {name} a request key repeats")
+        if stage["held_on_terminal"]:
+            problems.append(f"H: {name} reserved slot on {stage['held_on_terminal']}")
+        if (
+            kind in {TRANSIENT, PIN_AUTHORITY, PIN_PAUSED}
+            and stage["sends"]["unscripted"]
+        ):
+            problems.append(
+                f"H: {name} {stage['sends']['unscripted']} unscripted sends"
+            )
+    if kind == MOVED:
+        problems += _moved(facts)
+    elif kind == TRANSIENT:
+        problems += _transient(facts)
+    elif kind in {PIN_AUTHORITY, PIN_PAUSED}:
+        problems += _pinned(kind, facts)
+    tags = sorted({problem.split(":", 1)[0] for problem in problems})
+    assert problems == [], (
+        f"[{' '.join(tags)}] {facts['caller']}[{facts['cut']}] {kind}: {problems}"
+    )
+
+
+def _controls() -> dict[str, dict[str, Any]]:
+    controls: dict[str, dict[str, Any]] = json.loads(CONTROLS_PATH.read_text())
+    return controls
 
 
 def _node(
@@ -902,45 +1569,71 @@ def _node(
     cut: str,
     monkeypatch: pytest.MonkeyPatch,
     record_property: Callable[[str, object], None],
-) -> None:
+) -> dict[str, Any]:
     _observe(caller, monkeypatch)
-    facts = _drive(caller, cut, monkeypatch)
-    record_property("tuple", json.dumps(facts, sort_keys=True))
+    _drive(caller, cut, monkeypatch)
+    facts = _Facts(caller).facts(cut)
+    record_property("tuple", json.dumps(facts, sort_keys=True, default=str))
     _judge(CUTS[cut], facts)
+    # A control node's recorded facts are the oracle self-tests' control; on the
+    # trees without the typed refusal its refusing claim differs by design.
+    if (caller.name, cut) in CONTROL_NODES and hasattr(
+        call_contracts, "VersionMovedError"
+    ):
+        assert (
+            json.loads(json.dumps(facts, default=str))
+            == _controls()[f"{caller.name}[{cut}]"]
+        )
+    return facts
+
+
+# Callers.
 
 
 def _page_caller(world: World, settings: SettingsWrapper) -> Caller:
     tasks = import_module("apps.integrations.serpro.tasks")
     tenant_id = world.termo.tenant.pk
 
-    def latest() -> PaymentQuery | None:
-        with tenant_context(tenant_id):
-            return PaymentQuery.objects.order_by("-created_at").first()
-
     def redeliver() -> object:
-        query = latest()
-        if query is None:
+        query_id = caller.pinned.get("query")
+        if query_id is None:
             return None
+        with tenant_context(tenant_id):
+            query = PaymentQuery.objects.get(pk=query_id)
         if query.settlement_owner is not None:
             lease_runs_out(world, query.pk)
-        return tasks.run_payment_query_task(str(tenant_id), str(query.pk))
+        return tasks.run_payment_query_task(str(tenant_id), str(query_id))
 
-    def aggregate(baseline: dict[str, Any]) -> dict[str, object]:
-        query = PaymentQuery.objects.order_by("-created_at").first()
+    def aggregate(caller: Caller) -> dict[str, object]:
+        query_id = caller.pinned.get("query")
+        query = PaymentQuery.objects.filter(pk=query_id).first() if query_id else None
+        created = PaymentQuery.objects.exclude(
+            pk__in=[*caller.seed.get("queries", ()), *caller.decoys]
+        ).count()
         consulted = FederalConsultation.objects.exclude(
-            pk__in=baseline["consultations"]
+            pk__in=caller.seed.get("consultations", ())
         ).order_by("consulted_at", "pk")
+        target = caller.target
+        key_ok = (
+            target["request_key"] == payments._page_key(query, 0)
+            if query is not None and target is not None
+            else None
+        )
         return {
+            "query": query_id,
             "state": query.state if query else None,
             "code": query.failure_code if query else None,
-            "ref": [[row.outcome, row.provider_ref] for row in consulted],
+            "queries": created,
+            "kind": consulted[0].kind if consulted else None,
+            "consultations": list(
+                consulted.values(
+                    "client_id", "kind", "outcome", "provider_ref", "scope_digest"
+                )
+            ),
+            "page_key_is_target": key_ok,
         }
 
-    def named() -> dict[str, str]:
-        query = latest()
-        return {str(query.pk): "query"} if query else {}
-
-    return Caller(
+    caller = Caller(
         name="page",
         module=payments,
         tenant_id=tenant_id,
@@ -951,13 +1644,27 @@ def _page_caller(world: World, settings: SettingsWrapper) -> Caller:
         gateway=world.gateway,
         run=world.consult,
         redeliver=redeliver,
-        sends=lambda: len(world.sent()),
         aggregate=aggregate,
-        named=named,
+        named=lambda c: (
+            {str(c.pinned["query"]): "query"} if "query" in c.pinned else {}
+        ),
         script_ok=lambda: world.script(page([item("DAS000000000045")])),
         script_401=lambda: world.script(Reply(status=401)),
         authority_service="pagtoweb",
     )
+    return caller
+
+
+def _pin_query(caller: Caller, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Capture the consultation's id when it is opened, before any runner dies."""
+    real_open = payments.open_payment_query
+
+    def opened(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        query = real_open(*args, **kwargs)
+        caller.pinned.setdefault("query", str(query.pk))
+        return query
+
+    monkeypatch.setattr(payments, "open_payment_query", opened)
 
 
 def _receipt_caller(
@@ -972,20 +1679,23 @@ def _receipt_caller(
     args = (str(tenant_id), str(das.pk), str(world.termo.actor.pk))
     pdf = import_module("tests.integrations.test_pagtoweb").PDF
     issued = json.dumps({"pdf": __import__("base64").b64encode(pdf).decode()})
+    key = payments.receipt_request_key(das.pk)
 
-    def aggregate(_baseline: dict[str, Any]) -> dict[str, object]:
-        call = ProviderCall.objects.filter(
-            request_key=payments.receipt_request_key(das.pk)
-        ).first()
+    def aggregate(caller: Caller) -> dict[str, object]:
+        call = ProviderCall.objects.filter(request_key=key).first()
         document = (
             Document.objects.filter(acquisition_receipt_ref=str(call.pk)).first()
             if call is not None
             else None
         )
+        target = caller.target
         return {
+            "payment": das.pk,
+            "call": call.pk if call else None,
             "state": call.state if call else None,
             "code": call.provider_code if call else None,
-            "ref": document.acquisition_receipt_ref if document else None,
+            "document": document.pk if document else None,
+            "key_is_payment": target is not None and target["request_key"] == key,
         }
 
     caller = Caller(
@@ -999,12 +1709,12 @@ def _receipt_caller(
         gateway=world.gateway,
         run=lambda: tasks.emit_payment_receipt_task(*args),
         redeliver=lambda: tasks.emit_payment_receipt_task(*args),
-        sends=lambda: len(world.sent("/Emitir")),
         aggregate=aggregate,
-        named=lambda: {str(das.pk): "payment"},
+        named=lambda _c: {str(das.pk): "payment"},
         script_ok=lambda: world.script(Reply(body=receipt_body(issued))),
         script_401=lambda: world.script(Reply(status=401)),
         authority_service="pagtoweb",
+        result_ids=lambda c, _r: {"call": c.returned[-1] if c.returned else None},
     )
     module = import_module(payments.__name__)
     real_perform = module.perform
@@ -1021,6 +1731,14 @@ def _receipt_caller(
         return result
 
     monkeypatch.setattr(module, "perform", observed)
+    real_emit = tasks.emit_payment_receipt
+
+    def emitted(*emit_args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        call = real_emit(*emit_args, **kwargs)
+        caller.returned.append(str(call.pk) if call is not None else "none")
+        return call
+
+    monkeypatch.setattr(tasks, "emit_payment_receipt", emitted)
     return caller
 
 
@@ -1034,23 +1752,48 @@ def _guide_caller(
             world.owner, world.tenant_id, world.cycle.pk, origin=peer.origin
         )
 
-    def aggregate(_baseline: dict[str, Any]) -> dict[str, object]:
+    def aggregate(_caller: Caller) -> dict[str, object]:
+        guides = []
         for call in ProviderCall.objects.filter(operation="SP-DAS").order_by(
-            "created_at"
+            "created_at", "pk"
         ):
             document = pgmei._guide_document(call)
-            if document is not None:
-                link = (
-                    EvidenceLink.objects.filter(document=document)
-                    .select_related("request")
-                    .first()
-                )
-                return {
-                    "state": link.request.state if link else None,
-                    "code": None,
-                    "ref": str(call.pk),
+            link = (
+                EvidenceLink.objects.filter(document=document)
+                .select_related("request")
+                .first()
+                if document is not None
+                else None
+            )
+            guides.append(
+                {
+                    "call": call.pk,
+                    "document": document.pk if document else None,
+                    "link": link.pk if link else None,
+                    "cycle": link.request.cycle_id if link else None,
                 }
-        return {"state": None, "code": None, "ref": None}
+            )
+        return {"guides": guides}
+
+    def result_ids(_caller: Caller, result: object) -> dict[str, object]:
+        if not isinstance(result, pgmei.GuideOutcome):
+            return {}
+        with tenant_context(world.tenant_id):
+            document = Document.objects.filter(pk=result.document_id).first()
+            link = (
+                EvidenceLink.objects.select_related("request")
+                .filter(pk=result.link_id)
+                .first()
+            )
+        return {
+            "call": result.call_id,
+            "document": result.document_id,
+            "link": result.link_id,
+            "document_call": document.acquisition_receipt_ref if document else None,
+            "private": (not document.portal_visible) if document else None,
+            "link_document": link.document_id if link else None,
+            "link_cycle": link.request.cycle_id if link else None,
+        }
 
     return Caller(
         name="guide",
@@ -1063,11 +1806,11 @@ def _guide_caller(
         gateway=peer,
         run=click,
         redeliver=click,
-        sends=lambda: len(peer.requests),
         aggregate=aggregate,
-        named=lambda: {str(world.cycle.pk): "cycle"},
+        named=lambda _c: {str(world.cycle.pk): "cycle"},
         script_ok=lambda: peer.replies.append(das_reply()),
         script_401=lambda: peer.replies.append(Reply(status=401)),
+        result_ids=result_ids,
     )
 
 
@@ -1092,12 +1835,13 @@ def _sitfis_caller(
     def deliver() -> object:
         return tasks._advance(str(world.tenant_id), str(report.pk))
 
-    def aggregate(_baseline: dict[str, Any]) -> dict[str, object]:
+    def aggregate(_caller: Caller) -> dict[str, object]:
         current = world.reload(report)
         receipt = FederalConsultation.objects.get(pk=current.consultation_id)
         return {
+            "report": report.pk,
             "state": current.state,
-            "code": receipt.outcome,
+            "outcome": receipt.outcome,
             "ref": receipt.provider_ref or None,
         }
 
@@ -1116,9 +1860,8 @@ def _sitfis_caller(
         gateway=world.gateway,
         run=run if prepared else deliver,
         redeliver=deliver,
-        sends=lambda: len(world.sent("/Emitir")),
         aggregate=aggregate,
-        named=lambda: {
+        named=lambda _c: {
             str(report.pk): "report",
             str(report.consultation_id): "consultation",
             str(world.cycle.pk): "cycle",
@@ -1127,7 +1870,7 @@ def _sitfis_caller(
         script_ok=lambda: world.script(processing_202(4_000)),
         script_401=lambda: world.script(Reply(status=401)),
         authority_service="sitfis",
-        ordinal=lambda call: (emissions.get(call.request_key, 0), str(call.pk)),
+        ordinal=lambda row: (emissions.get(row["request_key"], 0), str(row["id"])),
     )
 
 
@@ -1140,7 +1883,9 @@ def test_page(
     record_property: Callable[[str, object], None],
     cut: str,
 ) -> None:
-    _node(_page_caller(world, settings), cut, monkeypatch, record_property)
+    caller = _page_caller(world, settings)
+    _pin_query(caller, monkeypatch)
+    _node(caller, cut, monkeypatch, record_property)
 
 
 @DB
@@ -1186,102 +1931,306 @@ def test_sitfis(
     _node(caller, cut, monkeypatch, record_property)
 
 
-def _recorded_receipt_skip() -> dict[str, Any]:
-    """The receipt's skip cell as the head run records it: the oracle's control."""
-    target = {
-        "id": "target",
-        "state": CallState.AUTHORITY,
-        "code": CallState.AUTHORITY,
-        "attempts": 0,
-        "billed": "desconhecido",
-        "settled": None,
-        "version": 2,
-        "fence": 0,
-        "owner": None,
-        "lease": None,
-        "started": None,
-        "finalized": None,
-        "retry_of": None,
-    }
-    snapshot = {
-        "calls": [target],
-        "attempts": [],
-        "slots": [["target", 1, "released"]],
-        "budget": [0, 0, 0],
-        "sends": 0,
-        "unscripted": 0,
-        "aggregate": {
-            "state": CallState.AUTHORITY,
-            "code": CallState.AUTHORITY,
-            "ref": None,
-        },
-        "owned": [],
-        "queued": [],
-        "keys_unique": True,
-        "held_on_terminal": [],
-        "target_binding": True,
-    }
-    return {
-        "caller": "receipt",
-        "cut": SKIP,
-        "bound": True,
-        "retried": [],
-        "passes": [
-            ["first", "returned reservada"],
-            ["redeliver", "returned bloqueada_autoridade"],
-            ["settle", "returned bloqueada_autoridade"],
-        ],
-        "performs": [],
-        "skip": {"claim": "skipped", "errors": [], "unchanged": True, "released": True},
-        "after_cut": deepcopy(snapshot),
-        "after_settle": deepcopy(snapshot),
-    }
+@DB
+def test_the_page_record_is_the_query_it_opened(
+    world: World,
+    settings: SettingsWrapper,
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
+) -> None:
+    """Fixture negative: a newer, already final query never stands in for it."""
+
+    def decoy(caller: Caller) -> None:
+        with tenant_context(caller.tenant_id):
+            query = PaymentQuery.objects.get(pk=caller.pinned["query"])
+            query.pk = uuid4()
+            query.request_key = hashlib.sha256(b"decoy").hexdigest()
+            query.state, query.failure_code = "falha", "decoy"
+            query.created_at = timezone.now() + timedelta(seconds=1)
+            query.settlement_owner = query.settlement_until = None
+            query.save(force_insert=True)
+        caller.decoys.add(str(query.pk))
+
+    caller = _page_caller(world, settings)
+    caller.before_settle = decoy
+    _pin_query(caller, monkeypatch)
+    _observe(caller, monkeypatch)
+    _drive(caller, "moved-before-claim", monkeypatch)
+    facts = _Facts(caller).facts("moved-before-claim")
+    record_property("tuple", json.dumps(facts, sort_keys=True, default=str))
+    settle = facts["stages"][list(facts["stages"])[-1]]["aggregate"]
+    assert (settle["query"], settle["code"], settle["queries"]) == (
+        "query",
+        facts["stages"]["1:first"]["aggregate"]["code"],
+        1,
+    )
+    assert len(caller.decoys) == 1
 
 
-def _lock_timeout_then_refused(facts: dict[str, Any]) -> None:
-    facts["passes"][0] = [
-        "first",
-        "raised OperationalError: canceling statement due to lock timeout",
+# Oracle self-tests: the collector's helpers and the judge, each against the
+# counterfactuals the reviews named.
+
+
+def _row(fields: tuple[str, ...]) -> dict[str, Any]:
+    return {name: f"value-{n}" for n, name in enumerate(fields)}
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [CALL_FIELDS, ATTEMPT_FIELDS, SLOT_FIELDS],
+    ids=["call", "attempt", "slot"],
+)
+def test_every_row_field_is_compared(fields: tuple[str, ...]) -> None:
+    models = {
+        CALL_FIELDS: ProviderCall,
+        ATTEMPT_FIELDS: ProviderCallAttempt,
+        SLOT_FIELDS: ProviderReservation,
+    }
+    assert set(fields) == {f.attname for f in models[fields]._meta.concrete_fields}
+    base = _row(fields)
+    for name in fields:
+        changed = {**base, name: "other"}
+        assert _changed({"k": base}, {"k": changed}, "rows") == [("rows", "k", name)]
+
+
+def test_the_collector_sees_a_rewritten_status_epoch_and_update() -> None:
+    before = {"t": {"http_status": 401, "execution_epoch": 1, "updated_at": 1}}
+    after = {"t": {"http_status": 403, "execution_epoch": 2, "updated_at": 2}}
+    assert _changed(before, after, "calls") == [
+        ("calls", "t", "execution_epoch"),
+        ("calls", "t", "http_status"),
+        ("calls", "t", "updated_at"),
     ]
-    facts["skip"]["claim"] = "never returned"
+    assert _changed(before, {**before, "late": {"x": 1}}, "attempts") == [
+        ("attempts", "late", "added")
+    ]
+    assert _changed(before, {}, "attempts") == [("attempts", "t", "removed")]
 
 
-def _duplicate_slot(facts: dict[str, Any]) -> None:
-    facts["after_cut"]["slots"].append(["target", 1, "released"])
+def test_the_collector_attributes_sends_by_tag() -> None:
+    issued = [("tag-a", "target", 1), ("tag-b", "successor", 1)]
+    assert _attribute(issued, [("/Emitir", "tag-b")])["attributed"] == {
+        "successor": ["tag-b"]
+    }
+    assert _attribute(issued, [("/Emitir", "tag-z")])["unattributed"] == 1
+    assert _attribute(issued, [("/Emitir", None)])["unattributed"] == 1
+    assert (
+        _attribute(issued, [("/Emitir", "tag-a"), ("/Emitir", "tag-a")])["duplicates"]
+        == 1
+    )
 
 
-def _terminal_rewrite(facts: dict[str, Any]) -> None:
-    facts["after_settle"]["calls"][0]["version"] += 1
+def test_the_collector_ledger_keeps_every_bucket() -> None:
+    slots = {
+        "a": {"budget_id": "b", "call_id": "c", "state": "reserved", "microbrl": 5},
+        "k": {"budget_id": "b", "call_id": "c", "state": "known", "microbrl": 7},
+        "r": {"budget_id": "b", "call_id": "d", "state": "released", "microbrl": 9},
+    }
+    assert _ledger(slots) == {"b": {"c": [5, 7, 0]}}
 
 
-def _failed_redelivery(facts: dict[str, Any]) -> None:
-    facts["passes"][-1] = ["settle", "raised RuntimeError: the worker was lost"]
+def test_the_recorder_keeps_kwargs_options_and_due_time() -> None:
+    # The call shape of `sitfis_tasks.py:54-59`, positional and keyword.
+    now = datetime(2026, 11, 27, 12, 0, tzinfo=timezone.get_current_timezone())
+    later = now + timedelta(minutes=1)
+    sink: list[dict[str, Any]] = []
+    queue = _recorder(sink, "t")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(timezone, "now", lambda: now)
+        queue(("a", "b"), {"failures": 1}, eta=later, ignore_result=True)
+        queue(("a", "b"), kwargs={"failures": 1}, eta=later, ignore_result=True)
+    positional, keyword = sink
+    assert (
+        positional
+        == keyword
+        == {
+            "task": "t",
+            "args": ["a", "b"],
+            "kwargs": {"failures": 1},
+            "options": {"ignore_result": True},
+            "due_in_s": 60,
+        }
+    )
+    assert _queue_record("t", ("a", "b"), None, {"eta": later}, now)["kwargs"] == {}
+    assert (
+        _queue_record("t", ("a", "b"), {"failures": 1}, {"eta": now}, now)["due_in_s"]
+        == 0
+    )
 
 
-def _authority_on_another_call(facts: dict[str, Any]) -> None:
-    for name in ("after_cut", "after_settle"):
-        calls = facts[name]["calls"]
-        calls.append({**calls[0], "id": "successor"})
-        calls[0]["state"] = CallState.CANCELLED
+def _control(node: str) -> dict[str, Any]:
+    return deepcopy(_controls()[node])
 
 
-# The reviewer's counterfactuals (gate review :666) against a recorded cell.
-COUNTERFACTUALS: Final[dict[str, Callable[[dict[str, Any]], None]]] = {
-    "first-pass-lock-timeout": _lock_timeout_then_refused,
-    "duplicate-slot": _duplicate_slot,
-    "terminal-rewrite": _terminal_rewrite,
-    "failed-final-redelivery": _failed_redelivery,
-    "authority-on-another-call": _authority_on_another_call,
+def _last(facts: dict[str, Any]) -> dict[str, Any]:
+    stage: dict[str, Any] = facts["stages"][list(facts["stages"])[-1]]
+    return stage
+
+
+def _each_later(facts: dict[str, Any]) -> list[dict[str, Any]]:
+    claim = facts["claims"][facts["refusal"]]
+    return [stage for _n, stage in _stage_list(facts, claim["pass"])]
+
+
+def _veto_missing(facts: dict[str, Any]) -> None:
+    for record in facts["claims"]:
+        record["cut"] = False
+
+
+def _veto_wrong(facts: dict[str, Any]) -> None:
+    next(r for r in facts["claims"] if r["cut"])["outcome"] = "returned ticket"
+
+
+def _veto_recorded(facts: dict[str, Any]) -> None:
+    veto = next(r for r in facts["claims"] if r["cut"])
+    veto["post"]["calls"]["target"]["state"] = CallState.PAUSED
+
+
+def _first_duplicate_rewrite(facts: dict[str, Any]) -> None:
+    first = next(iter(facts["since_refusal"]))
+    facts["since_refusal"][first] = ["calls.target.version"]
+
+
+def _released_early(facts: dict[str, Any]) -> None:
+    facts["skip"]["probe"] = "free"
+    facts["skip"]["holder"]["released"] = True
+
+
+def _changed_while_held(facts: dict[str, Any]) -> None:
+    facts["skip"]["changed"] = ["calls.target.version"]
+
+
+def _observation(facts: dict[str, Any], name: str, value: object) -> None:
+    for stage in _each_later(facts):
+        for key, row in stage["attempts"].items():
+            if key.startswith("target/"):
+                row[name] = value
+
+
+def _late_observation(facts: dict[str, Any]) -> None:
+    attempts = _last(facts)["attempts"]
+    attempts["target/1/late"] = {**attempts["target/1/result"], "observation": "late"}
+
+
+def _observation_missing(facts: dict[str, Any]) -> None:
+    _last(facts)["attempts"].clear()
+
+
+def _send_swap(facts: dict[str, Any]) -> None:
+    for stage in facts["stages"].values():
+        sends = stage["sends"]["attributed"]
+        if "successor" in sends:
+            sends["target"] = sends.pop("successor")
+
+
+def _unattributed(facts: dict[str, Any]) -> None:
+    _last(facts)["sends"]["unattributed"] = 1
+
+
+def _budget_without_successor(facts: dict[str, Any]) -> None:
+    budgets = _last(facts)["budgets"]
+    budgets[next(iter(budgets))] = [0, 320_000, 0]
+
+
+def _reserve_beside_successor(facts: dict[str, Any]) -> None:
+    for stage in _each_later(facts):
+        budget = next(iter(stage["budgets"]))
+        stage["budgets"][budget][0] += 320_000
+
+
+def _rewritten(name: str) -> Callable[[dict[str, Any]], None]:
+    def mutate(facts: dict[str, Any]) -> None:
+        facts["since_refusal"][list(facts["since_refusal"])[-1]] = [
+            f"calls.target.{name}"
+        ]
+
+    return mutate
+
+
+def _guide_work_removed(facts: dict[str, Any]) -> None:
+    owned = _last(facts)["owned"]
+    for key in [k for k, row in owned.items() if row.get("subject_ref") == "target"]:
+        del owned[key]
+
+
+def _wrong_link(facts: dict[str, Any]) -> None:
+    next(p for p in facts["passes"] if p["intent"] == "new-click")["ids"][
+        "link_document"
+    ] = "id#999"
+
+
+def _no_document(facts: dict[str, Any]) -> None:
+    ids = next(p for p in facts["passes"] if p["intent"] == "new-click")["ids"]
+    ids["document"] = ids["document_call"] = None
+
+
+def _decoy_query(facts: dict[str, Any]) -> None:
+    _last(facts)["aggregate"]["query"] = "id#777"
+
+
+def _second_query(facts: dict[str, Any]) -> None:
+    _last(facts)["aggregate"]["queries"] = 2
+
+
+def _new_intent_as_repeat(facts: dict[str, Any]) -> None:
+    next(p for p in facts["passes"] if p["intent"] == "new-click")["intent"] = "target"
+
+
+def _queued(facts: dict[str, Any]) -> None:
+    _last(facts)["queued"] = [
+        {"task": "x", "args": [], "kwargs": {}, "options": {}, "due_in_s": 0}
+    ]
+
+
+RECEIPT_SKIP, RECEIPT_RETRY = f"receipt[{SKIP}]", "receipt[moved-before-retry-claim]"
+GUIDE_SUCCESSOR, PAGE_MOVED = "guide[moved-then-redelivery]", "page[moved-before-claim]"
+RECEIPT_T1 = "receipt[pause-retry-claim]"
+COUNTERFACTUALS: Final[dict[str, tuple[str, Callable[[dict[str, Any]], None], str]]] = {
+    "t1-veto-missing": (RECEIPT_T1, _veto_missing, "T1"),
+    "t1-veto-wrong": (RECEIPT_T1, _veto_wrong, "T1"),
+    "t1-recorded-then-overwritten": (RECEIPT_T1, _veto_recorded, "T1"),
+    "first-duplicate-rewrite": (RECEIPT_RETRY, _first_duplicate_rewrite, "M5"),
+    "holder-released-early": (RECEIPT_SKIP, _released_early, "Mskip"),
+    "changed-while-held": (RECEIPT_SKIP, _changed_while_held, "Mskip"),
+    "401-outcome-negada": (
+        RECEIPT_RETRY,
+        lambda f: _observation(f, "outcome", "negada"),
+        "M1",
+    ),
+    "401-code-http": (
+        RECEIPT_RETRY,
+        lambda f: _observation(f, "provider_code", "serpro_http_401"),
+        "M1",
+    ),
+    "late-observation": (RECEIPT_RETRY, _late_observation, "M1"),
+    "observation-missing-at-settle": (RECEIPT_RETRY, _observation_missing, "M1"),
+    "send-swap": (GUIDE_SUCCESSOR, _send_swap, "M3"),
+    "unattributed-send": (RECEIPT_RETRY, _unattributed, "M3"),
+    "budget-without-successor": (RECEIPT_RETRY, _budget_without_successor, "M2"),
+    "reserve-beside-successor": (GUIDE_SUCCESSOR, _reserve_beside_successor, "M2"),
+    "http-status-403": (RECEIPT_RETRY, _rewritten("http_status"), "M5"),
+    "epoch-2": (RECEIPT_RETRY, _rewritten("execution_epoch"), "M5"),
+    "updated-at-changed": (RECEIPT_RETRY, _rewritten("updated_at"), "M5"),
+    "guide-work-removed": (GUIDE_SUCCESSOR, _guide_work_removed, "M5"),
+    "wrong-guide-link": (GUIDE_SUCCESSOR, _wrong_link, "M4"),
+    "successor-without-document": (GUIDE_SUCCESSOR, _no_document, "M4"),
+    "decoy-page-query": (PAGE_MOVED, _decoy_query, "M4"),
+    "second-page-query": (PAGE_MOVED, _second_query, "M4"),
+    "new-intent-as-repeat": (GUIDE_SUCCESSOR, _new_intent_as_repeat, "M4"),
+    "queued-continuation": (RECEIPT_RETRY, _queued, "M4"),
 }
 
 
-def test_the_oracle_accepts_the_recorded_skip_cell() -> None:
-    _judge(MOVED, _recorded_receipt_skip())
+@pytest.mark.parametrize("node", [f"{c}[{cut}]" for c, cut in CONTROL_NODES])
+def test_the_oracle_accepts_its_control(node: str) -> None:
+    # The guide control has a priced successor, so a blanket zero balance fails.
+    _judge(CUTS[node.split("[")[1].rstrip("]")], _control(node))
 
 
 @pytest.mark.parametrize("counterfactual", list(COUNTERFACTUALS))
 def test_the_oracle_rejects(counterfactual: str) -> None:
-    facts = _recorded_receipt_skip()
-    COUNTERFACTUALS[counterfactual](facts)
-    with pytest.raises(AssertionError):
-        _judge(MOVED, facts)
+    node, mutate, tag = COUNTERFACTUALS[counterfactual]
+    facts = _control(node)
+    mutate(facts)
+    with pytest.raises(AssertionError, match=rf"\[[^\]]*\b{tag}\b"):
+        _judge(CUTS[node.split("[")[1].rstrip("]")], facts)
