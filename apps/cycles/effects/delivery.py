@@ -7,8 +7,8 @@ from datetime import timedelta
 from uuid import UUID
 
 from apps.cycles.effects.inputs import ProposalInput
+from apps.cycles.effects.markers import MarkerState, marker_state
 from apps.cycles.models import (
-    ActionExecution,
     ActionProposal,
     ClientPublication,
     PublicationState,
@@ -48,7 +48,10 @@ def _valid(message: OutboundMessage) -> tuple[bool, str]:
             "approval_required",
         )
         return False, reason
-    if not ActionExecution.objects.filter(proposal=proposal).exists():
+    marker, _receipt = marker_state(proposal)
+    if marker is MarkerState.CONFLICT:
+        return False, "execution_conflict"
+    if marker is MarkerState.ABSENT:
         return False, "execution_missing"
     data = json.loads(bytes(proposal.manifest_bytes))
     payload = data["payload"]

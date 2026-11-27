@@ -16,6 +16,7 @@ from apps.cycles.effects.build import initiation_capability
 from apps.cycles.effects.delivery import message_intent
 from apps.cycles.effects.inputs import ProposalInput
 from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.effects.markers import MarkerState, marker_state
 from apps.cycles.models import (
     ActionExecution,
     ActionProposal,
@@ -49,13 +50,12 @@ class ExecutionResult:
 
 
 def _existing(proposal: ActionProposal) -> bool:
-    previous = ActionExecution.objects.filter(
-        client_id=proposal.client_id, business_intent_key=proposal.business_intent_key
-    ).first()
-    if previous is not None and previous.digest != proposal.digest:
+    """Replay only an exact marker; any other candidate is a conflict, never absence."""
+    state, _receipt = marker_state(proposal)
+    if state is MarkerState.CONFLICT:
         msg = "A mesma intenção já tem efeitos diferentes registrados."
         raise IntentConflict(msg)
-    return previous is not None
+    return state is MarkerState.EXACT
 
 
 def _release_documents(
@@ -212,10 +212,7 @@ def execute(
     if candidate is None:
         raise Http404
     load_client(actor, tenant_id(), candidate.client_id)
-    if ActionExecution.objects.filter(
-        client_id=candidate.client_id,
-        business_intent_key=candidate.business_intent_key,
-    ).exists():
+    if marker_state(candidate)[0] is not MarkerState.ABSENT:
         scope, proposal, spec, _decisions = _locked_proposal(
             actor, proposal_id, expected_version
         )

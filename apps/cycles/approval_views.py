@@ -11,7 +11,9 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import format_html
 from django.views.decorators.http import require_http_methods
 
 from apps.accounts.views import AuthenticatedRequest
@@ -32,9 +34,10 @@ from apps.cycles.approval_forms import (
 from apps.cycles.effects.build import BuildError, initiation_capability
 from apps.cycles.effects.executors import ExecutionResult, execute
 from apps.cycles.effects.inputs import ProposalInput
-from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.effects.manifest import ActionKind, kind_unavailable
+from apps.cycles.effects.markers import MarkerState, marker_state
 from apps.cycles.errors import IllegalTransition, VersionConflict
-from apps.cycles.models import ActionExecution, ActionProposal, ProposalState
+from apps.cycles.models import ActionProposal, ProposalState
 from apps.cycles.services.approvals import (
     DecisionResult,
     approve,
@@ -271,7 +274,12 @@ def _card(
         {**row, "name": names.get(row["contact_id"], "")}
         for row in frozen["recipients"]
     ]
-    execution = ActionExecution.objects.filter(proposal=proposal).first()
+    marker, execution = marker_state(proposal)
+    # AXRM-022: a stored kind with no registered effect, or a conflicting marker, is
+    # read-only history: no decision, execution, cancellation or revision control.
+    unavailable = kind_unavailable(proposal.action_kind)
+    conflict = marker is MarkerState.CONFLICT
+    live = not (unavailable or conflict)
     action_label = (
         "Reabrir ciclo"
         if frozen["payload"].get("reopen")
@@ -284,10 +292,13 @@ def _card(
             "proposal": proposal,
             "action_label": action_label,
             "execution": execution,
+            "effect_unavailable": unavailable,
+            "marker_conflict": conflict,
             "may_execute": (
-                controls.propose
+                not unavailable
+                and controls.propose
                 and proposal.state == ProposalState.APPROVED
-                and execution is None
+                and marker is MarkerState.ABSENT
                 and expires_at > now
             ),
             "frozen": frozen,
@@ -311,15 +322,17 @@ def _card(
             "decisions": proposal.approvals.select_related("approver").order_by(
                 "decided_at"
             ),
-            "may_approve": controls.approve,
+            "may_approve": live and controls.approve,
             "may_cancel": (
-                controls.propose
+                live
+                and controls.propose
                 and (proposal.initiator_id == request.user.pk or controls.cancel_others)
             ),
-            "may_propose": controls.propose,
+            "may_propose": live and controls.propose,
             "self_approval": proposal.initiator_id == request.user.pk,
-            "awaiting": proposal.state == ProposalState.AWAITING,
-            "open": proposal.state in {ProposalState.AWAITING, ProposalState.APPROVED},
+            "awaiting": live and proposal.state == ProposalState.AWAITING,
+            "open": live
+            and proposal.state in {ProposalState.AWAITING, ProposalState.APPROVED},
             "effects": [
                 {
                     "label": action_label,
@@ -375,6 +388,16 @@ def proposal_create(request: AuthenticatedRequest, pk: UUID) -> HttpResponse:
         previous = get_object_or_404(
             ActionProposal.objects, pk=previous_key, cycle=cycle
         )
+        if kind_unavailable(previous.action_kind):
+            # AXRM-022-SCAFFOLD: nothing of this predecessor is copied or decoded.
+            return HttpResponse(
+                format_html(
+                    "<p>Esta ciência da operação ainda não pode ser revisada.</p>"
+                    '<p><a href="{}">Voltar ao ciclo</a></p>',
+                    reverse("cycle-detail", args=[cycle.pk]),
+                ),
+                status=HTTPStatus.UNPROCESSABLE_CONTENT,
+            )
         initial.update(previous.input_spec)
         initial.update(
             {

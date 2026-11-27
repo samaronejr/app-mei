@@ -8,6 +8,7 @@ from django.db.models import Exists, OuterRef
 
 from apps.cycles.completion_checks import CompletionItem
 from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.effects.markers import exact_markers
 from apps.cycles.models import (
     ActionExecution,
     Approval,
@@ -69,7 +70,8 @@ def display_valid_waivers(
         expires_at__gt=OuterRef("executed_at"),
     )
     receipts: QuerySet[WithAnnotations[ActionExecution, ReceiptApproval]] = (
-        ActionExecution.objects.filter(
+        exact_markers()
+        .filter(
             client_id=cycle.client_id,
             cycle=cycle,
             action_kind=ActionKind.REQUEST_WAIVER,

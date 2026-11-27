@@ -42,8 +42,16 @@ from apps.cycles.effects.invalidation import (
     RevalidationContext,
     compare_manifests,
 )
-from apps.cycles.effects.manifest import ActionKind, EffectManifestV1
-from apps.cycles.errors import IllegalTransition, VersionConflict
+from apps.cycles.effects.manifest import (
+    ActionKind,
+    EffectManifestV1,
+    kind_unavailable,
+)
+from apps.cycles.errors import (
+    IllegalTransition,
+    ProposalIntegrityError,
+    VersionConflict,
+)
 from apps.cycles.models import (
     ActionExecution,
     ActionProposal,
@@ -200,8 +208,11 @@ def _locked_proposal(
     candidate = ActionProposal.objects.filter(pk=proposal_id).first()
     if candidate is None:
         raise Http404
+    # Refused from the stored kind before any blob is decoded or lock is taken.
+    _refuse_unregistered_kind(candidate.action_kind)
     reader = actor if actor is not None else candidate.initiator
-    spec = ProposalInput.from_data(candidate.input_spec)
+    # The candidate's input only discovers lock participants; the locked row decides.
+    discovered = ProposalInput.from_data(candidate.input_spec)
     previous_ids = set(
         Approval.objects.filter(proposal=candidate).values_list("pk", flat=True)
     )
@@ -212,7 +223,7 @@ def _locked_proposal(
                 "approver_id", flat=True
             )
         )
-        | _recipient_users(spec)
+        | _recipient_users(discovered)
     )
     scope = _lock_scope(
         reader, _cycle(candidate.cycle_id), participants, system=actor is None
@@ -220,6 +231,7 @@ def _locked_proposal(
     proposal = ActionProposal.objects.select_for_update(no_key=True).get(pk=proposal_id)
     if expected_version is not None:
         check_version(proposal.version, expected_version)
+    spec = _stored_spec(proposal)
     decisions = tuple(Approval.objects.filter(proposal=proposal).order_by("pk"))
     if {row.pk for row in decisions} != previous_ids or not _recipient_users(
         spec
@@ -456,14 +468,24 @@ def _completion_inputs(
     return spec
 
 
-def _refuse_unregistered_kind(spec: ProposalInput) -> None:
-    """AXRM-022-SCAFFOLD: no fiscal effect is proposable until its builder lands.
+def _refuse_unregistered_kind(kind: str) -> None:
+    """AXRM-022-SCAFFOLD: no fiscal effect is proposable or decidable yet.
 
-    Re-keyed in 22-06 and removed in 22-14. Compare by value: a bare string counts.
+    22-06 keeps this refusal keyed on the ROW kind; removed in 22-14. By value: a bare
+    string counts.
     """
-    if spec.action_kind == ActionKind.FISCAL_MANIFESTATION:
-        msg = "A ciência da operação ainda não pode ser proposta."
+    if kind_unavailable(kind):
+        msg = "A ciência da operação ainda não pode ser proposta nem decidida."
         raise ValidationError(msg, code="fiscal_manifestation_unavailable")
+
+
+def _stored_spec(proposal: ActionProposal) -> ProposalInput:
+    """Decode the LOCKED row; its blob must name the kind its column and bytes bind."""
+    spec = ProposalInput.from_data(proposal.input_spec)
+    if spec.action_kind != proposal.action_kind:
+        msg = "Os dados desta proposta não correspondem ao efeito registrado."
+        raise ProposalIntegrityError(msg)
+    return spec
 
 
 @transaction.atomic
@@ -476,7 +498,7 @@ def propose(
 ) -> ActionProposal:
     """Freeze selected effects; revision is a new row under one natural intent."""
     spec = draft.inputs
-    _refuse_unregistered_kind(spec)
+    _refuse_unregistered_kind(spec.action_kind)
     expires_at, not_before = draft.expires_at, draft.not_before
     spec.validate()
     scope = _lock_scope(actor, _cycle(cycle_id), {actor.pk} | _recipient_users(spec))
@@ -501,6 +523,8 @@ def propose(
         .first()
     )
     if previous is not None:
+        # A predecessor is superseded only under its own stored kind.
+        _refuse_unregistered_kind(previous.action_kind)
         if draft.previous_id != previous.pk or draft.previous_version is None:
             msg = "Revise a proposta existente antes de criar outra versão."
             raise VersionConflict(msg)

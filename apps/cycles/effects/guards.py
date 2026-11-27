@@ -1,8 +1,8 @@
 """Cycle guards for the consequential effects and their unresolved outbound work."""
 
 from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.effects.markers import exact_markers, exactly_executed
 from apps.cycles.models import (
-    ActionExecution,
     ActionProposal,
     ProposalState,
     ServiceCycle,
@@ -21,7 +21,7 @@ def actions_terminal(cycle: ServiceCycle) -> bool:
                 ProposalState.INVALIDATED,
             ]
         )
-        .filter(executions__isnull=True)
+        .filter(~exactly_executed())
         .exists()
     )
     unresolved = OutboundMessage.objects.filter(
@@ -39,7 +39,8 @@ def actions_terminal(cycle: ServiceCycle) -> bool:
 def effects_started(cycle: ServiceCycle) -> bool:
     """Treat an applied DB effect or durable SMTP start as irreversible history."""
     return (
-        ActionExecution.objects.filter(cycle=cycle)
+        exact_markers()
+        .filter(cycle=cycle)
         .exclude(action_kind=ActionKind.EMAIL_NOTICE)
         .exists()
         or OutboundMessage.objects.filter(

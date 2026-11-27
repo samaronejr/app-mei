@@ -32,7 +32,7 @@ from apps.cycles.bulk_contracts import (
     text_value,
 )
 from apps.cycles.capabilities import CYCLES_OPERATE
-from apps.cycles.effects.manifest import JSONValue
+from apps.cycles.effects.manifest import JSONValue, kind_unavailable
 from apps.cycles.errors import IllegalTransition, VersionConflict
 from apps.cycles.models import (
     ActionProposal,
@@ -246,6 +246,8 @@ def _preview_approval(actor: User, pk: UUID) -> SnapshotItem:
         reason = "proposal_expired"
     elif proposal.initiator_id == actor.pk:
         reason = "individual_self_approval"
+    if kind_unavailable(proposal.action_kind):
+        reason = "effect_unavailable"
     if not can(actor, APPROVE, tenant_id=tenant_id()):
         reason = "capability_denied"
     frozen: dict[str, JSONValue] = json.loads(bytes(proposal.manifest_bytes))

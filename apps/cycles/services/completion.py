@@ -12,12 +12,12 @@ from apps.accounts.models import User
 from apps.cycles.completion_checks import completion_items, require_open_completion
 from apps.cycles.completion_records import CompletionGeneration, CompletionJustification
 from apps.cycles.effects.inputs import ProposalDraft, ProposalInput
-from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.effects.manifest import ActionKind, kind_unavailable
+from apps.cycles.effects.markers import exact_markers, exactly_executed
 from apps.cycles.errors import IllegalTransition
 from apps.cycles.evidence_index import freeze_index
 from apps.cycles.index_projection import digest_data
 from apps.cycles.models import (
-    ActionExecution,
     ActionProposal,
     Approval,
     ApprovalDecision,
@@ -35,9 +35,7 @@ def apply_completion(actor: User, proposal: ActionProposal) -> None:
     spec = ProposalInput.from_data(proposal.input_spec)
     cycle = load_cycle(actor, proposal.cycle_id, lock=True)
     require_actor(actor, "cycles.reopen" if spec.reopen else "cycles.complete")
-    if not ActionExecution.objects.filter(
-        proposal=proposal, digest=proposal.digest, proposal_revision=proposal.revision
-    ).exists():
+    if not exact_markers().filter(proposal=proposal).exists():
         msg = "Execute a proposta aprovada para alterar o encerramento."
         raise IllegalTransition(msg)
     if spec.reopen:
@@ -188,6 +186,20 @@ def _reopen(
     )
     if decision is None:
         raise PermissionDenied
+    pending = (
+        ActionProposal.objects.filter(
+            cycle=cycle, state__in=[ProposalState.AWAITING, ProposalState.APPROVED]
+        )
+        .filter(~exactly_executed())
+        .order_by("pk")
+    )
+    # AXRM-022-SCAFFOLD: a pending sibling with no registered effect is never silently
+    # invalidated or skipped; the reopening is refused before any write.
+    if any(
+        kind_unavailable(kind) for kind in pending.values_list("action_kind", flat=True)
+    ):
+        msg = "Há uma ciência da operação pendente; a emenda não pode alterá-la ainda."
+        raise ValidationError(msg, code="fiscal_manifestation_unavailable")
     cycle.amendment += 1
     CycleAmendment.objects.create(
         tenant_id=cycle.tenant_id,
@@ -200,15 +212,11 @@ def _reopen(
         completed_snapshot=generation.snapshot,
         approved_by_id=decision.approver_id,
     )
-    for pending in ActionProposal.objects.filter(
-        cycle=cycle,
-        executions__isnull=True,
-        state__in=[ProposalState.AWAITING, ProposalState.APPROVED],
-    ):
-        pending.state = ProposalState.INVALIDATED
-        pending.version += 1
-        pending.invalidation_reasons = ["cycle_amended"]
-        pending.save(update_fields=["state", "version", "invalidation_reasons"])
+    for sibling in pending:
+        sibling.state = ProposalState.INVALIDATED
+        sibling.version += 1
+        sibling.invalidation_reasons = ["cycle_amended"]
+        sibling.save(update_fields=["state", "version", "invalidation_reasons"])
     cycle.state = CycleState.ACTIVE
     cycle.version += 1
     cycle.save(update_fields=["state", "version", "amendment"])

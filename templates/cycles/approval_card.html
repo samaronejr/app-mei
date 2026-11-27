@@ -144,6 +144,7 @@ Empty collections share one compact line, and the technical identity of this ver
       <section class="ui-panel" aria-labelledby="approval-decision" data-decision-controls>
         <h2 id="approval-decision" class="ui-panel-heading">Decidir sobre estes efeitos</h2>
         <div class="grid gap-4 px-4 py-3">
+        {% if effect_unavailable %}<p data-effect-unavailable>A ciência da operação ainda não pode ser decidida nem executada; este cartão é apenas histórico.</p>{% elif marker_conflict %}<p role="alert" data-marker-conflict>Há um registro de execução que não corresponde a esta proposta; nenhum controle está disponível.</p>{% endif %}
         {% if execution %}<p>Efeito registrado em {{ execution.executed_at|data_hora }}.{% if proposal.action_kind == 'email_notice' %} O aviso foi colocado na fila; o resultado do servidor de e-mail está em Comunicação.{% endif %}</p>
         {% elif may_execute %}<form method="post">{% csrf_token %}
           <input type="hidden" name="expected_version" value="{{ proposal.version }}">

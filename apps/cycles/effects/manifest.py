@@ -142,6 +142,16 @@ BOUND_COLLECTIONS: Final[dict[ActionKind, frozenset[str]]] = {
     ActionKind.REQUEST_WAIVER: frozenset({"evidence"}),
     ActionKind.FISCAL_MANIFESTATION: frozenset({"documents", "authorization"}),
 }
+
+
+def kind_unavailable(kind: str) -> bool:
+    """AXRM-022-SCAFFOLD: a stored kind with no registered effect yet (by value).
+
+    22-06 keys this on the row kind's registered effect; removed in 22-14.
+    """
+    return kind == ActionKind.FISCAL_MANIFESTATION
+
+
 MESSAGE_ACTIONS: Final = frozenset(
     {ActionKind.CLIENT_PUBLICATION, ActionKind.EMAIL_NOTICE}
 )

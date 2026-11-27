@@ -4,8 +4,8 @@ import json
 from dataclasses import dataclass
 
 from apps.cycles.effects.manifest import ActionKind
+from apps.cycles.effects.markers import exact_markers, exactly_executed
 from apps.cycles.models import (
-    ActionExecution,
     ActionProposal,
     ApprovalDecision,
     CycleState,
@@ -37,12 +37,16 @@ def valid_waiver(request: EvidenceRequest) -> bool:
     internal = RequestInternal.objects.filter(request=request).first()
     if internal is None or not internal.waiver_reason.strip():
         return False
-    receipts = ActionExecution.objects.filter(
-        client_id=request.client_id,
-        cycle_id=request.cycle_id,
-        action_kind=ActionKind.REQUEST_WAIVER,
-        proposal__input_spec__evidence_requests__contains=[str(request.pk)],
-    ).select_related("proposal")
+    receipts = (
+        exact_markers()
+        .filter(
+            client_id=request.client_id,
+            cycle_id=request.cycle_id,
+            action_kind=ActionKind.REQUEST_WAIVER,
+            proposal__input_spec__evidence_requests__contains=[str(request.pk)],
+        )
+        .select_related("proposal")
+    )
     for receipt in receipts:
         proposal = receipt.proposal
         manifest = json.loads(bytes(proposal.manifest_bytes))
@@ -116,9 +120,8 @@ def completion_items(cycle: ServiceCycle) -> list[CompletionItem]:
             "Efeito ainda não encerrado",
             f"/acoes/{proposal.pk}/",
         )
-        for proposal in ActionProposal.objects.filter(
-            cycle=cycle, executions__isnull=True
-        )
+        for proposal in ActionProposal.objects.filter(cycle=cycle)
+        .filter(~exactly_executed())
         .exclude(
             state__in=[
                 ProposalState.REJECTED,
