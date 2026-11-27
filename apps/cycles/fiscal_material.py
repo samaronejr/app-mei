@@ -1,6 +1,8 @@
 """One versioned material digest for fiscal review writes and set-based readers."""
 
-from typing import Final
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Final, TypedDict
 
 from django.contrib.postgres.expressions import ArraySubquery
 from django.db.models import (
@@ -19,9 +21,30 @@ from django.db.models.functions import Cast, Collate, JSONArray
 
 from apps.obligations.models import RevisionArtifact
 
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+    from django_stubs_ext import WithAnnotations
+
+    from apps.obligations.models import FiscalDocument
+
 # The tag is hashed, so fingerprints retain the existing 64-hex storage contract.
 # A legacy hash of provider_version:original_sha does not match this encoding.
 REVIEW_MATERIAL_VERSION: Final = "fiscal-review-material:v1"
+
+
+class Material(TypedDict):
+    """Current revision material computed by the document statement."""
+
+    review_material: str
+
+
+def snapshot_rows(
+    rows: QuerySet[FiscalDocument],
+) -> QuerySet[WithAnnotations[FiscalDocument, Material]]:
+    """Bind the material to its current revision; narrower readers can project it."""
+    return rows.select_related("current_revision").annotate(
+        review_material=material_digest()
+    )
 
 
 def working_date() -> Case:
