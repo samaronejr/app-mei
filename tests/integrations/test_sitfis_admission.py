@@ -4,10 +4,11 @@ import hashlib
 import threading
 from collections.abc import Callable
 from datetime import timedelta
+from importlib import import_module
 from typing import Any
 
 import pytest
-from django.db import connections, transaction
+from django.db import OperationalError, connection, connections, transaction
 from django.db.models import F
 
 from apps.audit.models import Event
@@ -601,3 +602,86 @@ def test_a_locked_refused_call_defers_its_report_and_never_closes_it_blank(
     with tenant_context(world.tenant_id):
         receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
     assert (settled.state, receipt.provider_ref) == ("falha", str(refused.pk))
+
+
+def _hold_the_budget_lock(
+    world: World,
+) -> tuple[threading.Thread, threading.Event, threading.Event, list[str]]:
+    """One connection holds the cross-firm budget lock until released."""
+    holding, done = threading.Event(), threading.Event()
+    failures: list[str] = []
+
+    def hold() -> None:
+        try:
+            with tenant_context(world.tenant_id), transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '10s'")
+                    cursor.execute("SELECT pg_advisory_xact_lock(%s)", [240110])
+                holding.set()
+                assert done.wait(timeout=30)
+        except OperationalError as error:
+            failures.append(f"holder: {error}")
+        finally:
+            connections.close_all()
+
+    return threading.Thread(target=hold), holding, done, failures
+
+
+def test_a_moved_claims_reread_holds_no_report_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, first = _ready(world)
+    # Given a reserved emission whose connection version then moves...
+    row = reserve(world.tenant_id, first.link_id, _request(first))
+    with tenant_context(world.tenant_id):
+        link = ClientProviderLink.objects.get(pk=first.link_id)
+        ProviderConnection.objects.filter(pk=link.connection_id).update(
+            version=F("version") + 1
+        )
+    # ...and the budget lock is held elsewhere, so the moved claim's refusal
+    # stops in `release` after its re-read named the cause.
+    holder, holding, done, failures = _hold_the_budget_lock(world)
+    holder.start()
+    assert holding.wait(timeout=15)
+    state_module = import_module("apps.integrations.call_state")
+    real_release = state_module.release
+    releasing = threading.Event()
+
+    def release_after_signal(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if threading.current_thread() is not threading.main_thread():
+            releasing.set()
+        return real_release(*args, **kwargs)
+
+    monkeypatch.setattr(state_module, "release", release_after_signal)
+
+    def claim_it() -> None:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '10s'")
+            claim(world.tenant_id, row.pk)
+        except OperationalError as error:
+            failures.append(f"claimer: {error}")
+        except Exception:  # noqa: BLE001, S110 - the refusal itself is expected
+            pass
+        finally:
+            connections.close_all()
+
+    claimer = threading.Thread(target=claim_it)
+    claimer.start()
+    assert releasing.wait(timeout=15)
+    # When this runner locks the report while that claim is still in flight.
+    try:
+        with tenant_context(world.tenant_id), transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = '5s'")
+            FiscalSituationReport.objects.select_for_update().get(pk=report.pk)
+        locked = "locked"
+    except OperationalError as error:
+        locked = f"waited: {error}"
+    finally:
+        done.set()
+        holder.join(timeout=30)
+        claimer.join(timeout=30)
+    # Then the re-read kept no report lock: it only named a cause (AXRM-045).
+    assert locked == "locked"
+    assert failures == []

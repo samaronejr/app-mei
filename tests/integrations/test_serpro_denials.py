@@ -1342,3 +1342,44 @@ def test_a_budget_error_while_settling_a_sent_receipt_is_not_reported_as_stored(
     with tenant_context(tenant):
         call = ProviderCall.objects.get(operation="SP-COMP")
     assert call.state not in ("bloqueada_autoridade", "pausada", "bloqueada_cota")
+
+
+@DB
+def test_a_pause_at_the_receipt_first_claim_reaches_the_task(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its SP-COMP is reserved, then a pause meets its first claim.
+    real_claim = import_module("apps.integrations.call_protocol").claim
+
+    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(payments, "claim", pause_then_claim)
+    tasks = import_module("apps.integrations.serpro.tasks")
+    args = (str(world.termo.tenant.pk), str(das.pk), str(world.termo.actor.pk))
+    try:
+        outcome = tasks.emit_payment_receipt_task(*args)
+    except AdmissionDeniedError as error:
+        outcome = f"raised {error}"
+    # Then the pause reaches the task, and the call stays reserved with its slot.
+    with tenant_context(world.termo.tenant.pk):
+        call = ProviderCall.objects.get(operation="SP-COMP")
+        slots = list(
+            ProviderReservation.objects.filter(call=call).values_list(
+                "state", flat=True
+            )
+        )
+    assert (outcome, call.state, slots) == (
+        "raised pausada",
+        "reservada",
+        ["reserved"],
+    )
+    assert world.sent("/Emitir") == []
