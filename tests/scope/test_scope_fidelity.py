@@ -332,7 +332,10 @@ def test_row_6_no_bank_import() -> None:
     registered = PROVIDER_RECOVERY_FILES | DISPOSAL_RECONCILIATION_FILES
     strays = _outside(hits, registered)
     assert strays == [], _report("reconciliation outside provider recovery", strays)
-    assert {hit.split(":", 1)[0] for hit in hits} == registered
+    matched = {hit.split(":", 1)[0] for hit in hits}
+    assert matched == registered, _report(
+        "registered without reconciliation wording", sorted(registered - matched)
+    )
 
 
 def test_row_7_no_reports_v1_and_no_audit_ui() -> None:
