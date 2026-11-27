@@ -7,6 +7,7 @@ code opens the firm issue, which refuses that firm's next calls; a provider
 failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 """
 
+import base64
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -19,6 +20,7 @@ from typing import Any, Final
 from uuid import uuid4
 
 import pytest
+from django.db import IntegrityError
 from django.db.models import F
 from django.test import override_settings
 from pytest_django.fixtures import SettingsWrapper
@@ -1708,3 +1710,143 @@ def test_a_metered_late_reply_reads_billed_whatever_the_row_order(
     settled = payments.run_payment_query(query.tenant_id, query.pk)
     # Then the recorded charge is never lost to the unknown (AXRM-045).
     assert history(world, settled).endswith("A página 1 foi enviada e cobrada.")
+
+
+@DB
+def test_a_paused_receipt_retry_is_resumed_by_a_later_delivery(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    # Given one DAS payment, and its SP-COMP gets a complete 401 whose retry
+    # claim meets a pause.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(protocol, "claim", pause_then_claim)
+    world.script(Reply(status=401))
+    tasks = import_module("apps.integrations.serpro.tasks")
+    later: list[tuple[str, ...]] = []
+
+    def schedule(args: tuple[str, ...], **_kwargs: Any) -> None:  # noqa: ANN401
+        later.append(args)
+
+    monkeypatch.setattr(tasks.emit_payment_receipt_task, "apply_async", schedule)
+    args = (str(world.termo.tenant.pk), str(das.pk), str(world.termo.actor.pk))
+    outcomes: list[str] = []
+    # When the task is delivered, then redelivered while still paused.
+    for _ in range(2):
+        try:
+            outcomes.append(tasks.emit_payment_receipt_task(*args))
+        except AdmissionDeniedError as error:
+            outcomes.append(f"raised {error}")
+    # Then each delivery hands the same call to a later one; nothing is re-sent.
+    assert (outcomes, later) == (
+        ["aguardar_nova_tentativa", "aguardar_nova_tentativa"],
+        [args, args],
+    )
+    with tenant_context(world.termo.tenant.pk):
+        call = ProviderCall.objects.get(operation="SP-COMP")
+    assert (call.state, call.attempts) == ("aguardar_nova_tentativa", 1)
+    assert len(world.sent("/Emitir")) == 1
+
+
+def _receipt_task(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, tuple[str, ...], list[tuple[str, ...]]]:
+    """One found DAS payment, its receipt task, and the deliveries it schedules."""
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    tasks = import_module("apps.integrations.serpro.tasks")
+    later: list[tuple[str, ...]] = []
+
+    def schedule(args: tuple[str, ...], **_kwargs: Any) -> None:  # noqa: ANN401
+        later.append(args)
+
+    monkeypatch.setattr(tasks.emit_payment_receipt_task, "apply_async", schedule)
+    args = (str(world.termo.tenant.pk), str(das.pk), str(world.termo.actor.pk))
+    return tasks.emit_payment_receipt_task, args, later
+
+
+@DB
+def test_a_dispatch_paused_receipt_resumes_exactly_once_after_unpause(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    task, args, later = _receipt_task(world, monkeypatch)
+    # Given a complete 401, a successful retry claim, and a pause at its dispatch.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def claim_then_pause(*claim_args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real_claim(*claim_args, **kwargs)
+        settings.SERPRO_PAUSED = True
+        return ticket
+
+    pdf = import_module("tests.integrations.test_pagtoweb").PDF
+    issued = json.dumps({"pdf": base64.b64encode(pdf).decode()})
+    world.script(Reply(status=401), Reply(body=support.receipt_body(issued)))
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "claim", claim_then_pause)
+        first = task(*args)
+    # When the pause lifts and the scheduled delivery runs.
+    settings.SERPRO_PAUSED = False
+    [resumed] = later
+    try:
+        second = task(*resumed)
+    except IntegrityError as error:
+        second = f"raised {type(error).__name__}"
+    # Then the same retry is admitted once: one more send, nothing left held.
+    assert (first, second) == ("aguardar_nova_tentativa", "sucesso")
+    assert len(world.sent("/Emitir")) == 2
+    assert world.budget().reserved == 0
+
+
+@DB
+def test_a_held_receipt_whose_link_is_gone_ends_owned(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    task, args, later = _receipt_task(world, monkeypatch)
+    # Given a complete 401 whose retry claim meets a pause...
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def pause_then_claim(*claim_args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*claim_args, **kwargs)
+
+    world.script(Reply(status=401))
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "claim", pause_then_claim)
+        first = task(*args)
+    # ...when the pause lifts but the client's link is revoked before redelivery.
+    settings.SERPRO_PAUSED = False
+    with tenant_context(world.termo.tenant.pk):
+        ClientProviderLink.objects.filter(client=world.termo.client).update(
+            status="revogada"
+        )
+    [resumed] = later
+    second = task(*resumed)
+    # Then the held call is ended and owned, never stranded; nothing is re-sent.
+    with tenant_context(world.termo.tenant.pk):
+        call = ProviderCall.objects.get(operation="SP-COMP")
+    assert (first, second, call.state) == (
+        "aguardar_nova_tentativa",
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+    )
+    assert later == [args]
+    assert len(world.sent("/Emitir")) == 1

@@ -4,11 +4,13 @@ import hashlib
 import threading
 from collections.abc import Callable
 from datetime import timedelta
+from importlib import import_module
 from typing import Any
 
 import pytest
 from django.db import connections, transaction
 from django.db.models import F
+from pytest_django.fixtures import SettingsWrapper
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
@@ -601,3 +603,65 @@ def test_a_locked_refused_call_defers_its_report_and_never_closes_it_blank(
     with tenant_context(world.tenant_id):
         receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
     assert (settled.state, receipt.provider_ref) == ("falha", str(refused.pk))
+
+
+def test_a_paused_retry_closes_the_report_with_its_call_ref(
+    world: World, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+) -> None:
+    mod = sitfis()
+    report, first = _ready(world)
+    # Given the emission gets a complete 401 and its retry claim meets a pause...
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*args, **kwargs)
+
+    world.script(Reply(status=401))
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "claim", pause_then_claim)
+        mod._run(world.tenant_id, report.pk, first)
+    # ...when the next pass meets that held retry while still paused.
+    settled = world.advance(report)
+    # Then the report's receipt names the call that was sent (AXRM-045).
+    [held] = world.calls(first.operation)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (held.state, held.attempts) == ("aguardar_nova_tentativa", 1)
+    assert receipt.provider_ref == str(held.pk)
+    assert len(world.sent("/Emitir")) == 1
+
+
+def test_a_held_retry_whose_link_is_gone_closes_with_its_call(
+    world: World, monkeypatch: pytest.MonkeyPatch, settings: SettingsWrapper
+) -> None:
+    mod = sitfis()
+    report, first = _ready(world)
+    # Given the emission gets a complete 401 and its retry claim meets a pause...
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*args, **kwargs)
+
+    world.script(Reply(status=401))
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "claim", pause_then_claim)
+        mod._run(world.tenant_id, report.pk, first)
+    # ...when the pause lifts but the link is revoked before the next pass.
+    settings.SERPRO_PAUSED = False
+    with tenant_context(world.tenant_id):
+        ClientProviderLink.objects.filter(pk=first.link_id).update(status="revogada")
+    settled = world.advance(report)
+    # Then the held call is ended, and the report's receipt names it (AXRM-045).
+    [held] = world.calls(first.operation)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (settled.state, held.state, receipt.provider_ref) == (
+        "falha",
+        "bloqueada_autoridade",
+        str(held.pk),
+    )
+    assert len(world.sent("/Emitir")) == 1

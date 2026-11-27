@@ -118,15 +118,30 @@ class BudgetPolicy:
             quoted.microbrl,
             focus_configuration=call.operation_class == "configuration",
         )
-        ProviderReservation.objects.create(
-            tenant_id=call.tenant_id,
-            client_id=call.client_id,
-            call=call,
-            budget=budget,
-            attempt_number=call.attempts + 1,
-            microbrl=quoted.microbrl,
-            tariff_revision=quoted.tariff_revision,
+        released = (
+            ProviderReservation.objects.select_for_update()
+            .filter(call=call, attempt_number=call.attempts + 1, state="released")
+            .first()
         )
+        if released is None:
+            ProviderReservation.objects.create(
+                tenant_id=call.tenant_id,
+                client_id=call.client_id,
+                call=call,
+                budget=budget,
+                attempt_number=call.attempts + 1,
+                microbrl=quoted.microbrl,
+                tariff_revision=quoted.tariff_revision,
+            )
+        else:
+            # A slot released before its attempt was sent (a pause at dispatch)
+            # is reopened for that same attempt, never inserted twice (AXRM-045).
+            released.budget = budget
+            released.microbrl = quoted.microbrl
+            released.tariff_revision = quoted.tariff_revision
+            released.state = "reserved"
+            released.version += 1
+            released.save()
         budget.reserved += quoted.microbrl
         budget.version += 1
         budget.save()

@@ -9,6 +9,8 @@ from django.utils import timezone
 from django.utils.timezone import now as wall_clock
 
 from apps.core.tasks import PhasedTenantTask, PlatformTask
+from apps.integrations.call_contracts import AdmissionDeniedError
+from apps.integrations.call_models import CallState
 from apps.integrations.serpro import sweeps
 from apps.integrations.serpro.models import ACTIVE_QUERY_STATES
 from apps.integrations.serpro.pagtoweb import PaymentRange
@@ -21,6 +23,8 @@ from apps.integrations.serpro.payments import (
 SCHEDULE_AFTER_DAY: Final = 20
 # How long after the owner's lease deadline a yielded delivery looks again.
 RESUME_MARGIN: Final = timedelta(seconds=30)
+# How long a paused receipt waits before its same call is resumed.
+PAUSE_RESUME: Final = timedelta(minutes=5)
 
 
 @shared_task(base=PhasedTenantTask)
@@ -60,8 +64,22 @@ def purge_payment_pages(self: PlatformTask) -> int:
 
 @shared_task(base=PhasedTenantTask)
 def emit_payment_receipt_task(tenant_id: str, payment_id: str, actor_id: str) -> str:
-    """Issue one payment's receipt; the payment's call identity makes it idempotent."""
-    call = emit_payment_receipt(UUID(tenant_id), UUID(payment_id), UUID(actor_id))
+    """Issue one payment's receipt; the payment's call identity makes it idempotent.
+
+    A pause holding the receipt's sent call is handed to a later delivery of the
+    same payment, which resumes that call: it never starts a new one (AXRM-045).
+    """
+    try:
+        call = emit_payment_receipt(UUID(tenant_id), UUID(payment_id), UUID(actor_id))
+    except AdmissionDeniedError as error:
+        if str(error) != CallState.PAUSED:
+            raise
+        emit_payment_receipt_task.apply_async(
+            (tenant_id, payment_id, actor_id),
+            eta=wall_clock() + PAUSE_RESUME,
+            ignore_result=True,
+        )
+        return CallState.RETRY
     return call.state if call is not None else "recusada"
 
 

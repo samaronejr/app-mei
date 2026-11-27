@@ -139,7 +139,7 @@ def test_previous_day_reserved_runner_blocks_a_new_paid_click(
         )
 
 
-@pytest.mark.parametrize("interruption", ["death", "pause"])
+@pytest.mark.parametrize("interruption", ["death", "pause", "dispatch-pause"])
 def test_interrupted_definitive_401_retry_ends_owned(
     guide_world: GuideWorld,
     monkeypatch: pytest.MonkeyPatch,
@@ -153,13 +153,18 @@ def test_interrupted_definitive_401_retry_ends_owned(
         if interruption == "pause":
             settings.SERPRO_PAUSED = True
             return real_retry_claim(tenant_id, call_id)
+        if interruption == "dispatch-pause":
+            # The retry claim succeeds; the pause meets its dispatch (AXRM-045).
+            ticket = real_retry_claim(tenant_id, call_id)
+            settings.SERPRO_PAUSED = True
+            return ticket
         message = "death after first 401, before retry claim"
         raise SystemExit(message)
 
     with FakeSerpro((Reply(status=401), das_reply())) as peer:
         with monkeypatch.context() as patcher:
             patcher.setattr(call_protocol, "claim", interrupted_claim)
-            error = pgmei.GuideRefused if interruption == "pause" else SystemExit
+            error = SystemExit if interruption == "death" else pgmei.GuideRefused
             with pytest.raises(error):
                 obtain(world, peer.origin)
         settings.SERPRO_PAUSED = False
@@ -168,6 +173,11 @@ def test_interrupted_definitive_401_retry_ends_owned(
         sweep(world, days=8)
         first = refresh(world, first)
         owned_after_sweep = ownership(world, first)
+        sends_after_sweep = len(peer.requests)
+        with tenant_context(world.tenant_id):
+            held = list(
+                ProviderReservation.objects.filter(call=first, state="reserved")
+            )
         next_day(monkeypatch)
         again = obtain(world, peer.origin)
         report(
@@ -189,3 +199,5 @@ def test_interrupted_definitive_401_retry_ends_owned(
     assert owned_after_sweep, (
         "sent 401 retry is skipped forever after its worker or admission fails"
     )
+    # Only the first 401 was ever sent, and no retry reservation stays held.
+    assert (sends_after_sweep, held) == (1, [])
