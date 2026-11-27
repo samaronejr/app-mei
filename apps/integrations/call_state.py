@@ -125,6 +125,10 @@ def record_refusal(call: ProviderCall, error: AdmissionDeniedError) -> None:
     call.save()
 
 
+class CallBusyError(Exception):
+    """Another runner holds this call's lock; a later pass settles it."""
+
+
 def end_held(
     tenant_id: UUID, client_id: UUID, request_key: str, reason: str
 ) -> ProviderCall | None:
@@ -132,13 +136,15 @@ def end_held(
 
     A held call (reserved, or a sent one waiting to retry) is recorded refused,
     so it is terminal and owned, never stranded; nothing is sent (AXRM-045).
+    It never waits on the call's lock: a caller may hold another row (a SITFIS
+    report) that admission locks after the call, so a held call raises
+    `CallBusyError` for the caller to defer, never to treat as missing.
     """
     with tenant_context(tenant_id), transaction.atomic():
-        call = (
-            ProviderCall.objects.select_for_update()
-            .filter(client_id=client_id, request_key=request_key)
-            .first()
-        )
+        made = ProviderCall.objects.filter(client_id=client_id, request_key=request_key)
+        call = made.select_for_update(skip_locked=True, of=("self",)).first()
+        if call is None and made.exists():
+            raise CallBusyError(request_key)
         if call is not None and call.state in {CallState.RESERVED, CallState.RETRY}:
             record_refusal(
                 call, AdmissionDeniedError(CallState.AUTHORITY, reason=reason)

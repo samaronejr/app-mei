@@ -80,7 +80,7 @@ from apps.integrations.budget_settlement import release
 from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest, Claim
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
-from apps.integrations.call_state import end_held, refusal_recorded
+from apps.integrations.call_state import CallBusyError, end_held, refusal_recorded
 from apps.integrations.models import (
     AuthorityService,
     ClientProviderLink,
@@ -1037,7 +1037,11 @@ def emit_payment_receipt(
             # A receipt call already made is ended and owned, never stranded.
             reason = "termo_ausente" if link else "sem_vinculo_ativo"
             key = receipt_request_key(payment.pk)
-            return end_held(tenant_id, client.pk, key, reason)
+            try:
+                return end_held(tenant_id, client.pk, key, reason)
+            except CallBusyError:
+                # Another runner holds the call; report it as stored now.
+                return ProviderCall.objects.get(client_id=client.pk, request_key=key)
         environment = link.connection.environment
     data: JSONValue = {"numeroDocumento": payment.numero_documento}
     digest = hashlib.sha256(
