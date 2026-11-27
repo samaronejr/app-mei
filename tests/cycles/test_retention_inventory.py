@@ -375,6 +375,39 @@ def test_a_rule_that_expires_live_versions_dates_them_by_it(
     assert listed.expires == f"lifecycle-from:{timezone.localtime(removed).isoformat()}"
 
 
+def test_a_live_version_is_dated_by_the_earliest_rule_its_resolved_key_matches() -> (
+    None
+):
+    # Under a backend location the bucket key is `media/originals/a.pdf`: the rule
+    # for another prefix does not apply, and of the two that do, the earlier wins.
+    key, resolved = "originals/a.pdf", "media/originals/a.pdf"
+    rules = {
+        "Rules": [
+            {
+                "Status": "Enabled",
+                "Filter": {"Prefix": "other/"},
+                "Expiration": {"Days": 1},
+            },
+            {
+                "Status": "Enabled",
+                "Filter": {"Prefix": "media/originals/"},
+                "Expiration": {"Days": 200},
+            },
+            {
+                "Status": "Enabled",
+                "Filter": {"Prefix": "media/"},
+                "Expiration": {"Days": 100},
+            },
+        ]
+    }
+    pages = [{"Versions": [_version(resolved, "v1", latest=True, at=T0)]}]
+    bucket = FakeBucket(FakeClient(rules, pages), location="media")
+    state = retention_inventory.lifecycle(bucket)
+    (listed,) = retention_inventory.versions(bucket, key, state, "2032-01-01")
+    removed = timezone.localtime(T0 + timedelta(days=100)).isoformat()
+    assert listed.expires == f"lifecycle-from:{removed}"
+
+
 def test_actions_that_remove_no_dated_version_leave_the_rule_verified() -> None:
     key = "originals/a.pdf"
     rules = {
