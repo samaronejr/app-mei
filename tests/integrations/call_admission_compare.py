@@ -79,7 +79,7 @@ CALLERS = {
 AUTHORITY = "bloqueada_autoridade"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Rule:
     """One reviewed, stage-specific difference between two trees."""
 
@@ -103,17 +103,97 @@ def _dispatch() -> list[Rule]:
         "unpause-after-pause-retry-dispatch": "pausada",
     }
     return [
-        Rule(
-            "DISPATCH",
-            f"test_receipt[{cut}]",
-            pair,
-            "passes.0.outcome",
-            f"raised AdmissionDeniedError: {state}",
-            f"returned {state}",
-        )
+        rule
         for cut, state in states.items()
         for pair in ("B-R", "B-H")
+        for rule in (
+            Rule(
+                "DISPATCH",
+                f"test_receipt[{cut}]",
+                pair,
+                "passes.0.outcome",
+                f"raised AdmissionDeniedError: {state}",
+                f"returned {state}",
+            ),
+            # The same return: R and H hand back the stored call, B none.
+            Rule(
+                "DISPATCH",
+                f"test_receipt[{cut}]",
+                pair,
+                "passes.0.ids.call",
+                None,
+                "target",
+            ),
+        )
     ]
+
+
+def _ref() -> list[Rule]:
+    # Six SITFIS transient cuts, B against H: the projected consultation names
+    # the target from the pass that finishes the report on (beabdbe, e458ce1).
+    stages = {
+        "authority-revoked-at-claim": ("1:first", "2:settle"),
+        "link-disabled-at-claim": ("1:first", "2:settle"),
+        "moved-paused-claim": ("1:first", "2:settle"),
+        "pause-claim": ("1:first", "2:settle"),
+        "termo-lost-at-claim": ("1:first", "2:settle"),
+        "unpause-after-pause-claim": ("1:first", "2:repeat", "3:settle"),
+    }
+    return [
+        Rule(
+            "REF",
+            f"test_sitfis[{cut}]",
+            "B-H",
+            f"stages.{stage}.aggregate.ref",
+            None,
+            "target",
+        )
+        for cut, names in stages.items()
+        for stage in names
+    ]
+
+
+def _late_settle() -> list[Rule]:
+    # E4/E6 on `receipt[moved-paused-claim]` only, B against H, the unpaused
+    # settle only: its claim still meets the moved version, which H records and
+    # releases. Known, uncertain, attempts, sends, fence and ownership hold.
+    node, old, new = "test_receipt[moved-paused-claim]", "reservada", AUTHORITY
+    changes: list[tuple[str, object, object]] = [
+        (
+            "claims.1.outcome",
+            f"raised AdmissionDeniedError: {AUTHORITY}",
+            f"raised VersionMovedError: {AUTHORITY}",
+        ),
+        ("claims.1.changed", [], "<missing>"),
+        ("claims.1.changed.0", "<missing>", "calls.target.provider_code"),
+        ("claims.1.changed.1", "<missing>", "calls.target.state"),
+        ("claims.1.changed.2", "<missing>", "calls.target.version"),
+        ("claims.1.changed.3", "<missing>", "slots.id#1.state"),
+        ("claims.1.changed.4", "<missing>", "slots.id#1.version"),
+        (
+            "passes.1.outcome",
+            f"raised AdmissionDeniedError: {AUTHORITY}",
+            f"returned {AUTHORITY}",
+        ),
+        ("passes.1.ids.call", None, "target"),
+        ("refusal", None, 1),
+        ("since_refusal", {}, "<missing>"),
+        ("since_refusal.2:settle", "<missing>", []),
+    ]
+    for prefix in ("claims.1.post", "stages.2:settle"):
+        changes += [
+            (f"{prefix}.budgets.budget#1.0", 320_000, 0),
+            (f"{prefix}.calls.target.provider_code", "", AUTHORITY),
+            (f"{prefix}.calls.target.state", old, new),
+            (f"{prefix}.calls.target.version", 1, 2),
+            (f"{prefix}.slots.target/1.state", "reserved", "released"),
+            (f"{prefix}.slots.target/1.version", 1, 2),
+        ]
+    changes += [
+        ("stages.2:settle.aggregate.code", "", AUTHORITY),
+        ("stages.2:settle.aggregate.state", old, new),
+    ]
+    return [Rule("LATE-SETTLE", node, "B-H", path, a, b) for path, a, b in changes]
 
 
 def _typed() -> list[Rule]:
@@ -165,7 +245,7 @@ def _lease() -> list[Rule]:
     ]
 
 
-RULES: list[Rule] = [*_dispatch(), *_typed(), *_lease()]
+RULES: list[Rule] = [*_dispatch(), *_typed(), *_lease(), *_ref(), *_late_settle()]
 
 
 def flatten(value: object, prefix: str = "") -> dict[str, object]:
