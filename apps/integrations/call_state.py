@@ -1,6 +1,5 @@
 """Database-only admission locks and uncertainty work for provider calls."""
 
-from typing import Final
 from uuid import UUID
 
 from django.conf import settings
@@ -9,7 +8,6 @@ from django.utils import timezone
 
 from apps.audit.services import ObjectRef, record_event
 from apps.core.flags import tenant_row_has
-from apps.core.tenancy import tenant_context
 from apps.integrations.authority import client_owner
 from apps.integrations.budget_alerts import refused
 from apps.integrations.budget_pricing import BudgetDeniedError
@@ -84,34 +82,14 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
         raise AdmissionDeniedError(CallState.AUTHORITY)
 
 
-# The states `record_refusal` leaves on a refused call.
-RECORDED_REFUSALS: Final = (CallState.AUTHORITY, CallState.PAUSED, CallState.QUOTA)
-
-
-def refusal_recorded(tenant_id: UUID, call_id: UUID) -> bool:
-    """Whether a refusal was recorded and committed on this call (AXRM-045)."""
-    with tenant_context(tenant_id):
-        return ProviderCall.objects.filter(
-            pk=call_id, state__in=RECORDED_REFUSALS
-        ).exists()
-
-
 def record_refusal(call: ProviderCall, error: AdmissionDeniedError) -> None:
     """Record an admission refusal on the call and release its reservation.
 
     One handling for claim and dispatch: a refused call is never left reserved,
-    and the cause the refusal names stays with it (AXRM-045). A pause never ends
-    a call that already sent a request: it goes back to retry, still owned by
-    its sweep or settlement, with only its next attempt's reservation released.
+    and the cause the refusal names stays with it (AXRM-045).
     """
     release(call)
-    if (
-        call.attempts > 0
-        and str(error) == CallState.PAUSED
-        and not isinstance(error, BudgetDeniedError)
-    ):
-        call.state = CallState.RETRY
-    elif isinstance(error, BudgetDeniedError):
+    if isinstance(error, BudgetDeniedError):
         call.state = CallState.QUOTA
         call.provider_code = error.reason
         refused(call)
@@ -123,33 +101,6 @@ def record_refusal(call: ProviderCall, error: AdmissionDeniedError) -> None:
         call.provider_code = error.reason
     call.version += 1
     call.save()
-
-
-class CallBusyError(Exception):
-    """Another runner holds this call's lock; a later pass settles it."""
-
-
-def end_held(
-    tenant_id: UUID, client_id: UUID, request_key: str, reason: str
-) -> ProviderCall | None:
-    """End a call already made that the live controls no longer admit.
-
-    A held call (reserved, or a sent one waiting to retry) is recorded refused,
-    so it is terminal and owned, never stranded; nothing is sent (AXRM-045).
-    It never waits on the call's lock: a caller may hold another row (a SITFIS
-    report) that admission locks after the call, so a held call raises
-    `CallBusyError` for the caller to defer, never to treat as missing.
-    """
-    with tenant_context(tenant_id), transaction.atomic():
-        made = ProviderCall.objects.filter(client_id=client_id, request_key=request_key)
-        call = made.select_for_update(skip_locked=True, of=("self",)).first()
-        if call is None and made.exists():
-            raise CallBusyError(request_key)
-        if call is not None and call.state in {CallState.RESERVED, CallState.RETRY}:
-            record_refusal(
-                call, AdmissionDeniedError(CallState.AUTHORITY, reason=reason)
-            )
-        return call
 
 
 def _moved_cause(policy: AdmissionPolicy, call: ProviderCall) -> str:

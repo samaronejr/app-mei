@@ -77,10 +77,9 @@ from apps.integrations.authority import (
 )
 from apps.integrations.budget_pricing import BudgetDeniedError
 from apps.integrations.budget_settlement import release
-from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest, Claim
+from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
-from apps.integrations.call_state import end_held, refusal_recorded
 from apps.integrations.models import (
     AuthorityService,
     ClientProviderLink,
@@ -1000,18 +999,8 @@ def queue_payment_receipt(actor: User, client_id: UUID, payment_id: UUID) -> Non
     transaction.on_commit(lambda: emit_payment_receipt_task.delay(*args))
 
 
-def _receipt_claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
-    """Claim the receipt's call; a refusal is reported as stored once recorded.
-
-    A pause holding a sent retry is not recorded: it reaches the task, which
-    resumes the same call later (AXRM-045).
-    """
-    try:
-        return claim(tenant_id, call_id)
-    except AdmissionDeniedError:
-        if not refusal_recorded(tenant_id, call_id):
-            raise
-        return None
+# The states a refused admission leaves recorded on its call (`record_refusal`).
+RECORDED_REFUSALS: Final = (CallState.AUTHORITY, CallState.PAUSED, CallState.QUOTA)
 
 
 def emit_payment_receipt(
@@ -1034,11 +1023,7 @@ def emit_payment_receipt(
         link = serpro_link(client)
         parties = termo_parties(link.connection_id, client.cnpj) if link else None
         if link is None or parties is None:
-            # A receipt call already made is ended and owned, never stranded.
-            reason = "termo_ausente" if link else "sem_vinculo_ativo"
-            key = receipt_request_key(payment.pk)
-            # A call another runner holds raises `CallBusyError` to the task.
-            return end_held(tenant_id, client.pk, key, reason)
+            return None
         environment = link.connection.environment
     data: JSONValue = {"numeroDocumento": payment.numero_documento}
     digest = hashlib.sha256(
@@ -1051,7 +1036,10 @@ def emit_payment_receipt(
         )
     except AdmissionDeniedError:
         return None
-    ticket = _receipt_claim(tenant_id, row.pk)
+    try:
+        ticket = claim(tenant_id, row.pk)
+    except AdmissionDeniedError:
+        ticket = None  # The claim recorded the refusal and released the reservation.
     if ticket is None:
         # Report the call as stored now, never the row as it was reserved.
         with tenant_context(tenant_id):
@@ -1066,7 +1054,11 @@ def emit_payment_receipt(
         # Only a refusal the protocol recorded and committed on the call (a
         # dispatch refusal, first or after a 401 retry) is reported as stored;
         # anything else, such as a settlement's budget error, propagates.
-        if not refusal_recorded(tenant_id, row.pk):
+        with tenant_context(tenant_id):
+            recorded = ProviderCall.objects.filter(
+                pk=row.pk, state__in=RECORDED_REFUSALS
+            ).exists()
+        if not recorded:
             raise
     with tenant_context(tenant_id):
         call = ProviderCall.objects.get(pk=row.pk)
