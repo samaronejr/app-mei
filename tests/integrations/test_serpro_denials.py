@@ -7,6 +7,7 @@ code opens the firm issue, which refuses that firm's next calls; a provider
 failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 """
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -36,7 +37,9 @@ from apps.integrations.models import (
 )
 from apps.integrations.serpro import payments
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
+from apps.integrations.serpro.codec import build_request
 from apps.integrations.serpro.models import FirmIntegrationIssue, PaymentQuery
+from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.serpro.payments_panel import federal_payments_panel as panel
 from apps.integrations.serpro.payments_panel import query_detail
 from apps.integrations.serpro.reauthentication import COMPLETE_401
@@ -1177,38 +1180,75 @@ DEFINITIVE_401: Final = {
 }
 # The receipt's priced emission and the page's priced consultation.
 RECEIPT_MICROBRL: Final = 320_000
+# A budget row's identity: compared at every checkpoint, never its version.
+BUDGET_KEY: Final = ("id", "tenant_id", "provider", "window_start")
+# The call's lease and fencing fields, which only a successful claim advances.
+LEASE: Final = ("fence", "lease_owner", "lease_until", "execution_epoch", "version")
 
 
-def _money(world: World) -> tuple[int, int, int]:
-    """The one monthly budget's reserved, known and uncertain balances."""
-    budget = world.budget()
-    return budget.reserved, budget.known_liability, budget.uncertain_exposure
+def _sha(*parts: str) -> str:
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+
+
+def _pin_budget(world: World) -> tuple[object, ...]:
+    """The one monthly budget's identity, captured right after the seed."""
+    with tenant_context(world.termo.tenant.pk):
+        [row] = ProviderBudget.objects.values(*BUDGET_KEY)
+    return tuple(row[key] for key in BUDGET_KEY)
 
 
 def _target(world: World, call_id: UUID) -> dict[str, Any]:
-    """The bound call, every observation and slot it owns, and the budget's money."""
+    """The bound call, its observations and slots, and every budget: full rows."""
     with tenant_context(world.termo.tenant.pk):
-        call = ProviderCall.objects.get(pk=call_id)
-        observations = ProviderCallAttempt.objects.filter(call_id=call_id)
-        slots = ProviderReservation.objects.filter(call_id=call_id)
         return {
-            "call": (
-                call.state,
-                call.provider_code,
-                call.attempts,
-                call.http_status,
-                call.billed,
-            ),
+            "call": ProviderCall.objects.filter(pk=call_id).values().get(),
             "observations": list(
-                observations.order_by("attempt_number", "observation").values()
+                ProviderCallAttempt.objects.filter(call_id=call_id)
+                .order_by("attempt_number", "observation")
+                .values()
             ),
             "slots": list(
-                slots.order_by("attempt_number").values_list(
-                    "pk", "attempt_number", "state", "microbrl"
-                )
+                ProviderReservation.objects.filter(call_id=call_id)
+                .order_by("attempt_number")
+                .values()
             ),
-            "money": _money(world),
+            "budgets": list(ProviderBudget.objects.order_by("pk").values()),
         }
+
+
+def _budgets(world: World) -> dict[str, Any]:
+    """Every budget row, with no call yet: the post-seed baseline."""
+    with tenant_context(world.termo.tenant.pk):
+        return {
+            "slots": [],
+            "budgets": list(ProviderBudget.objects.order_by("pk").values()),
+        }
+
+
+def _on_budget(snapshot: dict[str, Any], pinned: tuple[object, ...]) -> tuple[int, ...]:
+    """Require the pinned budget alone, every slot drawn on it; its balances."""
+    [budget] = snapshot["budgets"]
+    assert tuple(budget[key] for key in BUDGET_KEY) == pinned, "another budget row"
+    assert [slot["budget_id"] for slot in snapshot["slots"]] == [pinned[0]] * len(
+        snapshot["slots"]
+    ), "a slot is not drawn on the pinned budget"
+    return budget["reserved"], budget["known_liability"], budget["uncertain_exposure"]
+
+
+def _slots(snapshot: dict[str, Any]) -> list[tuple[int, str, int]]:
+    return [
+        (slot["attempt_number"], slot["state"], slot["microbrl"])
+        for slot in snapshot["slots"]
+    ]
+
+
+def _delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
+    """Every field of one row that differs between two snapshots of it."""
+    return {
+        name: (before[name], after[name])
+        for name in sorted(set(before) | set(after))
+        if before.get(name) != after.get(name)
+    }
 
 
 def _recording_claim(
@@ -1245,10 +1285,10 @@ def _tag(request: Any) -> UUID | None:  # noqa: ANN401 - the fake's received req
     return UUID(value) if value else None
 
 
-def _observe_perform(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
-    """Record what the receipt's own perform does: return a result, or raise."""
+def _observe_perform(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """Record what the caller's own perform does: return its result, or raise."""
     real = import_module("apps.integrations.call_protocol").perform
-    seen: list[tuple[str, ...]] = []
+    seen: list[tuple[Any, ...]] = []
 
     def observed(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         try:
@@ -1256,11 +1296,23 @@ def _observe_perform(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
         except AdmissionDeniedError as error:
             seen.append(("raised", type(error).__name__, error.reason))
             raise
-        seen.append(("returned", result.state))
+        seen.append(("returned", result))
         return result
 
     monkeypatch.setattr(payments, "perform", observed)
     return seen
+
+
+def _the_401(result: Any) -> tuple[object, ...]:  # noqa: ANN401 - a CallResult
+    return (
+        result.state,
+        result.http_status,
+        result.provider_code,
+        result.billed,
+        result.settled_microbrl,
+        result.response_digest,
+        result.denial_cause,
+    )
 
 
 def _found_payment(world: World) -> FederalPayment:
@@ -1271,22 +1323,35 @@ def _found_payment(world: World) -> FederalPayment:
         return FederalPayment.objects.get()
 
 
+def _payment_key(das: FederalPayment) -> str:
+    """The receipt's one intent, derived from the input payment alone."""
+    key = _sha("pagtoweb-comprovante", str(das.pk))
+    assert payments.receipt_request_key(das.pk) == key
+    return key
+
+
+def _intent(snapshot: dict[str, Any]) -> tuple[str, str]:
+    return snapshot["call"]["request_key"], snapshot["call"]["business_effect_key"]
+
+
 @DB
 def test_a_receipt_whose_connection_moved_before_claim_is_refused_and_released(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Given one DAS payment found by a successful consultation; the seed page's
-    # money is its own, so the receipt is measured from here.
+    # money is its own, so the receipt is measured from its pinned budget here.
     das = _found_payment(world)
-    baseline = _money(world)
+    key = _payment_key(das)
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
     # When its SP-COMP is reserved at v1, then a termo renewal moves the
     # connection to v2 before the claim.
     real = import_module("apps.integrations.call_protocol").reserve
-    reserved: list[dict[str, Any]] = []
+    reserved: list[tuple[UUID, str, dict[str, Any]]] = []
 
     def reserve_then_renew(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         row = real(*args, **kwargs)
-        reserved.append(_target(world, row.pk))
+        reserved.append((row.pk, row.request_key, _target(world, row.pk)))
         _renew(world)
         return row
 
@@ -1301,31 +1366,49 @@ def test_a_receipt_whose_connection_moved_before_claim_is_refused_and_released(
     except AdmissionDeniedError:
         pytest.fail("the claim's refusal escaped the receipt worker")
     assert call is not None
-    # Then the reservation held one priced slot...
-    [entry] = reserved
-    [(slot, number, state, microbrl)] = entry["slots"]
-    assert (number, state, microbrl) == (1, "reserved", RECEIPT_MICROBRL)
-    assert entry["money"] == (baseline[0] + RECEIPT_MICROBRL, *baseline[1:])
-    # ...and the claim refused that call, typed as moved, recording it with that
-    # same slot released, nothing observed or sent, and no money left on it.
-    refused = {
-        "call": (CallState.AUTHORITY, CallState.AUTHORITY, 0, None, "desconhecido"),
-        "observations": [],
-        "slots": [(slot, 1, "released", RECEIPT_MICROBRL)],
-        "money": baseline,
+    # Then the reservation is the payment's one intent, holding one priced slot
+    # on the pinned budget...
+    [(row_id, row_key, entry)] = reserved
+    assert (row_key, _intent(entry)) == (key, (key, key)), (
+        "the receipt call is not the payment's intent"
+    )
+    assert entry["call"]["state"] == CallState.RESERVED
+    assert entry["observations"] == []
+    assert _slots(entry) == [(1, "reserved", RECEIPT_MICROBRL)]
+    assert _on_budget(entry, budget) == (
+        baseline[0] + RECEIPT_MICROBRL,
+        *baseline[1:],
+    )
+    # ...and the claim refused that same call, typed as moved, changing exactly
+    # its state, code and version, releasing that slot, returning the money.
+    [(refused_id, name, state, reason, refused)] = refusals
+    assert (refused_id, name, state, reason) == (
+        row_id,
+        "VersionMovedError",
+        CallState.AUTHORITY,
+        CallState.AUTHORITY,
+    )
+    version = entry["call"]["version"]
+    assert _delta(entry["call"], refused["call"]) == {
+        "provider_code": (entry["call"]["provider_code"], CallState.AUTHORITY),
+        "state": (CallState.RESERVED, CallState.AUTHORITY),
+        "version": (version, version + 1),
     }
-    assert refusals == [
-        (
-            call.pk,
-            "VersionMovedError",
-            CallState.AUTHORITY,
-            CallState.AUTHORITY,
-            refused,
-        )
-    ]
+    assert refused["observations"] == []
+    [before], [after] = entry["slots"], refused["slots"]
+    assert _delta(before, after) == {
+        "state": ("reserved", "released"),
+        "version": (before["version"], before["version"] + 1),
+    }
+    assert _on_budget(refused, budget) == baseline
+    assert set(_delta(entry["budgets"][0], refused["budgets"][0])) <= {
+        "reserved",
+        "version",
+    }
     # The worker returns that bound call as stored, unchanged since the refusal,
     # never the row as it was reserved.
     assert _target(world, call.pk) == refused
+    assert (call.pk, call.request_key, call.business_effect_key) == (row_id, key, key)
     assert world.sent("/Emitir") == []
     assert (call.state, call.provider_code) == (
         "bloqueada_autoridade",
@@ -1339,7 +1422,9 @@ def test_a_receipt_retry_after_a_401_refused_at_claim_is_reported_as_stored(
 ) -> None:
     # Given one DAS payment found by a successful consultation.
     das = _found_payment(world)
-    baseline = _money(world)
+    key = _payment_key(das)
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
     # When its first SP-COMP attempt gets a complete 401, and the connection
     # version moves at the retry's claim.
     protocol = import_module("apps.integrations.call_protocol")
@@ -1363,43 +1448,98 @@ def test_a_receipt_retry_after_a_401_refused_at_claim_is_reported_as_stored(
     # perform itself returns the 401's result once the retry claim's refusal is
     # recorded, before the receipt returns: it never hands that refusal on, so
     # the receipt's own handler cannot mask it (AXRM-045, gate review :730).
-    assert performs == [("returned", CallState.FAILED)], (
+    assert [row[0] for row in performs] == ["returned"], (
         "perform raised the retry claim's refusal"
     )
     assert call is not None
-    # Then the retry claim met the definitive, unbilled 401 with its slot released...
+    # Then the retry claim met the payment's intent with the definitive,
+    # unbilled 401 and its slot released on the pinned budget...
     [entry] = entries
+    assert _intent(entry) == (key, key), "the receipt call is not the payment's intent"
     [observation] = entry["observations"]
     assert {k: observation[k] for k in DEFINITIVE_401} == DEFINITIVE_401
-    assert entry["call"] == (CallState.RETRY, COMPLETE_401, 1, 401, "nao")
-    [(_slot, number, state, microbrl)] = entry["slots"]
-    assert (number, state, microbrl) == (1, "released", RECEIPT_MICROBRL)
-    assert entry["money"] == baseline
-    # ...and refused that call, typed as moved, keeping that 401 exactly (its
-    # attempt, fence and digest), the same released slot, no second slot and
-    # no money on it.
-    refused = {
-        **entry,
-        "call": (CallState.AUTHORITY, CallState.AUTHORITY, 1, 401, "nao"),
+    held = entry["call"]
+    assert (
+        held["state"],
+        held["provider_code"],
+        held["attempts"],
+        held["http_status"],
+        held["billed"],
+    ) == (CallState.RETRY, COMPLETE_401, 1, 401, "nao")
+    assert _slots(entry) == [(1, "released", RECEIPT_MICROBRL)]
+    assert _on_budget(entry, budget) == baseline
+    # ...perform returned exactly that 401's own result (gate review :739)...
+    [(_returned, result)] = performs
+    assert _the_401(result) == (
+        CallState.FAILED,
+        401,
+        COMPLETE_401,
+        "nao",
+        0,
+        observation["response_digest"],
+        "",
+    ), "perform did not return the 401's own result"
+    # ...and the claim refused that call, typed as moved, changing exactly its
+    # state, code and version: the 401 (attempt, fence, digest), the released
+    # slot and the budget all identical, no second slot.
+    [(refused_id, name, state, reason, refused)] = refusals
+    assert (refused_id, name, state, reason) == (
+        call.pk,
+        "VersionMovedError",
+        CallState.AUTHORITY,
+        CallState.AUTHORITY,
+    )
+    assert _delta(held, refused["call"]) == {
+        "provider_code": (COMPLETE_401, CallState.AUTHORITY),
+        "state": (CallState.RETRY, CallState.AUTHORITY),
+        "version": (held["version"], held["version"] + 1),
     }
-    assert refusals == [
-        (
-            call.pk,
-            "VersionMovedError",
-            CallState.AUTHORITY,
-            CallState.AUTHORITY,
-            refused,
-        )
-    ]
+    assert refused["observations"] == entry["observations"]
+    assert refused["slots"] == entry["slots"]
+    assert refused["budgets"] == entry["budgets"]
     # The worker returns that bound call as stored, unchanged since the refusal,
     # and the one exchange is the original attempt's.
     assert _target(world, call.pk) == refused
+    assert (call.request_key, call.business_effect_key) == (key, key)
     [sent] = world.sent("/Emitir")
     assert _tag(sent) == observation["attempt_id"]
     assert (call.state, call.provider_code) == (
         "bloqueada_autoridade",
         "bloqueada_autoridade",
     )
+
+
+def _receipt_entry(
+    entry: dict[str, Any],
+    site: str,
+    key: str,
+    budget: tuple[object, ...],
+    baseline: tuple[int, ...],
+) -> None:
+    """The receipt claim's entry: reserved with one priced slot, or after the
+    definitive 401 with that slot released, on the pinned budget."""
+    assert _intent(entry) == (key, key), "the receipt call is not the payment's intent"
+    held = entry["call"]
+    if site == "claim":
+        assert held["state"] == CallState.RESERVED
+        assert entry["observations"] == []
+        assert _slots(entry) == [(1, "reserved", RECEIPT_MICROBRL)]
+        assert _on_budget(entry, budget) == (
+            baseline[0] + RECEIPT_MICROBRL,
+            *baseline[1:],
+        )
+        return
+    assert (
+        held["state"],
+        held["provider_code"],
+        held["attempts"],
+        held["http_status"],
+        held["billed"],
+    ) == (CallState.RETRY, COMPLETE_401, 1, 401, "nao")
+    [observation] = entry["observations"]
+    assert {k: observation[k] for k in DEFINITIVE_401} == DEFINITIVE_401
+    assert _slots(entry) == [(1, "released", RECEIPT_MICROBRL)]
+    assert _on_budget(entry, budget) == baseline
 
 
 @DB
@@ -1411,6 +1551,9 @@ def test_an_ordinary_authority_veto_at_a_receipt_claim_is_never_a_moved_refusal(
     # Given one DAS payment found by a successful consultation, and for the
     # retry site a complete first 401.
     das = _found_payment(world)
+    key = _payment_key(das)
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
     if site == "retry-claim":
         world.script(Reply(status=401))
     protocol = import_module("apps.integrations.call_protocol")
@@ -1452,15 +1595,22 @@ def test_an_ordinary_authority_veto_at_a_receipt_claim_is_never_a_moved_refusal(
         public = ("returned",)
     except AdmissionDeniedError as error:
         public = ("raised", type(error).__name__, error.reason)
-    # Then, at that claim's exit, the refusal is the plain one with its own
-    # cause, and the claim rolled back: call, slots and money as at its entry.
+    # Then that claim met the payment's intent in its expected state.
     [entry] = entries
+    _receipt_entry(entry, site, key, budget, baseline)
+    held = entry["call"]
+    # At that claim's exit the refusal is the plain one with its own cause, and
+    # the claim rolled back: every row as at its entry, fence, lease, epoch and
+    # version included.
     [(call_id, name, state, reason, at_exit)] = refusals
     assert (name, state, reason) == (
         "AdmissionDeniedError",
         CallState.AUTHORITY,
         *reasons,
     )
+    assert [at_exit["call"][field] for field in LEASE] == [
+        held[field] for field in LEASE
+    ]
     assert at_exit == entry
     # At the retry site perform itself hands that same plain refusal on (E5,
     # gate review :730); the first claim has no perform.
@@ -1468,8 +1618,76 @@ def test_an_ordinary_authority_veto_at_a_receipt_claim_is_never_a_moved_refusal(
     # It reaches the receipt's caller, which leaves the call as it was and
     # sends nothing more.
     assert public == ("raised", name, reason)
-    assert _target(world, call_id) == entry
+    after = _target(world, call_id)
+    assert [after["call"][field] for field in LEASE] == [held[field] for field in LEASE]
+    assert after == entry
     assert len(world.sent("/Emitir")) == (0 if site == "claim" else 1)
+
+
+def _page_scope(world: World, query: PaymentQuery) -> tuple[str, str]:
+    """Page 0's key and body digest, derived from the query and termo alone."""
+    assert query.window == support.WINDOW
+    key = _sha("pagtoweb-pagina", query.request_key, "0")
+    data: dict[str, Any] = {
+        "intervaloDataArrecadacao": {
+            "dataInicial": support.WINDOW.start.isoformat(),
+            "dataFinal": support.WINDOW.end.isoformat(),
+        },
+        "primeiroDaPagina": 0,
+        "tamanhoDaPagina": 100,
+    }
+    if support.WINDOW.revenue_codes:
+        data["codigoReceitaLista"] = list(support.WINDOW.revenue_codes)
+    with tenant_context(world.termo.tenant.pk):
+        parties = termo_parties(world.termo.connection.pk, world.termo.client.cnpj)
+    assert parties is not None
+    body = build_request("SP-PAG", parties, data).body
+    return key, hashlib.sha256(body).hexdigest()
+
+
+def _record_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, list[tuple[object, ...]]]:
+    """Call-through recorders on the page's two settlement routes."""
+    routes: dict[str, list[tuple[object, ...]]] = {"refused": [], "settle": []}
+    real_refused, real_settle = payments._refused, payments._settle_page
+
+    def refused_route(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        query_arg, index, scope, page_key, error = args[:5]
+        routes["refused"].append(
+            (query_arg.pk, index, scope, page_key, f"{type(error).__name__}: {error}")
+        )
+        return real_refused(*args, **kwargs)
+
+    def settle_route(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        query_arg, index, scope, call_id = args[:4]
+        routes["settle"].append((query_arg.pk, index, scope, call_id))
+        return real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(payments, "_refused", refused_route)
+    monkeypatch.setattr(payments, "_settle_page", settle_route)
+    return routes
+
+
+def _page_routes(
+    site: str, query_id: UUID, key: str, digest: str, target: dict[str, Any]
+) -> tuple[list[object], dict[str, list[tuple[object, ...]]]]:
+    """What perform returns and which settlement route the page takes, per site."""
+    call_id = target["call"]["id"]
+    if site == "claim":
+        moved = f"VersionMovedError: {CallState.AUTHORITY}"
+        return [], {"refused": [(query_id, 0, digest, key, moved)], "settle": []}
+    [observation] = target["observations"]
+    result = (
+        CallState.FAILED,
+        401,
+        COMPLETE_401,
+        "nao",
+        0,
+        observation["response_digest"],
+        "",
+    )
+    return [result], {"refused": [], "settle": [(query_id, 0, digest, call_id)]}
 
 
 @DB
@@ -1477,17 +1695,20 @@ def test_an_ordinary_authority_veto_at_a_receipt_claim_is_never_a_moved_refusal(
 def test_a_page_moved_at_its_claim_settles_its_own_query_from_the_refusal(
     world: World, monkeypatch: pytest.MonkeyPatch, site: str
 ) -> None:
-    # Given one consultation opened, its id held, and for the retry site a
-    # complete first 401 on its page.
+    # Given one consultation opened, its id and key held, its page 0 scope
+    # derived before the run, and for the retry site a complete first 401.
     tenant, client = world.termo.tenant.pk, world.termo.client
     with tenant_context(tenant):
         locked = ClientCompany.objects.select_for_update().get(pk=client.pk)
         query = payments.open_payment_query(
             locked, support.WINDOW, actor=None, nonce="consulta-1"
         )
+    pinned = (query.pk, query.request_key)
+    key, digest = _page_scope(world, query)
     if site == "retry-claim":
         world.script(Reply(status=401))
-    baseline = _money(world)
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
     # When the connection version moves at that page's claim.
     protocol = import_module("apps.integrations.call_protocol")
     module = payments if site == "claim" else protocol
@@ -1497,6 +1718,8 @@ def test_a_page_moved_at_its_claim_settles_its_own_query_from_the_refusal(
         "claim",
         _recording_claim(world, module, refusals, lambda _id: _renew(world)),
     )
+    performs = _observe_perform(monkeypatch)
+    routes = _record_routes(monkeypatch)
     settled = payments.run_payment_query(tenant, query.pk)
     [call] = world.calls()
     sent = 0 if site == "claim" else 1
@@ -1516,34 +1739,59 @@ def test_a_page_moved_at_its_claim_settles_its_own_query_from_the_refusal(
                 )
             )
 
-    # Then that same query ends falha by the moved refusal's cause (through
-    # `_refused` at the first claim, `_settle_page` after the retry), with one
-    # payments receipt citing that call; a duplicate run of it changes nothing.
+    # Then that same query ends falha by the moved refusal's cause, with one
+    # payments receipt for that scope citing that call, the call being page 0's
+    # own intent; a duplicate run of it changes nothing.
+    first_routes: dict[str, list[tuple[object, ...]]] = {}
     for run in ("first", "duplicate"):
         if run == "duplicate":
+            first_routes = {name: list(rows) for name, rows in routes.items()}
             settled = payments.run_payment_query(tenant, query.pk)
-        assert (settled.pk, settled.state, settled.failure_code) == (
-            query.pk,
+        assert (settled.pk, settled.request_key) == pinned, run
+        assert (settled.state, settled.failure_code) == (
             "falha",
             ADMISSION_REFUSED,
         ), run
-        assert receipts_of_the_client() == [
-            (
-                FederalConsultationKind.PAGAMENTOS,
-                client.pk,
-                call.request_digest,
-                str(call.pk),
-            )
-        ], run
         target = _target(world, call.pk)
-        assert target["call"] == stored, run
-        assert [slot[1:3] for slot in target["slots"]] == [(1, "released")], run
-        assert target["money"] == baseline, run
-        assert [row.pk for row in world.calls()] == [call.pk], run
+        row = target["call"]
+        assert (
+            row["state"],
+            row["provider_code"],
+            row["attempts"],
+            row["http_status"],
+            row["billed"],
+        ) == stored, run
+        assert (
+            row["request_key"],
+            row["business_effect_key"],
+            row["request_digest"],
+        ) == (
+            key,
+            key,
+            digest,
+        ), run
+        assert receipts_of_the_client() == [
+            (FederalConsultationKind.PAGAMENTOS, client.pk, digest, str(call.pk))
+        ], run
+        assert [slot[:2] for slot in _slots(target)] == [(1, "released")], run
+        assert _on_budget(target, budget) == baseline, run
+        assert [other.pk for other in world.calls()] == [call.pk], run
         assert len(world.sent()) == sent, run
+    if site == "retry-claim":
+        [request] = world.sent()
+        assert hashlib.sha256(request.body).hexdigest() == digest
+        assert world.offsets() == [0]
     # And the claim raised the typed moved refusal for that call (named by string:
-    # the class is absent on the red trees).
+    # the class is absent on the red trees), settled through its own route:
+    # `_refused` at the first claim, `_settle_page` after perform returned the
+    # 401's own result at the retry; the duplicate took neither.
     assert [(row[0], row[1]) for row in refusals] == [(call.pk, "VersionMovedError")]
+    expected_performs, expected = _page_routes(site, query.pk, key, digest, target)
+    assert [
+        _the_401(row[1]) if row[0] == "returned" else row for row in performs
+    ] == expected_performs, "the page took the wrong settlement route"
+    assert routes == expected, "the page took the wrong settlement route"
+    assert routes == first_routes, "the duplicate run settled the page again"
 
 
 def _renew(world: World) -> None:

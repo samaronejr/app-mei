@@ -482,13 +482,17 @@ def test_a_moved_retry_claim_hands_the_report_to_its_next_advance(
 
     monkeypatch.setattr(protocol, "claim", move_then_claim)
     pinned = world.reload(report).consultation_id
-    mod._run(world.tenant_id, report.pk, first)
-    monkeypatch.setattr(protocol, "claim", real)
 
     def consultation() -> tuple[object, str, str]:
         with tenant_context(world.tenant_id):
             row = FederalConsultation.objects.get(pk=pinned)
         return row.pk, row.outcome, row.provider_ref
+
+    # The report's own consultation, read before the run: incerto, no ref.
+    before = consultation()
+    assert before == (pinned, "incerto", "")
+    mod._run(world.tenant_id, report.pk, first)
+    monkeypatch.setattr(protocol, "claim", real)
 
     # Then that retry claim recorded the refusal on the same call, typed as moved
     # (named by string: the class is absent on the red trees)...
@@ -500,10 +504,10 @@ def test_a_moved_retry_claim_hands_the_report_to_its_next_advance(
     )
     assert refused == [(target.pk, "VersionMovedError")]
     # ...the pass that ran it ends with the report still emitting and its own
-    # original consultation still incerto with a blank ref (gate review :730)...
+    # original consultation exactly as before the run (gate review :730, :739)...
     after = world.reload(report)
     assert (after.state, after.consultation_id) == ("emitindo", pinned)
-    assert consultation() == (pinned, "incerto", "")
+    assert consultation() == before
     assert len(world.sent("/Emitir")) == 1
     # ...and one advance of that report settles that same consultation falha,
     # naming the exact target from the stored refusal, never the earlier 401,
