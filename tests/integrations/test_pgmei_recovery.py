@@ -92,10 +92,9 @@ def guide_documents(world: GuideWorld) -> int:
 def sweep(world: GuideWorld, days: int = 1) -> None:
     tenant = Tenant.objects.get(pk=world.tenant_id)
     for offset in range(days):
-        with tenant_context(world.tenant_id):
-            pgmei.evaluate_guide_conditions(
-                tenant, timezone.localdate() + timedelta(days=offset)
-            )
+        pgmei.evaluate_guide_conditions(
+            tenant, timezone.localdate() + timedelta(days=offset)
+        )
 
 
 def expire_lease(world: GuideWorld, call: ProviderCall) -> None:

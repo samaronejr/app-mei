@@ -78,11 +78,11 @@ class EvaluationCounts:
     skipped_no_owner: int = 0
 
 
-# AXRM-008: other domains' deterministic openers (provider authority and certificate
-# conditions), registered by their app's ready() like COMPLETION_GUARDS. Each runs
-# once per sweep for the firm, after the cycle rules, inside the task's tenant
-# context, and is responsible for its own flag checks.
+# Evaluators run with the cycle rules inside the same tenant transaction.
+# Settlements run after commit, without an ambient transaction: they acquire
+# provider controls and client locks before locking an individual cycle.
 TENANT_EVALUATORS: list[Callable[[Tenant, date], None]] = []
+TENANT_SETTLEMENTS: list[Callable[[Tenant, date], None]] = []
 
 
 def fallback_owner(tenant_id: UUID) -> User | None:

@@ -19,6 +19,7 @@ from apps.core.tasks import (
     TenantTask,
     assert_no_transaction,
 )
+from apps.core.tenancy import tenant_context
 from apps.cycles.bulk_runner import (
     BulkClaim,
     StaleBulkClaimError,
@@ -34,7 +35,7 @@ from apps.cycles.extraction.service import (
     propagate_divergent_link,
 )
 from apps.cycles.models import PlaybookVersion, VersionState
-from apps.cycles.openers import evaluate_tenant_exceptions
+from apps.cycles.openers import TENANT_SETTLEMENTS, evaluate_tenant_exceptions
 from apps.cycles.scanner_status import check_scanner
 from apps.cycles.scanning import (
     clamd_from_settings,
@@ -173,14 +174,19 @@ def scan_tenant_quarantine(
     return counts
 
 
-@shared_task(base=TenantTask)
+@shared_task(base=PhasedTenantTask)
 def open_exceptions_for_tenant(tenant_id: UUID | str) -> dict[str, int]:
     """Run T14's deterministic openers for one firm; unflagged firms are untouched."""
     tenant_pk = UUID(str(tenant_id))
-    if not tenant_has(tenant_pk, "cycles_r1"):
-        return {"evaluated": 0, "skipped_no_owner": 0}
-    # PLATFORM_QUERY_OK: the TenantTask context names this exact firm.
-    counts = evaluate_tenant_exceptions(Tenant.objects.get(pk=tenant_pk))
+    today = timezone.localdate()
+    with tenant_context(tenant_pk):
+        if not tenant_has(tenant_pk, "cycles_r1"):
+            return {"evaluated": 0, "skipped_no_owner": 0}
+        # PLATFORM_QUERY_OK: the validated task argument names this exact firm.
+        tenant = Tenant.objects.get(pk=tenant_pk)
+        counts = evaluate_tenant_exceptions(tenant, today=today)
+    for settle in TENANT_SETTLEMENTS:
+        settle(tenant, today)
     return {"evaluated": counts.evaluated, "skipped_no_owner": counts.skipped_no_owner}
 
 

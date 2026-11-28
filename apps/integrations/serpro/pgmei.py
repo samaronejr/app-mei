@@ -654,7 +654,7 @@ def _send(
 
 def _lock_guide_client(client_id: UUID) -> ClientCompany:
     """After controls and the current call, serialize this client's guide decisions."""
-    return ClientCompany.objects.select_for_update().get(pk=client_id)
+    return ClientCompany.objects.select_for_update(no_key=True).get(pk=client_id)
 
 
 def _cancel_unsent(
@@ -1080,14 +1080,17 @@ def evaluate_guide_conditions(tenant: Tenant, today: date) -> None:
     with `federal_checks` off. The flag gates new emissions only. Non-final calls
     are taken only after their lease or reservation handoff has run out.
     """
-    candidates = ProviderCall.objects.filter(
-        tenant_id=tenant.pk, operation=OPERATION
-    ).order_by("pk")
-    for call in candidates:
-        if not CALL_FINAL[call.state] and not _lease_expired(call):
-            continue
-        if _unsettled(call):
-            settle_guide(tenant.pk, call.pk)
+    with tenant_context(tenant.pk):
+        candidates = ProviderCall.objects.filter(
+            tenant_id=tenant.pk, operation=OPERATION
+        ).order_by("pk")
+        due_ids = [
+            call.pk
+            for call in candidates
+            if (CALL_FINAL[call.state] or _lease_expired(call)) and _unsettled(call)
+        ]
+    for call_id in due_ids:
+        settle_guide(tenant.pk, call_id)
     del today
 
 

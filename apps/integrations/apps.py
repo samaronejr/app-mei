@@ -14,7 +14,10 @@ class IntegrationsConfig(AppConfig):
 
     def ready(self) -> None:
         """Attach the settings guard, the issue reasons and the sweep rule."""
-        from apps.cycles.openers import TENANT_EVALUATORS  # noqa: PLC0415
+        from apps.cycles.openers import (  # noqa: PLC0415
+            TENANT_EVALUATORS,
+            TENANT_SETTLEMENTS,
+        )
         from apps.cycles.services.exceptions import (  # noqa: PLC0415
             register_exception_reason,
         )
@@ -71,12 +74,9 @@ class IntegrationsConfig(AppConfig):
             register_exception_reason(code, reason)
         register_exception_reason(FAILURE_REASON, CAPTURE_REASON)
         TENANT_EVALUATORS.extend(
-            (
-                evaluate_provider_conditions,
-                evaluate_termo_conditions,
-                evaluate_guide_conditions,
-            )
+            (evaluate_provider_conditions, evaluate_termo_conditions)
         )
+        TENANT_SETTLEMENTS.append(evaluate_guide_conditions)
         register_serpro_operations()
         register_focus_operations()
         # Registers the `pagtoweb` qualification scenario (todo 13's extension point).
