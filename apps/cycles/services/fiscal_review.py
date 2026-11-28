@@ -109,7 +109,7 @@ def _require_reviewable(
         raise ValidationError(message)
 
 
-def _append_review(  # noqa: PLR0913 - exact review-form contract
+def record_fiscal_document_review(  # noqa: PLR0913 - exact review-form contract
     actor: User,
     cycle_id: UUID,
     document_id: UUID,
@@ -193,31 +193,3 @@ def _append_review(  # noqa: PLR0913 - exact review-form contract
             },
         )
     return review
-
-
-def record_fiscal_document_review(  # noqa: PLR0913 - existing first-only HTTP contract
-    actor: User,
-    cycle_id: UUID,
-    document_id: UUID,
-    *,
-    revision_id: UUID,
-    decision: str,
-    input_digest: str,
-    expected_version: int,
-    note: str = "",
-) -> FiscalDocumentReview:
-    """Admit roots only until every reader adopts the successor protocol."""
-    try:
-        return _append_review(
-            actor,
-            cycle_id,
-            document_id,
-            revision_id=revision_id,
-            decision=decision,
-            input_digest=input_digest,
-            expected_version=expected_version,
-            note=note,
-        )
-    except IllegalTransition as closed:
-        # The unchanged workspace handles conflicts, not writer transitions.
-        raise VersionConflict(str(closed)) from closed

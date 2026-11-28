@@ -8,7 +8,7 @@ from django.db.models import Exists, F, OuterRef, Q, Subquery, Value
 from django.db.models.lookups import Exact, GreaterThanOrEqual, IsNull, LessThanOrEqual
 from django.http import Http404
 
-from apps.cycles.fiscal_material import material_digest, snapshot_rows, working_date
+from apps.cycles.fiscal_material import snapshot_rows, working_date
 from apps.cycles.fiscal_records import FiscalDocumentReview
 from apps.cycles.records import ServiceCycle
 from apps.cycles.services.cycle import OPEN_STATES
@@ -62,31 +62,13 @@ class PendingReview(TypedDict):
     pending_cycle_id: UUID | None
 
 
-def awaiting_cycle_review(
-    rows: QuerySet[FiscalDocument],
-) -> QuerySet[WithAnnotations[FiscalDocument, PendingReview]]:
-    """Keep documents with a pending open cycle or no matching cycle yet."""
-    return _pending_cycles(
-        rows.filter(current_revision__isnull=False).alias(
-            review_working_date=working_date(), review_material=material_digest()
-        )
-    )
-
-
 def projected_pending_cycles(
     rows: QuerySet[FiscalDocument],
 ) -> QuerySet[WithAnnotations[FiscalDocument, PendingReview]]:
     """Expose the same material used to select the pending cycle in its result."""
-    return _pending_cycles(
-        snapshot_rows(rows.filter(current_revision__isnull=False)).alias(
-            review_working_date=working_date()
-        )
+    rows = snapshot_rows(rows.filter(current_revision__isnull=False)).alias(
+        review_working_date=working_date()
     )
-
-
-def _pending_cycles(
-    rows: QuerySet[FiscalDocument],
-) -> QuerySet[WithAnnotations[FiscalDocument, PendingReview]]:
     eligible = ServiceCycle.objects.filter(
         cycle_eligibility(
             OuterRef,
@@ -143,7 +125,7 @@ def review_cycles(
     else:
         eligible = [cycle for cycle in cycles if cycle.review_eligible]
         pending_id = (
-            awaiting_cycle_review(FiscalDocument.objects.filter(pk=fiscal.pk))
+            projected_pending_cycles(FiscalDocument.objects.filter(pk=fiscal.pk))
             .values_list("pending_cycle_id", flat=True)
             .first()
         )

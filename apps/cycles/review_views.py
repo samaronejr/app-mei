@@ -52,7 +52,7 @@ from apps.cycles.evidence import (
     ReviewDecision,
 )
 from apps.cycles.extraction import FIELD_LABELS, KIND_FIELDS, XML_LAYOUTS, kind_for
-from apps.cycles.fiscal_queries import pending_documents
+from apps.cycles.fiscal_queries import projected_pending_documents
 from apps.cycles.fiscal_views import fiscal_document_review
 from apps.cycles.receipt_observations import payment_evidence_eligible
 from apps.cycles.scanning import scan_required
@@ -199,7 +199,7 @@ FISCAL = QueueSpec(
     "fiscais",
     _("Documentos fiscais"),
     CYCLES_REVIEW,
-    pending_documents,
+    projected_pending_documents,
     "cycles/_fiscal_document_rows.html",
     (_("Cliente"), _("Documento"), _("Origem"), _("Capturado em"), _("Situação")),
 )
