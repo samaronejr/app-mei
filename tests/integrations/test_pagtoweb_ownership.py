@@ -31,8 +31,17 @@ from apps.integrations.serpro.payments import (
     queue_payment_consultation,
     run_payment_query,
 )
+from apps.integrations.serpro.payments_panel import federal_payments_panel
 from apps.tenants.models import Membership, TenantRole
-from tests.integrations.pagtoweb_support import WINDOW, World, darfs, item, page, world
+from tests.integrations.pagtoweb_support import (
+    COMPETENCE,
+    WINDOW,
+    World,
+    darfs,
+    item,
+    page,
+    world,
+)
 from tests.integrations.test_migration_rollback import _as_migrator
 from tests.integrations.test_pagtoweb import (
     _no_budget,
@@ -513,6 +522,21 @@ def test_a_refused_runner_never_rewrites_a_consultation_finished_without_it(
     with tenant_context(tenant_id):
         assert IntegrationIssue.objects.filter(reason=FAILED).count() == 1
         assert stored(world, query.pk).failure_code == "solicitante_sem_permissao"
+    # And its history keeps that ending, never B's late budget refusal (AXRM-045).
+    assert history_of(world, query.pk).startswith(
+        "A consulta não foi concluída (registro solicitante_sem_permissao)."
+    )
+
+
+def history_of(world: World, query_id: UUID) -> str:
+    """The client page's sentence for one consultation, as staff read it."""
+    with tenant_context(world.termo.tenant.pk):
+        section = federal_payments_panel(
+            world.termo.actor, world.termo.client, COMPETENCE
+        )
+    assert section is not None
+    [row] = [row for row in section.queries if row.query.pk == query_id]
+    return str(row.detail)
 
 
 def test_the_database_refuses_any_writer_but_the_live_owner(world: World) -> None:

@@ -17,10 +17,11 @@ from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from django.db.models import F
+from django.test import override_settings
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.clients.models import ClientCompany
@@ -56,6 +57,23 @@ from tests.integrations.test_pagtoweb_ownership import lease_runs_out
 __all__ = ["world"]
 # Only the flows touch the database; the table and code checks are pure.
 DB: Final = pytest.mark.django_db(transaction=True)
+
+
+def history_row(world: World, query: PaymentQuery) -> Any:  # noqa: ANN401
+    """The client page's row for one consultation, as staff read it."""
+    with tenant_context(query.tenant_id):
+        client = ClientCompany.objects.get(pk=query.client_id)
+        section = panel(world.termo.actor, client, support.COMPETENCE)
+    assert section is not None
+    [row] = [row for row in section.queries if row.query.pk == query.pk]
+    return row
+
+
+def history(world: World, query: PaymentQuery) -> str:
+    """The client page's sentence for one consultation."""
+    return str(history_row(world, query).detail)
+
+
 FIXTURE: Final = Path(__file__).parents[1] / "fixtures" / "providers" / "serpro"
 TABLE: Final = json.loads((FIXTURE / "mensagens_gerenciador.json").read_text())
 PAGE: Final = (
@@ -256,11 +274,14 @@ def test_every_documented_403_reaches_only_its_own_owner(
         [[str(call.pk)]] if cause in FIRM_STOPS else [],
     )
     # And the copy says "Sem procuracao" for the client's own procuracao only.
-    detail = query_detail(query)
+    detail = history(world, query)
     assert ("falta da procuração" in detail) is (cause == CLIENT)
     if cause != CLIENT:
         expected = denials_api().DENIAL_TEXT[cause]
-        assert detail == f"{expected} (código {code}). Consulta não repetida."
+        assert detail == (
+            f"{expected} (código {code}). Consulta não repetida. "
+            "A página 1 foi enviada e cobrada."
+        )
     # When a person asks again: nothing is re-sent automatically, and a cause
     # whose owner has not acted refuses before any byte.
     world.script(page([]))
@@ -308,7 +329,7 @@ def test_a_firm_termo_403_leaves_every_client_authority_and_opens_the_firm_issue
         "falha",
         first_issue(world, TERMO_020),
     )
-    detail = query_detail(refused)
+    detail = history(world, refused)
     assert "procuração do cliente não foi alterada" in detail
     assert TERMO_020 in detail
     assert effects(world, other)[1:3] == ("ativa", [])
@@ -323,7 +344,7 @@ def test_an_unknown_code_is_incerto_shown_and_never_resent(world: World) -> None
     query = world.consult()
     assert (query.state, query.failure_code) == ("incerto", U99)
     assert effects(world) == (["incerto"], "ativa", [], [])
-    assert U99 in query_detail(query)
+    assert U99 in history(world, query)
     assert payments.run_payment_query(query.tenant_id, query.pk).state == "incerto"
     assert len(world.sent()) == 1
 
@@ -387,7 +408,7 @@ def test_a_failure_that_is_not_a_403_keeps_its_own_copy(
     state: str, code: str, detail: str
 ) -> None:
     query = PaymentQuery(state=state, failure_code=code, pages_fetched=10)
-    assert query_detail(query).startswith(detail)
+    assert query_detail(query, []).startswith(detail)
 
 
 def test_a_call_result_refuses_a_cause_that_is_not_a_closed_code() -> None:
@@ -517,7 +538,7 @@ def test_a_firm_block_cleared_before_the_refusal_settles_is_never_the_clients(
     assert effects(world)[1:3] == ("ativa", [])
     with tenant_context(tenant):
         assert not IntegrationIssue.objects.exists()
-    assert "Consulte" not in query_detail(query)
+    assert "Consulte" not in history(world, query)
     assert world.sent() == []
 
 
@@ -612,7 +633,7 @@ def test_a_platform_403_names_the_platform_on_the_firms_next_refusal(
         "falha",
         first_issue(world, platform),
     )
-    detail = query_detail(refused)
+    detail = history(world, refused)
     assert "bloqueio do escritório" in detail
     assert platform in detail
     assert "termo" not in detail
@@ -766,7 +787,7 @@ def test_a_cleared_termo_refusal_reads_cleared_though_another_block_opened(
         "falha",
         f"encerrado-{call.provider_code}",
     )
-    detail = query_detail(settled)
+    detail = history(world, settled)
     assert f"registro {call.provider_code}" in detail
     assert platform not in detail
 
@@ -829,7 +850,7 @@ def test_a_resolved_issue_stays_cleared_though_a_replacement_opened(
     settled = payments.run_payment_query(query.tenant_id, query.pk)
     # Then this refusal's own issue reads as resolved, not revived by the other.
     assert settled.failure_code == f"encerrado-{first}"
-    detail = query_detail(settled)
+    detail = history(world, settled)
     assert "pendência sem código 403 registrado" in detail
     assert "aberta" not in detail
 
@@ -850,7 +871,7 @@ def test_a_refusals_history_keeps_the_403_frozen_when_it_was_refused(
             provider_code="AcessoNegado-ICGERENCIADOR-016"
         )
     # Then the history still names the 020 that caused it.
-    detail = query_detail(refused)
+    detail = history(world, refused)
     assert TERMO_020 in detail
     assert "016" not in detail
 
@@ -882,7 +903,7 @@ def test_a_firm_termo_call_403_before_the_run_ends_it_as_the_missing_termo(
     assert world.sent() == []
     # Then it ends as the firm's missing termo, stated as such, never the client's.
     assert (refused.state, refused.failure_code) == ("falha", "termo_ausente")
-    detail = query_detail(refused)
+    detail = history(world, refused)
     assert "não havia termo de autorização do escritório em vigor" in detail
     assert "procuração do cliente não foi alterada" in detail
 
@@ -911,7 +932,7 @@ def test_a_page_2_block_after_a_billed_page_1_states_both_pages(
         1,
         1,
     )
-    detail = query_detail(refused)
+    detail = history(world, refused)
     assert "A admissão recusou a consulta por um bloqueio do escritório" in detail
     assert "antes do envio" not in detail
 
@@ -947,7 +968,7 @@ def test_a_termo_gone_on_redelivery_after_a_billed_page_states_that_page(
         "termo_ausente",
         1,
     )
-    detail = query_detail(settled)
+    detail = history(world, settled)
     assert "A consulta parou: não havia termo" in detail
 
 
@@ -995,9 +1016,9 @@ def test_a_partial_quota_after_a_billed_page_ends_by_the_budget_refusal(
         1,
     )
     assert len(world.sent()) == 1
-    assert (
-        query_detail(stopped)
-        == "A consulta não foi concluída (registro cota_esgotada)."
+    assert history(world, stopped) == (
+        "O controle de custos recusou a página 2 antes do envio: o limite mensal "
+        "de consultas acabou. A página 1 foi enviada e cobrada."
     )
 
 
@@ -1144,7 +1165,7 @@ def test_a_firm_termo_call_403_after_the_claim_is_frozen_in_the_refusal(
         "falha",
         first_issue(world, platform),
     )
-    assert platform in query_detail(refused)
+    assert platform in history(world, refused)
 
 
 # The definitive 401 a retry claim follows (`serpro/reauthentication.py:27-50`).
@@ -1908,6 +1929,158 @@ def test_a_receipt_refused_at_dispatch_after_a_401_retry_claim_is_stored(
 
 
 @DB
+def test_a_first_page_204_is_stated_as_sent_without_a_charge(world: World) -> None:
+    # Given SERPRO answers the first page with a 204: an empty, unbilled page.
+    world.script(Reply(status=204, body=b""))
+    query = world.consult()
+    assert query.state == "nada_localizado"
+    # Then its history never claims a charge the call does not record (AXRM-045).
+    assert history(world, query) == (
+        "Nenhum pagamento localizado no intervalo consultado. Isso não indica "
+        "falta de pagamento. A página 1 foi enviada, sem cobrança."
+    )
+
+
+@DB
+def test_a_missing_tariff_is_stated_by_its_own_reason_not_as_a_spent_quota(
+    world: World,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    # Given quota is available but no tariff is configured for this consultation.
+    settings.USAGE_UNIT_PRICES_BRL = {"serpro_emissao": "0.32"}
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", "tarifa_ausente")
+    # Then the history names the missing tariff, never an exhausted cap.
+    text = history(world, query)
+    assert "não há tarifa cadastrada para esta consulta" in text
+    assert "limite mensal" not in text
+    assert text.endswith("Nenhuma página foi enviada.")
+
+
+@DB
+def test_a_billed_unsettled_page_stays_sent_and_billed_after_the_termo_goes(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 gets a malformed paid 200, finalized as billed, and the worker
+    # stops before settling it...
+    world.script(Reply(body=b'{"status":200,"mensagens":[],"dados":"{}"}'))
+
+    def die(*_args: object, **_kwargs: object) -> None:
+        raise SystemExit
+
+    with monkeypatch.context() as patch:
+        patch.setattr(payments, "_settle_page", die)
+        with pytest.raises(SystemExit):
+            world.consult()
+    [call] = world.calls()
+    assert (call.state, call.billed) == ("falhou", "sim")
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get(client=world.termo.client)
+    # ...when the termo is gone and the task is redelivered.
+    monkeypatch.setattr(payments, "termo_parties", lambda *_args: None)
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    assert (settled.state, settled.failure_code, settled.pages_fetched) == (
+        "falha",
+        "termo_ausente",
+        0,
+    )
+    # Then the history keeps the recorded send and charge (AXRM-045).
+    assert history(world, settled).endswith("A página 1 foi enviada e cobrada.")
+
+
+@pytest.mark.parametrize(
+    ("state", "code", "why"),
+    [
+        (
+            "cota_esgotada",
+            "cota_esgotada",
+            ": o limite mensal de consultas acabou.",
+        ),
+        (
+            "cota_esgotada",
+            "cota_ausente",
+            ": não há limite mensal de consultas configurado.",
+        ),
+        (
+            "cota_esgotada",
+            "tarifa_ausente",
+            ": não há tarifa cadastrada para esta consulta.",
+        ),
+        (
+            "cota_esgotada",
+            "tarifa_invalida",
+            ": a tarifa cadastrada para esta consulta é inválida.",
+        ),
+        (
+            "falha",
+            "reserva_ausente",
+            ": a reserva de custo da página não foi encontrada.",
+        ),
+        (
+            "falha",
+            "reserva_vencida",
+            ": a reserva de custo da página venceu antes do envio.",
+        ),
+        ("falha", "cota_esgotada_parcial", " (registro cota_esgotada_parcial)."),
+        ("cota_esgotada", "orcamento_novo", " (registro orcamento_novo)."),
+    ],
+    ids=lambda value: value if isinstance(value, str) and " " not in value else None,
+)
+def test_every_budget_reason_has_its_own_sentence(
+    state: str, code: str, why: str
+) -> None:
+    query = PaymentQuery(state=state, failure_code=code, pages_fetched=0)
+    assert query_detail(query, []) == (
+        f"O controle de custos recusou a consulta antes do envio{why} "
+        "Nenhuma página foi enviada."
+    )
+
+
+@pytest.mark.parametrize(
+    ("pages", "facts"),
+    [
+        ([], "Nenhuma página foi enviada."),
+        ([(1, False, "desconhecido")], "Nenhuma página foi enviada."),
+        ([(1, True, "sim")], "A página 1 foi enviada e cobrada."),
+        ([(1, True, "nao")], "A página 1 foi enviada, sem cobrança."),
+        (
+            [(1, True, "sim"), (2, True, "sim")],
+            "As páginas 1 e 2 foram enviadas e cobradas.",
+        ),
+        (
+            [(1, True, "sim"), (2, True, "sim"), (3, True, "sim")],
+            "As páginas 1 a 3 foram enviadas e cobradas.",
+        ),
+        (
+            [(1, True, "sim"), (2, True, "nao")],
+            (
+                "As páginas 1 e 2 foram enviadas: a página 1 foi cobrada; "
+                "a página 2 sem cobrança."
+            ),
+        ),
+        (
+            [(1, True, "sim"), (2, True, "desconhecido"), (3, False, "desconhecido")],
+            (
+                "As páginas 1 e 2 foram enviadas: a página 1 foi cobrada; "
+                "a cobrança não é conhecida para a página 2."
+            ),
+        ),
+    ],
+    ids=["none", "reserved", "billed", "unbilled", "pair", "range", "mixed", "unknown"],
+)
+def test_page_facts_come_from_each_recorded_page_call(
+    pages: list[tuple[int, bool, str]], facts: str
+) -> None:
+    panel_module = import_module("apps.integrations.serpro.payments_panel")
+    recorded = [
+        panel_module.PageFact(number, sent, billed, refused=False)
+        for number, sent, billed in pages
+    ]
+    assert panel_module.page_facts(recorded) == facts
+
+
+@DB
 def test_a_budget_error_while_settling_a_sent_receipt_is_not_reported_as_stored(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1946,6 +2119,198 @@ def test_a_budget_error_while_settling_a_sent_receipt_is_not_reported_as_stored(
     with tenant_context(tenant):
         call = ProviderCall.objects.get(operation="SP-COMP")
     assert call.state not in ("bloqueada_autoridade", "pausada", "bloqueada_cota")
+
+
+@DB
+def test_a_missing_tariff_never_wears_the_limit_reached_badge(
+    world: World,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    settings.USAGE_UNIT_PRICES_BRL = {"serpro_emissao": "0.32"}
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", "tarifa_ausente")
+    # Then the badge names the cost control, never an exhausted limit (AXRM-045).
+    assert history_row(world, query).label == "Recusada pelo controle de custos"
+
+
+@DB
+@pytest.mark.parametrize(
+    ("platform_cap", "code"),
+    [({"serpro": "0"}, "cota_esgotada"), ({}, "cota_ausente")],
+    ids=["platform-spent", "platform-absent"],
+)
+def test_a_platform_cap_refusal_never_blames_the_firms_limit(
+    world: World,
+    settings: Any,  # noqa: ANN401
+    platform_cap: dict[str, str],
+    code: str,
+) -> None:
+    # Given the firm's own budget has room, and only the platform's cap refuses.
+    settings.PROVIDER_GLOBAL_MONTHLY_CAP_BRL = platform_cap
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", code)
+    # Then the history names the cap without claiming it was the firm's.
+    text = history(world, query)
+    assert "escritório" not in text
+    assert "limite mensal de consultas" in text
+
+
+@DB
+def test_a_401_first_send_stays_sent_when_its_retry_is_refused_at_dispatch(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 gets a complete 401, its retry is claimed, and the budget
+    # month turns over before that retry is dispatched.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def claim_then_turn_the_window(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real_claim(*args, **kwargs)
+        with tenant_context(world.termo.tenant.pk):
+            budget = ProviderBudget.objects.get()
+            earlier = (budget.window_start - timedelta(days=1)).replace(day=1)
+            ProviderBudget.objects.update(window_start=earlier)
+        return ticket
+
+    monkeypatch.setattr(protocol, "claim", claim_then_turn_the_window)
+    world.script(Reply(status=401))
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("cota_esgotada", "reserva_vencida")
+    assert len(world.sent()) == 1
+    # Then the 401 send stays in the history, and the refusal is its retry's.
+    assert history(world, query) == (
+        "O controle de custos recusou a nova tentativa da página 1 antes do envio: "
+        "a reserva de custo da página venceu antes do envio. "
+        "A página 1 foi enviada, sem cobrança."
+    )
+
+
+@DB
+def test_an_unknown_budget_code_on_a_later_page_names_that_page(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 is full and billed, and the budget refuses page 2's
+    # reservation with a code this release does not know.
+    budget_module = import_module("apps.integrations.budget")
+    real_check = budget_module.check_cap
+    priced: list[int] = []
+
+    def refuse_the_second_page(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        if args[1] > 0:
+            priced.append(args[1])
+            if len(priced) == 2:
+                unknown = "orcamento_novo"
+                pricing = import_module("apps.integrations.budget_pricing")
+                raise pricing.BudgetDeniedError(unknown)
+        real_check(*args, **kwargs)
+
+    monkeypatch.setattr(budget_module, "check_cap", refuse_the_second_page)
+    world.script(page(support.darfs(100)))
+    query = world.consult()
+    assert (query.state, query.failure_code) == ("falha", "orcamento_novo")
+    # Then the generic budget sentence still names page 2 and the code.
+    assert history(world, query) == (
+        "O controle de custos recusou a página 2 antes do envio "
+        "(registro orcamento_novo). A página 1 foi enviada e cobrada."
+    )
+
+
+@DB
+def test_a_replayed_unbilled_204_reads_sent_without_a_charge(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given page 1 is dispatched and journaled, then the runner dies on the wire.
+    protocol = import_module("apps.integrations.call_protocol")
+    journal = import_module("apps.integrations.provider_journal")
+    replay = import_module("apps.integrations.provider_replay")
+    contracts = import_module("apps.integrations.call_contracts")
+    started: list[Any] = []
+
+    def die_on_the_wire(dispatch: Any, *_args: Any) -> Any:  # noqa: ANN401
+        started.append(dispatch)
+        raise SystemExit
+
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "transmit", die_on_the_wire)
+        with pytest.raises(SystemExit):
+            world.consult()
+    [dispatch] = started
+    # When recovery first sees only the start (a provisional observation), then
+    # the recovered complete, unbilled 204 for the same attempt.
+    with override_settings(PROVIDERS_PAUSED=True):
+        replay.reconcile(uuid4())
+    result = contracts.CallResult("sucesso", 204, "", "nao")
+    journal.append(replace(dispatch.receipt, result=result))
+    with override_settings(PROVIDERS_PAUSED=True):
+        replay.reconcile(uuid4())
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get(client=world.termo.client)
+        observations = sorted(
+            ProviderCallAttempt.objects.values_list("observation", "billed")
+        )
+    assert len(observations) == 2
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then the definitive observation wins: sent, without a charge (AXRM-045).
+    assert history(world, settled).endswith("A página 1 foi enviada, sem cobrança.")
+
+
+@DB
+@pytest.mark.parametrize("late_first", [True, False], ids=["late-first", "late-last"])
+def test_a_metered_late_reply_reads_billed_whatever_the_row_order(
+    world: World, monkeypatch: pytest.MonkeyPatch, late_first: bool
+) -> None:
+    # Given page 1 is dispatched and journaled, then its runner dies on the wire.
+    protocol = import_module("apps.integrations.call_protocol")
+    replay = import_module("apps.integrations.provider_replay")
+    started: list[Any] = []
+
+    def die_on_the_wire(dispatch: Any, *_args: Any) -> Any:  # noqa: ANN401
+        started.append(dispatch)
+        raise SystemExit
+
+    with monkeypatch.context() as patch:
+        patch.setattr(protocol, "transmit", die_on_the_wire)
+        with pytest.raises(SystemExit):
+            world.consult()
+    [dispatch] = started
+    receipt = dispatch.receipt
+
+    def metered_late_reply() -> None:
+        # The original billed 200, arriving after the epoch changed (`late`).
+        with tenant_context(world.termo.tenant.pk):
+            call = ProviderCall.objects.get(pk=receipt.call_id)
+            ProviderCallAttempt.objects.create(
+                tenant_id=call.tenant_id,
+                client_id=call.client_id,
+                call=call,
+                attempt_id=receipt.attempt_id,
+                attempt_number=receipt.attempt_number,
+                fence=receipt.fence,
+                outcome="sucesso",
+                observation="late",
+                http_status=200,
+                billed="sim",
+            )
+
+    # When the same attempt has a provisional unknown (from the replayed start)
+    # and a metered late reply, recorded in either order, before any result.
+    if late_first:
+        metered_late_reply()
+    with override_settings(PROVIDERS_PAUSED=True):
+        replay.reconcile(uuid4())
+    if not late_first:
+        metered_late_reply()
+    with tenant_context(world.termo.tenant.pk):
+        query = PaymentQuery.objects.get(client=world.termo.client)
+        observations = sorted(
+            ProviderCallAttempt.objects.values_list("observation", "billed")
+        )
+    assert observations == [("late", "sim"), ("uncertain", "desconhecido")]
+    lease_runs_out(world, query.pk)
+    settled = payments.run_payment_query(query.tenant_id, query.pk)
+    # Then the recorded charge is never lost to the unknown (AXRM-045).
+    assert history(world, settled).endswith("A página 1 foi enviada e cobrada.")
 
 
 @DB
