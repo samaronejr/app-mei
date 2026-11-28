@@ -1156,6 +1156,9 @@ def _apply(
     _finish(report, ending, operation, call, quota)
 
 
+_COMMITTED_REFUSALS: Final = (CallState.AUTHORITY, CallState.PAUSED)
+
+
 def _refused(
     tenant_id: UUID,
     report_id: UUID,
@@ -1163,37 +1166,51 @@ def _refused(
     error: AdmissionDeniedError,
     row_id: UUID | None,
 ) -> None:
-    """End a report whose next call the live controls refused before sending."""
+    """End a report whose next call the live controls refused before sending.
+
+    A refusal already committed on the call (by its claim or its dispatch) is
+    settled from that call: its own state, reason and link, and the receipt
+    names it (AXRM-045). A still-reserved call is cancelled and released here.
+    """
     with tenant_context(tenant_id), transaction.atomic():
         report = _locked(report_id)
+        kind, reason = str(error), error.reason
+        call = None
         if row_id is not None:
-            unused = (
-                ProviderCall.objects.select_for_update(skip_locked=True)
-                .filter(pk=row_id, state=CallState.RESERVED)
+            # Only the call row is locked: a lock another worker holds on its
+            # connection never hides the call (AXRM-045).
+            call = (
+                ProviderCall.objects.select_for_update(skip_locked=True, of=("self",))
+                .select_related("link__connection")
+                .filter(pk=row_id)
                 .first()
             )
-            if unused is not None:
-                release(unused)
-                unused.state = CallState.CANCELLED
-                unused.provider_code = str(error)[:64]
-                unused.version += 1
-                unused.save()
+            if call is None:
+                return  # Another runner holds the call: a later pass settles it.
+            if call.state == CallState.RESERVED:
+                release(call)
+                call.state = CallState.CANCELLED
+                call.provider_code = str(error)[:64]
+                call.version += 1
+                call.save()
+            elif call.state in _COMMITTED_REFUSALS:
+                kind, reason = call.state, call.provider_code
+            else:
+                call = None
         if report.state in FINAL_STATES or _next(report)[1] != step.key:
             return
-        link = serpro_link(report.client)
-        if str(error) == CallState.AUTHORITY:
+        link = call.link if call is not None else serpro_link(report.client)
+        if kind == CallState.AUTHORITY:
             # Classified by the cause recorded with the refusal, never re-read.
             cause = (
-                refusal_cause(error.reason, link.connection)
-                if link
-                else ADMISSION_REFUSED
+                refusal_cause(reason, link.connection) if link else ADMISSION_REFUSED
             )
             ending = FiscalReportState.FALHA if cause else FiscalReportState.NEGADO
-        elif str(error) == CallState.PAUSED and step.operation == EMISSION_OPERATION:
+        elif kind == CallState.PAUSED and step.operation == EMISSION_OPERATION:
             ending = FiscalReportState.PROTOCOLO_EXPIRADO
         else:
             ending = FiscalReportState.FALHA
-        _finish(report, ending, step.operation, None)
+        _finish(report, ending, step.operation, call)
 
 
 def _conflicted(tenant_id: UUID, report_id: UUID, step: _Step) -> None:

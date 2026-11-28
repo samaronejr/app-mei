@@ -9,8 +9,15 @@ from django.utils import timezone
 from apps.audit.services import ObjectRef, record_event
 from apps.core.flags import tenant_row_has
 from apps.integrations.authority import client_owner
-from apps.integrations.budget_settlement import quarantine
-from apps.integrations.call_contracts import AdmissionDeniedError, Operation
+from apps.integrations.budget_alerts import refused
+from apps.integrations.budget_pricing import BudgetDeniedError
+from apps.integrations.budget_settlement import quarantine, release
+from apps.integrations.call_contracts import (
+    AdmissionDeniedError,
+    AdmissionPolicy,
+    Operation,
+    VersionMovedError,
+)
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.models import (
     ACTIVE_ISSUE_STATES,
@@ -69,9 +76,59 @@ def admit(call: ProviderCall, tenant: Tenant, operation: Operation) -> None:
             operation.feature == "document_capture"
             and link.credential_state not in {"ativa", "vencendo"}
         )
-        or not operation.policy.authorize(call)
     ):
+        reason = _moved_cause(operation.policy, call)
+        raise VersionMovedError(CallState.AUTHORITY, reason=reason)
+    if not operation.policy.authorize(call):
         raise AdmissionDeniedError(CallState.AUTHORITY)
+
+
+def record_refusal(call: ProviderCall, error: AdmissionDeniedError) -> None:
+    """Record an admission refusal on the call and release its reservation.
+
+    One handling for claim and dispatch: a refused call is never left reserved,
+    and the cause the refusal names stays with it (AXRM-045).
+    """
+    release(call)
+    if isinstance(error, BudgetDeniedError):
+        call.state = CallState.QUOTA
+        call.provider_code = error.reason
+        refused(call)
+    else:
+        call.state = (
+            CallState.PAUSED if str(error) == CallState.PAUSED else CallState.AUTHORITY
+        )
+        # The cause as it stood when refused, durable with the refusal.
+        call.provider_code = error.reason
+    call.version += 1
+    call.save()
+
+
+def _moved_cause(policy: AdmissionPolicy, call: ProviderCall) -> str:
+    """Name the blocker a call meets now, once its versions moved after reservation.
+
+    A moved version is no cause in itself, and the call is refused with its
+    reservation released whatever the re-read does: it may only choose the cause.
+    The re-read's savepoint is always rolled back, so it keeps no write and no
+    lock; a wait, a deferral or an error names none.
+    """
+    try:
+        with transaction.atomic():
+            cause = _probe(policy, call)
+            # Whatever the re-read wrote or locked, its savepoint never survives.
+            transaction.set_rollback(True)
+    except Exception:  # noqa: BLE001 - the refusal stands whatever the re-read does
+        return ""
+    return cause
+
+
+def _probe(policy: AdmissionPolicy, call: ProviderCall) -> str:
+    """Name the authority cause the policy reports now, or none."""
+    try:
+        policy.authority(call)
+    except AdmissionDeniedError as refused:
+        return refused.reason if str(refused) == CallState.AUTHORITY else ""
+    return ""
 
 
 def uncertain(call: ProviderCall) -> None:

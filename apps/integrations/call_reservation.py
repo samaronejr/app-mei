@@ -15,10 +15,17 @@ from apps.integrations.call_contracts import (
     CallRequest,
     Claim,
     IntentConflictError,
+    VersionMovedError,
     operation_for,
 )
 from apps.integrations.call_models import CallState, ProviderCall
-from apps.integrations.call_state import admit, current_epoch, lock_controls, uncertain
+from apps.integrations.call_state import (
+    admit,
+    current_epoch,
+    lock_controls,
+    record_refusal,
+    uncertain,
+)
 
 
 def reserve(tenant_id: UUID, link_id: UUID, request: CallRequest) -> ProviderCall:
@@ -119,20 +126,28 @@ def claim(tenant_id: UUID, call_id: UUID) -> Claim | None:
             call.save()
             refused(call)
             return None
-        call.fence += 1
-        call.lease_owner = uuid4()
-        call.lease_until = now + timedelta(seconds=120)
-        call.execution_epoch = current_epoch()
-        call.state = CallState.CLAIMED
-        call.dispatch_started_at = None
-        call.finalized_at = None
-        call.version += 1
-        call.save()
-        return Claim(
-            tenant_id,
-            call.client_id,
-            call.pk,
-            call.fence,
-            call.lease_owner,
-            call.execution_epoch,
-        )
+        except VersionMovedError as error:
+            # Only a call that can never be admitted again is recorded and
+            # released here, then raised once this commits; every other refusal
+            # rolls this claim back and reaches the caller unchanged (AXRM-045).
+            record_refusal(call, error)
+            refusal = error
+        else:
+            call.fence += 1
+            call.lease_owner = uuid4()
+            call.lease_until = now + timedelta(seconds=120)
+            call.execution_epoch = current_epoch()
+            call.state = CallState.CLAIMED
+            call.dispatch_started_at = None
+            call.finalized_at = None
+            call.version += 1
+            call.save()
+            return Claim(
+                tenant_id,
+                call.client_id,
+                call.pk,
+                call.fence,
+                call.lease_owner,
+                call.execution_epoch,
+            )
+    raise refusal

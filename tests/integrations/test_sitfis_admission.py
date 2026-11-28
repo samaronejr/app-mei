@@ -2,21 +2,30 @@
 
 import hashlib
 import threading
+from collections.abc import Callable
 from datetime import timedelta
+from importlib import import_module
 from typing import Any
 
 import pytest
-from django.db import connections
+from django.db import OperationalError, connection, connections, transaction
+from django.db.models import F
 
 from apps.audit.models import Event
 from apps.core.tenancy import tenant_context
 from apps.cycles.models import CycleEvent, CycleState, ServiceCycle
 from apps.cycles.models import Exception as CycleException
-from apps.integrations.call_contracts import CallRequest
+from apps.integrations.authority import head_record, revoke_authority
+from apps.integrations.budget_models import ProviderReservation
+from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
 from apps.integrations.call_dispatch import begin_io
 from apps.integrations.call_models import ProviderCall, ProviderEffectBarrier
 from apps.integrations.call_protocol import claim, reserve
-from apps.integrations.models import IntegrationIssue
+from apps.integrations.models import (
+    ClientProviderLink,
+    IntegrationIssue,
+    ProviderConnection,
+)
 from apps.integrations.serpro.codec import build_request
 from apps.obligations.models import FederalConsultation, FiscalSituationReport
 from tests.fakes.provider import Reply
@@ -404,3 +413,427 @@ def test_adopting_a_limit_pdf_resolves_the_issue_when_no_cycle_is_open(
             object_id=str(issue.pk),
             metadata__resolution="relatorio_pago_adotado",
         ).exists()
+
+
+def test_a_stale_claim_meeting_a_late_wait_is_refused_and_released(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = sitfis()
+    report, first = _ready(world)
+    world.script(processing_202(0))
+    mod._run(world.tenant_id, report.pk, first)
+    step = mod._decide(world.tenant_id, report.pk)
+    assert step is not None
+    [received] = world.calls("SP-SIT-R")
+    original = mod.claim
+
+    def late_wait_on_a_moved_version(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        # Given a 300-second wait arrives, and the connection version moves,
+        # before this claim's admission.
+        mod._receive(
+            world.tenant_id,
+            report.pk,
+            received.pk,
+            mod.SitfisReply(wait=timedelta(seconds=300), received_at=world.clock.now()),
+        )
+        with tenant_context(world.tenant_id):
+            link = ClientProviderLink.objects.get(pk=received.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "claim", late_wait_on_a_moved_version)
+    mod._run(world.tenant_id, report.pk, step)
+    # Then the claim itself recorded the refusal and released the reservation,
+    # never a deferral that keeps it held (AXRM-045).
+    stale = world.calls("SP-SIT-R")[-1]
+    assert (stale.state, stale.provider_code) == (
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+    )
+    assert world.budget().reserved == 0
+    assert len(world.sent("/Emitir")) == 1
+
+
+def test_a_moved_retry_claim_hands_the_report_to_its_next_advance(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one due emission whose first attempt gets a complete 401...
+    mod = sitfis()
+    report, first = _ready(world)
+    world.script(Reply(status=401))
+    protocol = import_module("apps.integrations.call_protocol")
+    real = protocol.claim
+    refused: list[tuple[Any, str]] = []
+
+    def move_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        # ...and the connection version moves at its retry's claim.
+        with tenant_context(world.tenant_id):
+            link = ClientProviderLink.objects.get(pk=first.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        try:
+            return real(*args, **kwargs)
+        except AdmissionDeniedError as error:
+            refused.append((args[1], type(error).__name__))
+            raise
+
+    monkeypatch.setattr(protocol, "claim", move_then_claim)
+    pinned = world.reload(report).consultation_id
+
+    def consultation() -> tuple[object, str, str]:
+        with tenant_context(world.tenant_id):
+            row = FederalConsultation.objects.get(pk=pinned)
+        return row.pk, row.outcome, row.provider_ref
+
+    # The report's own consultation, read before the run: incerto, no ref.
+    before = consultation()
+    assert before == (pinned, "incerto", "")
+    mod._run(world.tenant_id, report.pk, first)
+    monkeypatch.setattr(protocol, "claim", real)
+
+    # Then that retry claim recorded the refusal on the same call, typed as moved
+    # (named by string: the class is absent on the red trees)...
+    [target] = world.calls(first.operation)
+    assert (target.state, target.provider_code, target.attempts) == (
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+        1,
+    )
+    assert refused == [(target.pk, "VersionMovedError")]
+    # ...the pass that ran it ends with the report still emitting and its own
+    # original consultation exactly as before the run (gate review :730, :739)...
+    after = world.reload(report)
+    assert (after.state, after.consultation_id) == ("emitindo", pinned)
+    assert consultation() == before
+    assert len(world.sent("/Emitir")) == 1
+    # ...and one advance of that report settles that same consultation falha,
+    # naming the exact target from the stored refusal, never the earlier 401,
+    # with no second emission.
+    settled = world.advance(after)
+    assert (settled.pk, settled.state, settled.consultation_id) == (
+        report.pk,
+        "falha",
+        pinned,
+    )
+    assert consultation() == (pinned, "falha", str(target.pk))
+    assert [call.pk for call in world.calls(first.operation)] == [target.pk]
+    assert len(world.sent("/Emitir")) == 1
+
+
+def test_a_claim_refusal_closes_the_consultation_from_the_stored_call(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mod = sitfis()
+    report, first = _ready(world)
+    original = mod.claim
+
+    def absent_on_a_moved_version(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        # Given the client's authority is revoked and the connection version
+        # moves before this claim, so the claim records `autorizacao_ausente`...
+        with tenant_context(world.tenant_id):
+            head = head_record(world.termo.client.pk, "sitfis")
+            assert head is not None
+            revoke_authority(
+                world.termo.actor,
+                world.termo.client.pk,
+                service="sitfis",
+                expected_version=head.version,
+            )
+            link = ClientProviderLink.objects.get(pk=first.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        try:
+            return original(*args, **kwargs)
+        finally:
+            # ...and the link is disabled once that refusal has committed.
+            with tenant_context(world.tenant_id):
+                ClientProviderLink.objects.filter(pk=first.link_id).update(
+                    status="revogada"
+                )
+
+    monkeypatch.setattr(mod, "claim", absent_on_a_moved_version)
+    mod._run(world.tenant_id, report.pk, first)
+    # Then the report settles from the refusal stored on the call, classified
+    # against that call's own link, and its receipt names that call (AXRM-045).
+    refused = world.calls(first.operation)[-1]
+    assert (refused.state, refused.provider_code) == (
+        "bloqueada_autoridade",
+        "autorizacao_ausente",
+    )
+    settled = world.reload(report)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (settled.state, receipt.provider_ref) == ("negado", str(refused.pk))
+    assert world.budget().reserved == 0
+    assert world.sent("/Emitir") == []
+
+
+def _hold(
+    world: World, lock: Callable[[], object]
+) -> tuple[threading.Thread, threading.Event, list[str]]:
+    """Hold one row lock on a second connection until released."""
+    held, release = threading.Event(), threading.Event()
+    errors: list[str] = []
+
+    def run() -> None:
+        try:
+            with tenant_context(world.tenant_id), transaction.atomic():
+                lock()
+                held.set()
+                assert release.wait(timeout=30)
+        except BaseException as error:  # noqa: BLE001 - return thread failures
+            errors.append(repr(error))
+        finally:
+            connections.close_all()
+
+    holder = threading.Thread(target=run)
+    holder.start()
+    assert held.wait(timeout=15)
+    return holder, release, errors
+
+
+def _refuse_at_claim_while(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    lock: Any,  # noqa: ANN401
+) -> tuple[FiscalSituationReport, Any, list[str]]:
+    """Run one claim whose refusal commits, then hold `lock` before SITFIS settles."""
+    mod = sitfis()
+    report, first = _ready(world)
+    original = mod.claim
+    holders: list[tuple[threading.Thread, threading.Event, list[str]]] = []
+
+    def refused_then_locked(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        with tenant_context(world.tenant_id):
+            link = ClientProviderLink.objects.get(pk=first.link_id)
+            ProviderConnection.objects.filter(pk=link.connection_id).update(
+                version=F("version") + 1
+            )
+        try:
+            return original(*args, **kwargs)
+        finally:
+            holders.append(_hold(world, lambda: lock(first)))
+
+    monkeypatch.setattr(mod, "claim", refused_then_locked)
+    mod._run(world.tenant_id, report.pk, first)
+    monkeypatch.setattr(mod, "claim", original)
+    [(holder, release, errors)] = holders
+    release.set()
+    holder.join(timeout=30)
+    return report, first, errors
+
+
+def _lock_connection(first: Any) -> None:  # noqa: ANN401
+    link = ClientProviderLink.objects.get(pk=first.link_id)
+    list(ProviderConnection.objects.select_for_update().filter(pk=link.connection_id))
+
+
+def _lock_call(first: Any) -> None:  # noqa: ANN401
+    list(ProviderCall.objects.select_for_update().filter(request_key=first.key))
+
+
+def test_a_lock_on_the_connection_never_hides_a_committed_claim_refusal(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the claim commits a refusal, and another worker then holds the
+    # connection's row lock while SITFIS settles it...
+    report, first, errors = _refuse_at_claim_while(world, monkeypatch, _lock_connection)
+    assert errors == []
+    # Then the report still closes from the stored call, never with a blank ref.
+    refused = world.calls(first.operation)[-1]
+    assert refused.state == "bloqueada_autoridade"
+    settled = world.reload(report)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (settled.state, receipt.provider_ref) == ("falha", str(refused.pk))
+
+
+def test_a_locked_refused_call_defers_its_report_and_never_closes_it_blank(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given the claim commits a refusal, and another worker then holds that
+    # call's own row lock while SITFIS settles it...
+    report, first, errors = _refuse_at_claim_while(world, monkeypatch, _lock_call)
+    assert errors == []
+    # Then that pass defers: the report stays emitting, its receipt unwritten...
+    deferred = world.reload(report)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=deferred.consultation_id)
+    assert (deferred.state, receipt.provider_ref) == ("emitindo", "")
+    # ...and the next pass settles it from the stored call.
+    refused = world.calls(first.operation)[-1]
+    settled = world.advance(deferred)
+    with tenant_context(world.tenant_id):
+        receipt = FederalConsultation.objects.get(pk=settled.consultation_id)
+    assert (settled.state, receipt.provider_ref) == ("falha", str(refused.pk))
+
+
+def _hold_the_budget_lock(
+    world: World,
+) -> tuple[threading.Thread, threading.Event, threading.Event, list[str]]:
+    """One connection holds the cross-firm budget lock until released."""
+    holding, done = threading.Event(), threading.Event()
+    failures: list[str] = []
+
+    def hold() -> None:
+        try:
+            with tenant_context(world.tenant_id), transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '10s'")
+                    cursor.execute("SELECT pg_advisory_xact_lock(%s)", [240110])
+                holding.set()
+                if not done.wait(timeout=30):
+                    failures.append("holder: never released")
+        except Exception as error:  # noqa: BLE001 - every holder failure is recorded
+            failures.append(f"holder: {type(error).__name__}: {error}")
+        finally:
+            connections.close_all()
+
+    return threading.Thread(target=hold), holding, done, failures
+
+
+def _signal_the_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[threading.Event, threading.Event, threading.Event, list[bool]]:
+    """Signal, in the claiming thread only: the probe reached the report, the
+    release began with the budget lock taken elsewhere, and the release ended."""
+    mod = sitfis()
+    state_module = import_module("apps.integrations.call_state")
+    real_admit, real_release = mod.admit_emission, state_module.release
+    probed, releasing, released = (threading.Event() for _ in range(3))
+    lock_free_at_release: list[bool] = []
+
+    def in_claimer() -> bool:
+        return threading.current_thread() is not threading.main_thread()
+
+    def admit_then_signal(call: Any) -> None:  # noqa: ANN401
+        real_admit(call)
+        if in_claimer():
+            probed.set()
+
+    def release_after_signal(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        if not in_claimer():
+            return real_release(*args, **kwargs)
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_xact_lock(%s)", [240110])
+            lock_free_at_release.append(cursor.fetchone()[0])
+        releasing.set()
+        try:
+            return real_release(*args, **kwargs)
+        finally:
+            released.set()
+
+    monkeypatch.setattr(mod, "admit_emission", admit_then_signal)
+    monkeypatch.setattr(state_module, "release", release_after_signal)
+    return probed, releasing, released, lock_free_at_release
+
+
+def _take_the_report(
+    world: World,
+    report: FiscalSituationReport,
+    events: dict[str, threading.Event],
+    claimer: threading.Thread,
+) -> tuple[str, dict[str, bool]]:
+    """Lock the report, noting where the claim stands while it is held."""
+    try:
+        with tenant_context(world.tenant_id), transaction.atomic():
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = '5s'")
+            FiscalSituationReport.objects.select_for_update().get(pk=report.pk)
+            window = {
+                "probed": events["probed"].is_set(),
+                "claiming": claimer.is_alive(),
+                "released": events["released"].is_set(),
+            }
+    except OperationalError as error:
+        return f"waited: {error}", {}
+    return "locked", window
+
+
+def test_a_moved_claims_reread_holds_no_report_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, first = _ready(world)
+    reserved_before = world.budget().reserved
+    # Given a reserved emission whose connection version then moves...
+    row = reserve(world.tenant_id, first.link_id, _request(first))
+    with tenant_context(world.tenant_id):
+        link = ClientProviderLink.objects.get(pk=first.link_id)
+        ProviderConnection.objects.filter(pk=link.connection_id).update(
+            version=F("version") + 1
+        )
+    # ...and the budget lock is held elsewhere, so the moved claim's refusal
+    # stops in `release` after its re-read reached the report.
+    holder, holding, done, failures = _hold_the_budget_lock(world)
+    probed, releasing, released, lock_free_at_release = _signal_the_claim(monkeypatch)
+    refusals: list[str] = []
+
+    def claim_it() -> None:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '10s'")
+            claim(world.tenant_id, row.pk)
+        except Exception as error:  # noqa: BLE001 - only the moved refusal may end it
+            refusals.append(f"{type(error).__name__}: {error}")
+        finally:
+            connections.close_all()
+
+    claimer = threading.Thread(target=claim_it)
+    started: list[threading.Thread] = []
+    ready = {"holding": False, "releasing": False}
+    window: dict[str, bool] = {}
+    locked = "not tried"
+    # One cleanup path: every started worker is released and joined on any exit.
+    try:
+        holder.start()
+        started.append(holder)
+        ready["holding"] = holding.wait(timeout=15)
+        if ready["holding"]:
+            claimer.start()
+            started.append(claimer)
+            ready["releasing"] = releasing.wait(timeout=15)
+        if ready["releasing"]:
+            # When this runner locks the report while that claim is in release.
+            locked, window = _take_the_report(
+                world, report, {"probed": probed, "released": released}, claimer
+            )
+    finally:
+        done.set()
+        for worker in started:
+            worker.join(timeout=30)
+    assert [worker.name for worker in started if worker.is_alive()] == []
+    assert ready == {"holding": True, "releasing": True}
+    # Then the re-read kept no new lock: it only named a cause (AXRM-045).
+    assert locked == "locked"
+    # The probe had reached the report and the release was waiting on the budget
+    # lock held elsewhere: this session took the report before that lock went.
+    assert window == {"probed": True, "claiming": True, "released": False}
+    assert lock_free_at_release == [False]
+    assert failures == []
+    assert refusals == ["VersionMovedError: bloqueada_autoridade"]
+    _assert_refused_and_released(world, first.operation, row.pk, reserved_before)
+
+
+def _assert_refused_and_released(
+    world: World,
+    operation: str,
+    call_id: object,
+    reserved_before: int,
+) -> None:
+    """The refusal committed: the call names its cause, its slot is released,
+    the budget is back where it was and nothing was sent."""
+    refused = world.calls(operation)[-1]
+    assert (refused.pk, refused.state, refused.provider_code) == (
+        call_id,
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+    )
+    with tenant_context(world.tenant_id):
+        slots = ProviderReservation.objects.filter(call=refused)
+        assert list(slots.values_list("attempt_number", "state")) == [(1, "released")]
+    assert world.budget().reserved == reserved_before
+    assert world.sent("/Emitir") == []

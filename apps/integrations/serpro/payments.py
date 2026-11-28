@@ -77,7 +77,11 @@ from apps.integrations.authority import (
 )
 from apps.integrations.budget_pricing import BudgetDeniedError
 from apps.integrations.budget_settlement import release
-from apps.integrations.call_contracts import AdmissionDeniedError, CallRequest
+from apps.integrations.call_contracts import (
+    AdmissionDeniedError,
+    CallRequest,
+    VersionMovedError,
+)
 from apps.integrations.call_models import CallState, ProviderCall
 from apps.integrations.call_protocol import claim, perform, reserve
 from apps.integrations.models import (
@@ -999,6 +1003,10 @@ def queue_payment_receipt(actor: User, client_id: UUID, payment_id: UUID) -> Non
     transaction.on_commit(lambda: emit_payment_receipt_task.delay(*args))
 
 
+# The states a refused admission leaves recorded on its call (`record_refusal`).
+RECORDED_REFUSALS: Final = (CallState.AUTHORITY, CallState.PAUSED, CallState.QUOTA)
+
+
 def emit_payment_receipt(
     tenant_id: UUID, payment_id: UUID, actor_id: UUID
 ) -> ProviderCall | None:
@@ -1032,14 +1040,30 @@ def emit_payment_receipt(
         )
     except AdmissionDeniedError:
         return None
-    ticket = claim(tenant_id, row.pk)
+    try:
+        ticket = claim(tenant_id, row.pk)
+    except VersionMovedError:
+        ticket = None  # The claim recorded the refusal and released the reservation.
     if ticket is None:
-        return row
+        # Report the call as stored now, never the row as it was reserved.
+        with tenant_context(tenant_id):
+            return ProviderCall.objects.get(pk=row.pk)
     adapter = ReceiptAdapter(
         SerproAdapter(_transport(cast("Environment", environment)), parties, data)
     )
     # A 403 is owned by the protocol's post-call hook (`work.own_denial`).
-    perform(ticket, adapter)
+    try:
+        perform(ticket, adapter)
+    except AdmissionDeniedError:
+        # Only a refusal the protocol recorded and committed on the call (a
+        # dispatch refusal, first or after a 401 retry) is reported as stored;
+        # anything else, such as a settlement's budget error, propagates.
+        with tenant_context(tenant_id):
+            recorded = ProviderCall.objects.filter(
+                pk=row.pk, state__in=RECORDED_REFUSALS
+            ).exists()
+        if not recorded:
+            raise
     with tenant_context(tenant_id):
         call = ProviderCall.objects.get(pk=row.pk)
     if call.state == CallState.SUCCESS and adapter.pdf is not None:

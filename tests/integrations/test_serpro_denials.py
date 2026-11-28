@@ -7,6 +7,7 @@ code opens the firm issue, which refuses that firm's next calls; a provider
 failure demotes nothing; an unknown code is `incerto`. No 403 is ever re-sent.
 """
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -16,16 +17,18 @@ from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
+from uuid import UUID
 
 import pytest
+from django.db.models import F
 from pytest_django.fixtures import SettingsWrapper
 
 from apps.clients.models import ClientCompany
 from apps.core.tenancy import tenant_context
-from apps.integrations.authority import head_record
-from apps.integrations.budget_models import ProviderBudget
+from apps.integrations.authority import head_record, revoke_authority
+from apps.integrations.budget_models import ProviderBudget, ProviderReservation
 from apps.integrations.call_contracts import AdmissionDeniedError
-from apps.integrations.call_models import ProviderCall
+from apps.integrations.call_models import CallState, ProviderCall, ProviderCallAttempt
 from apps.integrations.models import (
     ClientProviderLink,
     IntegrationIssue,
@@ -33,11 +36,17 @@ from apps.integrations.models import (
 )
 from apps.integrations.serpro import payments
 from apps.integrations.serpro.authorization import TermoSubmission, submit_termo
+from apps.integrations.serpro.codec import build_request
 from apps.integrations.serpro.models import FirmIntegrationIssue, PaymentQuery
+from apps.integrations.serpro.parties import termo_parties
 from apps.integrations.serpro.payments_panel import federal_payments_panel as panel
 from apps.integrations.serpro.payments_panel import query_detail
+from apps.integrations.serpro.reauthentication import COMPLETE_401
+from apps.integrations.serpro.work import ADMISSION_REFUSED, CLIENT_ABSENT, TERMO_PREFIX
 from apps.integrations.transport_types import ProviderResponse
 from apps.obligations.models import FederalConsultation, FederalPayment
+from apps.obligations.models.federal import FederalConsultationKind
+from tests.fakes.provider import Reply
 from tests.integrations import pagtoweb_support as support
 from tests.integrations.pagtoweb_support import World, denied, page, world
 from tests.integrations.serpro_support import serpro_module
@@ -1097,3 +1106,884 @@ def test_a_saved_quota_refusal_wins_over_a_gone_termo_on_redelivery(
     )
     assert receipts(world) == [("encontrado", 100), ("cota_esgotada", 0)]
     assert len(world.sent()) == 1
+
+
+@DB
+def test_a_firm_termo_call_403_after_the_claim_is_frozen_in_the_refusal(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given this page claimed, then the firm's SP-TERMO call answers 403/016
+    # before the page dispatches (the connection version moves): that firm call
+    # opens the issue, and admission names it at dispatch, never a bare refusal.
+    termo, platform = world.termo, "AcessoNegado-ICGERENCIADOR-016"
+    real = import_module("apps.integrations.call_protocol").claim
+
+    def claim_then_termo_403(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real(*args, **kwargs)
+        world.script(denied(code=platform))
+        with tenant_context(termo.tenant.pk):
+            version = ProviderConnection.objects.get(pk=termo.connection.pk).version
+        submit_termo(
+            termo.actor,
+            termo.tenant.pk,
+            TermoSubmission(
+                termo.connection.pk,
+                termo.document.pk,
+                version,
+                termo.parties,
+                world.gateway.origin,
+            ),
+        )
+        return ticket
+
+    monkeypatch.setattr(payments, "claim", claim_then_termo_403)
+    refused = world.consult()
+    assert world.sent() == []
+    # Then the refusal froze the 016 that firm call recorded, and history names it.
+    assert (refused.state, refused.failure_code) == (
+        "falha",
+        first_issue(world, platform),
+    )
+    assert platform in query_detail(refused)
+
+
+# The definitive 401 a retry claim follows (`serpro/reauthentication.py:27-50`).
+DEFINITIVE_401: Final = {
+    "attempt_number": 1,
+    "observation": "result",
+    "outcome": CallState.FAILED,
+    "http_status": 401,
+    "provider_code": COMPLETE_401,
+    "billed": "nao",
+    "settled_microbrl": 0,
+}
+# The receipt's priced emission and the page's priced consultation.
+RECEIPT_MICROBRL: Final = 320_000
+# A budget row's identity: compared at every checkpoint, never its version.
+BUDGET_KEY: Final = ("id", "tenant_id", "provider", "window_start")
+# The call's lease and fencing fields, which only a successful claim advances.
+LEASE: Final = ("fence", "lease_owner", "lease_until", "execution_epoch", "version")
+
+
+def _sha(*parts: str) -> str:
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+
+
+def _pin_budget(world: World) -> tuple[object, ...]:
+    """The one monthly budget's identity, captured right after the seed."""
+    with tenant_context(world.termo.tenant.pk):
+        [row] = ProviderBudget.objects.values(*BUDGET_KEY)
+    return tuple(row[key] for key in BUDGET_KEY)
+
+
+def _target(world: World, call_id: UUID) -> dict[str, Any]:
+    """The bound call, its observations and slots, and every budget: full rows."""
+    with tenant_context(world.termo.tenant.pk):
+        return {
+            "call": ProviderCall.objects.filter(pk=call_id).values().get(),
+            "observations": list(
+                ProviderCallAttempt.objects.filter(call_id=call_id)
+                .order_by("attempt_number", "observation")
+                .values()
+            ),
+            "slots": list(
+                ProviderReservation.objects.filter(call_id=call_id)
+                .order_by("attempt_number")
+                .values()
+            ),
+            "budgets": list(ProviderBudget.objects.order_by("pk").values()),
+        }
+
+
+def _budgets(world: World) -> dict[str, Any]:
+    """Every budget row, with no call yet: the post-seed baseline."""
+    with tenant_context(world.termo.tenant.pk):
+        return {
+            "slots": [],
+            "budgets": list(ProviderBudget.objects.order_by("pk").values()),
+        }
+
+
+def _on_budget(snapshot: dict[str, Any], pinned: tuple[object, ...]) -> tuple[int, ...]:
+    """Require the pinned budget alone, every slot drawn on it; its balances."""
+    [budget] = snapshot["budgets"]
+    assert tuple(budget[key] for key in BUDGET_KEY) == pinned, "another budget row"
+    assert [slot["budget_id"] for slot in snapshot["slots"]] == [pinned[0]] * len(
+        snapshot["slots"]
+    ), "a slot is not drawn on the pinned budget"
+    return budget["reserved"], budget["known_liability"], budget["uncertain_exposure"]
+
+
+def _slots(snapshot: dict[str, Any]) -> list[tuple[int, str, int]]:
+    return [
+        (slot["attempt_number"], slot["state"], slot["microbrl"])
+        for slot in snapshot["slots"]
+    ]
+
+
+def _delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
+    """Every field of one row that differs between two snapshots of it."""
+    return {
+        name: (before[name], after[name])
+        for name in sorted(set(before) | set(after))
+        if before.get(name) != after.get(name)
+    }
+
+
+def _recording_claim(
+    world: World,
+    module: ModuleType,
+    refusals: list[tuple[UUID, str, str, str, dict[str, Any]]],
+    entry: Callable[[UUID], None],
+) -> Callable[[UUID, UUID], Any]:
+    """The real claim at this site, after `entry`; each refusal kept at its exit."""
+    real = module.claim
+
+    def claim(tenant_id: UUID, call_id: UUID) -> Any:  # noqa: ANN401
+        entry(call_id)
+        try:
+            return real(tenant_id, call_id)
+        except AdmissionDeniedError as error:
+            # Named by string: the typed class is absent on the red trees.
+            refusals.append(
+                (
+                    call_id,
+                    type(error).__name__,
+                    str(error),
+                    error.reason,
+                    _target(world, call_id),
+                )
+            )
+            raise
+
+    return claim
+
+
+def _tag(request: Any) -> UUID | None:  # noqa: ANN401 - the fake's received request
+    value = next((v for k, v in request.headers if k.lower() == "x-request-tag"), None)
+    return UUID(value) if value else None
+
+
+def _observe_perform(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """Record what the caller's own perform does: return its result, or raise."""
+    real = import_module("apps.integrations.call_protocol").perform
+    seen: list[tuple[Any, ...]] = []
+
+    def observed(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        try:
+            result = real(*args, **kwargs)
+        except AdmissionDeniedError as error:
+            seen.append(("raised", type(error).__name__, error.reason))
+            raise
+        seen.append(("returned", result))
+        return result
+
+    monkeypatch.setattr(payments, "perform", observed)
+    return seen
+
+
+def _the_401(result: Any) -> tuple[object, ...]:  # noqa: ANN401 - a CallResult
+    return (
+        result.state,
+        result.http_status,
+        result.provider_code,
+        result.billed,
+        result.settled_microbrl,
+        result.response_digest,
+        result.denial_cause,
+    )
+
+
+def _found_payment(world: World) -> FederalPayment:
+    """One DAS payment found by a successful consultation (the seed page)."""
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        return FederalPayment.objects.get()
+
+
+def _payment_key(das: FederalPayment) -> str:
+    """The receipt's one intent, derived from the input payment alone."""
+    key = _sha("pagtoweb-comprovante", str(das.pk))
+    assert payments.receipt_request_key(das.pk) == key
+    return key
+
+
+def _intent(snapshot: dict[str, Any]) -> tuple[str, str]:
+    return snapshot["call"]["request_key"], snapshot["call"]["business_effect_key"]
+
+
+@DB
+def test_a_receipt_whose_connection_moved_before_claim_is_refused_and_released(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation; the seed page's
+    # money is its own, so the receipt is measured from its pinned budget here.
+    das = _found_payment(world)
+    key = _payment_key(das)
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
+    # When its SP-COMP is reserved at v1, then a termo renewal moves the
+    # connection to v2 before the claim.
+    real = import_module("apps.integrations.call_protocol").reserve
+    reserved: list[tuple[UUID, str, dict[str, Any]]] = []
+
+    def reserve_then_renew(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real(*args, **kwargs)
+        reserved.append((row.pk, row.request_key, _target(world, row.pk)))
+        _renew(world)
+        return row
+
+    monkeypatch.setattr(payments, "reserve", reserve_then_renew)
+    refusals: list[tuple[UUID, str, str, str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        payments, "claim", _recording_claim(world, payments, refusals, lambda _id: None)
+    )
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        pytest.fail("the claim's refusal escaped the receipt worker")
+    assert call is not None
+    # Then the reservation is the payment's one intent, holding one priced slot
+    # on the pinned budget...
+    [(row_id, row_key, entry)] = reserved
+    assert (row_key, _intent(entry)) == (key, (key, key)), (
+        "the receipt call is not the payment's intent"
+    )
+    assert entry["call"]["state"] == CallState.RESERVED
+    assert entry["observations"] == []
+    assert _slots(entry) == [(1, "reserved", RECEIPT_MICROBRL)]
+    assert _on_budget(entry, budget) == (
+        baseline[0] + RECEIPT_MICROBRL,
+        *baseline[1:],
+    )
+    # ...and the claim refused that same call, typed as moved, changing exactly
+    # its state, code and version, releasing that slot, returning the money.
+    [(refused_id, name, state, reason, refused)] = refusals
+    assert (refused_id, name, state, reason) == (
+        row_id,
+        "VersionMovedError",
+        CallState.AUTHORITY,
+        CallState.AUTHORITY,
+    )
+    version = entry["call"]["version"]
+    assert _delta(entry["call"], refused["call"]) == {
+        "provider_code": (entry["call"]["provider_code"], CallState.AUTHORITY),
+        "state": (CallState.RESERVED, CallState.AUTHORITY),
+        "version": (version, version + 1),
+    }
+    assert refused["observations"] == []
+    [before], [after] = entry["slots"], refused["slots"]
+    assert _delta(before, after) == {
+        "state": ("reserved", "released"),
+        "version": (before["version"], before["version"] + 1),
+    }
+    assert _on_budget(refused, budget) == baseline
+    assert set(_delta(entry["budgets"][0], refused["budgets"][0])) <= {
+        "reserved",
+        "version",
+    }
+    # The worker returns that bound call as stored, unchanged since the refusal,
+    # never the row as it was reserved.
+    assert _target(world, call.pk) == refused
+    assert (call.pk, call.request_key, call.business_effect_key) == (row_id, key, key)
+    assert world.sent("/Emitir") == []
+    assert (call.state, call.provider_code) == (
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+    )
+
+
+@DB
+def test_a_receipt_retry_after_a_401_refused_at_claim_is_reported_as_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    das = _found_payment(world)
+    key = _payment_key(das)
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
+    # When its first SP-COMP attempt gets a complete 401, and the connection
+    # version moves at the retry's claim.
+    protocol = import_module("apps.integrations.call_protocol")
+    entries: list[dict[str, Any]] = []
+
+    def renew_at_entry(call_id: UUID) -> None:
+        entries.append(_target(world, call_id))
+        _renew(world)
+
+    refusals: list[tuple[UUID, str, str, str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        protocol, "claim", _recording_claim(world, protocol, refusals, renew_at_entry)
+    )
+    performs = _observe_perform(monkeypatch)
+    world.script(Reply(status=401))
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        pytest.fail("the retry claim's refusal escaped the receipt worker")
+    # perform itself returns the 401's result once the retry claim's refusal is
+    # recorded, before the receipt returns: it never hands that refusal on, so
+    # the receipt's own handler cannot mask it (AXRM-045, gate review :730).
+    assert [row[0] for row in performs] == ["returned"], (
+        "perform raised the retry claim's refusal"
+    )
+    assert call is not None
+    # Then the retry claim met the payment's intent with the definitive,
+    # unbilled 401 and its slot released on the pinned budget...
+    [entry] = entries
+    assert _intent(entry) == (key, key), "the receipt call is not the payment's intent"
+    [observation] = entry["observations"]
+    assert {k: observation[k] for k in DEFINITIVE_401} == DEFINITIVE_401
+    held = entry["call"]
+    assert (
+        held["state"],
+        held["provider_code"],
+        held["attempts"],
+        held["http_status"],
+        held["billed"],
+    ) == (CallState.RETRY, COMPLETE_401, 1, 401, "nao")
+    assert _slots(entry) == [(1, "released", RECEIPT_MICROBRL)]
+    assert _on_budget(entry, budget) == baseline
+    # ...perform returned exactly that 401's own result (gate review :739)...
+    [(_returned, result)] = performs
+    assert _the_401(result) == (
+        CallState.FAILED,
+        401,
+        COMPLETE_401,
+        "nao",
+        0,
+        observation["response_digest"],
+        "",
+    ), "perform did not return the 401's own result"
+    # ...and the claim refused that call, typed as moved, changing exactly its
+    # state, code and version: the 401 (attempt, fence, digest), the released
+    # slot and the budget all identical, no second slot.
+    [(refused_id, name, state, reason, refused)] = refusals
+    assert (refused_id, name, state, reason) == (
+        call.pk,
+        "VersionMovedError",
+        CallState.AUTHORITY,
+        CallState.AUTHORITY,
+    )
+    assert _delta(held, refused["call"]) == {
+        "provider_code": (COMPLETE_401, CallState.AUTHORITY),
+        "state": (CallState.RETRY, CallState.AUTHORITY),
+        "version": (held["version"], held["version"] + 1),
+    }
+    assert refused["observations"] == entry["observations"]
+    assert refused["slots"] == entry["slots"]
+    assert refused["budgets"] == entry["budgets"]
+    # The worker returns that bound call as stored, unchanged since the refusal,
+    # and the one exchange is the original attempt's.
+    assert _target(world, call.pk) == refused
+    assert (call.request_key, call.business_effect_key) == (key, key)
+    [sent] = world.sent("/Emitir")
+    assert _tag(sent) == observation["attempt_id"]
+    assert (call.state, call.provider_code) == (
+        "bloqueada_autoridade",
+        "bloqueada_autoridade",
+    )
+
+
+def _pin_reserved_slot(
+    world: World, monkeypatch: pytest.MonkeyPatch, budget: tuple[object, ...]
+) -> list[tuple[UUID, UUID] | None]:
+    """Record (call, slot) of each reservation before the call reaches the worker."""
+    real = import_module("apps.integrations.call_protocol").reserve
+    pinned: list[tuple[UUID, UUID] | None] = []
+
+    def reserve_and_pin(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real(*args, **kwargs)
+        snapshot = _target(world, row.pk)
+        assert _slots(snapshot) == [(1, "reserved", RECEIPT_MICROBRL)]
+        _on_budget(snapshot, budget)
+        pinned.append((row.pk, snapshot["slots"][0]["id"]))
+        return row
+
+    monkeypatch.setattr(payments, "reserve", reserve_and_pin)
+    return pinned
+
+
+def _receipt_entry(  # noqa: PLR0913 - the entry, its site, intent, budget, money and slot
+    entry: dict[str, Any],
+    site: str,
+    key: str,
+    budget: tuple[object, ...],
+    baseline: tuple[int, ...],
+    *,
+    reserved: tuple[UUID, UUID] | None = None,
+) -> None:
+    """The receipt claim's entry: reserved with one priced slot, or after the
+    definitive 401 with that same slot released, on the pinned budget."""
+    assert _intent(entry) == (key, key), "the receipt call is not the payment's intent"
+    held = entry["call"]
+    if site == "claim":
+        assert held["state"] == CallState.RESERVED
+        assert entry["observations"] == []
+        assert _slots(entry) == [(1, "reserved", RECEIPT_MICROBRL)]
+        assert _on_budget(entry, budget) == (
+            baseline[0] + RECEIPT_MICROBRL,
+            *baseline[1:],
+        )
+        return
+    assert (
+        held["state"],
+        held["provider_code"],
+        held["attempts"],
+        held["http_status"],
+        held["billed"],
+    ) == (CallState.RETRY, COMPLETE_401, 1, 401, "nao")
+    [observation] = entry["observations"]
+    assert {k: observation[k] for k in DEFINITIVE_401} == DEFINITIVE_401
+    assert _slots(entry) == [(1, "released", RECEIPT_MICROBRL)]
+    assert _on_budget(entry, budget) == baseline
+    # The released slot is the very row reserved before the first send, on the
+    # same call (gate review :758); compared within this run only.
+    assert (held["id"], entry["slots"][0]["id"]) == reserved, (
+        "the retry's slot is not the one reserved for the first attempt"
+    )
+
+
+@DB
+@pytest.mark.parametrize("site", ["claim", "retry-claim"])
+@pytest.mark.parametrize("cause", ["authority-revoked", "termo-expired"])
+def test_an_ordinary_authority_veto_at_a_receipt_claim_is_never_a_moved_refusal(
+    world: World, monkeypatch: pytest.MonkeyPatch, cause: str, site: str
+) -> None:
+    # Given one DAS payment found by a successful consultation, and for the
+    # retry site a complete first 401.
+    das = _found_payment(world)
+    key = _payment_key(das)
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
+    protocol = import_module("apps.integrations.call_protocol")
+    reserved_at: list[tuple[UUID, UUID] | None] = []
+    if site == "retry-claim":
+        world.script(Reply(status=401))
+        reserved_at = _pin_reserved_slot(world, monkeypatch, budget)
+    module = payments if site == "claim" else protocol
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    entries: list[dict[str, Any]] = []
+    reasons: list[str] = []
+
+    def veto_at_entry(call_id: UUID) -> None:
+        # When that claim meets an ordinary authority veto, no version moving:
+        # the client's authority revoked, or the firm's termo no longer in force.
+        entries.append(_target(world, call_id))
+        with tenant_context(tenant):
+            if cause == "authority-revoked":
+                client = world.termo.client.pk
+                head = head_record(client, "pagtoweb")
+                assert head is not None
+                revoke_authority(
+                    actor, client, service="pagtoweb", expected_version=head.version
+                )
+                reasons.append(CLIENT_ABSENT)
+            else:
+                for name in ("work", "parties"):
+                    found = import_module(f"apps.integrations.serpro.{name}")
+                    monkeypatch.setattr(found, "termo_in_force", lambda *_args: False)
+                connection = ProviderConnection.objects.get(
+                    pk=world.termo.connection.pk
+                )
+                reasons.append(f"{TERMO_PREFIX}{connection.version}")
+
+    refusals: list[tuple[UUID, str, str, str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        module, "claim", _recording_claim(world, module, refusals, veto_at_entry)
+    )
+    performs = _observe_perform(monkeypatch)
+    public: tuple[str, ...]
+    try:
+        payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+        public = ("returned",)
+    except AdmissionDeniedError as error:
+        public = ("raised", type(error).__name__, error.reason)
+    # Then that claim met the payment's intent in its expected state.
+    [entry] = entries
+    # Exactly one reservation at the retry site; none is pinned at the claim.
+    (pinned_slot,) = reserved_at or [None]
+    _receipt_entry(entry, site, key, budget, baseline, reserved=pinned_slot)
+    held = entry["call"]
+    # At that claim's exit the refusal is the plain one with its own cause, and
+    # the claim rolled back: every row as at its entry, fence, lease, epoch and
+    # version included.
+    [(call_id, name, state, reason, at_exit)] = refusals
+    assert (name, state, reason) == (
+        "AdmissionDeniedError",
+        CallState.AUTHORITY,
+        *reasons,
+    )
+    assert [at_exit["call"][field] for field in LEASE] == [
+        held[field] for field in LEASE
+    ]
+    assert at_exit == entry
+    # At the retry site perform itself hands that same plain refusal on (E5,
+    # gate review :730); the first claim has no perform.
+    assert performs == ([] if site == "claim" else [("raised", name, reason)])
+    # It reaches the receipt's caller, which leaves the call as it was and
+    # sends nothing more.
+    assert public == ("raised", name, reason)
+    after = _target(world, call_id)
+    assert [after["call"][field] for field in LEASE] == [held[field] for field in LEASE]
+    assert after == entry
+    assert len(world.sent("/Emitir")) == (0 if site == "claim" else 1)
+
+
+def _page_scope(world: World, query: PaymentQuery) -> tuple[str, str]:
+    """Page 0's key and body digest, derived from the query and termo alone."""
+    assert query.window == support.WINDOW
+    key = _sha("pagtoweb-pagina", query.request_key, "0")
+    data: dict[str, Any] = {
+        "intervaloDataArrecadacao": {
+            "dataInicial": support.WINDOW.start.isoformat(),
+            "dataFinal": support.WINDOW.end.isoformat(),
+        },
+        "primeiroDaPagina": 0,
+        "tamanhoDaPagina": 100,
+    }
+    if support.WINDOW.revenue_codes:
+        data["codigoReceitaLista"] = list(support.WINDOW.revenue_codes)
+    with tenant_context(world.termo.tenant.pk):
+        parties = termo_parties(world.termo.connection.pk, world.termo.client.cnpj)
+    assert parties is not None
+    body = build_request("SP-PAG", parties, data).body
+    return key, hashlib.sha256(body).hexdigest()
+
+
+def _record_routes(
+    monkeypatch: pytest.MonkeyPatch, performs: list[tuple[Any, ...]]
+) -> dict[str, list[Any]]:
+    """Call-through recorders on the page's two settlement routes; each settle
+    entry also notes how many perform results had returned by then."""
+    routes: dict[str, list[Any]] = {"refused": [], "settle": [], "counts": []}
+    real_refused, real_settle = payments._refused, payments._settle_page
+
+    def refused_route(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        query_arg, index, scope, page_key, error = args[:5]
+        routes["refused"].append(
+            (query_arg.pk, index, scope, page_key, f"{type(error).__name__}: {error}")
+        )
+        return real_refused(*args, **kwargs)
+
+    def settle_route(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        query_arg, index, scope, call_id = args[:4]
+        routes["settle"].append((query_arg.pk, index, scope, call_id))
+        routes["counts"].append(len(performs))
+        return real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(payments, "_refused", refused_route)
+    monkeypatch.setattr(payments, "_settle_page", settle_route)
+    return routes
+
+
+def _page_routes(
+    site: str, query_id: UUID, key: str, digest: str, target: dict[str, Any]
+) -> tuple[list[object], dict[str, list[Any]]]:
+    """What perform returns and which settlement route the page takes, per site:
+    at the retry, the one 401 result has returned before settlement starts."""
+    call_id = target["call"]["id"]
+    if site == "claim":
+        moved = f"VersionMovedError: {CallState.AUTHORITY}"
+        refused = [(query_id, 0, digest, key, moved)]
+        return [], {"refused": refused, "settle": [], "counts": []}
+    [observation] = target["observations"]
+    result = (
+        CallState.FAILED,
+        401,
+        COMPLETE_401,
+        "nao",
+        0,
+        observation["response_digest"],
+        "",
+    )
+    settle = [(query_id, 0, digest, call_id)]
+    return [result], {"refused": [], "settle": settle, "counts": [1]}
+
+
+def _page_trace(  # noqa: PLR0913 - the expected and both observed snapshots
+    *,
+    expected_performs: list[object],
+    expected: dict[str, list[Any]],
+    first_performs: tuple[tuple[Any, ...], ...],
+    first_routes: dict[str, list[Any]],
+    performs: tuple[tuple[Any, ...], ...],
+    routes: dict[str, list[Any]],
+) -> None:
+    """The page's first run took its one route in order; the duplicate added nothing."""
+    assert [
+        _the_401(row[1]) if row[0] == "returned" else row for row in first_performs
+    ] == expected_performs, "the page took the wrong settlement route"
+    assert first_routes == expected, "the page took the wrong settlement route"
+    assert performs == first_performs, "the duplicate run performed the page again"
+    assert routes == first_routes, "the duplicate run settled the page again"
+
+
+@DB
+@pytest.mark.parametrize("site", ["claim", "retry-claim"])
+def test_a_page_moved_at_its_claim_settles_its_own_query_from_the_refusal(
+    world: World, monkeypatch: pytest.MonkeyPatch, site: str
+) -> None:
+    # Given one consultation opened, its id and key held, its page 0 scope
+    # derived before the run, and for the retry site a complete first 401.
+    tenant, client = world.termo.tenant.pk, world.termo.client
+    with tenant_context(tenant):
+        locked = ClientCompany.objects.select_for_update().get(pk=client.pk)
+        query = payments.open_payment_query(
+            locked, support.WINDOW, actor=None, nonce="consulta-1"
+        )
+    pinned = (query.pk, query.request_key)
+    key, digest = _page_scope(world, query)
+    if site == "retry-claim":
+        world.script(Reply(status=401))
+    budget = _pin_budget(world)
+    baseline = _on_budget(_budgets(world), budget)
+    # When the connection version moves at that page's claim.
+    protocol = import_module("apps.integrations.call_protocol")
+    module = payments if site == "claim" else protocol
+    refusals: list[tuple[UUID, str, str, str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        module,
+        "claim",
+        _recording_claim(world, module, refusals, lambda _id: _renew(world)),
+    )
+    performs = _observe_perform(monkeypatch)
+    routes = _record_routes(monkeypatch, performs)
+    settled = payments.run_payment_query(tenant, query.pk)
+    [call] = world.calls()
+    sent = 0 if site == "claim" else 1
+    stored = (
+        CallState.AUTHORITY,
+        CallState.AUTHORITY,
+        sent,
+        None if site == "claim" else 401,
+        "desconhecido" if site == "claim" else "nao",
+    )
+
+    def receipts_of_the_client() -> list[tuple[str, UUID, str, str]]:
+        with tenant_context(tenant):
+            return list(
+                FederalConsultation.objects.filter(client_id=client.pk).values_list(
+                    "kind", "client_id", "scope_digest", "provider_ref"
+                )
+            )
+
+    # Then that same query ends falha by the moved refusal's cause, with one
+    # payments receipt for that scope citing that call, the call being page 0's
+    # own intent; a duplicate run of it changes nothing.
+    first_routes: dict[str, list[Any]] = {}
+    first_performs: tuple[tuple[Any, ...], ...] = ()
+    for run in ("first", "duplicate"):
+        if run == "duplicate":
+            first_routes = {name: list(rows) for name, rows in routes.items()}
+            first_performs = tuple(performs)
+            settled = payments.run_payment_query(tenant, query.pk)
+        assert (settled.pk, settled.request_key) == pinned, run
+        assert (settled.state, settled.failure_code) == (
+            "falha",
+            ADMISSION_REFUSED,
+        ), run
+        target = _target(world, call.pk)
+        row = target["call"]
+        assert (
+            row["state"],
+            row["provider_code"],
+            row["attempts"],
+            row["http_status"],
+            row["billed"],
+        ) == stored, run
+        assert (
+            row["request_key"],
+            row["business_effect_key"],
+            row["request_digest"],
+        ) == (
+            key,
+            key,
+            digest,
+        ), run
+        assert receipts_of_the_client() == [
+            (FederalConsultationKind.PAGAMENTOS, client.pk, digest, str(call.pk))
+        ], run
+        assert [slot[:2] for slot in _slots(target)] == [(1, "released")], run
+        assert _on_budget(target, budget) == baseline, run
+        assert [other.pk for other in world.calls()] == [call.pk], run
+        assert len(world.sent()) == sent, run
+    if site == "retry-claim":
+        [request] = world.sent()
+        assert hashlib.sha256(request.body).hexdigest() == digest
+        assert world.offsets() == [0]
+    # And the claim raised the typed moved refusal for that call (named by string:
+    # the class is absent on the red trees), settled through its own route on
+    # the first run: `_refused` at the first claim, `_settle_page` only after
+    # perform returned the 401's own result at the retry; the duplicate run
+    # performed and settled nothing (gate review :758).
+    assert [(row[0], row[1]) for row in refusals] == [(call.pk, "VersionMovedError")]
+    expected_performs, expected = _page_routes(site, query.pk, key, digest, target)
+    _page_trace(
+        expected_performs=expected_performs,
+        expected=expected,
+        first_performs=first_performs,
+        first_routes=first_routes,
+        performs=tuple(performs),
+        routes=routes,
+    )
+
+
+def _renew(world: World) -> None:
+    with tenant_context(world.termo.tenant.pk):
+        ProviderConnection.objects.filter(pk=world.termo.connection.pk).update(
+            version=F("version") + 1
+        )
+
+
+@DB
+def test_a_receipt_refused_at_its_first_dispatch_is_reported_as_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its SP-COMP is claimed at v1, then a termo renewal moves the
+    # connection to v2 before the dispatch.
+    real_claim = import_module("apps.integrations.call_protocol").claim
+
+    def claim_then_renew(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real_claim(*args, **kwargs)
+        _renew(world)
+        return ticket
+
+    monkeypatch.setattr(payments, "claim", claim_then_renew)
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        call = None
+    # Then the dispatch refusal is recorded, released and reported as stored.
+    assert call is not None, "the dispatch refusal escaped the receipt worker"
+    assert call.state == "bloqueada_autoridade"
+    with tenant_context(tenant):
+        held = ProviderReservation.objects.filter(call=call, state="reserved")
+        assert not held.exists()
+    assert world.sent("/Emitir") == []
+
+
+@DB
+def test_a_receipt_refused_at_dispatch_after_a_401_retry_claim_is_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its first SP-COMP attempt gets a complete 401, the retry's claim
+    # succeeds, and the connection version moves before the retry's dispatch.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_claim = protocol.claim
+
+    def claim_then_renew(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ticket = real_claim(*args, **kwargs)
+        _renew(world)
+        return ticket
+
+    monkeypatch.setattr(protocol, "claim", claim_then_renew)
+    world.script(Reply(status=401))
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    try:
+        call = payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError:
+        call = None
+    # Then the retry's dispatch refusal is recorded, released, reported as stored.
+    assert call is not None, "the retry dispatch refusal escaped the receipt worker"
+    assert call.state == "bloqueada_autoridade"
+    with tenant_context(tenant):
+        held = ProviderReservation.objects.filter(call=call, state="reserved")
+        assert not held.exists()
+    assert len(world.sent("/Emitir")) == 1
+
+
+@DB
+def test_a_budget_error_while_settling_a_sent_receipt_is_not_reported_as_stored(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When the SP-COMP is sent, and while it is on the wire its reservation and
+    # budget month stop matching, so settling it raises a budget refusal.
+    protocol = import_module("apps.integrations.call_protocol")
+    real_transmit = protocol.transmit
+
+    def transmit_then_lose_the_budget(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        reply = real_transmit(*args, **kwargs)
+        with tenant_context(world.termo.tenant.pk):
+            ProviderReservation.objects.filter(call__operation="SP-COMP").update(
+                attempt_number=F("attempt_number") + 50
+            )
+            budget = ProviderBudget.objects.get()
+            earlier = (budget.window_start - timedelta(days=1)).replace(day=1)
+            ProviderBudget.objects.update(window_start=earlier)
+        return reply
+
+    monkeypatch.setattr(protocol, "transmit", transmit_then_lose_the_budget)
+    tenant, actor = world.termo.tenant.pk, world.termo.actor
+    escaped: list[AdmissionDeniedError] = []
+    try:
+        payments.emit_payment_receipt(tenant, das.pk, actor.pk)
+    except AdmissionDeniedError as error:
+        escaped.append(error)
+    # Then that unrecorded refusal reaches the task, never a "stored" call.
+    assert [error.reason for error in escaped] == ["cota_ausente"], (
+        "the receipt worker swallowed a refusal it never recorded"
+    )
+    with tenant_context(tenant):
+        call = ProviderCall.objects.get(operation="SP-COMP")
+    assert call.state not in ("bloqueada_autoridade", "pausada", "bloqueada_cota")
+
+
+@DB
+def test_a_pause_at_the_receipt_first_claim_reaches_the_task(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Any,  # noqa: ANN401
+) -> None:
+    # Given one DAS payment found by a successful consultation.
+    world.script(page([support.item("DAS000000000045")]))
+    world.consult()
+    with tenant_context(world.termo.tenant.pk):
+        das = FederalPayment.objects.get()
+    # When its SP-COMP is reserved, then a pause meets its first claim.
+    real_claim = import_module("apps.integrations.call_protocol").claim
+
+    def pause_then_claim(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        settings.SERPRO_PAUSED = True
+        return real_claim(*args, **kwargs)
+
+    monkeypatch.setattr(payments, "claim", pause_then_claim)
+    tasks = import_module("apps.integrations.serpro.tasks")
+    args = (str(world.termo.tenant.pk), str(das.pk), str(world.termo.actor.pk))
+    try:
+        outcome = tasks.emit_payment_receipt_task(*args)
+    except AdmissionDeniedError as error:
+        outcome = f"raised {error}"
+    # Then the pause reaches the task, and the call stays reserved with its slot.
+    with tenant_context(world.termo.tenant.pk):
+        call = ProviderCall.objects.get(operation="SP-COMP")
+        slots = list(
+            ProviderReservation.objects.filter(call=call).values_list(
+                "state", flat=True
+            )
+        )
+    assert (outcome, call.state, slots) == (
+        "raised pausada",
+        "reservada",
+        ["reserved"],
+    )
+    assert world.sent("/Emitir") == []

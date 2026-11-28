@@ -49,6 +49,14 @@ class AdmissionDeniedError(Exception):
         self.reason = reason or self.reason or (str(args[0]) if args else "")
 
 
+class VersionMovedError(AdmissionDeniedError):
+    """A version or credential moved after reservation: never admissible again.
+
+    The one refusal claim records on the call; every other refusal rolls the
+    claim back and reaches its caller unchanged (AXRM-045).
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class CallRequest:
     """Only canonical identities and digests cross into persisted workflow state."""
@@ -139,8 +147,20 @@ class Reservation:
             raise AdmissionDeniedError(reason)
 
 
+def _names_no_cause(_call: ProviderCall) -> bool:
+    return True
+
+
 class AdmissionPolicy(Protocol):
     """Authority/approval and budget hooks run under the protocol's DB locks."""
+
+    @property
+    def authority(self) -> Callable[[ProviderCall], bool]:
+        """The domain authority predicate alone; it may raise naming its blocker.
+
+        A policy with no domain predicate of its own names no cause (AXRM-045).
+        """
+        return _names_no_cause
 
     def authorize(self, call: ProviderCall) -> bool:
         """Recheck authority, approval and reservation against live domain state."""
