@@ -30,6 +30,8 @@ from apps.cycles.evidence import (
     TITLE_MAX_LENGTH,
     EvidenceRequest,
     RequestInternal,
+    RequestKind,
+    RequestPurpose,
     RequestState,
     counted_links,
 )
@@ -53,6 +55,18 @@ PRIVATE_OBLIGATION: Final = (
     "solicitação ao cliente."
 )
 EDITABLE_STATES: Final = frozenset({RequestState.DRAFT, RequestState.REQUESTED})
+_INSTRUCTIONS: Final = {
+    RequestPurpose.DAS_GUIDE: (
+        "Guia emitida pelo PGMEI (SERPRO). Revise o arquivo e publique pela "
+        "etapa Guia DAS do mês, com aprovação."
+    ),
+    RequestPurpose.PERIOD_FISCAL_DOCUMENTS: (
+        "Reúna e revise os documentos fiscais do período neste ciclo."
+    ),
+    RequestPurpose.MUNICIPAL_PROOF: (
+        "Anexe e revise o comprovante do trabalho realizado no sistema municipal."
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +170,7 @@ def _bind_obligation(
 
 def _event(
     cycle: ServiceCycle,
-    actor: User,
+    actor: User | None,
     event_type: str,
     request: EvidenceRequest,
     payload: dict[str, str | int] | None = None,
@@ -233,6 +247,85 @@ def create_request(
         return request
 
 
+def _internal_obligation(
+    cycle: ServiceCycle, purpose: RequestPurpose, obligation: Obligation | None
+) -> Obligation | None:
+    if purpose != RequestPurpose.MUNICIPAL_PROOF:
+        if obligation is not None:
+            msg = "Somente o comprovante municipal pode vincular uma obrigação interna."
+            raise ValidationError(msg)
+        return None
+    if obligation is None:
+        msg = "Vincule a obrigação do comprovante municipal."
+        raise ValidationError(msg)
+    subject = Obligation.objects.filter(
+        pk=obligation.pk,
+        tenant_id=cycle.tenant_id,
+        client_id=cycle.client_id,
+        competence_month=cycle.period_start,
+    ).first()
+    if subject is None:
+        raise Http404
+    if subject.portal_visible:
+        msg = "O comprovante municipal deve vincular uma obrigação interna."
+        raise ValidationError(msg)
+    return subject
+
+
+@transaction.atomic
+def ensure_internal_request(
+    cycle: ServiceCycle,
+    purpose: str,
+    *,
+    obligation: Obligation | None = None,
+    actor: User | None = None,
+) -> EvidenceRequest:
+    """Ensure the firm-only identity under the cycle lock, even for a closed cycle.
+
+    Callers are already-authorized firm services or trusted system jobs. `actor`
+    is attribution, not authority; late-change work may need an amendment scope
+    on a completed cycle. This never sends a request or authorizes an effect.
+    """
+    try:
+        purpose_key = RequestPurpose(purpose)
+    except ValueError as error:
+        msg = "Finalidade interna da solicitação desconhecida."
+        raise ValidationError(msg) from error
+    current = (
+        ServiceCycle.objects.select_for_update()
+        .filter(pk=cycle.pk, tenant_id=cycle.tenant_id, client_id=cycle.client_id)
+        .first()
+    )
+    if current is None:
+        raise Http404
+    subject = _internal_obligation(current, purpose_key, obligation)
+    request, created = EvidenceRequest.objects.get_or_create(
+        tenant_id=current.tenant_id,
+        client_id=current.client_id,
+        cycle=current,
+        purpose=purpose_key,
+        obligation=subject,
+        defaults={
+            "title": purpose_key.label,
+            "state": RequestState.INTERNAL,
+            "required": False,
+            "created_by": actor,
+            "kind": RequestKind.COMPROVANTE if subject else RequestKind.DOCUMENTO,
+        },
+    )
+    if created:
+        RequestInternal.objects.create(
+            tenant_id=current.tenant_id,
+            client_id=current.client_id,
+            request=request,
+            instructions=_INSTRUCTIONS[purpose_key],
+        )
+        current.version += 1
+        current.save(update_fields=["version"])
+        _event(current, actor, "request.created", request, {"purpose": purpose_key})
+    return request
+
+
 def update_request(
     actor: User,
     request_id: UUID,
@@ -306,6 +399,9 @@ def waive_request(
         cycle, request = _locked_request(actor, request_id)
         check_version(request.version, expected_version)
         require_actor(actor, CYCLES_OPERATE)
+        if request.state == RequestState.INTERNAL:
+            msg = "Uma solicitação interna não pode ser dispensada."
+            raise IllegalTransition(msg)
         if request.state in {
             RequestState.WAIVED,
             RequestState.ACCEPTED,
@@ -577,6 +673,7 @@ __all__ = [
     "RequestFields",
     "client_status",
     "create_request",
+    "ensure_internal_request",
     "live_invite",
     "preview_recipients",
     "recipients",

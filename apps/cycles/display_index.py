@@ -7,7 +7,7 @@ from django.db.models import F, Value
 from django.db.models.functions import JSONObject
 
 from apps.cycles.effects.build import definition_hash
-from apps.cycles.index_projection import digest_data
+from apps.cycles.index_projection import digest_data, encode_v1_request_attribution
 from apps.cycles.models import (
     CycleAmendment,
     CycleTask,
@@ -239,6 +239,8 @@ def _normalize(row: SourceRow) -> "dict[str, JSONValue]":
     }
     for key in HASH_FIELDS.get(row["source_section"], ()):
         data[f"{key}_digest"] = digest_data(data.pop(key))
+    if row["source_section"] == "requests":
+        encode_v1_request_attribution(data)
     return data
 
 

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import date
 
 import pytest
-from django.db import connection, transaction
+from django.db import DatabaseError, connection, transaction
 from django.db.backends.utils import CursorWrapper
 from psycopg import sql
 
@@ -28,7 +28,7 @@ from apps.accounts.models import User
 from apps.clients.models import ClientCompany
 from apps.core import identifiers
 from apps.core.tenancy import tenant_context
-from apps.cycles.models import EvidenceRequest
+from apps.cycles.models import EvidenceRequest, RequestState
 from apps.obligations.models import (
     Document,
     Obligation,
@@ -205,9 +205,8 @@ def test_t070_the_positive_control_attaches_its_own_obligation(firm: Fixture) ->
 #
 # The portal INSERTs an evidence link, the intake row of a new document and one
 # submission event. Each table carries the RESTRICTIVE client-anchored WITH CHECK, and
-# the request/document/cycle references are client-paired composite keys. Each refusal
-# below asserts the NAMED policy (or the FK sqlstate) and the absence of "permission
-# denied", with the honest write beside it as the positive control.
+# the references are client-paired composite keys. AXRM-049 also refuses a hidden
+# request at the policy before the FK could tell it apart from a missing request.
 
 T11_TABLES = ("cycles_evidencelink", "cycles_documentintake", "cycles_cycleevent")
 
@@ -382,7 +381,7 @@ def test_t11_the_positive_control_writes_its_own_client(
         ("cycles_documentintake", "document"),
     ],
 )
-def test_t11_an_honest_row_naming_a_foreign_parent_is_refused_by_the_fk(
+def test_t11_an_honest_row_naming_a_foreign_parent_is_refused(
     requests_graph: RequestGraph, table: str, reference: str
 ) -> None:
     graph = requests_graph
@@ -399,8 +398,46 @@ def test_t11_an_honest_row_naming_a_foreign_parent_is_refused_by_the_fk(
             if reference == "document"
             else graph.alpha_document,
         )
-    assert getattr(exc.value.__cause__, "sqlstate", None) == FK_VIOLATION, exc.value
+    if reference == "request":
+        assert RLS_VIOLATION in str(exc.value)
+        assert "cycles_evidencelink_portal_client_isolation" in str(exc.value)
+    else:
+        assert getattr(exc.value.__cause__, "sqlstate", None) == FK_VIOLATION, exc.value
     assert PERMISSION_DENIED not in str(exc.value)
+
+
+def test_link_insert_refuses_hidden_and_missing_requests_alike(
+    requests_graph: RequestGraph,
+) -> None:
+    graph = requests_graph
+    with tenant_context(graph.tenant.pk):
+        hidden = EvidenceRequest.objects.create(
+            tenant=graph.tenant,
+            client=graph.alpha,
+            cycle_id=graph.alpha_request.cycle_id,
+            title="Firm-only request",
+            state=RequestState.INTERNAL,
+            created_by=graph.uploader,
+        )
+    missing = EvidenceRequest(id=identifiers.uuid7())
+    with transaction.atomic(), _as_portal(graph, graph.alpha) as cursor:
+        cursor.execute(
+            "SELECT current_user, rolsuper, rolbypassrls "
+            "FROM pg_roles WHERE rolname = current_user"
+        )
+        assert cursor.fetchone() == (PORTAL_ROLE, False, False)
+        for request in (hidden, missing):
+            with pytest.raises(DatabaseError) as refused, transaction.atomic():
+                _t11_insert(
+                    graph,
+                    "cycles_evidencelink",
+                    confined_to=graph.alpha,
+                    attributed_to=graph.alpha,
+                    request=request,
+                    document=graph.alpha_document,
+                )
+            assert getattr(refused.value.__cause__, "sqlstate", None) == "42501"
+            assert "cycles_evidencelink_portal_client_isolation" in str(refused.value)
 
 
 @pytest.mark.parametrize(

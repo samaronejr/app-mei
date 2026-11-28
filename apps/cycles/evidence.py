@@ -1,9 +1,8 @@
 """Evidence requests and what the client sends against them (S6.3, S7.5, S8.2).
 
-The split is the portal exposure rule made physical. `EvidenceRequest` holds only what
-the client may read, because the portal role SELECTs the base table under client RLS;
-anything firm-private about a request (instructions to the team, the waiver reason)
-lives in `RequestInternal`, which the portal role holds no privilege on at all.
+The portal role reads `EvidenceRequest` under tenant/client RLS, which excludes
+`interno` rows. Private instructions and waiver reasons live in `RequestInternal`,
+which the portal role holds no privilege on at all.
 
 The client never UPDATEs anything. An upload INSERTs a `Document` (or reuses one with
 the same bytes), an `EvidenceLink`, a `DocumentIntake` for a new document, and one
@@ -70,19 +69,31 @@ class RequestKind(models.TextChoices):
     COMPROVANTE = "comprovante", "Comprovante de pagamento"
 
 
-class EvidenceRequest(ClientRecord):
-    """One thing the firm asks the client for, inside one cycle.
+class RequestPurpose(models.TextChoices):
+    """Stable identities for firm-only requests, independent of display titles."""
 
-    Client-visible by construction: the portal reads this table. Nothing firm-private
-    may ever be added here -- put it on `RequestInternal`.
+    DAS_GUIDE = "guia_das_oficial", "Guia DAS oficial"
+    PERIOD_FISCAL_DOCUMENTS = (
+        "documentos_fiscais_do_periodo",
+        "Documentos fiscais do período",
+    )
+    MUNICIPAL_PROOF = "comprovante_municipal", "Comprovante municipal"
+
+
+class EvidenceRequest(ClientRecord):
+    """One item of evidence the firm tracks inside a cycle.
+
+    A purpose names an internal request; it does not grant or remove access.
+    The internal state controls portal visibility, including for legacy rows
+    without a purpose. Instructions stay in `RequestInternal`.
     """
 
     cycle = models.ForeignKey(
         ServiceCycle, on_delete=models.PROTECT, related_name="requests"
     )
-    # T17: receipt binding. A `comprovante` request names the obligation whose
-    # payment it evidences (client-paired; the CHECK below keeps the pair
-    # consistent). Identity fields are mutable only while `state == 'rascunho'`:
+    # A comprovante binds evidence to one obligation: ordinarily a payment,
+    # but a municipal proof documents filing instead. Identity fields of a
+    # client-facing request are mutable only while `state == 'rascunho'`:
     # once sent, a wrong binding is fixed by a new correctly bound request, not
     # by rewriting one the client may have already answered.
     kind = models.CharField(
@@ -106,10 +117,16 @@ class EvidenceRequest(ClientRecord):
     state = models.CharField(
         max_length=24, choices=RequestState.choices, default=RequestState.DRAFT
     )
+    # NULL is the only absent value; the database check rejects blank strings.
+    purpose = models.CharField[str | None, str | None](
+        max_length=32, choices=RequestPurpose.choices, null=True, blank=True
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="created_evidence_requests",
+        null=True,
+        blank=True,
     )
     requested_at = models.DateTimeField(null=True, blank=True)
     version = models.PositiveIntegerField(default=1)
@@ -139,6 +156,37 @@ class EvidenceRequest(ClientRecord):
                     | models.Q(kind="documento", obligation__isnull=True)
                 ),
                 name="evidencerequest_kind_obligation_check",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(created_by__isnull=False)
+                | models.Q(purpose__isnull=False),
+                name="evidencerequest_human_or_purpose_check",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(purpose__isnull=True)
+                | (
+                    models.Q(state=RequestState.INTERNAL, required=False)
+                    & (
+                        models.Q(
+                            purpose__in=[
+                                RequestPurpose.DAS_GUIDE,
+                                RequestPurpose.PERIOD_FISCAL_DOCUMENTS,
+                            ],
+                            kind=RequestKind.DOCUMENTO,
+                        )
+                        | models.Q(
+                            purpose=RequestPurpose.MUNICIPAL_PROOF,
+                            kind=RequestKind.COMPROVANTE,
+                        )
+                    )
+                ),
+                name="evidencerequest_internal_purpose_check",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "client", "cycle", "purpose", "obligation"],
+                condition=models.Q(purpose__isnull=False),
+                nulls_distinct=False,
+                name="evidencerequest_purpose_uniq",
             ),
         ]
 

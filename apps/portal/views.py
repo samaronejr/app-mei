@@ -815,11 +815,18 @@ def document_download(
     because its iterator would be consumed after the transaction closes and the role and
     both GUCs are gone, yielding nothing.
     """
-    document = get_object_or_404(
-        Document.objects.filter(_served(strict=_strict(request))),
-        storage_key=storage_key,
+    return serve_document(
+        get_object_or_404(servable_documents(request), storage_key=storage_key)
     )
 
+
+def servable_documents(request: PortalVaultRequest) -> QuerySet[Document]:
+    """Keep all portal downloads behind the vault's live scan and RLS checks."""
+    return Document.objects.filter(_served(strict=_strict(request)))
+
+
+def serve_document(document: Document) -> HttpResponse:
+    """Serve a document already authorized by a portal query."""
     try:
         # Size from metadata BEFORE the body. Under object storage this is a HEAD rather
         # than
