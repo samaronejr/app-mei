@@ -1509,15 +1509,36 @@ def test_a_receipt_retry_after_a_401_refused_at_claim_is_reported_as_stored(
     )
 
 
-def _receipt_entry(
+def _pin_reserved_slot(
+    world: World, monkeypatch: pytest.MonkeyPatch, budget: tuple[object, ...]
+) -> list[tuple[UUID, UUID] | None]:
+    """Record (call, slot) of each reservation before the call reaches the worker."""
+    real = import_module("apps.integrations.call_protocol").reserve
+    pinned: list[tuple[UUID, UUID] | None] = []
+
+    def reserve_and_pin(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        row = real(*args, **kwargs)
+        snapshot = _target(world, row.pk)
+        assert _slots(snapshot) == [(1, "reserved", RECEIPT_MICROBRL)]
+        _on_budget(snapshot, budget)
+        pinned.append((row.pk, snapshot["slots"][0]["id"]))
+        return row
+
+    monkeypatch.setattr(payments, "reserve", reserve_and_pin)
+    return pinned
+
+
+def _receipt_entry(  # noqa: PLR0913 - the entry, its site, intent, budget, money and slot
     entry: dict[str, Any],
     site: str,
     key: str,
     budget: tuple[object, ...],
     baseline: tuple[int, ...],
+    *,
+    reserved: tuple[UUID, UUID] | None = None,
 ) -> None:
     """The receipt claim's entry: reserved with one priced slot, or after the
-    definitive 401 with that slot released, on the pinned budget."""
+    definitive 401 with that same slot released, on the pinned budget."""
     assert _intent(entry) == (key, key), "the receipt call is not the payment's intent"
     held = entry["call"]
     if site == "claim":
@@ -1540,6 +1561,11 @@ def _receipt_entry(
     assert {k: observation[k] for k in DEFINITIVE_401} == DEFINITIVE_401
     assert _slots(entry) == [(1, "released", RECEIPT_MICROBRL)]
     assert _on_budget(entry, budget) == baseline
+    # The released slot is the very row reserved before the first send, on the
+    # same call (gate review :758); compared within this run only.
+    assert (held["id"], entry["slots"][0]["id"]) == reserved, (
+        "the retry's slot is not the one reserved for the first attempt"
+    )
 
 
 @DB
@@ -1554,9 +1580,11 @@ def test_an_ordinary_authority_veto_at_a_receipt_claim_is_never_a_moved_refusal(
     key = _payment_key(das)
     budget = _pin_budget(world)
     baseline = _on_budget(_budgets(world), budget)
+    protocol = import_module("apps.integrations.call_protocol")
+    reserved_at: list[tuple[UUID, UUID] | None] = []
     if site == "retry-claim":
         world.script(Reply(status=401))
-    protocol = import_module("apps.integrations.call_protocol")
+        reserved_at = _pin_reserved_slot(world, monkeypatch, budget)
     module = payments if site == "claim" else protocol
     tenant, actor = world.termo.tenant.pk, world.termo.actor
     entries: list[dict[str, Any]] = []
@@ -1597,7 +1625,9 @@ def test_an_ordinary_authority_veto_at_a_receipt_claim_is_never_a_moved_refusal(
         public = ("raised", type(error).__name__, error.reason)
     # Then that claim met the payment's intent in its expected state.
     [entry] = entries
-    _receipt_entry(entry, site, key, budget, baseline)
+    # Exactly one reservation at the retry site; none is pinned at the claim.
+    (pinned_slot,) = reserved_at or [None]
+    _receipt_entry(entry, site, key, budget, baseline, reserved=pinned_slot)
     held = entry["call"]
     # At that claim's exit the refusal is the plain one with its own cause, and
     # the claim rolled back: every row as at its entry, fence, lease, epoch and
@@ -1646,10 +1676,11 @@ def _page_scope(world: World, query: PaymentQuery) -> tuple[str, str]:
 
 
 def _record_routes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> dict[str, list[tuple[object, ...]]]:
-    """Call-through recorders on the page's two settlement routes."""
-    routes: dict[str, list[tuple[object, ...]]] = {"refused": [], "settle": []}
+    monkeypatch: pytest.MonkeyPatch, performs: list[tuple[Any, ...]]
+) -> dict[str, list[Any]]:
+    """Call-through recorders on the page's two settlement routes; each settle
+    entry also notes how many perform results had returned by then."""
+    routes: dict[str, list[Any]] = {"refused": [], "settle": [], "counts": []}
     real_refused, real_settle = payments._refused, payments._settle_page
 
     def refused_route(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
@@ -1662,6 +1693,7 @@ def _record_routes(
     def settle_route(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         query_arg, index, scope, call_id = args[:4]
         routes["settle"].append((query_arg.pk, index, scope, call_id))
+        routes["counts"].append(len(performs))
         return real_settle(*args, **kwargs)
 
     monkeypatch.setattr(payments, "_refused", refused_route)
@@ -1671,12 +1703,14 @@ def _record_routes(
 
 def _page_routes(
     site: str, query_id: UUID, key: str, digest: str, target: dict[str, Any]
-) -> tuple[list[object], dict[str, list[tuple[object, ...]]]]:
-    """What perform returns and which settlement route the page takes, per site."""
+) -> tuple[list[object], dict[str, list[Any]]]:
+    """What perform returns and which settlement route the page takes, per site:
+    at the retry, the one 401 result has returned before settlement starts."""
     call_id = target["call"]["id"]
     if site == "claim":
         moved = f"VersionMovedError: {CallState.AUTHORITY}"
-        return [], {"refused": [(query_id, 0, digest, key, moved)], "settle": []}
+        refused = [(query_id, 0, digest, key, moved)]
+        return [], {"refused": refused, "settle": [], "counts": []}
     [observation] = target["observations"]
     result = (
         CallState.FAILED,
@@ -1687,7 +1721,26 @@ def _page_routes(
         observation["response_digest"],
         "",
     )
-    return [result], {"refused": [], "settle": [(query_id, 0, digest, call_id)]}
+    settle = [(query_id, 0, digest, call_id)]
+    return [result], {"refused": [], "settle": settle, "counts": [1]}
+
+
+def _page_trace(  # noqa: PLR0913 - the expected and both observed snapshots
+    *,
+    expected_performs: list[object],
+    expected: dict[str, list[Any]],
+    first_performs: tuple[tuple[Any, ...], ...],
+    first_routes: dict[str, list[Any]],
+    performs: tuple[tuple[Any, ...], ...],
+    routes: dict[str, list[Any]],
+) -> None:
+    """The page's first run took its one route in order; the duplicate added nothing."""
+    assert [
+        _the_401(row[1]) if row[0] == "returned" else row for row in first_performs
+    ] == expected_performs, "the page took the wrong settlement route"
+    assert first_routes == expected, "the page took the wrong settlement route"
+    assert performs == first_performs, "the duplicate run performed the page again"
+    assert routes == first_routes, "the duplicate run settled the page again"
 
 
 @DB
@@ -1719,7 +1772,7 @@ def test_a_page_moved_at_its_claim_settles_its_own_query_from_the_refusal(
         _recording_claim(world, module, refusals, lambda _id: _renew(world)),
     )
     performs = _observe_perform(monkeypatch)
-    routes = _record_routes(monkeypatch)
+    routes = _record_routes(monkeypatch, performs)
     settled = payments.run_payment_query(tenant, query.pk)
     [call] = world.calls()
     sent = 0 if site == "claim" else 1
@@ -1742,10 +1795,12 @@ def test_a_page_moved_at_its_claim_settles_its_own_query_from_the_refusal(
     # Then that same query ends falha by the moved refusal's cause, with one
     # payments receipt for that scope citing that call, the call being page 0's
     # own intent; a duplicate run of it changes nothing.
-    first_routes: dict[str, list[tuple[object, ...]]] = {}
+    first_routes: dict[str, list[Any]] = {}
+    first_performs: tuple[tuple[Any, ...], ...] = ()
     for run in ("first", "duplicate"):
         if run == "duplicate":
             first_routes = {name: list(rows) for name, rows in routes.items()}
+            first_performs = tuple(performs)
             settled = payments.run_payment_query(tenant, query.pk)
         assert (settled.pk, settled.request_key) == pinned, run
         assert (settled.state, settled.failure_code) == (
@@ -1782,16 +1837,20 @@ def test_a_page_moved_at_its_claim_settles_its_own_query_from_the_refusal(
         assert hashlib.sha256(request.body).hexdigest() == digest
         assert world.offsets() == [0]
     # And the claim raised the typed moved refusal for that call (named by string:
-    # the class is absent on the red trees), settled through its own route:
-    # `_refused` at the first claim, `_settle_page` after perform returned the
-    # 401's own result at the retry; the duplicate took neither.
+    # the class is absent on the red trees), settled through its own route on
+    # the first run: `_refused` at the first claim, `_settle_page` only after
+    # perform returned the 401's own result at the retry; the duplicate run
+    # performed and settled nothing (gate review :758).
     assert [(row[0], row[1]) for row in refusals] == [(call.pk, "VersionMovedError")]
     expected_performs, expected = _page_routes(site, query.pk, key, digest, target)
-    assert [
-        _the_401(row[1]) if row[0] == "returned" else row for row in performs
-    ] == expected_performs, "the page took the wrong settlement route"
-    assert routes == expected, "the page took the wrong settlement route"
-    assert routes == first_routes, "the duplicate run settled the page again"
+    _page_trace(
+        expected_performs=expected_performs,
+        expected=expected,
+        first_performs=first_performs,
+        first_routes=first_routes,
+        performs=tuple(performs),
+        routes=routes,
+    )
 
 
 def _renew(world: World) -> None:
