@@ -126,7 +126,7 @@ def record_fiscal_document_review(  # noqa: PLR0913 - exact review-form contract
         if not tenant_has(tenant_id(), "document_capture"):
             raise Http404
         initial = load_cycle(actor, cycle_id)
-        ClientCompany.objects.select_for_update().get(pk=initial.client_id)
+        ClientCompany.objects.select_for_update(no_key=True).get(pk=initial.client_id)
         fiscal = (
             FiscalDocument.objects.select_for_update()
             .filter(pk=document_id, client_id=initial.client_id)

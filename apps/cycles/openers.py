@@ -21,6 +21,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.clients.models import TaxRegime
 from apps.clients.services import profile_at
+from apps.core.tenancy import tenant_context
 from apps.cycles.evidence import EvidenceRequest, RequestState
 from apps.cycles.models import CycleState, ServiceCycle
 from apps.cycles.models import Exception as CycleException
@@ -78,11 +79,12 @@ class EvaluationCounts:
     skipped_no_owner: int = 0
 
 
-# AXRM-008: other domains' deterministic openers (provider authority and certificate
-# conditions), registered by their app's ready() like COMPLETION_GUARDS. Each runs
-# once per sweep for the firm, after the cycle rules, inside the task's tenant
-# context, and is responsible for its own flag checks.
+# Evaluators run after the cycle rules commit, each in its own tenant transaction:
+# none may wait on provider rows or another cycle while a rule's cycle lock is held.
+# Settlements run last, without an ambient transaction: they acquire provider
+# controls and client locks before locking an individual cycle.
 TENANT_EVALUATORS: list[Callable[[Tenant, date], None]] = []
+TENANT_SETTLEMENTS: list[Callable[[Tenant, date], None]] = []
 
 
 def fallback_owner(tenant_id: UUID) -> User | None:
@@ -182,22 +184,25 @@ def evaluate_tenant_exceptions(
 ) -> EvaluationCounts:
     """Run every deterministic opener over one firm's open cycles.
 
-    Called inside `tenant_context` (the task names the firm); `today` is
-    injectable so tests pin the deadline arithmetic.
+    The daily task calls it with no transaction open: the cycle rules commit
+    before each evaluator runs in its own transaction. `today` is injectable so
+    tests pin the deadline arithmetic.
     """
     on = today or timezone.localdate()
     evaluated = skipped = 0
-    cycles = (
-        ServiceCycle.objects.filter(tenant=tenant)
-        .exclude(state__in=CLOSED_STATES)
-        .select_related("client", "engagement__responsible", "owner")
-        .order_by("pk")
-    )
-    for cycle in cycles:
-        if evaluate_cycle(cycle, on):
-            evaluated += 1
-        else:
-            skipped += 1
+    with tenant_context(tenant.pk):
+        cycles = (
+            ServiceCycle.objects.filter(tenant=tenant)
+            .exclude(state__in=CLOSED_STATES)
+            .select_related("client", "engagement__responsible", "owner")
+            .order_by("pk")
+        )
+        for cycle in cycles:
+            if evaluate_cycle(cycle, on):
+                evaluated += 1
+            else:
+                skipped += 1
     for evaluator in TENANT_EVALUATORS:
-        evaluator(tenant, on)
+        with tenant_context(tenant.pk):
+            evaluator(tenant, on)
     return EvaluationCounts(evaluated=evaluated, skipped_no_owner=skipped)

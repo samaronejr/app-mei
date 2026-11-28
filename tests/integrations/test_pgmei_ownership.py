@@ -198,9 +198,9 @@ def test_worker_death_after_a_final_success_is_linked_by_the_daily_sweep(
     # When the firm's daily evaluator runs, then the guide is linked, once.
     monkeypatch.setattr(pgmei, "settle_guide", original)
     tenant = Tenant.objects.get(pk=guide_world.tenant_id)
+    pgmei.evaluate_guide_conditions(tenant, timezone.localdate())
+    pgmei.evaluate_guide_conditions(tenant, timezone.localdate())
     with tenant_context(guide_world.tenant_id):
-        pgmei.evaluate_guide_conditions(tenant, timezone.localdate())
-        pgmei.evaluate_guide_conditions(tenant, timezone.localdate())
         links = EvidenceLink.objects.filter(request__cycle=guide_world.cycle)
         assert links.count() == 1
         assert links.get().submitted_by_id == guide_world.owner.pk
@@ -219,8 +219,7 @@ def test_worker_death_after_a_final_refusal_is_owned_by_the_daily_sweep(
     assert owned_exception(guide_world, pgmei.GUIDE_NOT_OBTAINED) is None
     monkeypatch.setattr(pgmei, "settle_guide", original)
     tenant = Tenant.objects.get(pk=guide_world.tenant_id)
-    with tenant_context(guide_world.tenant_id):
-        pgmei.evaluate_guide_conditions(tenant, timezone.localdate())
+    pgmei.evaluate_guide_conditions(tenant, timezone.localdate())
     assert owned_exception(guide_world, pgmei.GUIDE_NOT_OBTAINED) is not None
 
 
