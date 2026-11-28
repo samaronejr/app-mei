@@ -1001,17 +1001,20 @@ def _own(call: ProviderCall, reason: str) -> None:
     )
 
 
-def settle_guide(
+def settle_guide(  # noqa: PLR0911 - one exit per settled outcome
     tenant_id: UUID,
     call_id: UUID,
     *,
     cycle_id: UUID | None = None,
     actor: User | None = None,
+    recovery: bool = False,
 ) -> str:
     """Converge one guide call on a linked guide or owned work; never raise on it.
 
     Every abandoned non-final call is released or owned under its fence, and a PDF
     it already stored is adopted. No recovery path automatically sends anything.
+    A `recovery` (the daily sweep's frozen id) first rechecks, under these locks,
+    that the call still needs a link or owned work; a settled one is left alone.
     """
     with tenant_context(tenant_id):
         call = ProviderCall.objects.get(pk=call_id, operation=OPERATION)
@@ -1023,6 +1026,8 @@ def settle_guide(
             pk=call_id, operation=OPERATION
         )
         call.client = _lock_guide_client(call.client_id)
+        if recovery and not _unsettled(call):
+            return "ja_liquidada"
         if not CALL_FINAL[call.state]:
             return "em_andamento"
         if call.state in REFUSED_CODES:
@@ -1090,7 +1095,7 @@ def evaluate_guide_conditions(tenant: Tenant, today: date) -> None:
             if (CALL_FINAL[call.state] or _lease_expired(call)) and _unsettled(call)
         ]
     for call_id in due_ids:
-        settle_guide(tenant.pk, call_id)
+        settle_guide(tenant.pk, call_id, recovery=True)
     del today
 
 

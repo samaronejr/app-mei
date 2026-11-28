@@ -184,7 +184,7 @@ def open_exceptions_for_tenant(tenant_id: UUID | str) -> dict[str, int]:
             return {"evaluated": 0, "skipped_no_owner": 0}
         # PLATFORM_QUERY_OK: the validated task argument names this exact firm.
         tenant = Tenant.objects.get(pk=tenant_pk)
-        counts = evaluate_tenant_exceptions(tenant, today=today)
+    counts = evaluate_tenant_exceptions(tenant, today=today)
     for settle in TENANT_SETTLEMENTS:
         settle(tenant, today)
     return {"evaluated": counts.evaluated, "skipped_no_owner": counts.skipped_no_owner}
